@@ -20,7 +20,7 @@
     "file-saver": "^2.0.5",
     "heroicons": "^2.2.0",
     "html2canvas": "^1.4.1",
-    "jspdf": "^3.0.3",
+    "jspdf": "^4.0.0",
     "jspdf-autotable": "^5.0.2",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",

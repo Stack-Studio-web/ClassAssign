@@ -26,6 +26,11 @@ const Allotment = () => {
 
   const [excludedBatches, setExcludedBatches] = useState({});
 
+  const [facultyMode, setFacultyMode] = useState("AUTO");
+  const [allFaculty, setAllFaculty] = useState([]);
+  const [manualFacultyAssignments, setManualFacultyAssignments] = useState({});
+
+
   // Fetch venues and courses
   useEffect(() => {
     const fetchData = async () => {
@@ -40,6 +45,19 @@ const Allotment = () => {
     };
     fetchData();
   }, []);
+
+  // Fetch faculty
+useEffect(() => {
+  const fetchFaculty = async () => {
+    try {
+      const res = await axios.get("http://localhost:5000/api/faculty");
+      setAllFaculty(res.data);
+    } catch (err) {
+      console.error("Failed to fetch faculty");
+    }
+  };
+  fetchFaculty();
+}, []);
 
   // Add course
   const handleAddCourse = async () => {
@@ -223,38 +241,56 @@ const Allotment = () => {
   };
 
   // Save plan
-  const handleSave = async () => {
-    if (!generatedSeating) {
-      setError("Generate a plan before saving.");
-      return;
-    }
+const handleSave = async () => {
+  if (!generatedSeating) {
+    setError("Generate a plan before saving.");
+    return;
+  }
 
-    const payload = {
-      examDate,
-      examStartTime,
-      examEndTime,
-      examSession,
-      examType,
-      selectedCourses,
-      students: allottedStudents,
-      venuesUsed: generatedSeating.map((v) => ({
-        venueId: v.venue._id,
-        venueName: `${v.venue.name} - ${v.venue.type}`,
-        seatingArrangement: v.seats,
-      })),
-    };
-
-    try {
-      await axios.post("http://localhost:5000/api/seating/save-plan", payload);
-      alert("Seating plan saved successfully!");
-      setGeneratedSeating(null);
-      setSelectedCourses([]);
-      setStudentsByCourse({});
-      setExcludedBatches({});
-    } catch (err) {
-      setError("Failed to save seating plan.");
+  // Validation for manual mode
+  if (facultyMode === "MANUAL") {
+    for (const v of generatedSeating) {
+      if (!manualFacultyAssignments[v.venue._id]) {
+        setError("Please assign faculty to all venues.");
+        return;
+      }
     }
+  }
+
+  const payload = {
+    examDate,
+    examStartTime,
+    examEndTime,
+    examSession,
+    examType,
+    selectedCourses,
+    students: allottedStudents,
+    facultyMode: facultyMode, // AUTO or MANUAL
+
+    venuesUsed: generatedSeating.map((v) => ({
+      venueId: v.venue._id,
+      venueName: `${v.venue.name} - ${v.venue.type}`,
+      seatingArrangement: v.seats,
+      facultyId:
+        facultyMode === "MANUAL"
+          ? manualFacultyAssignments[v.venue._id]
+          : null,
+    })),
   };
+
+  try {
+    await axios.post("http://localhost:5000/api/seating/save-plan", payload);
+    alert("Seating plan saved successfully!");
+    setGeneratedSeating(null);
+    setSelectedCourses([]);
+    setStudentsByCourse({});
+    setExcludedBatches({});
+    setManualFacultyAssignments({});
+  } catch (err) {
+    setError("Failed to save seating plan.");
+  }
+};
+
 
   return (
     <div className="p-6 bg-white min-h-screen">
@@ -357,6 +393,47 @@ const Allotment = () => {
               <span>Manual (Select venues)</span>
             </label>
           </div>
+
+          {/* Faculty Configuration */}
+{/* Faculty Configuration */}
+<div className="mt-6 pt-4 border-t">
+  <label className="block font-medium mb-2 text-indigo-700">
+    Faculty Invigilation Mode
+  </label>
+
+  <div className="flex gap-6">
+    {/* AUTO MODE */}
+    <label className="flex items-center gap-2 cursor-pointer">
+      <input
+        type="radio"
+        value="AUTO"
+        checked={facultyMode === "AUTO"}
+        onChange={(e) => setFacultyMode(e.target.value)}
+      />
+      <span className="text-sm">
+        Auto-Assign (System chooses available faculty)
+      </span>
+    </label>
+
+    {/* MANUAL MODE */}
+    <label className="flex items-center gap-2 cursor-pointer">
+      <input
+        type="radio"
+        value="MANUAL"
+        checked={facultyMode === "MANUAL"}
+        onChange={(e) => setFacultyMode(e.target.value)}
+      />
+      <span className="text-sm">
+        Manual-Assign (Assign faculty per venue)
+      </span>
+    </label>
+  </div>
+
+  <p className="text-xs text-gray-500 mt-1 italic">
+    *AUTO mode assigns faculty automatically. MANUAL mode allows custom assignment per venue.
+  </p>
+</div>
+
         </div>
 
         {seatingMode === "manual" && (
@@ -504,10 +581,11 @@ const Allotment = () => {
       </div>
 
       {/* Output */}
+{/* 4. Generated Seating Plan Tables */}
       {generatedSeating && (
         <div className="mt-8">
-          <h2 className="text-2xl font-bold text-center mb-4">
-            Generated Seating Plan
+          <h2 className="text-2xl font-bold text-center mb-6 text-gray-800">
+            Preview: Generated Seating Plan
           </h2>
           {generatedSeating.map((item, idx) => {
             const colLabels = Array.from(
@@ -519,48 +597,64 @@ const Allotment = () => {
               (_, i) => (i + 1).toString()
             );
 
+            // Find faculty name for preview if in MANUAL mode
+            const assignedFacultyId = manualFacultyAssignments[item.venue._id];
+            const assignedFacultyName = allFaculty.find(f => f.id === parseInt(assignedFacultyId))?.name || "Pending Auto-Assignment";
+
             return (
-              <div
-                key={idx}
-                className="mb-8 p-4 border rounded-lg shadow-sm bg-gray-50"
-              >
-                <h3 className="text-lg font-semibold mb-3 text-gray-800">
-                  {item.venue.name} ({item.venue.type})
-                </h3>
-                <table className="w-full border-collapse text-center text-sm">
-                  <thead>
-                    <tr>
-                      <th className="border p-2 bg-gray-100">Row/Col</th>
-                      {colLabels.map((col) => (
-                        <th key={col} className="border p-2 bg-gray-100">
-                          {col}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {item.seats.map((row, rIdx) => (
-                      <tr key={rIdx}>
-                        <td className="border p-2 font-semibold bg-gray-100">
-                          {rowLabels[rIdx]}
-                        </td>
-                        {row.map((cell, cIdx) => (
-                          <td
-                            key={cIdx}
-                            className="border p-2 whitespace-pre-line text-xs"
-                          >
-                            {cell}
-                          </td>
+              <div key={idx} className="mb-10 p-5 border rounded-xl shadow-md bg-gray-50">
+                <div className="flex justify-between items-center mb-4 border-b pb-2">
+                  <div>
+                    <h3 className="text-xl font-bold text-indigo-900">
+                      {item.venue.name} <span className="text-sm font-normal text-gray-500">({item.venue.type})</span>
+                    </h3>
+                    <p className="text-sm text-gray-600">Capacity used: {item.seats.flat().filter(s => s !== "Empty").length} students</p>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-xs font-semibold uppercase text-gray-400 block">Invigilator</span>
+                    <span className="font-medium text-indigo-700">{facultyMode === "AUTO" ? "🔄 Auto-Rotating" : assignedFacultyName}</span>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full border-collapse text-center text-sm bg-white">
+                    <thead>
+                      <tr>
+                        <th className="border p-2 bg-gray-100 w-16">Row</th>
+                        {colLabels.map((col) => (
+                          <th key={col} className="border p-2 bg-gray-100 font-bold text-gray-700">
+                            Column {col}
+                          </th>
                         ))}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {item.seats.map((row, rIdx) => (
+                        <tr key={rIdx}>
+                          <td className="border p-2 font-bold bg-gray-100 text-gray-600">
+                            {rowLabels[rIdx]}
+                          </td>
+                          {row.map((cell, cIdx) => (
+                            <td
+                              key={cIdx}
+                              className={`border p-3 whitespace-pre-line text-xs min-w-[100px] ${
+                                cell === "Empty" ? "text-gray-300 italic" : "text-gray-800 font-medium"
+                              }`}
+                            >
+                              {cell}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             );
           })}
         </div>
       )}
+
     </div>
   );
 };

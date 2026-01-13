@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const Faculty = require("../models/Faculty");
 
 const SeatingPlan = require("../models/SeatingPlan");
 const Venue = require("../models/venue");
@@ -18,6 +19,7 @@ router.post("/save-plan", async (req, res) => {
       selectedCourses,
       venuesUsed,
       students = [],
+      facultyMode = "AUTO",   // ✅ NEW
     } = req.body;
 
     /* ---------- SAFE DATE HANDLING ---------- */
@@ -68,6 +70,13 @@ router.post("/save-plan", async (req, res) => {
       }
     }
 
+    let finalVenues = venuesUsed;
+
+    /* ---------- AUTO FACULTY ASSIGN ---------- */
+    if (facultyMode === "AUTO") {
+      finalVenues = await autoAssignFaculty(venuesUsed);
+    }
+
     /* ---------- SAVE PLAN ---------- */
     const seatingPlanId = await SeatingPlan.createPlan({
       examDate: dateOnly,
@@ -77,7 +86,8 @@ router.post("/save-plan", async (req, res) => {
       examEndTime,
       selectedCourses,
       students,
-      venuesUsed,
+      venuesUsed: finalVenues,   // ✅ facultyId now included
+      facultyMode,               // ✅ save mode
     });
 
     /* ---------- ADD VENUE SESSIONS ---------- */
@@ -91,7 +101,7 @@ router.post("/save-plan", async (req, res) => {
     }
 
     res.status(201).json({
-      message: "Seating plan saved successfully",
+      message: "Seating plan saved with faculty assignment",
       seatingPlanId,
     });
   } catch (err) {
@@ -102,6 +112,7 @@ router.post("/save-plan", async (req, res) => {
     });
   }
 });
+
 
 /* =====================================================
    GET: ALL SEATING PLANS
@@ -194,4 +205,29 @@ router.delete("/delete-plan/:id", async (req, res) => {
     });
   }
 });
+
+async function autoAssignFaculty(venuesUsed) {
+  const db = require("../config/db");
+
+  // 1️⃣ Fetch all faculty
+  const [facultyList] = await db.query(
+    "SELECT id, name, department FROM faculty"
+  );
+
+  if (facultyList.length === 0) {
+    throw new Error("No faculty available for auto assignment");
+  }
+
+  // 2️⃣ Assign faculty using round-robin
+  return venuesUsed.map((venue, index) => {
+    const faculty = facultyList[index % facultyList.length];
+    return {
+      ...venue,
+      facultyId: faculty.id,
+      facultyName: faculty.name,
+      facultyDepartment: faculty.department,
+    };
+  });
+}
+
 module.exports = router;

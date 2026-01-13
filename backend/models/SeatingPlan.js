@@ -4,114 +4,81 @@ const SeatingPlan = {
   /* ===============================
      CREATE SEATING PLAN
   =============================== */
-  createPlan: async (plan) => {
-    const {
-      examDate,
-      examSession,
-      examType,
-      examStartTime,
-      examEndTime,
-      selectedCourses,
-      students = [],
-      venuesUsed = [],
-    } = plan;
+async createPlan({
+  examDate,
+  examSession,
+  examType,
+  examStartTime,
+  examEndTime,
+  selectedCourses,
+  students,
+  venuesUsed,
+  facultyMode = "AUTO",
+}) {
+  const conn = await db.getConnection();
+  await conn.beginTransaction();
 
-    // 🔒 Normalize selectedCourses
-    const safeCourses = Array.isArray(selectedCourses)
-      ? selectedCourses
-      : selectedCourses
-        ? [selectedCourses]
-        : [];
+  try {
+    // 1️⃣ Insert main plan
+    const [result] = await conn.query(
+      `INSERT INTO seating_plans
+       (exam_date, exam_session, exam_type, exam_start_time, exam_end_time, selected_courses, students, faculty_mode)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        examDate,
+        examSession,
+        examType,
+        examStartTime,
+        examEndTime,
+        JSON.stringify(selectedCourses),
+        JSON.stringify(students),
+        facultyMode,
+      ]
+    );
 
-    // 🔁 Use transaction for safety
-    const conn = await db.getConnection();
-    try {
-      await conn.beginTransaction();
+    const seatingPlanId = result.insertId;
 
-      /* ---------- 1️⃣ Insert seating plan ---------- */
-      const [planResult] = await conn.query(
-        `INSERT INTO seating_plans
-         (exam_date, exam_session, exam_type, exam_start_time, exam_end_time, selected_courses)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+    // 2️⃣ Insert venues
+    for (const v of venuesUsed) {
+      await conn.query(
+        `INSERT INTO seating_plan_venues
+         (seating_plan_id, venue_id, venue_name, faculty_id)
+         VALUES (?, ?, ?, ?)`,
+        [seatingPlanId, v.venueId, v.venueName, v.facultyId || null]
+      );
+    }
+
+    // ================================
+    // 🔥 FIX #2: INSERT STUDENTS
+    // ================================
+    for (const s of students) {
+      await conn.query(
+        `INSERT INTO seating_plan_students
+         (seating_plan_id, regn_no, student_name, course_description, exam_code)
+         VALUES (?, ?, ?, ?, ?)`,
         [
-          examDate,
-          examSession,
-          examType,
-          examStartTime,
-          examEndTime,
-          JSON.stringify(safeCourses),
+          seatingPlanId,
+          s.regnNo,
+          s.studentName || "",
+          s.courseDescription,
+          s.examCode || null,
         ]
       );
-
-      const seatingPlanId = planResult.insertId;
-
-      /* ---------- 2️⃣ Insert students ---------- */
-      for (const s of students) {
-        await conn.query(
-          `INSERT INTO seating_plan_students
-           (seating_plan_id, regn_no, student_name, course_description, exam_code)
-           VALUES (?, ?, ?, ?, ?)`,
-          [
-            seatingPlanId,
-            s.regnNo,
-            s.studentName,
-            s.courseDescription,
-            s.examCode || examType,
-          ]
-        );
-      }
-
-      /* ---------- 3️⃣ Insert venues + seating ---------- */
-      for (const venue of venuesUsed) {
-        if (!Array.isArray(venue.seatingArrangement)) {
-          throw new Error(
-            `Invalid seatingArrangement for venue ${venue.venueName}`
-          );
-        }
-
-        const [venueRes] = await conn.query(
-          `INSERT INTO seating_plan_venues
-           (seating_plan_id, venue_id, venue_name)
-           VALUES (?, ?, ?)`,
-          [seatingPlanId, venue.venueId, venue.venueName]
-        );
-
-        const seatingPlanVenueId = venueRes.insertId;
-
-        for (let r = 0; r < venue.seatingArrangement.length; r++) {
-          for (let c = 0; c < venue.seatingArrangement[r].length; c++) {
-            const value = venue.seatingArrangement[r][c];
-
-            const hasSeat =
-              value !== undefined && value !== null && value !== "";
-
-            const regnNo =
-              value && value !== "Empty" ? value : null;
-
-            await conn.query(
-              `INSERT INTO seating_arrangements
-               (seating_plan_venue_id, seat_row, seat_col, regn_no)
-               VALUES (?, ?, ?, ?)`,
-              [
-                seatingPlanVenueId,
-                hasSeat ? r : null, // ✅ NULL allowed
-                hasSeat ? c : null, // ✅ NULL allowed
-                regnNo,
-              ]
-            );
-          }
-        }
-      }
-
-      await conn.commit();
-      return seatingPlanId;
-    } catch (err) {
-      await conn.rollback();
-      throw err;
-    } finally {
-      conn.release();
     }
-  },
+
+    // 3️⃣ Commit
+    await conn.commit();
+    return seatingPlanId;
+
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+,
+
 
   /* ===============================
      GET ALL SEATING PLANS
@@ -126,6 +93,7 @@ const SeatingPlan = {
         exam_start_time AS examStartTime,
         exam_end_time AS examEndTime,
         selected_courses AS selectedCourses,
+        faculty_mode AS facultyMode,
         created_at AS createdAt
       FROM seating_plans
       ORDER BY exam_date DESC, exam_session
@@ -134,11 +102,17 @@ const SeatingPlan = {
     const result = [];
 
     for (const plan of plans) {
-      /* ---------- venues ---------- */
+      /* ---------- venues + faculty ---------- */
       const [venues] = await db.query(
-        `SELECT venue_id AS venueId, venue_name AS venueName
-         FROM seating_plan_venues
-         WHERE seating_plan_id = ?`,
+        `SELECT 
+           spv.venue_id AS venueId,
+           spv.venue_name AS venueName,
+           spv.faculty_id AS facultyId,
+           f.name AS facultyName,
+           f.department AS facultyDepartment
+         FROM seating_plan_venues spv
+         LEFT JOIN faculty f ON spv.faculty_id = f.id
+         WHERE spv.seating_plan_id = ?`,
         [plan._id]
       );
 
@@ -175,35 +149,32 @@ const SeatingPlan = {
         );
 
         const validSeats = seats.filter(
-          s => s.seat_row !== null && s.seat_col !== null
+          (s) => s.seat_row !== null && s.seat_col !== null
         );
 
         if (validSeats.length === 0) {
           venuesWithSeats.push({
             ...venue,
-            seatingArrangement: []
+            seatingArrangement: [],
           });
           continue;
         }
 
-        const maxRow =
-          Math.max(...validSeats.map(s => s.seat_row)) + 1;
-        const maxCol =
-          Math.max(...validSeats.map(s => s.seat_col)) + 1;
+        const maxRow = Math.max(...validSeats.map((s) => s.seat_row)) + 1;
+        const maxCol = Math.max(...validSeats.map((s) => s.seat_col)) + 1;
 
-        const seatingArrangement = Array.from(
-          { length: maxRow },
-          () => Array.from({ length: maxCol }, () => "Empty")
+        const seatingArrangement = Array.from({ length: maxRow }, () =>
+          Array.from({ length: maxCol }, () => "Empty")
         );
 
-        validSeats.forEach(seat => {
+        validSeats.forEach((seat) => {
           seatingArrangement[seat.seat_row][seat.seat_col] =
             seat.regn_no || "Empty";
         });
 
         venuesWithSeats.push({
           ...venue,
-          seatingArrangement
+          seatingArrangement,
         });
       }
 
@@ -224,7 +195,7 @@ const SeatingPlan = {
         ...plan,
         selectedCourses: parsedCourses,
         venuesUsed: venuesWithSeats,
-        students
+        students,
       });
     }
 
@@ -242,9 +213,13 @@ const SeatingPlan = {
     if (!plan) return null;
 
     const [venues] = await db.query(
-      `SELECT venue_id AS venueId
-       FROM seating_plan_venues
-       WHERE seating_plan_id = ?`,
+      `SELECT 
+         spv.venue_id AS venueId,
+         spv.faculty_id AS facultyId,
+         f.name AS facultyName
+       FROM seating_plan_venues spv
+       LEFT JOIN faculty f ON spv.faculty_id = f.id
+       WHERE spv.seating_plan_id = ?`,
       [id]
     );
 
@@ -276,5 +251,8 @@ const SeatingPlan = {
     return rows;
   },
 };
+
+/* --- Place this at the bottom of your route file --- */
+
 
 module.exports = SeatingPlan;
