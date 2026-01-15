@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 
 const Allotment = () => {
+  // --- State Management ---
   const [venues, setVenues] = useState([]);
   const [courses, setCourses] = useState([]);
   const [selectedCourses, setSelectedCourses] = useState([]);
@@ -25,636 +26,402 @@ const Allotment = () => {
   const [examEndTime, setExamEndTime] = useState("");
 
   const [excludedBatches, setExcludedBatches] = useState({});
-
   const [facultyMode, setFacultyMode] = useState("AUTO");
   const [allFaculty, setAllFaculty] = useState([]);
   const [manualFacultyAssignments, setManualFacultyAssignments] = useState({});
+  const [facultyAvailability, setFacultyAvailability] = useState(null);
 
-
-  // Fetch venues and courses
+  // --- Initial Data Fetch ---
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const venuesRes = await axios.get("http://localhost:5000/api/venues");
-        setVenues(venuesRes.data.filter((v) => v.isAvailable));
-        const coursesRes = await axios.get("http://localhost:5000/api/students/courses");
-        setCourses(coursesRes.data);
+        const [vRes, cRes, fRes] = await Promise.all([
+          axios.get("http://localhost:5000/api/venues"),
+          axios.get("http://localhost:5000/api/students/courses"),
+          axios.get("http://localhost:5000/api/faculty")
+        ]);
+        setVenues(vRes.data.filter((v) => v.isAvailable));
+        setCourses(cRes.data);
+        setAllFaculty(fRes.data);
       } catch (err) {
-        setError("Failed to fetch initial data. Ensure backend is running.");
+        setError("Connection error. Ensure the backend is running.");
       }
     };
     fetchData();
   }, []);
 
-  // Fetch faculty
-useEffect(() => {
-  const fetchFaculty = async () => {
-    try {
-      const res = await axios.get("http://localhost:5000/api/faculty");
-      setAllFaculty(res.data);
-    } catch (err) {
-      console.error("Failed to fetch faculty");
-    }
-  };
-  fetchFaculty();
-}, []);
-
-  // Add course
+  // --- Handlers ---
   const handleAddCourse = async () => {
     if (!currentCourse || selectedCourses.includes(currentCourse)) return;
     setLoading(true);
     try {
-      const res = await axios.get(
-        `http://localhost:5000/api/students/course/${encodeURIComponent(currentCourse)}`
-      );
-      setStudentsByCourse((prev) => ({ ...prev, [currentCourse]: res.data }));
-      setSelectedCourses((prev) => [...prev, currentCourse]);
+      const res = await axios.get(`http://localhost:5000/api/students/course/${encodeURIComponent(currentCourse)}`);
+      setStudentsByCourse(prev => ({ ...prev, [currentCourse]: res.data }));
+      setSelectedCourses(prev => [...prev, currentCourse]);
       setCurrentCourse("");
     } catch {
-      setError(`Failed to fetch students for course ${currentCourse}`);
+      setError(`Failed to fetch students for ${currentCourse}`);
     } finally {
       setLoading(false);
     }
   };
 
-  // Remove course
   const removeCourse = (course) => {
-    setSelectedCourses((prev) => prev.filter((c) => c !== course));
-    setStudentsByCourse((prev) => {
-      const copy = { ...prev };
-      delete copy[course];
-      return copy;
-    });
-    setExcludedBatches((prev) => {
-      const copy = { ...prev };
-      delete copy[course];
-      return copy;
+    setSelectedCourses(prev => prev.filter(c => c !== course));
+    setStudentsByCourse(prev => { 
+        const copy = { ...prev }; 
+        delete copy[course]; 
+        return copy; 
     });
   };
 
-  // Mode change
-  const handleModeChange = (e) => {
-    setSeatingMode(e.target.value);
-    setManualVenueId("");
-  };
-
-  // Add a venue manually
+  // Fixed Manual Venue Add Logic
   const handleAddVenueManual = () => {
-    if (!manualVenueId || selectedVenues.find((v) => v._id === manualVenueId)) return;
-    const venueToAdd = venues.find((v) => v._id === manualVenueId);
+    if (!manualVenueId || manualVenueId === "") return;
+
+    // Check for duplicates
+    if (selectedVenues.some(v => String(v._id) === String(manualVenueId))) {
+        setManualVenueId("");
+        return;
+    }
+
+    const venueToAdd = venues.find(v => String(v._id) === String(manualVenueId));
     if (venueToAdd) {
-      setSelectedVenues((prev) => [...prev, venueToAdd]);
-      setManualVenueId("");
+        setSelectedVenues(prev => [...prev, venueToAdd]);
+        setManualVenueId(""); // Reset dropdown
     }
   };
 
-  // Remove manually added venue
   const removeManualVenue = (venueId) => {
-    setSelectedVenues((prev) => prev.filter((v) => v._id !== venueId));
+    setSelectedVenues(prev => prev.filter(v => v._id !== venueId));
   };
 
-  // Generate seating
-  const handleGenerate = async (e) => {
-    e.preventDefault();
+  // --- Allotment Logic ---
+  const handleGenerate = async () => {
     setError("");
-    setGeneratedSeating(null);
-    setAllottedStudents([]);
+    if (!examDate || !examType || !examStartTime || !examEndTime) return setError("Fill all exam details.");
+    if (selectedCourses.length === 0) return setError("Add at least one course.");
+
     setIsGenerating(true);
 
-    if (!examDate || !examType || !examStartTime || !examEndTime) {
-      setError("Please fill all exam details.");
+    const venuesToUse = seatingMode === "auto" 
+      ? [...venues].sort((a, b) => b.capacity - a.capacity) 
+      : [...selectedVenues];
+
+    if (venuesToUse.length === 0) {
       setIsGenerating(false);
-      return;
+      return setError("No venues available.");
     }
 
-    if (selectedCourses.length === 0) {
-      setError("Add at least one course before generating.");
-      setIsGenerating(false);
-      return;
-    }
-
-    // Determine venues
-    let venuesToUse = [];
-    if (seatingMode === "auto") {
-      venuesToUse = [...venues].sort((a, b) => b.capacity - a.capacity);
-    } else {
-      if (selectedVenues.length === 0) {
-        setError("Please add at least one venue in manual mode.");
-        setIsGenerating(false);
-        return;
-      }
-      venuesToUse = [...selectedVenues];
-    }
-
-    // Filter students
     let allStudents = [];
-    selectedCourses.forEach((courseName) => {
-      const studentsForCourse = studentsByCourse[courseName] || [];
-      const excludedPrefixes = excludedBatches[courseName]
-        ? excludedBatches[courseName].split(",").map((p) => p.trim().toUpperCase())
-        : [];
-
-      const filtered = studentsForCourse.filter(
-        (student) =>
-          !excludedPrefixes.some((prefix) =>
-            student.regnNo.toUpperCase().startsWith(prefix)
-          )
-      );
-
-      allStudents.push(...filtered.map((s) => ({ ...s, courseDescription: courseName })));
+    selectedCourses.forEach(courseName => {
+      const students = studentsByCourse[courseName] || [];
+      const prefixes = (excludedBatches[courseName] || "").split(",").map(p => p.trim().toUpperCase());
+      const filtered = students.filter(s => !prefixes.some(p => p && s.regnNo.toUpperCase().startsWith(p)));
+      allStudents.push(...filtered.map(s => ({ ...s, courseDescription: courseName })));
     });
-
-    if (allStudents.length === 0) {
-      setError("No students available after filtering.");
-      setIsGenerating(false);
-      return;
-    }
 
     const totalCapacity = venuesToUse.reduce((sum, v) => sum + v.capacity, 0);
     if (allStudents.length > totalCapacity) {
-      setError(
-        `Insufficient venue capacity. Required ${allStudents.length}, available ${totalCapacity}.`
-      );
       setIsGenerating(false);
-      return;
+      return setError(`Capacity error: Need ${allStudents.length}, have ${totalCapacity}`);
     }
 
-    // Seating logic
+    // Seating Logic
     const totalBenches = Math.floor(totalCapacity / 2);
     let allBenches = Array.from({ length: totalBenches }, () => [null, null]);
-    let placedStudents = [];
 
-    for (const student of allStudents) {
+    allStudents.forEach(student => {
       for (let i = 0; i < allBenches.length; i++) {
-        const bench = allBenches[i];
-        if (bench[0] === null && bench[1]?.courseDescription !== student.courseDescription) {
-          bench[0] = student;
-          placedStudents.push(student);
+        const [s1, s2] = allBenches[i];
+        if (!s1 && (!s2 || s2.courseDescription !== student.courseDescription)) {
+          allBenches[i][0] = student;
           break;
-        } else if (
-          bench[1] === null &&
-          bench[0]?.courseDescription !== student.courseDescription
-        ) {
-          bench[1] = student;
-          placedStudents.push(student);
+        } else if (!s2 && (!s1 || s1.courseDescription !== student.courseDescription)) {
+          allBenches[i][1] = student;
           break;
         }
       }
-    }
+    });
 
-    setAllottedStudents(placedStudents);
+    const venuesResult = [];
+    let benchOffset = 0;
+    
+    venuesToUse.forEach((venue, idx) => {
+      const size = venue.benchesRow * venue.benchesCol;
+      const venueBenches = allBenches.slice(benchOffset, benchOffset + size);
+      benchOffset += size;
 
-    // Format for display
-    const venuesUsedResult = [];
-    let benchCounter = 0;
-    for (const venue of venuesToUse) {
-      const benchesInVenue = venue.benchesRow * venue.benchesCol;
-      const venueBenchesData = allBenches.slice(benchCounter, benchCounter + benchesInVenue);
-      benchCounter += benchesInVenue;
+      if (!venueBenches.some(b => b[0] || b[1])) return;
 
-      const isVenueUsed = venueBenchesData.some((b) => b[0] || b[1]);
-      if (!isVenueUsed) continue;
-
-      const seatsGrid = Array.from({ length: venue.benchesRow }, () =>
-        Array(venue.benchesCol).fill("")
-      );
-      let benchIndex = 0;
-
+      const grid = Array.from({ length: venue.benchesRow }, () => Array(venue.benchesCol).fill("Empty"));
+      let bIdx = 0;
       for (let c = 0; c < venue.benchesCol; c++) {
         for (let r = 0; r < venue.benchesRow; r++) {
-          if (benchIndex < venueBenchesData.length) {
-            const [s1, s2] = venueBenchesData[benchIndex];
-            let content = "";
-            if (s1) content += s1.regnNo;
-            if (s2) content += `\n${s2.regnNo}`;
-            seatsGrid[r][c] = content || "Empty";
-            benchIndex++;
+          if (bIdx < venueBenches.length) {
+            const [s1, s2] = venueBenches[bIdx++];
+            grid[r][c] = [s1?.regnNo, s2?.regnNo].filter(Boolean).join("\n") || "Empty";
           }
         }
       }
 
-      venuesUsedResult.push({ venue, seats: seatsGrid });
-    }
+      let previewFaculty = "Not Assigned";
+      if (facultyMode === "AUTO" && allFaculty.length > 0) {
+        const f = allFaculty[idx % allFaculty.length];
+        previewFaculty = `${f.name} (${f.department})`;
+      }
 
-    setGeneratedSeating(venuesUsedResult);
+      venuesResult.push({ venue, seats: grid, previewFacultyName: previewFaculty });
+    });
+
+    setAllottedStudents(allStudents);
+    setGeneratedSeating(venuesResult);
     setIsGenerating(false);
   };
 
-  // Save plan
-const handleSave = async () => {
-  if (!generatedSeating) {
-    setError("Generate a plan before saving.");
-    return;
-  }
-
-  // Validation for manual mode
-  if (facultyMode === "MANUAL") {
-    for (const v of generatedSeating) {
-      if (!manualFacultyAssignments[v.venue._id]) {
-        setError("Please assign faculty to all venues.");
-        return;
-      }
+  const handleSave = async () => {
+    if (facultyMode === "MANUAL" && generatedSeating.some(v => !manualFacultyAssignments[v.venue._id])) {
+      return setError("Assign faculty to all rooms.");
     }
-  }
 
-  const payload = {
-    examDate,
-    examStartTime,
-    examEndTime,
-    examSession,
-    examType,
-    selectedCourses,
-    students: allottedStudents,
-    facultyMode: facultyMode, // AUTO or MANUAL
+    const payload = {
+      examDate, examStartTime, examEndTime, examSession, examType,
+      selectedCourses, students: allottedStudents, facultyMode,
+      venuesUsed: generatedSeating.map(v => ({
+        venueId: v.venue._id,
+        venueName: v.venue.name,
+        seatingArrangement: v.seats,
+        facultyId: facultyMode === "MANUAL" ? manualFacultyAssignments[v.venue._id] : null
+      }))
+    };
 
-    venuesUsed: generatedSeating.map((v) => ({
-      venueId: v.venue._id,
-      venueName: `${v.venue.name} - ${v.venue.type}`,
-      seatingArrangement: v.seats,
-      facultyId:
-        facultyMode === "MANUAL"
-          ? manualFacultyAssignments[v.venue._id]
-          : null,
-    })),
+    try {
+      setLoading(true);
+      await axios.post("http://localhost:5000/api/seating/save-plan", payload);
+      alert("Seating Plan Saved Successfully!");
+      setGeneratedSeating(null);
+    } catch (err) {
+      setError("Failed to save to database.");
+    } finally {
+      setLoading(false);
+    }
   };
 
-  try {
-    await axios.post("http://localhost:5000/api/seating/save-plan", payload);
-    alert("Seating plan saved successfully!");
-    setGeneratedSeating(null);
-    setSelectedCourses([]);
-    setStudentsByCourse({});
-    setExcludedBatches({});
-    setManualFacultyAssignments({});
-  } catch (err) {
-    setError("Failed to save seating plan.");
-  }
-};
-
-
   return (
-    <div className="p-6 bg-white min-h-screen">
-      <h1 className="text-3xl font-bold text-center mb-6 text-600">
-        Exam Seating Allotment
-      </h1>
+    <div className="p-6 bg-white min-h-screen text-gray-800">
+      <h1 className="text-3xl font-bold text-center mb-6">Exam Seating Allotment</h1>
 
-      {error && (
-        <div className="bg-red-100 text-red-700 text-center p-3 rounded mb-4">
-          {error}
-        </div>
-      )}
+      {error && <div className="bg-red-100 text-red-700 p-3 rounded mb-4 text-center">{error}</div>}
 
-      {/* Exam Details */}
-      <div className="border p-4 rounded-lg mb-6 shadow-sm">
-        <h3 className="font-semibold mb-3 text-lg text-gray-800">
-          1. Exam Details
-        </h3>
-        <div className="grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+      {/* 1. Exam Details */}
+      <section className="border p-4 rounded-lg mb-6 shadow-sm">
+        <h3 className="font-semibold mb-3 text-lg">1. Exam Details</h3>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
           <div>
-            <label className="block mb-1 text-sm font-medium">Exam Date</label>
-            <input
-              type="date"
-              value={examDate}
-              onChange={(e) => setExamDate(e.target.value)}
-              className="border p-2 rounded-md w-full"
-            />
+            <label className="text-sm font-medium">Date</label>
+            <input type="date" value={examDate} onChange={e => setExamDate(e.target.value)} className="border p-2 rounded-md w-full" />
           </div>
           <div>
-            <label className="block mb-1 text-sm font-medium">Session</label>
-            <select
-              value={examSession}
-              onChange={(e) => setExamSession(e.target.value)}
-              className="border p-2 rounded-md w-full"
-            >
+            <label className="text-sm font-medium">Session</label>
+            <select value={examSession} onChange={e => setExamSession(e.target.value)} className="border p-2 rounded-md w-full">
               <option value="FN">FN</option>
               <option value="AN">AN</option>
             </select>
           </div>
           <div>
-            <label className="block mb-1 text-sm font-medium">Exam Type</label>
-            <select
-              value={examType}
-              onChange={(e) => setExamType(e.target.value)}
-              className="border p-2 rounded-md w-full"
-            >
-              <option value="">Select Type</option>
+            <label className="text-sm font-medium">Type</label>
+            <select value={examType} onChange={e => setExamType(e.target.value)} className="border p-2 rounded-md w-full">
+              <option value="">Select</option>
               <option value="CAT1">CAT 1</option>
               <option value="CAT2">CAT 2</option>
-              <option value="RETEST">Retest</option>
               <option value="SEM">Semester</option>
             </select>
           </div>
           <div>
-            <label className="block mb-1 text-sm font-medium">Start Time</label>
-            <input
-              type="time"
-              value={examStartTime}
-              onChange={(e) => setExamStartTime(e.target.value)}
-              className="border p-2 rounded-md w-full"
-            />
+            <label className="text-sm font-medium">Start</label>
+            <input type="time" value={examStartTime} onChange={e => setExamStartTime(e.target.value)} className="border p-2 rounded-md w-full" />
           </div>
           <div>
-            <label className="block mb-1 text-sm font-medium">End Time</label>
-            <input
-              type="time"
-              value={examEndTime}
-              onChange={(e) => setExamEndTime(e.target.value)}
-              className="border p-2 rounded-md w-full"
-            />
+            <label className="text-sm font-medium">End</label>
+            <input type="time" value={examEndTime} onChange={e => setExamEndTime(e.target.value)} className="border p-2 rounded-md w-full" />
           </div>
         </div>
-      </div>
+      </section>
 
-      {/* Allotment Config */}
-      <div className="border p-4 rounded-lg mb-6 shadow-sm">
-        <h3 className="font-semibold mb-3 text-lg text-gray-800">
-          2. Allotment Configuration
-        </h3>
-
-        <div className="mb-4">
-          <label className="block font-medium mb-2">Seating Mode</label>
-          <div className="flex gap-6">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="radio"
-                value="auto"
-                checked={seatingMode === "auto"}
-                onChange={handleModeChange}
-              />
-              <span>Automatic (All venues)</span>
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="radio"
-                value="manual"
-                checked={seatingMode === "manual"}
-                onChange={handleModeChange}
-              />
-              <span>Manual (Select venues)</span>
-            </label>
-          </div>
-
-          {/* Faculty Configuration */}
-{/* Faculty Configuration */}
-<div className="mt-6 pt-4 border-t">
-  <label className="block font-medium mb-2 text-indigo-700">
-    Faculty Invigilation Mode
-  </label>
-
-  <div className="flex gap-6">
-    {/* AUTO MODE */}
-    <label className="flex items-center gap-2 cursor-pointer">
-      <input
-        type="radio"
-        value="AUTO"
-        checked={facultyMode === "AUTO"}
-        onChange={(e) => setFacultyMode(e.target.value)}
-      />
-      <span className="text-sm">
-        Auto-Assign (System chooses available faculty)
-      </span>
-    </label>
-
-    {/* MANUAL MODE */}
-    <label className="flex items-center gap-2 cursor-pointer">
-      <input
-        type="radio"
-        value="MANUAL"
-        checked={facultyMode === "MANUAL"}
-        onChange={(e) => setFacultyMode(e.target.value)}
-      />
-      <span className="text-sm">
-        Manual-Assign (Assign faculty per venue)
-      </span>
-    </label>
-  </div>
-
-  <p className="text-xs text-gray-500 mt-1 italic">
-    *AUTO mode assigns faculty automatically. MANUAL mode allows custom assignment per venue.
-  </p>
-</div>
-
-        </div>
-
-        {seatingMode === "manual" && (
-          <div className="mb-4">
-            <label className="block font-medium mb-1">Select Venue</label>
-            <div className="flex gap-2">
-              <select
-                value={manualVenueId}
-                onChange={(e) => setManualVenueId(e.target.value)}
-                className="border p-2 rounded-md w-full max-w-sm"
-              >
-                <option value="">-- Choose Venue --</option>
-                {venues.map((v) => (
-                  <option key={v._id} value={v._id}>
-                    {v.name} ({v.type}) - Capacity: {v.capacity}
-                  </option>
-                ))}
-              </select>
-              <button
-                onClick={handleAddVenueManual}
-                className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700"
-              >
-                Add Venue
-              </button>
+      {/* 2. Configuration */}
+      <section className="border p-4 rounded-lg mb-6 shadow-sm bg-gray-50">
+        <h3 className="font-semibold mb-3 text-lg">2. Configuration</h3>
+        <div className="grid md:grid-cols-2 gap-8">
+          <div>
+            <label className="block font-medium mb-2">Venue Selection</label>
+            <div className="flex gap-4 mb-3">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="radio" checked={seatingMode === "auto"} onChange={() => setSeatingMode("auto")} /> 
+                Auto (All)
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="radio" checked={seatingMode === "manual"} onChange={() => setSeatingMode("manual")} /> 
+                Manual (Select)
+              </label>
             </div>
 
-            {selectedVenues.length > 0 && (
-              <div className="mt-3">
-                <h4 className="font-medium mb-2">
-                  Selected Venues ({selectedVenues.length})
-                </h4>
-                <ul className="space-y-1">
-                  {selectedVenues.map((v) => (
-                    <li
-                      key={v._id}
-                      className="flex justify-between border rounded-md p-2"
-                    >
-                      <span>
-                        {v.name} ({v.type}) – Capacity: {v.capacity}
-                      </span>
-                      <button
-                        onClick={() => removeManualVenue(v._id)}
-                        className="text-red-600 font-bold hover:text-red-800"
-                      >
-                        ×
-                      </button>
-                    </li>
-                  ))}
-                </ul>
+            {seatingMode === "manual" && (
+              <div className="space-y-3">
+                <div className="flex gap-2">
+                  <select 
+                    value={manualVenueId} 
+                    onChange={e => setManualVenueId(e.target.value)} 
+                    className="border p-2 rounded-md flex-1"
+                  >
+                    <option value="">-- Choose Venue --</option>
+                    {venues.map(v => (
+                      <option key={v._id} value={v._id}>
+                        {v.name} (Cap: {v.capacity})
+                      </option>
+                    ))}
+                  </select>
+                  <button onClick={handleAddVenueManual} className="bg-blue-600 text-white px-4 py-2 rounded shadow hover:bg-blue-700">Add</button>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                    {selectedVenues.map(v => (
+                        <span key={v._id} className="bg-indigo-100 text-indigo-800 text-xs font-semibold px-2.5 py-1 rounded-full flex items-center gap-2 border">
+                            {v.name}
+                            <button onClick={() => removeManualVenue(v._id)} className="text-red-500 font-bold ml-1">×</button>
+                        </span>
+                    ))}
+                </div>
               </div>
             )}
           </div>
-        )}
-
-        {/* Courses */}
-        <div>
-          <label className="block font-medium mb-1">Add Courses</label>
-          <div className="flex gap-3">
-            <select
-              value={currentCourse}
-              onChange={(e) => setCurrentCourse(e.target.value)}
-              className="border p-2 rounded-md"
-            >
-              <option value="">-- Choose Course --</option>
-              {courses.map((c) => (
-                <option key={c.courseDescription} value={c.courseDescription}>
-                  {c.courseDescription} - {c.courseName}
-                </option>
-              ))}
-            </select>
-            <button
-              onClick={handleAddCourse}
-              disabled={loading}
-              className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 disabled:bg-gray-400"
-            >
-              {loading ? "Adding..." : "Add Course"}
-            </button>
+          <div>
+            <label className="block font-medium mb-2">Faculty Assignment</label>
+            <div className="flex gap-4">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="radio" checked={facultyMode === "AUTO"} onChange={() => setFacultyMode("AUTO")} /> Auto
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="radio" checked={facultyMode === "MANUAL"} onChange={() => setFacultyMode("MANUAL")} /> Manual
+              </label>
+            </div>
           </div>
         </div>
-      </div>
+      </section>
 
-      {/* Selected Courses */}
-      {selectedCourses.length > 0 && (
-        <div className="border p-4 rounded-lg mb-6 shadow-sm">
-          <h3 className="font-semibold mb-2">
-            Selected Courses ({selectedCourses.length})
-          </h3>
-          <div className="flex flex-wrap gap-2">
-            {selectedCourses.map((c) => (
-              <div
-                key={c}
-                className="bg-gray-100 border rounded-lg px-3 py-1 flex flex-col gap-2 w-full sm:w-auto"
-              >
-                <div className="flex justify-between items-center">
-                  <span className="font-medium">
-                    {c} ({studentsByCourse[c]?.length || 0} students)
-                  </span>
-                  <button
-                    onClick={() => removeCourse(c)}
-                    className="text-red-500 font-bold hover:text-red-700"
-                  >
-                    ×
-                  </button>
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-600">
-                    Exclude Batch Prefix:
-                  </label>
-                  <input
-                    type="text"
-                    value={excludedBatches[c] || ""}
-                    onChange={(e) =>
-                      setExcludedBatches((prev) => ({
-                        ...prev,
-                        [c]: e.target.value.toUpperCase(),
-                      }))
-                    }
-                    className="border p-1 w-full rounded-md text-sm"
-                    placeholder="e.g., 24BAD, 23BCS"
-                  />
-                </div>
-              </div>
+      {/* 3. Courses */}
+      <section className="border p-4 rounded-lg mb-6 shadow-sm">
+        <h3 className="font-semibold mb-3">3. Courses & Students</h3>
+        <div className="flex gap-3 mb-4">
+          <select value={currentCourse} onChange={e => setCurrentCourse(e.target.value)} className="border p-2 rounded-md flex-1">
+            <option value="">-- Select Course --</option>
+            {courses.map(c => (
+              <option key={c.courseDescription} value={c.courseDescription}>
+                {c.courseDescription}
+              </option>
             ))}
-          </div>
+          </select>
+          <button onClick={handleAddCourse} disabled={loading} className="bg-indigo-600 text-white px-6 py-2 rounded-md">
+            {loading ? "Adding..." : "Add Course"}
+          </button>
         </div>
-      )}
 
-      {/* Buttons */}
-      <div className="mb-6">
-        <button
-          onClick={handleGenerate}
-          disabled={isGenerating}
-          className="bg-green-600 text-white px-6 py-2 rounded-md hover:bg-green-700 disabled:bg-gray-400"
-        >
-          {isGenerating ? "Generating..." : "Generate Seating"}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {selectedCourses.map(c => (
+            <div key={c} className="bg-gray-50 p-3 rounded border shadow-sm">
+              <div className="flex justify-between font-bold mb-1">
+                <span>{c}</span>
+                <button onClick={() => removeCourse(c)} className="text-red-500">×</button>
+              </div>
+              <input 
+                type="text" 
+                placeholder="Exclude prefix (e.g. 24BAD)" 
+                className="w-full text-xs p-1 border rounded"
+                onChange={e => setExcludedBatches(prev => ({...prev, [c]: e.target.value}))}
+              />
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Actions */}
+      <div className="flex gap-4 mb-10">
+        <button onClick={handleGenerate} disabled={isGenerating} className="bg-green-600 text-white px-8 py-3 rounded-lg font-bold shadow-md hover:bg-green-700 disabled:bg-gray-400">
+          {isGenerating ? "Generating..." : "Generate Seating Plan"}
         </button>
         {generatedSeating && (
-          <button
-            onClick={handleSave}
-            className="bg-indigo-600 text-white px-6 py-2 ml-3 rounded-md hover:bg-indigo-700"
-          >
-            Save Plan
+          <button onClick={handleSave} disabled={loading} className="bg-indigo-600 text-white px-8 py-3 rounded-lg font-bold shadow-md hover:bg-indigo-700">
+            Save & Finalize
           </button>
         )}
       </div>
 
-      {/* Output */}
-{/* 4. Generated Seating Plan Tables */}
+      {/* Seating Preview */}
       {generatedSeating && (
-        <div className="mt-8">
-          <h2 className="text-2xl font-bold text-center mb-6 text-gray-800">
-            Preview: Generated Seating Plan
-          </h2>
-          {generatedSeating.map((item, idx) => {
-            const colLabels = Array.from(
-              { length: item.venue.benchesCol },
-              (_, i) => String.fromCharCode(65 + i)
-            );
-            const rowLabels = Array.from(
-              { length: item.venue.benchesRow },
-              (_, i) => (i + 1).toString()
-            );
-
-            // Find faculty name for preview if in MANUAL mode
-            const assignedFacultyId = manualFacultyAssignments[item.venue._id];
-            const assignedFacultyName = allFaculty.find(f => f.id === parseInt(assignedFacultyId))?.name || "Pending Auto-Assignment";
-
-            return (
-              <div key={idx} className="mb-10 p-5 border rounded-xl shadow-md bg-gray-50">
-                <div className="flex justify-between items-center mb-4 border-b pb-2">
-                  <div>
-                    <h3 className="text-xl font-bold text-indigo-900">
-                      {item.venue.name} <span className="text-sm font-normal text-gray-500">({item.venue.type})</span>
-                    </h3>
-                    <p className="text-sm text-gray-600">Capacity used: {item.seats.flat().filter(s => s !== "Empty").length} students</p>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-xs font-semibold uppercase text-gray-400 block">Invigilator</span>
-                    <span className="font-medium text-indigo-700">{facultyMode === "AUTO" ? "🔄 Auto-Rotating" : assignedFacultyName}</span>
-                  </div>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full border-collapse text-center text-sm bg-white">
-                    <thead>
-                      <tr>
-                        <th className="border p-2 bg-gray-100 w-16">Row</th>
-                        {colLabels.map((col) => (
-                          <th key={col} className="border p-2 bg-gray-100 font-bold text-gray-700">
-                            Column {col}
-                          </th>
+        <div className="space-y-10">
+          <h2 className="text-2xl font-bold border-b pb-2">Seating Layout Preview</h2>
+          
+          {facultyMode === "MANUAL" && (
+            <div className="bg-indigo-50 p-4 rounded-lg border border-indigo-200 grid md:grid-cols-2 gap-4">
+               {generatedSeating.map(item => (
+                 <div key={item.venue._id} className="flex items-center justify-between bg-white p-2 rounded border shadow-sm">
+                    <span className="text-sm font-medium">{item.venue.name}</span>
+                    <select 
+                        className="text-sm border rounded p-1"
+                        onChange={e => setManualFacultyAssignments(prev => ({...prev, [item.venue._id]: e.target.value}))}
+                        value={manualFacultyAssignments[item.venue._id] || ""}
+                    >
+                        <option value="">Assign Faculty</option>
+                        {allFaculty.map(f => (
+                            <option key={f.id} value={f.id}>{f.name}</option>
                         ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {item.seats.map((row, rIdx) => (
-                        <tr key={rIdx}>
-                          <td className="border p-2 font-bold bg-gray-100 text-gray-600">
-                            {rowLabels[rIdx]}
-                          </td>
-                          {row.map((cell, cIdx) => (
-                            <td
-                              key={cIdx}
-                              className={`border p-3 whitespace-pre-line text-xs min-w-[100px] ${
-                                cell === "Empty" ? "text-gray-300 italic" : "text-gray-800 font-medium"
-                              }`}
-                            >
-                              {cell}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                    </select>
+                 </div>
+               ))}
+            </div>
+          )}
+
+          {generatedSeating.map((item, idx) => (
+            <div key={`${item.venue._id}-${idx}`} className="bg-gray-50 p-4 rounded-xl border">
+              <div className="flex justify-between items-center mb-4">
+                <div>
+                  <h3 className="text-xl font-bold text-indigo-900">{item.venue.name}</h3>
+                  <p className="text-xs text-gray-500">Capacity: {item.venue.capacity}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] uppercase font-bold text-gray-400">Invigilator</p>
+                  <p className="font-bold text-indigo-700">
+                    {facultyMode === "AUTO" ? item.previewFacultyName : (allFaculty.find(f => String(f.id) === String(manualFacultyAssignments[item.venue._id]))?.name || "Unassigned")}
+                  </p>
                 </div>
               </div>
-            );
-          })}
+
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse bg-white shadow-sm">
+                  <thead>
+                    <tr>
+                      <th className="border p-2 bg-gray-100 text-[10px] w-12">Row</th>
+                      {Array.from({ length: item.venue.benchesCol }).map((_, c) => (
+                        <th key={`col-header-${c}`} className="border p-2 bg-gray-100 text-[10px]">COL {String.fromCharCode(65 + c)}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {item.seats.map((row, rIdx) => (
+                      <tr key={`row-${rIdx}`}>
+                        <td className="border p-2 text-center font-bold text-xs bg-gray-50">{rIdx + 1}</td>
+                        {row.map((cell, cIdx) => (
+                          <td key={`cell-${rIdx}-${cIdx}`} className={`border p-3 text-[10px] text-center min-w-[100px] whitespace-pre-line ${cell === "Empty" ? "text-gray-200 italic" : "font-bold"}`}>
+                            {cell}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
         </div>
       )}
-
     </div>
   );
 };
