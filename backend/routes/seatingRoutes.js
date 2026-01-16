@@ -201,50 +201,54 @@ router.delete("/delete-plan/:id", async (req, res) => {
       return res.status(404).json({ error: "Seating plan not found" });
     }
 
-    const examDateRaw = plan.exam_date || plan.examDate;
-    const dateOnly =
-      typeof examDateRaw === "string" && examDateRaw.includes("T")
-        ? examDateRaw.split("T")[0]
-        : examDateRaw;
+    // 1. Extract Venues correctly
+    // Depending on your model, this might be plan.venuesUsed (JS) or plan.venues_used (DB)
+    const venues = plan.venuesUsed || plan.venues_used;
+    const venueList = typeof venues === 'string' ? JSON.parse(venues) : venues;
 
-    // 1️⃣ Remove venue sessions
-    for (const v of plan.venuesUsed) {
-      await Venue.removeSession(
-        v.venueId,
-        dateOnly,
-        plan.exam_start_time || plan.examStartTime,
-        plan.exam_end_time || plan.examEndTime
-      );
-    }
+    if (venueList && Array.isArray(venueList)) {
+      for (const v of venueList) {
+        // 2. Decrement Faculty Allocation
+        // Check for both camelCase and snake_case property names
+        const fId = v.facultyId || v.faculty_id;
 
-    // 2️⃣ Decrement faculty allocation
-    for (const v of plan.venuesUsed) {
-      if (v.facultyId) {
-        await connection.query(
-          "UPDATE faculty SET allocation = allocation - 1 WHERE id = ? AND allocation > 0",
-          [v.facultyId]
+        if (fId) {
+          console.log(`Decreasing allocation for Faculty ID: ${fId}`);
+          await connection.query(
+            "UPDATE faculty SET allocation = GREATEST(0, allocation - 1) WHERE id = ?",
+            [fId]
+          );
+        }
+
+        // 3. Remove Venue Sessions
+        const examDateRaw = plan.exam_date || plan.examDate;
+        const dateOnly = typeof examDateRaw === "string" && examDateRaw.includes("T")
+          ? examDateRaw.split("T")[0]
+          : examDateRaw;
+
+        await Venue.removeSession(
+          v.venueId || v.venue_id,
+          dateOnly,
+          plan.exam_start_time || plan.examStartTime,
+          plan.exam_end_time || plan.examEndTime
         );
       }
     }
 
-    // 3️⃣ Delete plan
+    // 4. Delete the actual plan
     await SeatingPlan.deletePlan(planId);
 
     await connection.commit();
-    res.status(200).json({ message: "Seating plan deleted successfully" });
+    res.status(200).json({ message: "Plan deleted and faculty updated." });
 
   } catch (err) {
     await connection.rollback();
     console.error("DELETE ERROR:", err);
-    res.status(500).json({
-      error: "Failed to delete seating plan",
-      message: err.message
-    });
+    res.status(500).json({ error: "Failed to delete", message: err.message });
   } finally {
     connection.release();
   }
 });
-
 /* =====================================================
     HELPER: AUTO ASSIGN FACULTY
 ===================================================== */
