@@ -40,15 +40,30 @@ const Allotment = () => {
           axios.get("http://localhost:5000/api/students/courses"),
           axios.get("http://localhost:5000/api/faculty")
         ]);
+
         setVenues(vRes.data.filter((v) => v.isAvailable));
         setCourses(cRes.data);
-        setAllFaculty(fRes.data);
+
+        // Add availability flag
+        const facultyWithStatus = await Promise.all(
+          fRes.data.map(async (f) => {
+            try {
+              const res = await axios.get(`http://localhost:5000/api/faculty/${f.id}/can-allocate`);
+              return { ...f, canAllocate: res.data.allowed };
+            } catch {
+              return { ...f, canAllocate: false };
+            }
+          })
+        );
+
+        setAllFaculty(facultyWithStatus);
       } catch (err) {
         setError("Connection error. Ensure the backend is running.");
       }
     };
     fetchData();
   }, []);
+
 
   // --- Handlers ---
   const handleAddCourse = async () => {
@@ -95,6 +110,8 @@ const Allotment = () => {
   const removeManualVenue = (venueId) => {
     setSelectedVenues(prev => prev.filter(v => v._id !== venueId));
   };
+
+ 
 
   // --- Allotment Logic ---
   const handleGenerate = async () => {
@@ -166,10 +183,12 @@ const Allotment = () => {
       }
 
       let previewFaculty = "Not Assigned";
-      if (facultyMode === "AUTO" && allFaculty.length > 0) {
-        const f = allFaculty[idx % allFaculty.length];
+      const availableFaculty = allFaculty.filter(f => f.canAllocate);
+      if (facultyMode === "AUTO" && availableFaculty.length > 0) {
+        const f = availableFaculty[idx % availableFaculty.length];
         previewFaculty = `${f.name} (${f.department})`;
       }
+
 
       venuesResult.push({ venue, seats: grid, previewFacultyName: previewFaculty });
     });
@@ -179,33 +198,49 @@ const Allotment = () => {
     setIsGenerating(false);
   };
 
-  const handleSave = async () => {
-    if (facultyMode === "MANUAL" && generatedSeating.some(v => !manualFacultyAssignments[v.venue._id])) {
-      return setError("Assign faculty to all rooms.");
-    }
+const handleSave = async () => {
+  if (facultyMode === "MANUAL" && generatedSeating.some(v => !manualFacultyAssignments[v.venue._id])) {
+    return setError("Assign faculty to all rooms.");
+  }
 
-    const payload = {
-      examDate, examStartTime, examEndTime, examSession, examType,
-      selectedCourses, students: allottedStudents, facultyMode,
-      venuesUsed: generatedSeating.map(v => ({
-        venueId: v.venue._id,
-        venueName: v.venue.name,
-        seatingArrangement: v.seats,
-        facultyId: facultyMode === "MANUAL" ? manualFacultyAssignments[v.venue._id] : null
-      }))
-    };
+  // 🔴 BLOCK IF ANY SELECTED FACULTY IS FULL
+  const fullFaculty = Object.values(manualFacultyAssignments).some(fid => {
+    const faculty = allFaculty.find(f => String(f.id) === String(fid));
+    return faculty && !faculty.canAllocate;
+  });
 
-    try {
-      setLoading(true);
-      await axios.post("http://localhost:5000/api/seating/save-plan", payload);
-      alert("Seating Plan Saved Successfully!");
-      setGeneratedSeating(null);
-    } catch (err) {
-      setError("Failed to save to database.");
-    } finally {
-      setLoading(false);
-    }
+  if (fullFaculty) {
+    return setError("One or more selected faculty have reached their allocation limit.");
+  }
+
+  const payload = {
+    examDate, examStartTime, examEndTime, examSession, examType,
+    selectedCourses,
+    students: allottedStudents,
+    facultyMode,
+    venuesUsed: generatedSeating.map(v => ({
+      venueId: v.venue._id,
+      venueName: v.venue.name,
+      seatingArrangement: v.seats,
+      facultyId: facultyMode === "MANUAL" ? manualFacultyAssignments[v.venue._id] : null
+    }))
   };
+
+  try {
+    setLoading(true);
+    await axios.post("http://localhost:5000/api/seating/save-plan", payload);
+    alert("Seating Plan Saved Successfully!");
+    setGeneratedSeating(null);
+  } catch (err) {
+    if (err.response?.data?.error) {
+      setError(err.response.data.error);
+    } else {
+      setError("Failed to save to database.");
+    }
+  } finally {
+    setLoading(false);
+  }
+};
 
   return (
     <div className="p-6 bg-white min-h-screen text-gray-800">
@@ -370,9 +405,15 @@ const Allotment = () => {
                         value={manualFacultyAssignments[item.venue._id] || ""}
                     >
                         <option value="">Assign Faculty</option>
-                        {allFaculty.map(f => (
-                            <option key={f.id} value={f.id}>{f.name}</option>
-                        ))}
+                            {allFaculty.map(f => (
+                              <option 
+                                key={f.id} 
+                                value={f.id} 
+                                disabled={!f.canAllocate}
+                              >
+                                {f.name} {!f.canAllocate ? "(Full)" : ""}
+                              </option>
+                            ))}
                     </select>
                  </div>
                ))}

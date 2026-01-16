@@ -2,33 +2,71 @@ const express = require("express");
 const router = express.Router();
 const SeatingPlan = require("../models/SeatingPlan");
 const Venue = require("../models/venue");
+const Faculty = require("../models/Faculty");
 const db = require("../config/db");
 
 /* =====================================================
     POST: SAVE SEATING PLAN
 ===================================================== */
 router.post("/save-plan", async (req, res) => {
+  const connection = await db.getConnection();
   try {
-    const { examDate, examStartTime, examEndTime, examSession, examType, selectedCourses, venuesUsed, students, facultyMode } = req.body;
+    const {
+      examDate,
+      examStartTime,
+      examEndTime,
+      examSession,
+      examType,
+      selectedCourses,
+      venuesUsed,
+      students,
+      facultyMode
+    } = req.body;
 
     const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
 
-    // 1. Venue Conflict Check
+    // 1️⃣ Check venue conflicts
     for (const v of venuesUsed) {
-      const available = await Venue.isAvailable(v.venueId, dateOnly, examStartTime, examEndTime);
-      if (!available) return res.status(400).json({ error: `Venue ${v.venueName} already booked` });
+      const available = await Venue.isAvailable(
+        v.venueId,
+        dateOnly,
+        examStartTime,
+        examEndTime
+      );
+      if (!available) {
+        return res.status(400).json({
+          error: `Venue ${v.venueName} already booked`
+        });
+      }
     }
 
     let finalVenues = venuesUsed;
 
-    // 2. Handle Auto Faculty Assignment
+    // 2️⃣ Auto Faculty Assignment
     if (facultyMode === "AUTO") {
       const result = await autoAssignFaculty(venuesUsed, dateOnly, examSession);
-      if (!result.success) return res.status(400).json({ error: result.error });
+      if (!result.success) {
+        return res.status(400).json({ error: result.error });
+      }
       finalVenues = result.venues;
     }
 
-    // 3. Save Plan
+    await connection.beginTransaction();
+
+    // 3️⃣ Block faculty if allocation limit reached
+    for (const v of finalVenues) {
+      if (v.facultyId) {
+        const canAllocate = await Faculty.canAllocate(v.facultyId);
+        if (!canAllocate) {
+          await connection.rollback();
+          return res.status(400).json({
+            error: "Faculty allocation limit reached. Cannot assign this faculty."
+          });
+        }
+      }
+    }
+
+    // 4️⃣ Save seating plan
     const seatingPlanId = await SeatingPlan.createPlan({
       examDate: dateOnly,
       examSession,
@@ -41,15 +79,41 @@ router.post("/save-plan", async (req, res) => {
       facultyMode
     });
 
-    // 4. Mark Venues as Booked
+    // 5️⃣ Mark venues as booked
     for (const v of finalVenues) {
-      await Venue.addSession(v.venueId, dateOnly, examStartTime, examEndTime);
+      await Venue.addSession(
+        v.venueId,
+        dateOnly,
+        examStartTime,
+        examEndTime
+      );
     }
 
-    res.status(201).json({ message: "Seating plan saved successfully", seatingPlanId });
+    // 6️⃣ Increment faculty allocation
+    for (const v of finalVenues) {
+      if (v.facultyId) {
+        await connection.query(
+          "UPDATE faculty SET allocation = allocation + 1 WHERE id = ?",
+          [v.facultyId]
+        );
+      }
+    }
+
+    await connection.commit();
+    res.status(201).json({
+      message: "Seating plan saved successfully",
+      seatingPlanId
+    });
+
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to save plan", message: err.message });
+    await connection.rollback();
+    console.error("SAVE PLAN ERROR:", err);
+    res.status(500).json({
+      error: "Failed to save plan",
+      message: err.message
+    });
+  } finally {
+    connection.release();
   }
 });
 
@@ -61,29 +125,46 @@ router.post("/check-faculty-availability", async (req, res) => {
     const { examDate, examSession, venueCount } = req.body;
     const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
 
-    const [facultyList] = await db.query("SELECT id, name, department, max_classrooms FROM faculty");
+    const [facultyList] = await db.query(
+      "SELECT id, name, department, max_classrooms FROM faculty"
+    );
+
     const [existing] = await db.query(
-      `SELECT spv.faculty_id, COUNT(*) as count FROM seating_plan_venues spv 
-       JOIN seating_plans sp ON spv.seating_plan_id = sp.id 
-       WHERE sp.exam_date = ? AND sp.exam_session = ? GROUP BY spv.faculty_id`, [dateOnly, examSession]
+      `SELECT spv.faculty_id, COUNT(*) as count 
+       FROM seating_plan_venues spv
+       JOIN seating_plans sp ON spv.seating_plan_id = sp.id
+       WHERE sp.exam_date = ? AND sp.exam_session = ?
+       GROUP BY spv.faculty_id`,
+      [dateOnly, examSession]
     );
 
     const assignmentMap = new Map(existing.map(row => [row.faculty_id, row.count]));
+
     let totalAvailableSlots = 0;
-    
+
     const facultyStatus = facultyList.map(f => {
       const current = assignmentMap.get(f.id) || 0;
       const available = Math.max(0, (f.max_classrooms || 1) - current);
       totalAvailableSlots += available;
-      return { ...f, currentAssignments: current, availableSlots: available, status: available > 0 ? 'available' : 'full' };
+
+      return {
+        ...f,
+        currentAssignments: current,
+        availableSlots: available,
+        status: available > 0 ? "available" : "full"
+      };
     });
 
     res.json({
       available: totalAvailableSlots >= venueCount,
-      message: totalAvailableSlots >= venueCount ? "Sufficient faculty available" : "Faculty shortage",
+      message:
+        totalAvailableSlots >= venueCount
+          ? "Sufficient faculty available"
+          : "Faculty shortage",
       facultyStatus
     });
   } catch (err) {
+    console.error("FACULTY AVAILABILITY ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -99,31 +180,34 @@ router.get("/", async (req, res) => {
     console.error("FETCH PLANS ERROR:", err);
     res.status(500).json({
       error: "Failed to fetch seating plans",
-      message: err.message,
+      message: err.message
     });
   }
 });
-
 
 /* =====================================================
     DELETE: SEATING PLAN
 ===================================================== */
 router.delete("/delete-plan/:id", async (req, res) => {
   const planId = req.params.id;
+  const connection = await db.getConnection();
 
   try {
-    // Get plan details first
+    await connection.beginTransaction();
+
     const plan = await SeatingPlan.getPlanById(planId);
     if (!plan) {
+      await connection.rollback();
       return res.status(404).json({ error: "Seating plan not found" });
     }
 
     const examDateRaw = plan.exam_date || plan.examDate;
-    const dateOnly = typeof examDateRaw === "string" && examDateRaw.includes("T")
-      ? examDateRaw.split("T")[0]
-      : examDateRaw;
+    const dateOnly =
+      typeof examDateRaw === "string" && examDateRaw.includes("T")
+        ? examDateRaw.split("T")[0]
+        : examDateRaw;
 
-    // 1️⃣ Remove venue sessions (free the halls)
+    // 1️⃣ Remove venue sessions
     for (const v of plan.venuesUsed) {
       await Venue.removeSession(
         v.venueId,
@@ -133,37 +217,76 @@ router.delete("/delete-plan/:id", async (req, res) => {
       );
     }
 
-    // 2️⃣ Delete the plan and all related records
+    // 2️⃣ Decrement faculty allocation
+    for (const v of plan.venuesUsed) {
+      if (v.facultyId) {
+        await connection.query(
+          "UPDATE faculty SET allocation = allocation - 1 WHERE id = ? AND allocation > 0",
+          [v.facultyId]
+        );
+      }
+    }
+
+    // 3️⃣ Delete plan
     await SeatingPlan.deletePlan(planId);
 
+    await connection.commit();
     res.status(200).json({ message: "Seating plan deleted successfully" });
+
   } catch (err) {
+    await connection.rollback();
     console.error("DELETE ERROR:", err);
     res.status(500).json({
       error: "Failed to delete seating plan",
-      message: err.message,
+      message: err.message
     });
+  } finally {
+    connection.release();
   }
 });
 
-/* Helper Function for Auto Assignment */
+/* =====================================================
+    HELPER: AUTO ASSIGN FACULTY
+===================================================== */
 async function autoAssignFaculty(venuesUsed, examDate, examSession) {
-  const [facultyList] = await db.query("SELECT id, name, department, max_classrooms FROM faculty");
-  const [existing] = await db.query(`SELECT faculty_id, COUNT(*) as count FROM seating_plan_venues spv JOIN seating_plans sp ON spv.seating_plan_id = sp.id WHERE sp.exam_date = ? AND sp.exam_session = ? GROUP BY faculty_id`, [examDate, examSession]);
-  
+  const [facultyList] = await db.query(
+    "SELECT id, name, department, max_classrooms FROM faculty"
+  );
+
+  const [existing] = await db.query(
+    `SELECT faculty_id, COUNT(*) as count 
+     FROM seating_plan_venues spv
+     JOIN seating_plans sp ON spv.seating_plan_id = sp.id
+     WHERE sp.exam_date = ? AND sp.exam_session = ?
+     GROUP BY faculty_id`,
+    [examDate, examSession]
+  );
+
   const counts = new Map(existing.map(r => [r.faculty_id, r.count]));
-  let available = facultyList.filter(f => (counts.get(f.id) || 0) < (f.max_classrooms || 1));
+
+  let available = facultyList.filter(f => {
+    const used = counts.get(f.id) || 0;
+    return used < (f.max_classrooms || 1);
+  });
 
   const assigned = [];
+
   for (const v of venuesUsed) {
-    if (available.length === 0) return { success: false, error: "Insufficient faculty capacity" };
+    if (available.length === 0) {
+      return { success: false, error: "Insufficient faculty capacity" };
+    }
+
     const f = available[0];
     assigned.push({ ...v, facultyId: f.id });
-    
+
     const newCount = (counts.get(f.id) || 0) + 1;
     counts.set(f.id, newCount);
-    if (newCount >= (f.max_classrooms || 1)) available.shift();
+
+    if (newCount >= (f.max_classrooms || 1)) {
+      available.shift();
+    }
   }
+
   return { success: true, venues: assigned };
 }
 

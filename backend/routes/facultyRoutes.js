@@ -4,7 +4,7 @@ const Faculty = require("../models/Faculty");
 
 router.get("/", async (req, res) => {
   try {
-    const data = await Faculty.getAll();
+    const data = await Faculty.getAllWithAllocation();
     res.json(data);
   } catch (err) {
     res.status(500).json(err);
@@ -48,6 +48,23 @@ router.delete("/:id", async (req, res) => {
   try {
     await Faculty.deleteById(req.params.id);
     res.json({ message: "Faculty deleted" });
+  } catch (err) {
+    res.status(500).json(err);
+  }
+});
+
+router.get("/:id/can-allocate", async (req, res) => {
+  try {
+    const canAllocate = await Faculty.canAllocate(req.params.id);
+
+    if (!canAllocate) {
+      return res.status(403).json({
+        allowed: false,
+        message: "Faculty has reached maximum allocation limit",
+      });
+    }
+
+    res.json({ allowed: true });
   } catch (err) {
     res.status(500).json(err);
   }

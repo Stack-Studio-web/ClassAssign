@@ -338,60 +338,91 @@ export default function Faculty() {
                   <th className="p-4 font-bold text-gray-700">Name</th>
                   <th className="p-4 font-bold text-gray-700">Department</th>
                   <th className="p-4 font-bold text-gray-700">Email</th>
-                  <th className="p-4 font-bold text-gray-700 text-center">Classrooms / Actions</th>
+                  <th className="p-4 font-bold text-gray-700 text-center">Max</th>
+                  <th className="p-4 font-bold text-gray-700 text-center">Allocated</th>
+                  <th className="p-4 font-bold text-gray-700 text-center">Remaining</th>
+                  <th className="p-4 font-bold text-gray-700 text-center">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-100">
-                {filteredFaculty.map((f) => (
-                  <tr key={f.id} className="hover:bg-blue-50 transition-colors">
-                    <td className="p-4 font-medium">{f.name}</td>
-                    <td className="p-4 text-gray-600">{f.department || "-"}</td>
-                    <td className="p-4 text-gray-500 italic">{f.email}</td>
-                    <td className="p-4 text-center">
-                      {editingId === f.id ? (
-                        <div className="flex items-center justify-center gap-2">
-                          <input
-                            type="number"
-                            value={editValue}
-                            onChange={(e) => setEditValue(Number(e.target.value))}
-                            className="w-16 p-1 border rounded text-center"
-                          />
-                          <button
-                            onClick={() => handleUpdateMaxClassrooms(f.id)}
-                            className="bg-green-600 text-white px-3 py-1 rounded text-sm"
-                          >
-                            Save
-                          </button>
-                          <button
-                            onClick={() => setEditingId(null)}
-                            className="bg-gray-400 text-white px-3 py-1 rounded text-sm"
-                          >
-                            X
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="flex items-center justify-center gap-4">
-                          <span className="font-bold text-blue-800 bg-blue-100 px-3 py-1 rounded-full text-xs">
-                            {f.max_classrooms || 0} Classrooms
-                          </span>
-                          <button
-                            onClick={() => handleEditClick(f)}
-                            className="text-blue-600 hover:underline font-semibold"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => handleDelete(f.id)}
-                            className="text-red-600 hover:underline font-semibold"
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
+
+<tbody className="divide-y divide-gray-100">
+  {filteredFaculty.map((f) => (
+    <tr key={f.id} className="hover:bg-blue-50 transition-colors">
+      <td className="p-4 font-medium">{f.name}</td>
+      <td className="p-4 text-gray-600">{f.department || "-"}</td>
+      <td className="p-4 text-gray-500 italic">{f.email}</td>
+
+      {/* MAX */}
+      <td className="p-4 text-center">
+        <span className="font-bold text-blue-800 bg-blue-100 px-3 py-1 rounded-full text-xs">
+          {f.max_classrooms || 0}
+        </span>
+      </td>
+
+      {/* ALLOCATED */}
+      <td className="p-4 text-center">
+        <span className="font-bold text-orange-700 bg-orange-100 px-3 py-1 rounded-full text-xs">
+          {f.allocation || 0}
+        </span>
+      </td>
+
+      {/* REMAINING */}
+      <td className="p-4 text-center">
+        <span
+          className={`font-bold px-3 py-1 rounded-full text-xs ${
+            f.remaining > 0
+              ? "text-green-700 bg-green-100"
+              : "text-red-700 bg-red-100"
+          }`}
+        >
+          {f.remaining}
+        </span>
+      </td>
+
+      {/* ACTIONS */}
+      <td className="p-4 text-center">
+        {editingId === f.id ? (
+          <div className="flex items-center justify-center gap-2">
+            <input
+              type="number"
+              value={editValue}
+              onChange={(e) => setEditValue(Number(e.target.value))}
+              className="w-16 p-1 border rounded text-center"
+            />
+            <button
+              onClick={() => handleUpdateMaxClassrooms(f.id)}
+              className="bg-green-600 text-white px-3 py-1 rounded text-sm"
+            >
+              Save
+            </button>
+            <button
+              onClick={() => setEditingId(null)}
+              className="bg-gray-400 text-white px-3 py-1 rounded text-sm"
+            >
+              X
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center justify-center gap-4">
+            <button
+              onClick={() => handleEditClick(f)}
+              className="text-blue-600 hover:underline font-semibold"
+            >
+              Edit
+            </button>
+            <button
+              onClick={() => handleDelete(f.id)}
+              className="text-red-600 hover:underline font-semibold"
+            >
+              Delete
+            </button>
+          </div>
+        )}
+      </td>
+    </tr>
+  ))}
+</tbody>
+
             </table>
           </div>
         </div>
