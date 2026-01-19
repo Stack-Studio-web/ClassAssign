@@ -1,3 +1,4 @@
+//Allotment.jsx
 import React, { useState, useEffect } from "react";
 import axios from "axios";
 
@@ -43,20 +44,7 @@ const Allotment = () => {
 
         setVenues(vRes.data.filter((v) => v.isAvailable));
         setCourses(cRes.data);
-
-        // Add availability flag
-        const facultyWithStatus = await Promise.all(
-          fRes.data.map(async (f) => {
-            try {
-              const res = await axios.get(`http://localhost:5000/api/faculty/${f.id}/can-allocate`);
-              return { ...f, canAllocate: res.data.allowed };
-            } catch {
-              return { ...f, canAllocate: false };
-            }
-          })
-        );
-
-        setAllFaculty(facultyWithStatus);
+        setAllFaculty(fRes.data);
       } catch (err) {
         setError("Connection error. Ensure the backend is running.");
       }
@@ -64,6 +52,55 @@ const Allotment = () => {
     fetchData();
   }, []);
 
+  // 🔴 NEW: Fetch faculty availability when exam details change
+  useEffect(() => {
+    const checkFacultyAvailability = async () => {
+      if (!examDate || !examStartTime || !examEndTime) {
+        setAllFaculty(prev => prev.map(f => ({ ...f, canAllocate: true, hasTimeConflict: false })));
+        return;
+      }
+
+      try {
+        const facultyWithStatus = await Promise.all(
+          allFaculty.map(async (f) => {
+            try {
+              // Check general allocation limit
+              const allocRes = await axios.get(`http://localhost:5000/api/faculty/${f.id}/can-allocate`);
+              const canAllocate = allocRes.data.allowed;
+
+              // Check time conflict
+              const availRes = await axios.post("http://localhost:5000/api/seating/check-faculty-availability", {
+                examDate,
+                examSession,
+                examStartTime,
+                examEndTime,
+                venueCount: 1
+              });
+
+              const facultyStatus = availRes.data.facultyStatus?.find(fs => fs.id === f.id);
+              const hasTimeConflict = facultyStatus?.hasTimeConflict || false;
+
+              return { 
+                ...f, 
+                canAllocate: canAllocate && !hasTimeConflict,
+                hasTimeConflict 
+              };
+            } catch {
+              return { ...f, canAllocate: false, hasTimeConflict: false };
+            }
+          })
+        );
+
+        setAllFaculty(facultyWithStatus);
+      } catch (err) {
+        console.error("Error checking faculty availability:", err);
+      }
+    };
+
+    if (allFaculty.length > 0) {
+      checkFacultyAvailability();
+    }
+  }, [examDate, examStartTime, examEndTime, examSession]);
 
   // --- Handlers ---
   const handleAddCourse = async () => {
@@ -90,11 +127,9 @@ const Allotment = () => {
     });
   };
 
-  // Fixed Manual Venue Add Logic
   const handleAddVenueManual = () => {
     if (!manualVenueId || manualVenueId === "") return;
 
-    // Check for duplicates
     if (selectedVenues.some(v => String(v._id) === String(manualVenueId))) {
         setManualVenueId("");
         return;
@@ -103,15 +138,13 @@ const Allotment = () => {
     const venueToAdd = venues.find(v => String(v._id) === String(manualVenueId));
     if (venueToAdd) {
         setSelectedVenues(prev => [...prev, venueToAdd]);
-        setManualVenueId(""); // Reset dropdown
+        setManualVenueId("");
     }
   };
 
   const removeManualVenue = (venueId) => {
     setSelectedVenues(prev => prev.filter(v => v._id !== venueId));
   };
-
- 
 
   // --- Allotment Logic ---
   const handleGenerate = async () => {
@@ -183,12 +216,11 @@ const Allotment = () => {
       }
 
       let previewFaculty = "Not Assigned";
-      const availableFaculty = allFaculty.filter(f => f.canAllocate);
+      const availableFaculty = allFaculty.filter(f => f.canAllocate && !f.hasTimeConflict);
       if (facultyMode === "AUTO" && availableFaculty.length > 0) {
         const f = availableFaculty[idx % availableFaculty.length];
         previewFaculty = `${f.name} (${f.department})`;
       }
-
 
       venuesResult.push({ venue, seats: grid, previewFacultyName: previewFaculty });
     });
@@ -198,49 +230,49 @@ const Allotment = () => {
     setIsGenerating(false);
   };
 
-const handleSave = async () => {
-  if (facultyMode === "MANUAL" && generatedSeating.some(v => !manualFacultyAssignments[v.venue._id])) {
-    return setError("Assign faculty to all rooms.");
-  }
-
-  // 🔴 BLOCK IF ANY SELECTED FACULTY IS FULL
-  const fullFaculty = Object.values(manualFacultyAssignments).some(fid => {
-    const faculty = allFaculty.find(f => String(f.id) === String(fid));
-    return faculty && !faculty.canAllocate;
-  });
-
-  if (fullFaculty) {
-    return setError("One or more selected faculty have reached their allocation limit.");
-  }
-
-  const payload = {
-    examDate, examStartTime, examEndTime, examSession, examType,
-    selectedCourses,
-    students: allottedStudents,
-    facultyMode,
-    venuesUsed: generatedSeating.map(v => ({
-      venueId: v.venue._id,
-      venueName: v.venue.name,
-      seatingArrangement: v.seats,
-      facultyId: facultyMode === "MANUAL" ? manualFacultyAssignments[v.venue._id] : null
-    }))
-  };
-
-  try {
-    setLoading(true);
-    await axios.post("http://localhost:5000/api/seating/save-plan", payload);
-    alert("Seating Plan Saved Successfully!");
-    setGeneratedSeating(null);
-  } catch (err) {
-    if (err.response?.data?.error) {
-      setError(err.response.data.error);
-    } else {
-      setError("Failed to save to database.");
+  const handleSave = async () => {
+    if (facultyMode === "MANUAL" && generatedSeating.some(v => !manualFacultyAssignments[v.venue._id])) {
+      return setError("Assign faculty to all rooms.");
     }
-  } finally {
-    setLoading(false);
-  }
-};
+
+    // 🔴 BLOCK IF ANY SELECTED FACULTY IS FULL OR HAS TIME CONFLICT
+    const invalidFaculty = Object.values(manualFacultyAssignments).some(fid => {
+      const faculty = allFaculty.find(f => String(f.id) === String(fid));
+      return faculty && (!faculty.canAllocate || faculty.hasTimeConflict);
+    });
+
+    if (invalidFaculty) {
+      return setError("One or more selected faculty are unavailable (allocation limit reached or time conflict).");
+    }
+
+    const payload = {
+      examDate, examStartTime, examEndTime, examSession, examType,
+      selectedCourses,
+      students: allottedStudents,
+      facultyMode,
+      venuesUsed: generatedSeating.map(v => ({
+        venueId: v.venue._id,
+        venueName: v.venue.name,
+        seatingArrangement: v.seats,
+        facultyId: facultyMode === "MANUAL" ? manualFacultyAssignments[v.venue._id] : null
+      }))
+    };
+
+    try {
+      setLoading(true);
+      await axios.post("http://localhost:5000/api/seating/save-plan", payload);
+      alert("Seating Plan Saved Successfully!");
+      setGeneratedSeating(null);
+    } catch (err) {
+      if (err.response?.data?.error) {
+        setError(err.response.data.error);
+      } else {
+        setError("Failed to save to database.");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="p-6 bg-white min-h-screen text-gray-800">
@@ -409,9 +441,9 @@ const handleSave = async () => {
                               <option 
                                 key={f.id} 
                                 value={f.id} 
-                                disabled={!f.canAllocate}
+                                disabled={!f.canAllocate || f.hasTimeConflict}
                               >
-                                {f.name} {!f.canAllocate ? "(Full)" : ""}
+                                {f.name} {!f.canAllocate ? "(Full)" : ""} {f.hasTimeConflict ? "(Busy)" : ""}
                               </option>
                             ))}
                     </select>

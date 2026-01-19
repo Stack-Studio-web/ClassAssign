@@ -1,3 +1,4 @@
+//Faculty.jsx
 import React, { useState, useEffect, useMemo } from "react";
 import axios from "axios";
 

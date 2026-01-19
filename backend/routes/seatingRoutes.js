@@ -1,3 +1,4 @@
+//seatingRoutes.js
 const express = require("express");
 const router = express.Router();
 const SeatingPlan = require("../models/SeatingPlan");
@@ -44,7 +45,7 @@ router.post("/save-plan", async (req, res) => {
 
     // 2️⃣ Auto Faculty Assignment
     if (facultyMode === "AUTO") {
-      const result = await autoAssignFaculty(venuesUsed, dateOnly, examSession);
+      const result = await autoAssignFaculty(venuesUsed, dateOnly, examSession, examStartTime, examEndTime);
       if (!result.success) {
         return res.status(400).json({ error: result.error });
       }
@@ -53,9 +54,22 @@ router.post("/save-plan", async (req, res) => {
 
     await connection.beginTransaction();
 
-    // 3️⃣ Check faculty allocation limits
+    // 3️⃣ Check faculty allocation limits AND time conflicts
+    const assignedFacultyInThisRequest = new Set();
+    
     for (const v of finalVenues) {
       if (v.facultyId) {
+        // 🔴 CHECK: Faculty already used in THIS request
+        if (assignedFacultyInThisRequest.has(v.facultyId)) {
+          await connection.rollback();
+          const [faculty] = await db.query("SELECT name FROM faculty WHERE id = ?", [v.facultyId]);
+          const facultyName = faculty[0]?.name || "Unknown";
+          return res.status(400).json({
+            error: `Cannot assign ${facultyName} to multiple venues in the same exam session`
+          });
+        }
+        
+        // Check allocation limit
         const canAllocate = await Faculty.canAllocate(v.facultyId);
         if (!canAllocate) {
           await connection.rollback();
@@ -63,6 +77,26 @@ router.post("/save-plan", async (req, res) => {
             error: "Faculty allocation limit reached. Cannot assign this faculty."
           });
         }
+
+        // 🔴 CHECK: Time conflict with existing assignments
+        const hasConflict = await checkFacultyTimeConflict(
+          v.facultyId,
+          dateOnly,
+          examStartTime,
+          examEndTime
+        );
+        
+        if (hasConflict) {
+          await connection.rollback();
+          const [faculty] = await db.query("SELECT name FROM faculty WHERE id = ?", [v.facultyId]);
+          const facultyName = faculty[0]?.name || "Unknown";
+          return res.status(400).json({
+            error: `Faculty ${facultyName} is already assigned to another venue at this time (${examStartTime} - ${examEndTime} on ${dateOnly})`
+          });
+        }
+        
+        // ✅ Track this faculty as assigned in this request
+        assignedFacultyInThisRequest.add(v.facultyId);
       }
     }
 
@@ -89,8 +123,6 @@ router.post("/save-plan", async (req, res) => {
       );
     }
 
-    // ✅ NO MANUAL ALLOCATION INCREMENT - it's calculated dynamically
-
     await connection.commit();
     res.status(201).json({
       message: "Seating plan saved successfully",
@@ -114,7 +146,7 @@ router.post("/save-plan", async (req, res) => {
 ===================================================== */
 router.post("/check-faculty-availability", async (req, res) => {
   try {
-    const { examDate, examSession, venueCount } = req.body;
+    const { examDate, examSession, venueCount, examStartTime, examEndTime } = req.body;
     const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
 
     const [facultyList] = await db.query(
@@ -134,18 +166,34 @@ router.post("/check-faculty-availability", async (req, res) => {
 
     let totalAvailableSlots = 0;
 
-    const facultyStatus = facultyList.map(f => {
+    const facultyStatus = await Promise.all(facultyList.map(async (f) => {
       const current = assignmentMap.get(f.id) || 0;
       const available = Math.max(0, (f.max_classrooms || 1) - current);
-      totalAvailableSlots += available;
+      
+      // 🔴 Check time conflict if examStartTime and examEndTime are provided
+      let hasTimeConflict = false;
+      if (examStartTime && examEndTime) {
+        hasTimeConflict = await checkFacultyTimeConflict(
+          f.id,
+          dateOnly,
+          examStartTime,
+          examEndTime
+        );
+      }
+      
+      const isAvailable = available > 0 && !hasTimeConflict;
+      if (isAvailable) {
+        totalAvailableSlots += available;
+      }
 
       return {
         ...f,
         currentAssignments: current,
         availableSlots: available,
-        status: available > 0 ? "available" : "full"
+        hasTimeConflict,
+        status: isAvailable ? "available" : (hasTimeConflict ? "time-conflict" : "full")
       };
-    });
+    }));
 
     res.json({
       available: totalAvailableSlots >= venueCount,
@@ -214,9 +262,6 @@ router.delete("/delete-plan/:id", async (req, res) => {
       }
     }
 
-    // ✅ NO MANUAL ALLOCATION DECREMENT - it's calculated dynamically
-    // When seating_plan_venues records are deleted, the count automatically updates
-
     // Delete the seating plan (this should cascade to seating_plan_venues)
     await SeatingPlan.deletePlan(planId);
 
@@ -233,9 +278,41 @@ router.delete("/delete-plan/:id", async (req, res) => {
 });
 
 /* =====================================================
-    HELPER: AUTO ASSIGN FACULTY
+    🔴 CHECK FACULTY TIME CONFLICT
 ===================================================== */
-async function autoAssignFaculty(venuesUsed, examDate, examSession) {
+async function checkFacultyTimeConflict(facultyId, examDate, startTime, endTime) {
+  try {
+    const [conflicts] = await db.query(
+      `SELECT COUNT(*) as conflictCount
+       FROM seating_plan_venues spv
+       JOIN seating_plans sp ON spv.seating_plan_id = sp.id
+       WHERE spv.faculty_id = ?
+         AND sp.exam_date = ?
+         AND (
+           (sp.exam_start_time < ? AND sp.exam_end_time > ?) OR
+           (sp.exam_start_time < ? AND sp.exam_end_time > ?) OR
+           (sp.exam_start_time >= ? AND sp.exam_end_time <= ?)
+         )`,
+      [
+        facultyId,
+        examDate,
+        endTime, startTime,
+        endTime, startTime,
+        startTime, endTime
+      ]
+    );
+    
+    return conflicts[0].conflictCount > 0;
+  } catch (err) {
+    console.error("TIME CONFLICT CHECK ERROR:", err);
+    throw err;
+  }
+}
+
+/* =====================================================
+    🔴 FIXED: AUTO ASSIGN FACULTY (WITH PROPER TRACKING)
+===================================================== */
+async function autoAssignFaculty(venuesUsed, examDate, examSession, examStartTime, examEndTime) {
   const [facultyList] = await db.query(
     "SELECT id, name, department, max_classrooms FROM faculty"
   );
@@ -251,26 +328,69 @@ async function autoAssignFaculty(venuesUsed, examDate, examSession) {
 
   const counts = new Map(existing.map(r => [r.faculty_id, r.count]));
 
-  let available = facultyList.filter(f => {
+  // 🔴 Filter faculty: must have capacity AND no time conflict
+  let available = [];
+  for (const f of facultyList) {
     const used = counts.get(f.id) || 0;
-    return used < (f.max_classrooms || 1);
-  });
+    const hasCapacity = used < (f.max_classrooms || 1);
+    
+    if (hasCapacity) {
+      const hasConflict = await checkFacultyTimeConflict(
+        f.id,
+        examDate,
+        examStartTime,
+        examEndTime
+      );
+      
+      if (!hasConflict) {
+        available.push(f);
+      }
+    }
+  }
 
   const assigned = [];
+  const usedInThisSession = new Set(); // 🔴 TRACK USAGE IN THIS REQUEST
 
   for (const v of venuesUsed) {
     if (available.length === 0) {
-      return { success: false, error: "Insufficient faculty capacity" };
+      return { 
+        success: false, 
+        error: "Insufficient faculty capacity (considering time conflicts and session limits)" 
+      };
     }
 
-    const f = available[0];
-    assigned.push({ ...v, facultyId: f.id });
+    // 🔴 Find first faculty not yet used in THIS session
+    let selectedFaculty = null;
+    let selectedIndex = -1;
 
-    const newCount = (counts.get(f.id) || 0) + 1;
-    counts.set(f.id, newCount);
+    for (let i = 0; i < available.length; i++) {
+      const f = available[i];
+      if (!usedInThisSession.has(f.id)) {
+        selectedFaculty = f;
+        selectedIndex = i;
+        break;
+      }
+    }
 
-    if (newCount >= (f.max_classrooms || 1)) {
-      available.shift();
+    // 🔴 If all available faculty already used in this session, we need MORE faculty
+    if (!selectedFaculty) {
+      return {
+        success: false,
+        error: `Cannot assign same faculty to multiple venues in one exam session. Need ${venuesUsed.length} faculty but only ${usedInThisSession.size} available without conflicts.`
+      };
+    }
+
+    // 🔴 Assign this faculty
+    assigned.push({ ...v, facultyId: selectedFaculty.id });
+    usedInThisSession.add(selectedFaculty.id);
+
+    // Update count for this faculty
+    const newCount = (counts.get(selectedFaculty.id) || 0) + 1;
+    counts.set(selectedFaculty.id, newCount);
+
+    // 🔴 Remove from available if they've hit their max
+    if (newCount >= (selectedFaculty.max_classrooms || 1)) {
+      available.splice(selectedIndex, 1);
     }
   }
 
