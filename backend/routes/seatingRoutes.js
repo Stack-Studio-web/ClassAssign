@@ -26,7 +26,7 @@ router.post("/save-plan", async (req, res) => {
 
     const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
 
-    // 1️⃣ Check venue conflicts
+    // 1️ Check venue conflicts
     for (const v of venuesUsed) {
       const available = await Venue.isAvailable(
         v.venueId,
@@ -43,7 +43,7 @@ router.post("/save-plan", async (req, res) => {
 
     let finalVenues = venuesUsed;
 
-    // 2️⃣ Auto Faculty Assignment
+    // 2️ Auto Faculty Assignment
     if (facultyMode === "AUTO") {
       const result = await autoAssignFaculty(venuesUsed, dateOnly, examSession, examStartTime, examEndTime);
       if (!result.success) {
@@ -54,12 +54,12 @@ router.post("/save-plan", async (req, res) => {
 
     await connection.beginTransaction();
 
-    // 3️⃣ Check faculty allocation limits AND time conflicts
+    // 3️Check faculty allocation limits AND time conflicts
     const assignedFacultyInThisRequest = new Set();
     
     for (const v of finalVenues) {
       if (v.facultyId) {
-        // 🔴 CHECK: Faculty already used in THIS request
+        //  CHECK: Faculty already used in THIS request
         if (assignedFacultyInThisRequest.has(v.facultyId)) {
           await connection.rollback();
           const [faculty] = await db.query("SELECT name FROM faculty WHERE id = ?", [v.facultyId]);
@@ -78,7 +78,7 @@ router.post("/save-plan", async (req, res) => {
           });
         }
 
-        // 🔴 CHECK: Time conflict with existing assignments
+        //  CHECK: Time conflict with existing assignments
         const hasConflict = await checkFacultyTimeConflict(
           v.facultyId,
           dateOnly,
@@ -95,12 +95,12 @@ router.post("/save-plan", async (req, res) => {
           });
         }
         
-        // ✅ Track this faculty as assigned in this request
+        //  Track this faculty as assigned in this request
         assignedFacultyInThisRequest.add(v.facultyId);
       }
     }
 
-    // 4️⃣ Save seating plan
+    // 4Save seating plan
     const seatingPlanId = await SeatingPlan.createPlan({
       examDate: dateOnly,
       examSession,
@@ -113,7 +113,7 @@ router.post("/save-plan", async (req, res) => {
       facultyMode
     });
 
-    // 5️⃣ Mark venues as booked
+    // 5 Mark venues as booked
     for (const v of finalVenues) {
       await Venue.addSession(
         v.venueId,
@@ -170,7 +170,7 @@ router.post("/check-faculty-availability", async (req, res) => {
       const current = assignmentMap.get(f.id) || 0;
       const available = Math.max(0, (f.max_classrooms || 1) - current);
       
-      // 🔴 Check time conflict if examStartTime and examEndTime are provided
+      //  Check time conflict if examStartTime and examEndTime are provided
       let hasTimeConflict = false;
       if (examStartTime && examEndTime) {
         hasTimeConflict = await checkFacultyTimeConflict(
@@ -278,7 +278,7 @@ router.delete("/delete-plan/:id", async (req, res) => {
 });
 
 /* =====================================================
-    🔴 CHECK FACULTY TIME CONFLICT
+    CHECK FACULTY TIME CONFLICT
 ===================================================== */
 async function checkFacultyTimeConflict(facultyId, examDate, startTime, endTime) {
   try {
@@ -310,7 +310,7 @@ async function checkFacultyTimeConflict(facultyId, examDate, startTime, endTime)
 }
 
 /* =====================================================
-    🔴 FIXED: AUTO ASSIGN FACULTY (WITH PROPER TRACKING)
+    FIXED: AUTO ASSIGN FACULTY (WITH PROPER TRACKING)
 ===================================================== */
 async function autoAssignFaculty(venuesUsed, examDate, examSession, examStartTime, examEndTime) {
   const [facultyList] = await db.query(
@@ -328,7 +328,7 @@ async function autoAssignFaculty(venuesUsed, examDate, examSession, examStartTim
 
   const counts = new Map(existing.map(r => [r.faculty_id, r.count]));
 
-  // 🔴 Filter faculty: must have capacity AND no time conflict
+  //  Filter faculty: must have capacity AND no time conflict
   let available = [];
   for (const f of facultyList) {
     const used = counts.get(f.id) || 0;
@@ -349,7 +349,7 @@ async function autoAssignFaculty(venuesUsed, examDate, examSession, examStartTim
   }
 
   const assigned = [];
-  const usedInThisSession = new Set(); // 🔴 TRACK USAGE IN THIS REQUEST
+  const usedInThisSession = new Set(); //  TRACK USAGE IN THIS REQUEST
 
   for (const v of venuesUsed) {
     if (available.length === 0) {
@@ -359,7 +359,7 @@ async function autoAssignFaculty(venuesUsed, examDate, examSession, examStartTim
       };
     }
 
-    // 🔴 Find first faculty not yet used in THIS session
+    //  Find first faculty not yet used in THIS session
     let selectedFaculty = null;
     let selectedIndex = -1;
 
@@ -372,7 +372,7 @@ async function autoAssignFaculty(venuesUsed, examDate, examSession, examStartTim
       }
     }
 
-    // 🔴 If all available faculty already used in this session, we need MORE faculty
+    //  If all available faculty already used in this session, we need MORE faculty
     if (!selectedFaculty) {
       return {
         success: false,
@@ -380,7 +380,7 @@ async function autoAssignFaculty(venuesUsed, examDate, examSession, examStartTim
       };
     }
 
-    // 🔴 Assign this faculty
+    //  Assign this faculty
     assigned.push({ ...v, facultyId: selectedFaculty.id });
     usedInThisSession.add(selectedFaculty.id);
 
