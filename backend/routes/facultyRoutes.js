@@ -1,73 +1,308 @@
 const express = require("express");
 const router = express.Router();
+const SeatingPlan = require("../models/SeatingPlan");
+const Venue = require("../models/venue");
 const Faculty = require("../models/Faculty");
+const db = require("../config/db");
 
+/* =====================================================
+    POST: SAVE SEATING PLAN
+===================================================== */
+router.post("/save-plan", async (req, res) => {
+  const connection = await db.getConnection();
+  try {
+    const {
+      examDate,
+      examStartTime,
+      examEndTime,
+      examSession,
+      examType,
+      selectedCourses,
+      venuesUsed,
+      students,
+      facultyMode
+    } = req.body;
+
+    const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
+
+    // 1️⃣ Check venue conflicts
+    for (const v of venuesUsed) {
+      const available = await Venue.isAvailable(
+        v.venueId,
+        dateOnly,
+        examStartTime,
+        examEndTime
+      );
+      if (!available) {
+        return res.status(400).json({
+          error: `Venue ${v.venueName} already booked`
+        });
+      }
+    }
+
+    let finalVenues = venuesUsed;
+
+    // 2️⃣ Auto Faculty Assignment
+    if (facultyMode === "AUTO") {
+      const result = await autoAssignFaculty(venuesUsed, dateOnly, examSession);
+      if (!result.success) {
+        return res.status(400).json({ error: result.error });
+      }
+      finalVenues = result.venues;
+    }
+
+    await connection.beginTransaction();
+
+    // 3️⃣ Check faculty allocation limits
+    for (const v of finalVenues) {
+      if (v.faculty_id) {
+        const canAllocate = await Faculty.canAllocate(v.faculty_id);
+        if (!canAllocate) {
+          await connection.rollback();
+          return res.status(400).json({
+            error: "Faculty allocation limit reached. Cannot assign this faculty."
+          });
+        }
+      }
+    }
+
+    // 4️⃣ Save seating plan
+    const seatingPlanId = await SeatingPlan.createPlan({
+      examDate: dateOnly,
+      examSession,
+      examType,
+      examStartTime,
+      examEndTime,
+      selectedCourses,
+      students,
+      venuesUsed: finalVenues,
+      facultyMode
+    });
+
+    // 5️⃣ Mark venues as booked
+    for (const v of finalVenues) {
+      await Venue.addSession(
+        v.venueId,
+        dateOnly,
+        examStartTime,
+        examEndTime
+      );
+    }
+
+    // ✅ NO MANUAL ALLOCATION INCREMENT - it's calculated dynamically
+
+    await connection.commit();
+    res.status(201).json({
+      message: "Seating plan saved successfully",
+      seatingPlanId
+    });
+
+  } catch (err) {
+    await connection.rollback();
+    console.error("SAVE PLAN ERROR:", err);
+    res.status(500).json({
+      error: "Failed to save plan",
+      message: err.message
+    });
+  } finally {
+    connection.release();
+  }
+});
+
+/* =====================================================
+    POST: CHECK FACULTY AVAILABILITY
+===================================================== */
+router.post("/check-faculty-availability", async (req, res) => {
+  try {
+    const { examDate, examSession, venueCount } = req.body;
+    const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
+
+    const [facultyList] = await db.query(
+      "SELECT id, name, department, max_classrooms FROM faculty"
+    );
+
+    const [existing] = await db.query(
+      `SELECT spv.faculty_id, COUNT(*) as count 
+       FROM seating_plan_venues spv
+       JOIN seating_plans sp ON spv.seating_plan_id = sp.id
+       WHERE sp.exam_date = ? AND sp.exam_session = ?
+       GROUP BY spv.faculty_id`,
+      [dateOnly, examSession]
+    );
+
+    const assignmentMap = new Map(existing.map(row => [row.faculty_id, row.count]));
+
+    let totalAvailableSlots = 0;
+
+    const facultyStatus = facultyList.map(f => {
+      const current = assignmentMap.get(f.id) || 0;
+      const available = Math.max(0, (f.max_classrooms || 1) - current);
+      totalAvailableSlots += available;
+
+      return {
+        ...f,
+        currentAssignments: current,
+        availableSlots: available,
+        status: available > 0 ? "available" : "full"
+      };
+    });
+
+    res.json({
+      available: totalAvailableSlots >= venueCount,
+      message:
+        totalAvailableSlots >= venueCount
+          ? "Sufficient faculty available"
+          : "Faculty shortage",
+      facultyStatus
+    });
+  } catch (err) {
+    console.error("FACULTY AVAILABILITY ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* =====================================================
+    GET: ALL SEATING PLANS
+===================================================== */
 router.get("/", async (req, res) => {
   try {
-    const data = await Faculty.getAllWithAllocation();
-    res.json(data);
+    const plans = await SeatingPlan.getAllPlans();
+    res.status(200).json(plans);
   } catch (err) {
-    res.status(500).json(err);
+    console.error("FETCH PLANS ERROR:", err);
+    res.status(500).json({
+      error: "Failed to fetch seating plans",
+      message: err.message
+    });
   }
 });
 
-router.get("/stats", async (req, res) => {
+/* =====================================================
+    GET: VENUE ASSIGNMENTS FOR A SPECIFIC PLAN
+===================================================== */
+router.get("/:id/venues", async (req, res) => {
   try {
-    const stats = await Faculty.count();
-    res.json(stats);
-  } catch (err) {
-    res.status(500).json(err);
-  }
-});
-
-router.post("/", async (req, res) => {
-  try {
-    await Faculty.create(req.body);
-    res.json({ message: "Faculty added successfully" });
-  } catch (err) {
-    if (err.code === "ER_DUP_ENTRY") {
-      return res.status(409).json({ message: "Faculty already exists" });
-    }
-    res.status(500).json(err);
-  }
-});
-
-router.put("/:id/max-classrooms", async (req, res) => {
-  try {
-    await Faculty.updateMaxClassrooms(
-      req.params.id,
-      req.body.max_classrooms
+    const planId = req.params.id;
+    const [venues] = await db.query(
+      `SELECT 
+        spv.id,
+        spv.venue_id,
+        spv.venue_name,
+        spv.faculty_id,
+        spv.seating_arrangement
+       FROM seating_plan_venues spv
+       WHERE spv.seating_plan_id = ?
+       ORDER BY spv.venue_name`,
+      [planId]
     );
-    res.json({ message: "Max classrooms updated" });
+    res.json(venues);
   } catch (err) {
-    res.status(500).json(err);
+    console.error("FETCH VENUES ERROR:", err);
+    res.status(500).json({
+      error: "Failed to fetch venues",
+      message: err.message
+    });
   }
 });
 
-router.delete("/:id", async (req, res) => {
-  try {
-    await Faculty.deleteById(req.params.id);
-    res.json({ message: "Faculty deleted" });
-  } catch (err) {
-    res.status(500).json(err);
-  }
-});
+/* =====================================================
+    DELETE: SEATING PLAN
+===================================================== */
+router.delete("/delete-plan/:id", async (req, res) => {
+  const planId = req.params.id;
+  const connection = await db.getConnection();
 
-router.get("/:id/can-allocate", async (req, res) => {
   try {
-    const canAllocate = await Faculty.canAllocate(req.params.id);
+    await connection.beginTransaction();
 
-    if (!canAllocate) {
-      return res.status(403).json({
-        allowed: false,
-        message: "Faculty has reached maximum allocation limit",
-      });
+    const plan = await SeatingPlan.getPlanById(planId);
+    if (!plan) {
+      await connection.rollback();
+      return res.status(404).json({ error: "Seating plan not found" });
     }
 
-    res.json({ allowed: true });
+    // Extract venues
+    const venues = plan.venuesUsed || plan.venues_used;
+    const venueList = typeof venues === 'string' ? JSON.parse(venues) : venues;
+
+    if (venueList && Array.isArray(venueList)) {
+      for (const v of venueList) {
+        // Remove venue sessions
+        const examDateRaw = plan.exam_date || plan.examDate;
+        const dateOnly = typeof examDateRaw === "string" && examDateRaw.includes("T")
+          ? examDateRaw.split("T")[0]
+          : examDateRaw;
+
+        await Venue.removeSession(
+          v.venueId || v.venue_id,
+          dateOnly,
+          plan.exam_start_time || plan.examStartTime,
+          plan.exam_end_time || plan.examEndTime
+        );
+      }
+    }
+
+    // ✅ NO MANUAL ALLOCATION DECREMENT - it's calculated dynamically
+    // When seating_plan_venues records are deleted, the count automatically updates
+
+    // Delete the seating plan (this should cascade to seating_plan_venues)
+    await SeatingPlan.deletePlan(planId);
+
+    await connection.commit();
+    res.status(200).json({ message: "Plan deleted successfully." });
+
   } catch (err) {
-    res.status(500).json(err);
+    await connection.rollback();
+    console.error("DELETE ERROR:", err);
+    res.status(500).json({ error: "Failed to delete", message: err.message });
+  } finally {
+    connection.release();
   }
 });
+
+/* =====================================================
+    HELPER: AUTO ASSIGN FACULTY
+===================================================== */
+async function autoAssignFaculty(venuesUsed, examDate, examSession) {
+  const [facultyList] = await db.query(
+    "SELECT id, name, department, max_classrooms FROM faculty"
+  );
+
+  const [existing] = await db.query(
+    `SELECT faculty_id, COUNT(*) as count 
+     FROM seating_plan_venues spv
+     JOIN seating_plans sp ON spv.seating_plan_id = sp.id
+     WHERE sp.exam_date = ? AND sp.exam_session = ?
+     GROUP BY faculty_id`,
+    [examDate, examSession]
+  );
+
+  const counts = new Map(existing.map(r => [r.faculty_id, r.count]));
+
+  let available = facultyList.filter(f => {
+    const used = counts.get(f.id) || 0;
+    return used < (f.max_classrooms || 1);
+  });
+
+  const assigned = [];
+
+  for (const v of venuesUsed) {
+    if (available.length === 0) {
+      return { success: false, error: "Insufficient faculty capacity" };
+    }
+
+    const f = available[0];
+    assigned.push({ ...v, faculty_id: f.id });
+
+    const newCount = (counts.get(f.id) || 0) + 1;
+    counts.set(f.id, newCount);
+
+    if (newCount >= (f.max_classrooms || 1)) {
+      available.shift();
+    }
+  }
+
+  return { success: true, venues: assigned };
+}
 
 module.exports = router;

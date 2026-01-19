@@ -53,7 +53,7 @@ router.post("/save-plan", async (req, res) => {
 
     await connection.beginTransaction();
 
-    // 3️⃣ Block faculty if allocation limit reached
+    // 3️⃣ Check faculty allocation limits
     for (const v of finalVenues) {
       if (v.facultyId) {
         const canAllocate = await Faculty.canAllocate(v.facultyId);
@@ -89,15 +89,7 @@ router.post("/save-plan", async (req, res) => {
       );
     }
 
-    // 6️⃣ Increment faculty allocation
-    for (const v of finalVenues) {
-      if (v.facultyId) {
-        await connection.query(
-          "UPDATE faculty SET allocation = allocation + 1 WHERE id = ?",
-          [v.facultyId]
-        );
-      }
-    }
+    // ✅ NO MANUAL ALLOCATION INCREMENT - it's calculated dynamically
 
     await connection.commit();
     res.status(201).json({
@@ -201,26 +193,13 @@ router.delete("/delete-plan/:id", async (req, res) => {
       return res.status(404).json({ error: "Seating plan not found" });
     }
 
-    // 1. Extract Venues correctly
-    // Depending on your model, this might be plan.venuesUsed (JS) or plan.venues_used (DB)
+    // Extract venues
     const venues = plan.venuesUsed || plan.venues_used;
     const venueList = typeof venues === 'string' ? JSON.parse(venues) : venues;
 
     if (venueList && Array.isArray(venueList)) {
       for (const v of venueList) {
-        // 2. Decrement Faculty Allocation
-        // Check for both camelCase and snake_case property names
-        const fId = v.facultyId || v.faculty_id;
-
-        if (fId) {
-          console.log(`Decreasing allocation for Faculty ID: ${fId}`);
-          await connection.query(
-            "UPDATE faculty SET allocation = GREATEST(0, allocation - 1) WHERE id = ?",
-            [fId]
-          );
-        }
-
-        // 3. Remove Venue Sessions
+        // Remove venue sessions
         const examDateRaw = plan.exam_date || plan.examDate;
         const dateOnly = typeof examDateRaw === "string" && examDateRaw.includes("T")
           ? examDateRaw.split("T")[0]
@@ -235,11 +214,14 @@ router.delete("/delete-plan/:id", async (req, res) => {
       }
     }
 
-    // 4. Delete the actual plan
+    // ✅ NO MANUAL ALLOCATION DECREMENT - it's calculated dynamically
+    // When seating_plan_venues records are deleted, the count automatically updates
+
+    // Delete the seating plan (this should cascade to seating_plan_venues)
     await SeatingPlan.deletePlan(planId);
 
     await connection.commit();
-    res.status(200).json({ message: "Plan deleted and faculty updated." });
+    res.status(200).json({ message: "Plan deleted successfully." });
 
   } catch (err) {
     await connection.rollback();
@@ -249,6 +231,7 @@ router.delete("/delete-plan/:id", async (req, res) => {
     connection.release();
   }
 });
+
 /* =====================================================
     HELPER: AUTO ASSIGN FACULTY
 ===================================================== */

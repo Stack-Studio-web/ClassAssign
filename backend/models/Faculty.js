@@ -1,4 +1,4 @@
-const db = require("../config/db"); // already promise-based
+const db = require("../config/db");
 
 const Faculty = {
   create: async ({ name, department, email }) => {
@@ -39,7 +39,7 @@ const Faculty = {
     if (ids.length === 0) return;
     const sql = `DELETE FROM faculty WHERE id IN (?)`;
     return db.query(sql, [ids]);
-  }, 
+  },
 
   deleteAll: async () => {
     return db.query("DELETE FROM faculty");
@@ -48,7 +48,7 @@ const Faculty = {
   /* =====================================
      CHECK IF FACULTY CAN BE ALLOCATED
   ===================================== */
-  canAllocate: async (facultyId) => {
+  canAllocate: async (faculty_id) => {
     const [rows] = await db.query(
       `
       SELECT 
@@ -61,54 +61,35 @@ const Faculty = {
       WHERE f.id = ?
       GROUP BY f.id
       `,
-      [facultyId]
+      [faculty_id]
     );
-
     if (rows.length === 0) return false;
-
     const { max_classrooms, allocationCount } = rows[0];
     return allocationCount < max_classrooms;
   },
 
   /* =====================================
-     INCREMENT ALLOCATION
+     GET ALL FACULTY WITH ALLOCATION INFO
+     (Dynamically calculated from seating_plan_venues)
   ===================================== */
-  incrementAllocation: async (facultyId) => {
-    return db.query(
-      "UPDATE faculty SET allocation = allocation + 1 WHERE id = ?",
-      [facultyId]
-    );
+  getAllWithAllocation: async () => {
+    const [rows] = await db.query(`
+      SELECT 
+        f.id,
+        f.name,
+        f.department,
+        f.email,
+        f.max_classrooms,
+        COUNT(spv.id) AS allocation,
+        (f.max_classrooms - COUNT(spv.id)) AS remaining
+      FROM faculty f
+      LEFT JOIN seating_plan_venues spv 
+        ON spv.faculty_id = f.id
+      GROUP BY f.id
+      ORDER BY f.name ASC
+    `);
+    return rows;
   },
-
-  /* =====================================
-     DECREMENT ALLOCATION
-  ===================================== */
-  decrementAllocation: async (facultyId) => {
-    return db.query(
-      "UPDATE faculty SET allocation = allocation - 1 WHERE id = ? AND allocation > 0",
-      [facultyId]
-    );
-  },
-
-  /* =====================================
-   GET ALL FACULTY WITH ALLOCATION INFO
-===================================== */
-getAllWithAllocation: async () => {
-  const [rows] = await db.query(`
-    SELECT 
-      id,
-      name,
-      department,
-      email,
-      max_classrooms,
-      allocation,
-      (max_classrooms - allocation) AS remaining
-    FROM faculty
-    ORDER BY name ASC
-  `);
-  return rows;
-},
-
 };
 
 module.exports = Faculty;
