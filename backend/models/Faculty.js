@@ -48,7 +48,7 @@ const Faculty = {
   /* =====================================
      CHECK IF FACULTY CAN BE ALLOCATED
   ===================================== */
-  canAllocate: async (faculty_id) => {
+  canAllocate: async (facultyId) => {
     const [rows] = await db.query(
       `
       SELECT 
@@ -61,7 +61,7 @@ const Faculty = {
       WHERE f.id = ?
       GROUP BY f.id
       `,
-      [faculty_id]
+      [facultyId]
     );
     if (rows.length === 0) return false;
     const { max_classrooms, allocationCount } = rows[0];
