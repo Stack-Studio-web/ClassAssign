@@ -1,3 +1,4 @@
+// Class/backend/models/Faculty.js
 const db = require("../config/db");
 
 const Faculty = {

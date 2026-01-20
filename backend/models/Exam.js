@@ -1,3 +1,4 @@
+// Class/backend/models/Exam.js
 const db = require("../config/db");
 
 const Exam = {

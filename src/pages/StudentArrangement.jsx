@@ -1,4 +1,4 @@
-//StudentArrangement.jsx
+// StudentArrangement.jsx - FIXED TIMEZONE ISSUE
 import React, { useEffect, useState, useRef } from "react";
 import axios from "axios";
 import { useReactToPrint } from "react-to-print";
@@ -41,6 +41,32 @@ const formatTime = (start, end) => {
     return `${hour}:${m} ${suffix}`;
   };
   return `${format(start)} - ${format(end)}`;
+};
+
+// FIXED: Function to normalize date to YYYY-MM-DD without timezone issues
+const normalizeDateToYYYYMMDD = (dateInput) => {
+  if (!dateInput) return null;
+  
+  let dateObj;
+  
+  if (dateInput instanceof Date) {
+    dateObj = dateInput;
+  } else if (typeof dateInput === 'string') {
+    // If it's already in YYYY-MM-DD format from input, use it directly
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateInput)) {
+      return dateInput;
+    }
+    dateObj = new Date(dateInput);
+  } else {
+    return null;
+  }
+  
+  // Extract year, month, day in LOCAL timezone (not UTC)
+  const year = dateObj.getFullYear();
+  const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const day = String(dateObj.getDate()).padStart(2, '0');
+  
+  return `${year}-${month}-${day}`;
 };
 
 const ExamHallAllotment = () => {
@@ -145,7 +171,7 @@ const ExamHallAllotment = () => {
     }
   };
 
-  // Filter halls
+  // FIXED: Filter halls with proper date comparison
   useEffect(() => {
     const { date, session } = filters;
     
@@ -156,18 +182,11 @@ const ExamHallAllotment = () => {
 
     const filtered = seatingPlans
       .filter((plan) => {
-        let planDateStr = plan.examDate;
+        // FIXED: Normalize both dates for comparison
+        const planDateStr = normalizeDateToYYYYMMDD(plan.examDate);
+        const filterDateStr = date; // Already in YYYY-MM-DD format from input
         
-        if (planDateStr instanceof Date) {
-          const year = planDateStr.getFullYear();
-          const month = String(planDateStr.getMonth() + 1).padStart(2, '0');
-          const day = String(planDateStr.getDate()).padStart(2, '0');
-          planDateStr = `${year}-${month}-${day}`;
-        } else if (typeof planDateStr === 'string') {
-          planDateStr = planDateStr.split('T')[0];
-        }
-        
-        const matchesDate = date ? planDateStr === date : true;
+        const matchesDate = date ? planDateStr === filterDateStr : true;
         const matchesSession = session ? plan.examSession === session : true;
         
         return matchesDate && matchesSession;

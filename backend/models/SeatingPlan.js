@@ -1,3 +1,4 @@
+// Class/backend/models/SeatingPlan.js
 const db = require("../config/db");
 
 const SeatingPlan = {
