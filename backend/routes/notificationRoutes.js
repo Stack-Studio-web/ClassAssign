@@ -6,14 +6,13 @@ const db = require("../config/db");
 /* ================================
    KCT TEAMS CONFIG
 ================================ */
-const KCT_TEAMS_API_URL =
-  process.env.KCT_TEAMS_API_URL || "http://10.1.76.76:25001/async/send/";
-
+const KCT_TEAMS_API_URL = process.env.KCT_TEAMS_API_URL || "http://10.1.76.76:25001/send/";
+const KCT_TEAMS_FROM_EMAIL = process.env.KCT_TEAMS_FROM_EMAIL || "entry@kct.ac.in";
 const KCT_TEAMS_API_USER = process.env.KCT_TEAMS_API_USER;
 const KCT_TEAMS_API_PASSWORD = process.env.KCT_TEAMS_API_PASSWORD;
 
 /* ================================
-   SEND TEAMS CHAT MESSAGE (WITH MOCK MODE)
+   SEND TEAMS CHAT MESSAGE
 ================================ */
 const sendTeamsMessage = async (toEmail, message) => {
   console.log("\n=== ATTEMPTING TEAMS MESSAGE ===");
@@ -35,9 +34,11 @@ const sendTeamsMessage = async (toEmail, message) => {
     const response = await axios.post(
       KCT_TEAMS_API_URL,
       {
-        from_email: KCT_TEAMS_API_USER,
+        from_email: KCT_TEAMS_FROM_EMAIL,
         email: toEmail,
         message: message,
+        content_type: "html",
+        mention: "true"
       },
       {
         auth: {
@@ -47,7 +48,7 @@ const sendTeamsMessage = async (toEmail, message) => {
         headers: {
           "Content-Type": "application/json",
         },
-        timeout: 60000, // 60 seconds (Teams API can be slow)
+        timeout: 60000, // 60 seconds
       }
     );
     
@@ -256,23 +257,17 @@ router.post("/teams", async (req, res) => {
         || student.course_description 
         || "N/A";
 
-      const message = [
-        "📢 EXAM ANNOUNCEMENT",
-        "",
-        `Hello ${student.student_name},`,
-        "",
-        `📅 Date: ${new Date(venueData.examDate).toDateString()}`,
-        "",
-        `⏰ Time: ${venueData.examTime}`,
-        "",
-        `🏛 Venue: ${venueData.venueName}`,
-        "",
-        `📘 Course: ${courseName}`,
-        "",
-        "Please be present at least 30 minutes early.",
-        "",
-        "— KCT Examination Cell"
-      ].join("\n");
+      // Format message with HTML and line breaks
+      const message = `
+        <b>📢 EXAM ANNOUNCEMENT</b><br><br>
+        Hello ${student.student_name},<br><br>
+        <b>📅 Date:</b> ${new Date(venueData.examDate).toDateString()}<br><br>
+        <b>⏰ Time:</b> ${venueData.examTime}<br><br>
+        <b>🏛 Venue:</b> ${venueData.venueName}<br><br>
+        <b>📘 Course:</b> ${courseName}<br><br>
+        Please be present at least 30 minutes early.<br><br>
+        — KCT Examination Cell
+      `.trim();
 
       const result = await sendTeamsMessage(email, message);
       
