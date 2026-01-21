@@ -4,21 +4,22 @@ const axios = require("axios");
 const db = require("../config/db");
 
 /* ================================
-   KCT TEAMS CONFIG
+   KCT TEAMS CONFIG (Matching Django implementation)
 ================================ */
 const KCT_TEAMS_API_URL = process.env.KCT_TEAMS_API_URL || "http://10.1.76.76:25001/send/";
 const KCT_TEAMS_FROM_EMAIL = process.env.KCT_TEAMS_FROM_EMAIL || "entry@kct.ac.in";
-const KCT_TEAMS_API_USER = process.env.KCT_TEAMS_API_USER;
-const KCT_TEAMS_API_PASSWORD = process.env.KCT_TEAMS_API_PASSWORD;
+const KCT_TEAMS_API_USER = process.env.KCT_TEAMS_API_USER || "iqube@kct.ac.in";
+const KCT_TEAMS_API_PASSWORD = process.env.KCT_TEAMS_API_PASSWORD || "iQube@2025";
 
 /* ================================
-   SEND TEAMS CHAT MESSAGE
+   SEND TEAMS CHAT MESSAGE (Matching Django implementation)
 ================================ */
 const sendTeamsMessage = async (toEmail, message) => {
   console.log("\n=== ATTEMPTING TEAMS MESSAGE ===");
   console.log("To:", toEmail);
+  console.log("From:", KCT_TEAMS_FROM_EMAIL);
   console.log("API URL:", KCT_TEAMS_API_URL);
-  console.log("From Email:", KCT_TEAMS_API_USER);
+  console.log("Auth User:", KCT_TEAMS_API_USER);
   console.log("Auth configured:", !!(KCT_TEAMS_API_USER && KCT_TEAMS_API_PASSWORD));
   
   // MOCK MODE: Set to true for testing without actual API
@@ -31,10 +32,11 @@ const sendTeamsMessage = async (toEmail, message) => {
   }
   
   try {
+    // Matching Django implementation exactly
     const response = await axios.post(
       KCT_TEAMS_API_URL,
       {
-        from_email: KCT_TEAMS_FROM_EMAIL,
+        from_email: KCT_TEAMS_FROM_EMAIL,  // entry@kct.ac.in
         email: toEmail,
         message: message,
         content_type: "html",
@@ -257,16 +259,16 @@ router.post("/teams", async (req, res) => {
         || student.course_description 
         || "N/A";
 
-      // Format message with HTML and line breaks
+      // HTML formatted message (matching Django implementation)
       const message = `
         <b>📢 EXAM ANNOUNCEMENT</b><br><br>
-        Hello ${student.student_name},<br><br>
+        Hello <b>${student.student_name}</b>,<br><br>
         <b>📅 Date:</b> ${new Date(venueData.examDate).toDateString()}<br><br>
         <b>⏰ Time:</b> ${venueData.examTime}<br><br>
         <b>🏛 Venue:</b> ${venueData.venueName}<br><br>
         <b>📘 Course:</b> ${courseName}<br><br>
         Please be present at least 30 minutes early.<br><br>
-        — KCT Examination Cell
+        <i>— KCT Examination Cell</i>
       `.trim();
 
       const result = await sendTeamsMessage(email, message);
