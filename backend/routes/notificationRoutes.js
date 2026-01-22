@@ -1,93 +1,11 @@
 const express = require("express");
 const router = express.Router();
-const axios = require("axios");
 const db = require("../config/db");
-
-/* ================================
-   KCT TEAMS CONFIG
-================================ */
-const KCT_TEAMS_API_URL =
-  process.env.KCT_TEAMS_API_URL || "http://10.1.76.76:25001/async/send/";
-
-const KCT_TEAMS_API_USER = process.env.KCT_TEAMS_API_USER;
-const KCT_TEAMS_API_PASSWORD = process.env.KCT_TEAMS_API_PASSWORD;
-
-/* ================================
-   SEND TEAMS CHAT MESSAGE (WITH MOCK MODE)
-================================ */
-const sendTeamsMessage = async (toEmail, message) => {
-  console.log("\n=== ATTEMPTING TEAMS MESSAGE ===");
-  console.log("To:", toEmail);
-  console.log("API URL:", KCT_TEAMS_API_URL);
-  console.log("From Email:", KCT_TEAMS_API_USER);
-  console.log("Auth configured:", !!(KCT_TEAMS_API_USER && KCT_TEAMS_API_PASSWORD));
-  
-  // MOCK MODE: Set to true for testing without actual API
-  const MOCK_MODE = process.env.MOCK_TEAMS_API === 'true';
-  
-  if (MOCK_MODE) {
-    console.log("🧪 MOCK MODE: Simulating successful Teams notification");
-    console.log("Message preview:", message.substring(0, 100) + "...");
-    return { success: true, data: { mock: true, message: "Mock notification sent" } };
-  }
-  
-  try {
-    const response = await axios.post(
-      KCT_TEAMS_API_URL,
-      {
-        from_email: KCT_TEAMS_API_USER,
-        email: toEmail,
-        message: message,
-      },
-      {
-        auth: {
-          username: KCT_TEAMS_API_USER,
-          password: KCT_TEAMS_API_PASSWORD,
-        },
-        headers: {
-          "Content-Type": "application/json",
-        },
-        timeout: 60000, // 60 seconds (Teams API can be slow)
-      }
-    );
-    
-    console.log("✅ SUCCESS! Response:", response.status, response.data);
-    return { success: true, data: response.data };
-    
-  } catch (err) {
-    console.error("\n❌ TEAMS API ERROR:");
-    console.error("Error Type:", err.code || err.name);
-    console.error("Error Message:", err.message);
-    
-    if (err.response) {
-      console.error("Response Status:", err.response.status);
-      console.error("Response Data:", err.response.data);
-      console.error("Response Headers:", err.response.headers);
-    } else if (err.request) {
-      console.error("No response received. Request details:", {
-        method: err.request.method,
-        path: err.request.path,
-        host: err.request.host
-      });
-      console.error("\n⚠️  CONNECTION FAILED - Possible reasons:");
-      console.error("   1. Not connected to KCT network/VPN");
-      console.error("   2. Server is down or unreachable");
-      console.error("   3. Firewall blocking port 25001");
-      console.error("   💡 TIP: Add MOCK_TEAMS_API=true to .env for testing");
-    }
-    
-    return { 
-      success: false, 
-      error: err.message,
-      code: err.code,
-      responseStatus: err.response?.status,
-      responseData: err.response?.data
-    };
-  }
-};
+const bull = require("../config/bullWorker"); // Bull queue instance
 
 /* ================================
    POST /api/notifications/teams
+   Seating-plan based notifications
 ================================ */
 router.post("/teams", async (req, res) => {
   const { date, session } = req.body;
@@ -98,18 +16,10 @@ router.post("/teams", async (req, res) => {
     });
   }
 
-  // Check credentials
-  if (!KCT_TEAMS_API_USER || !KCT_TEAMS_API_PASSWORD) {
-    return res.status(500).json({
-      error: "Teams API credentials not configured",
-      message: "Please set KCT_TEAMS_API_USER and KCT_TEAMS_API_PASSWORD in .env"
-    });
-  }
-
   try {
     // 1️⃣ Get seating plans
     const dateOnly = date.includes("T") ? date.split("T")[0] : date;
-    
+
     const [plans] = await db.query(
       `SELECT 
         id, exam_date, exam_session, exam_type,
@@ -120,22 +30,20 @@ router.post("/teams", async (req, res) => {
     );
 
     if (plans.length === 0) {
-      return res.status(404).json({ 
-        error: "No seating plans found for this date and session" 
-      });
+      return res.status(404).json({ error: "No seating plans found" });
     }
 
     // 2️⃣ Get venues
     const planIds = plans.map(p => p.id);
-    const placeholders = planIds.map(() => '?').join(',');
-    
+    const planPlaceholders = planIds.map(() => "?").join(",");
+
     const [venues] = await db.query(
       `SELECT 
-        spv.id as venue_plan_id, spv.seating_plan_id, spv.venue_name,
-        f.name as faculty_name, f.department as faculty_department
+        spv.id as venue_plan_id,
+        spv.seating_plan_id,
+        spv.venue_name
       FROM seating_plan_venues spv
-      LEFT JOIN faculty f ON spv.faculty_id = f.id
-      WHERE spv.seating_plan_id IN (${placeholders})`,
+      WHERE spv.seating_plan_id IN (${planPlaceholders})`,
       planIds
     );
 
@@ -145,77 +53,73 @@ router.post("/teams", async (req, res) => {
 
     // 3️⃣ Get seating arrangements
     const venuePlanIds = venues.map(v => v.venue_plan_id);
-    const venuePlaceholders = venuePlanIds.map(() => '?').join(',');
-    
+    const venuePlaceholders = venuePlanIds.map(() => "?").join(",");
+
     const [seatingArrangements] = await db.query(
       `SELECT seating_plan_venue_id, regn_no
-      FROM seating_arrangements
-      WHERE seating_plan_venue_id IN (${venuePlaceholders})`,
+       FROM seating_arrangements
+       WHERE seating_plan_venue_id IN (${venuePlaceholders})`,
       venuePlanIds
     );
 
-    // 4️⃣ Build mapping
+    // 4️⃣ Build student → venue map
     const studentVenueMap = {};
     const studentSet = new Set();
 
     seatingArrangements.forEach(seat => {
-      const regnNo = seat.regn_no.trim();
+      const regnNo = seat.regn_no?.trim();
       if (!regnNo) return;
 
       studentSet.add(regnNo);
+
       const venue = venues.find(v => v.venue_plan_id === seat.seating_plan_venue_id);
-      if (!venue) return;
+      const plan = plans.find(p => p.id === venue?.seating_plan_id);
 
-      const plan = plans.find(p => p.id === venue.seating_plan_id);
-      if (!plan) return;
-
-      studentVenueMap[regnNo] = {
-        venueName: venue.venue_name,
-        facultyName: venue.faculty_name || "TBA",
-        examTime: `${plan.exam_start_time} - ${plan.exam_end_time}`,
-        examDate: plan.exam_date,
-        examType: plan.exam_type,
-        examSession: plan.exam_session,
-        courses: typeof plan.selected_courses === 'string'
-          ? JSON.parse(plan.selected_courses)
-          : plan.selected_courses || []
-      };
+      if (venue && plan) {
+        studentVenueMap[regnNo] = {
+          venueName: venue.venue_name,
+          examTime: `${plan.exam_start_time} - ${plan.exam_end_time}`,
+          examDate: plan.exam_date,
+          examType: plan.exam_type,
+          courses: typeof plan.selected_courses === "string"
+            ? JSON.parse(plan.selected_courses)
+            : plan.selected_courses || []
+        };
+      }
     });
 
     if (studentSet.size === 0) {
       return res.status(404).json({ error: "No students found" });
     }
 
-    // 5️⃣ Get student details (FIXED: SQL GROUP BY issue)
+    // 5️⃣ Get student details
     const regnNos = Array.from(studentSet);
-    const studentPlaceholders = regnNos.map(() => '?').join(',');
-    
+    const studentPlaceholders = regnNos.map(() => "?").join(",");
+
     const [studentRecords] = await db.query(
       `SELECT 
-        regn_no, 
-        MIN(student_name) as student_name, 
-        MIN(email) as email, 
-        MIN(course_description) as course_description, 
-        MIN(course_name) as course_name
+        regn_no,
+        MIN(student_name) AS student_name,
+        MIN(email) AS email,
+        MIN(course_description) AS course_description,
+        MIN(course_name) AS course_name
       FROM students
       WHERE regn_no IN (${studentPlaceholders})
       GROUP BY regn_no`,
       regnNos
     );
 
-    if (studentRecords.length === 0) {
-      return res.status(404).json({ error: "No student records found" });
-    }
-
     // 6️⃣ Get exam names
     const courseDescriptions = [...new Set(studentRecords.map(s => s.course_description))].filter(Boolean);
     let examMap = {};
-    
+
     if (courseDescriptions.length > 0) {
       try {
-        const examPlaceholders = courseDescriptions.map(() => '?').join(',');
+        const examPlaceholders = courseDescriptions.map(() => "?").join(",");
         const [exams] = await db.query(
-          `SELECT exam_code, exam_name FROM exams WHERE exam_code IN (${examPlaceholders})`,
+          `SELECT exam_code, exam_name
+           FROM exams
+           WHERE exam_code IN (${examPlaceholders})`,
           courseDescriptions
         );
         examMap = Object.fromEntries(exams.map(e => [e.exam_code, e.exam_name]));
@@ -224,97 +128,214 @@ router.post("/teams", async (req, res) => {
       }
     }
 
-    // 7️⃣ Send notifications
-    const sent = [];
-    const failed = [];
+    // 7️⃣ Queue notifications
+    const queued = [];
     const skipped = [];
     const seen = new Set();
 
     for (const student of studentRecords) {
-      const email = student.email;
-      const regnNo = student.regn_no;
+      const { regn_no, student_name, email } = student;
 
       if (!email || !email.trim()) {
-        skipped.push({ regnNo, name: student.student_name, reason: "No email" });
+        skipped.push({ regnNo: regn_no, name: student_name, reason: "No email" });
         continue;
       }
 
       if (seen.has(email)) {
-        skipped.push({ regnNo, email, name: student.student_name, reason: "Duplicate" });
+        skipped.push({ regnNo: regn_no, email, name: student_name, reason: "Duplicate" });
         continue;
       }
       seen.add(email);
 
-      const venueData = studentVenueMap[regnNo];
+      const venueData = studentVenueMap[regn_no];
       if (!venueData) {
-        skipped.push({ regnNo, email, name: student.student_name, reason: "No venue" });
+        skipped.push({ regnNo: regn_no, email, name: student_name, reason: "No venue" });
         continue;
       }
 
-      const courseName = examMap[student.course_description] 
-        || student.course_name 
-        || student.course_description 
-        || "N/A";
+      const courseName =
+        examMap[student.course_description] ||
+        student.course_name ||
+        student.course_description ||
+        "N/A";
 
-      const message = [
-        "📢 EXAM ANNOUNCEMENT",
-        "",
-        `Hello ${student.student_name},`,
-        "",
-        `📅 Date: ${new Date(venueData.examDate).toDateString()}`,
-        "",
-        `⏰ Time: ${venueData.examTime}`,
-        "",
-        `🏛 Venue: ${venueData.venueName}`,
-        "",
-        `📘 Course: ${courseName}`,
-        "",
-        "Please be present at least 30 minutes early.",
-        "",
-        "— KCT Examination Cell"
-      ].join("\n");
+      const job = await bull.add({
+        type: "seating-notification",
+        email,
+        studentName: student_name,
+        examDate: venueData.examDate,
+        examTime: venueData.examTime,
+        venue: venueData.venueName,
+        courseName
+      });
 
-      const result = await sendTeamsMessage(email, message);
-      
-      if (result.success) {
-        sent.push({ regnNo, email, name: student.student_name, venue: venueData.venueName });
-      } else {
-        failed.push({ 
-          regnNo, 
-          email, 
-          name: student.student_name,
-          reason: result.error,
-          errorCode: result.code,
-          apiStatus: result.responseStatus,
-          apiResponse: result.responseData
-        });
-      }
+      queued.push({
+        jobId: job.id,
+        regnNo: regn_no,
+        email,
+        name: student_name,
+        venue: venueData.venueName
+      });
     }
 
-    // 8️⃣ Return results
+    const [waiting, active, completed, failed] = await Promise.all([
+      bull.getWaitingCount(),
+      bull.getActiveCount(),
+      bull.getCompletedCount(),
+      bull.getFailedCount()
+    ]);
+
     res.json({
       success: true,
-      message: "Notification process completed",
+      message: "Notifications queued successfully",
       stats: {
-        totalPlans: plans.length,
-        totalVenues: venues.length,
-        totalStudentsInSeating: studentSet.size,
-        studentsInDatabase: studentRecords.length,
-        sent: sent.length,
-        failed: failed.length,
-        skipped: skipped.length
+        queued: queued.length,
+        skipped: skipped.length,
+        queueStats: { waiting, active, completed, failed }
       },
-      sent,
-      failed,
+      queued,
       skipped
     });
 
   } catch (err) {
     console.error("Teams Notification Error:", err);
-    res.status(500).json({ 
-      error: "Failed to send notifications",
-      message: err.message
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ================================
+   POST /api/notifications/exam-announcement
+   Course-based exam announcements
+================================ */
+router.post("/exam-announcement", async (req, res) => {
+  const { examType, courses } = req.body;
+
+  if (!examType || !courses || courses.length === 0) {
+    return res.status(400).json({
+      error: "Exam type and at least one course are required",
     });
+  }
+
+  try {
+    const placeholders = courses.map(() => "?").join(",");
+
+    const [students] = await db.query(
+      `SELECT regn_no, student_name, email, course_description, course_name
+       FROM students
+       WHERE course_description IN (${placeholders})
+       GROUP BY regn_no, student_name, email, course_description, course_name`,
+      courses
+    );
+
+    if (students.length === 0) {
+      return res.status(404).json({ error: "No students found" });
+    }
+
+    const studentMap = {};
+
+    students.forEach(s => {
+      if (!s.email) return;
+      if (!studentMap[s.email]) {
+        studentMap[s.email] = {
+          regnNo: s.regn_no,
+          studentName: s.student_name,
+          email: s.email,
+          courses: []
+        };
+      }
+      studentMap[s.email].courses.push({
+        code: s.course_description,
+        name: s.course_name
+      });
+    });
+
+    let examMap = {};
+    try {
+      const [exams] = await db.query(
+        `SELECT exam_code, exam_name
+         FROM exams
+         WHERE exam_code IN (${placeholders})`,
+        courses
+      );
+      examMap = Object.fromEntries(exams.map(e => [e.exam_code, e.exam_name]));
+    } catch (_) {}
+
+    const queued = [];
+    const skipped = [];
+
+    for (const email in studentMap) {
+      const student = studentMap[email];
+      if (student.courses.length === 0) {
+        skipped.push({ email, reason: "No courses" });
+        continue;
+      }
+
+      const courseList = student.courses
+        .map(c => `📘 ${c.code} - ${examMap[c.code] || c.name || c.code}`)
+        .join("\n");
+
+      const job = await bull.add({
+        type: "exam-announcement",
+        email,
+        studentName: student.studentName,
+        examType,
+        courseList
+      });
+
+      queued.push({ jobId: job.id, email });
+    }
+
+    const [waiting, active, completed, failed] = await Promise.all([
+      bull.getWaitingCount(),
+      bull.getActiveCount(),
+      bull.getCompletedCount(),
+      bull.getFailedCount()
+    ]);
+
+    res.json({
+      success: true,
+      message: `${examType} notifications queued`,
+      stats: {
+        queued: queued.length,
+        skipped: skipped.length,
+        queueStats: { waiting, active, completed, failed }
+      }
+    });
+
+  } catch (err) {
+    console.error("Exam Announcement Error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ================================
+   GET /api/notifications/queue/stats
+================================ */
+router.get("/queue/stats", async (req, res) => {
+  try {
+    const [waiting, active, completed, failed] = await Promise.all([
+      bull.getWaitingCount(),
+      bull.getActiveCount(),
+      bull.getCompletedCount(),
+      bull.getFailedCount()
+    ]);
+    res.json({ stats: { waiting, active, completed, failed } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ================================
+   POST /api/notifications/queue/clear
+================================ */
+router.post("/queue/clear", async (req, res) => {
+  try {
+    await bull.empty();
+    await bull.clean(0, "completed");
+    await bull.clean(0, "failed");
+    res.json({ message: "Bull queue cleared" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

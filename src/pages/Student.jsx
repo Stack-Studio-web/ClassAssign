@@ -1,3 +1,4 @@
+// Student.jsx - WITH NOTIFICATIONS TAB
 import React, { useState, useEffect, useMemo } from "react";
 import axios from "axios";
 
@@ -27,6 +28,20 @@ export default function Student() {
   const [searchQuery, setSearchQuery] = useState("");
   const [sortOrder, setSortOrder] = useState("asc");
 
+  // 🔴 NEW: Notification States
+  const [notificationForm, setNotificationForm] = useState({
+    examType: "",
+    department: "",
+    selectedCourses: []
+  });
+  const [courses, setCourses] = useState([]);
+  const [notificationStatus, setNotificationStatus] = useState({
+    loading: false,
+    message: "",
+    error: false,
+    details: null
+  });
+
   /* ================= FETCH DATA ================= */
   const fetchStudentStats = async () => {
     try {
@@ -46,9 +61,20 @@ export default function Student() {
     }
   };
 
+  // 🔴 NEW: Fetch courses for notification dropdown
+  const fetchCourses = async () => {
+    try {
+      const res = await axios.get("/api/students/courses");
+      setCourses(res.data);
+    } catch (err) {
+      setCourses([]);
+    }
+  };
+
   useEffect(() => {
     fetchStudentStats();
     fetchStudents();
+    fetchCourses();
   }, []);
 
   // Derive unique values for filter dropdowns
@@ -126,6 +152,87 @@ export default function Student() {
     }
   };
 
+  /* ================= 🔴 NEW: NOTIFICATION LOGIC ================= */
+  const handleCourseToggle = (courseCode) => {
+    setNotificationForm(prev => ({
+      ...prev,
+      selectedCourses: prev.selectedCourses.includes(courseCode)
+        ? prev.selectedCourses.filter(c => c !== courseCode)
+        : [...prev.selectedCourses, courseCode]
+    }));
+  };
+
+  const handleSendNotifications = async () => {
+    const { examType, selectedCourses } = notificationForm;
+
+    if (!examType) {
+      setNotificationStatus({
+        loading: false,
+        message: "Please select an exam type",
+        error: true,
+        details: null
+      });
+      return;
+    }
+
+    if (selectedCourses.length === 0) {
+      setNotificationStatus({
+        loading: false,
+        message: "Please select at least one course",
+        error: true,
+        details: null
+      });
+      return;
+    }
+
+    setNotificationStatus({
+      loading: true,
+      message: "Sending notifications...",
+      error: false,
+      details: null
+    });
+
+    try {
+      const res = await axios.post("/api/notifications/exam-announcement", {
+        examType,
+        courses: selectedCourses,
+        department: notificationForm.department
+      });
+
+      setNotificationStatus({
+        loading: false,
+        message: res.data.message || "Notifications sent successfully!",
+        error: false,
+        details: res.data
+      });
+
+      // Reset form
+      setNotificationForm({
+        examType: "",
+        department: "",
+        selectedCourses: []
+      });
+    } catch (err) {
+      setNotificationStatus({
+        loading: false,
+        message: err.response?.data?.error || "Failed to send notifications",
+        error: true,
+        details: err.response?.data
+      });
+    }
+  };
+
+  // Filter courses based on department
+  const filteredCourses = useMemo(() => {
+    if (!notificationForm.department) return courses;
+    
+    return courses.filter(course => {
+      const desc = course.courseDescription.toLowerCase();
+      const dept = notificationForm.department.toLowerCase();
+      return desc.includes(dept);
+    });
+  }, [courses, notificationForm.department]);
+
   /* ================= FILTER & SORT LOGIC ================= */
   const handleFilterChange = (e) => {
     const { name, value } = e.target;
@@ -187,14 +294,15 @@ export default function Student() {
         </div>
       </div>
 
-      {/* Tabs */}
+      {/* 🔴 UPDATED: Tabs - Added Notifications */}
       <div className="flex gap-8 border-b mb-8">
-        {["import", "all"].map((tab) => (
+        {["import", "all", "notifications"].map((tab) => (
           <button
             key={tab}
             onClick={() => {
               setActiveTab(tab);
               setMessage("");
+              setNotificationStatus({ loading: false, message: "", error: false, details: null });
             }}
             className={`pb-3 capitalize transition-all ${
               activeTab === tab
@@ -202,7 +310,7 @@ export default function Student() {
                 : "text-gray-500 hover:text-gray-700"
             }`}
           >
-            {tab === "import" ? "Import Students" : "All Students"}
+            {tab === "import" ? "Import Students" : tab === "all" ? "All Students" : "Notifications"}
           </button>
         ))}
       </div>
@@ -240,7 +348,7 @@ export default function Student() {
             </button>
           </div>
 
-          {/* Skipped Section - If duplicates found */}
+          {/* Skipped Section */}
           {skippedRecords.length > 0 && (
             <div className="bg-yellow-50 border border-yellow-200 p-6 rounded-xl shadow-sm">
               <h3 className="font-bold text-yellow-800 mb-3">⚠️ Skipped Records</h3>
@@ -356,6 +464,112 @@ export default function Student() {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* 🔴 NEW: Tab Content - Notifications */}
+      {activeTab === "notifications" && (
+        <div className="animate-fadeIn max-w-4xl">
+          <div className="bg-white p-8 rounded-xl shadow-md border border-gray-100">
+            <h2 className="text-2xl font-bold mb-6 text-gray-800">📢 Send Exam Notifications</h2>
+            
+            {/* Notification Status */}
+            {notificationStatus.message && (
+              <div className={`p-4 mb-6 rounded-lg border-l-4 ${
+                notificationStatus.error 
+                  ? "bg-red-50 border-red-500 text-red-700" 
+                  : "bg-green-50 border-green-500 text-green-700"
+              }`}>
+                <p className="font-semibold">{notificationStatus.message}</p>
+                {notificationStatus.details?.stats && (
+                  <div className="mt-2 text-sm">
+                    <p>Queued: {notificationStatus.details.stats.queued} | Skipped: {notificationStatus.details.stats.skipped}</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Form */}
+            <div className="space-y-6">
+              {/* Exam Type */}
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Exam Type *</label>
+                <select
+                  value={notificationForm.examType}
+                  onChange={(e) => setNotificationForm({...notificationForm, examType: e.target.value})}
+                  className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                >
+                  <option value="">-- Select Exam Type --</option>
+                  <option value="CAT 1">CAT 1</option>
+                  <option value="CAT 2">CAT 2</option>
+                  <option value="Semester">Semester</option>
+                </select>
+              </div>
+
+              {/* Department Filter (Optional) */}
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Department (Optional Filter)</label>
+                <select
+                  value={notificationForm.department}
+                  onChange={(e) => setNotificationForm({...notificationForm, department: e.target.value})}
+                  className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                >
+                  <option value="">All Departments</option>
+                  <option value="CSE">CSE</option>
+                  <option value="IT">IT</option>
+                  <option value="AIDS">AIDS</option>
+                </select>
+              </div>
+
+              {/* Courses Selection */}
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Select Courses *</label>
+                <div className="border border-gray-300 rounded-lg p-4 max-h-64 overflow-y-auto bg-gray-50">
+                  {filteredCourses.length > 0 ? (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {filteredCourses.map((course) => (
+                        <label
+                          key={course.courseDescription}
+                          className="flex items-start gap-3 p-3 bg-white rounded-lg border border-gray-200 hover:bg-blue-50 cursor-pointer transition-colors"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={notificationForm.selectedCourses.includes(course.courseDescription)}
+                            onChange={() => handleCourseToggle(course.courseDescription)}
+                            className="mt-1 w-4 h-4 text-blue-600 focus:ring-2 focus:ring-blue-500"
+                          />
+                          <div className="flex-1">
+                            <p className="font-semibold text-sm text-gray-800">{course.courseDescription}</p>
+                            <p className="text-xs text-gray-500">{course.courseName}</p>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-center text-gray-500 py-4">No courses available</p>
+                  )}
+                </div>
+                {notificationForm.selectedCourses.length > 0 && (
+                  <p className="text-sm text-blue-600 mt-2">
+                    {notificationForm.selectedCourses.length} course(s) selected
+                  </p>
+                )}
+              </div>
+
+              {/* Send Button */}
+              <button
+                onClick={handleSendNotifications}
+                disabled={notificationStatus.loading || !notificationForm.examType || notificationForm.selectedCourses.length === 0}
+                className={`w-full py-4 rounded-lg font-bold text-white transition-all shadow-lg ${
+                  notificationStatus.loading || !notificationForm.examType || notificationForm.selectedCourses.length === 0
+                    ? "bg-gray-400 cursor-not-allowed"
+                    : "bg-blue-600 hover:bg-blue-700 active:scale-95"
+                }`}
+              >
+                {notificationStatus.loading ? "📤 Sending Notifications..." : "📨 Send Notifications"}
+              </button>
+            </div>
           </div>
         </div>
       )}
