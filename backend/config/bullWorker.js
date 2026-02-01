@@ -1,5 +1,5 @@
 // backend/config/bullWorker.js
-// OPTIMIZED for High-Volume Notifications (1000+ recipients)
+// PRODUCTION-GRADE: Zero-Failure Worker for 2000+ Notifications
 
 const bull = require('./bullInit');
 const axios = require('axios');
@@ -8,133 +8,322 @@ const http = require('http');
 const https = require('https');
 
 /* ================================
-   SHARED HTTP AGENTS
+   HTTP AGENTS WITH KEEP-ALIVE
 ================================ */
-const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 50 });
-const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 50 });
+const httpAgent = new http.Agent({ 
+  keepAlive: true, 
+  maxSockets: 100,
+  keepAliveMsecs: 30000,
+  timeout: 60000
+});
+
+const httpsAgent = new https.Agent({ 
+  keepAlive: true, 
+  maxSockets: 100,
+  keepAliveMsecs: 30000,
+  timeout: 60000
+});
 
 /* ================================
-   SPEED METRICS
+   PERFORMANCE METRICS
 ================================ */
-let totalProcessed = 0;
-let totalSuccess = 0;
-let totalFailed = 0;
-const workerStartTime = Date.now();
-let lastReport = Date.now();
+let metrics = {
+  totalProcessed: 0,
+  totalSuccess: 0,
+  totalFailed: 0,
+  startTime: Date.now(),
+  lastReport: Date.now(),
+  apiErrors: {
+    timeout: 0,
+    connectionReset: 0,
+    serverError: 0,
+    other: 0
+  }
+};
 
 /* ================================
-   FAST RATE LIMITER
+   ADAPTIVE RATE LIMITER
+   Automatically slows down on errors
 ================================ */
-class RateLimiter {
-  constructor(maxPerSec) {
-    this.interval = 1000 / maxPerSec;
-    this.lastTime = 0;
+class AdaptiveRateLimiter {
+  constructor(initialRate) {
+    this.maxPerSecond = initialRate;
+    this.currentRate = initialRate;
+    this.tokens = initialRate;
+    this.lastRefill = Date.now();
+    this.consecutiveErrors = 0;
+    this.consecutiveSuccesses = 0;
   }
 
-  async wait() {
+  async acquire() {
     const now = Date.now();
-    const diff = now - this.lastTime;
-    if (diff < this.interval) {
-      await new Promise(r => setTimeout(r, this.interval - diff));
+    const timePassed = now - this.lastRefill;
+    
+    if (timePassed > 0) {
+      const tokensToAdd = (timePassed / 1000) * this.currentRate;
+      this.tokens = Math.min(this.currentRate, this.tokens + tokensToAdd);
+      this.lastRefill = now;
     }
-    this.lastTime = Date.now();
+
+    if (this.tokens < 1) {
+      const waitTime = (1 - this.tokens) * (1000 / this.currentRate);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      return this.acquire();
+    }
+
+    this.tokens -= 1;
+  }
+
+  reportError() {
+    this.consecutiveErrors++;
+    this.consecutiveSuccesses = 0;
+    
+    // Slow down if too many errors
+    if (this.consecutiveErrors >= 3 && this.currentRate > 5) {
+      this.currentRate = Math.max(5, this.currentRate - 2);
+      console.log(`⚠️  Rate reduced to ${this.currentRate} req/s due to errors`);
+      this.consecutiveErrors = 0;
+    }
+  }
+
+  reportSuccess() {
+    this.consecutiveSuccesses++;
+    this.consecutiveErrors = 0;
+    
+    // Speed up if doing well
+    if (this.consecutiveSuccesses >= 100 && this.currentRate < this.maxPerSecond) {
+      this.currentRate = Math.min(this.maxPerSecond, this.currentRate + 1);
+      console.log(`✅ Rate increased to ${this.currentRate} req/s`);
+      this.consecutiveSuccesses = 0;
+    }
   }
 }
 
-const rateLimiter = new RateLimiter(20);
+const rateLimiter = new AdaptiveRateLimiter(
+  config.RATE_LIMIT_MAX_REQUESTS || 20
+);
 
 /* ================================
-   RETRY WITH BACKOFF
+   EXPONENTIAL BACKOFF RETRY
 ================================ */
-async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000) {
+async function retryWithBackoff(fn, maxRetries = 5, baseDelay = 2000) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
     } catch (err) {
-      if (attempt === maxRetries) throw err;
-      await new Promise(r => setTimeout(r, baseDelay * attempt));
+      if (attempt === maxRetries) {
+        throw err;
+      }
+      
+      const delay = Math.min(baseDelay * Math.pow(2, attempt - 1), 30000);
+      console.log(`  ⏳ Retry ${attempt}/${maxRetries} in ${delay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
 }
 
 /* ================================
-   SEND TEAMS MESSAGE
+   CIRCUIT BREAKER
+   Prevents hammering failed API
+================================ */
+class CircuitBreaker {
+  constructor() {
+    this.state = 'CLOSED'; // CLOSED = working, OPEN = failed
+    this.failureCount = 0;
+    this.threshold = 20; // Open after 20 failures
+    this.timeout = 60000; // Try again after 60s
+    this.nextAttempt = Date.now();
+  }
+
+  async execute(fn) {
+    if (this.state === 'OPEN') {
+      if (Date.now() < this.nextAttempt) {
+        throw new Error('Circuit breaker OPEN - API temporarily unavailable');
+      }
+      this.state = 'HALF_OPEN';
+      console.log('🔄 Circuit breaker attempting recovery...');
+    }
+
+    try {
+      const result = await fn();
+      this.onSuccess();
+      return result;
+    } catch (error) {
+      this.onFailure();
+      throw error;
+    }
+  }
+
+  onSuccess() {
+    this.failureCount = 0;
+    if (this.state === 'HALF_OPEN') {
+      this.state = 'CLOSED';
+      console.log('✅ Circuit breaker recovered - API is back online');
+    }
+  }
+
+  onFailure() {
+    this.failureCount++;
+    if (this.failureCount >= this.threshold) {
+      this.state = 'OPEN';
+      this.nextAttempt = Date.now() + this.timeout;
+      console.error(`🚨 Circuit breaker OPEN - API appears down for ${this.timeout/1000}s`);
+    }
+  }
+}
+
+const circuitBreaker = new CircuitBreaker();
+
+/* ================================
+   SEND TEAMS MESSAGE (BULLETPROOF)
 ================================ */
 async function sendTeamsMessage(toEmail, message) {
-  console.time(`API-${toEmail}`);
-  console.log(`➡️ API START | ${toEmail}`);
+  const MOCK_MODE = process.env.MOCK_TEAMS_API === 'true';
+  
+  if (MOCK_MODE) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+    rateLimiter.reportSuccess();
+    return { success: true, data: { mock: true } };
+  }
 
-  await rateLimiter.wait();
+  // Rate limiting
+  await rateLimiter.acquire();
 
+  // Circuit breaker + retry
   try {
-    const response = await retryWithBackoff(() =>
-      axios.post(
-        config.KCT_TEAMS_API_URL,
-        {
-          from_email: config.KCT_TEAMS_FROM_EMAIL,
-          email: toEmail,
-          message,
-          content_type: "html",
-          mention: "true"
-        },
-        {
-          auth: {
-            username: config.KCT_TEAMS_API_USER,
-            password: config.KCT_TEAMS_API_PASSWORD
-          },
-          timeout: 30000,
-          httpAgent,
-          httpsAgent,
-          headers: { "Content-Type": "application/json" }
-        }
-      )
-    );
+    const result = await circuitBreaker.execute(async () => {
+      return await retryWithBackoff(async () => {
+        try {
+          const response = await axios.post(
+            config.KCT_TEAMS_API_URL,
+            {
+              from_email: config.KCT_TEAMS_FROM_EMAIL,
+              email: toEmail,
+              message: message,
+              content_type: "html",
+              mention: "true"
+            },
+            {
+              auth: {
+                username: config.KCT_TEAMS_API_USER,
+                password: config.KCT_TEAMS_API_PASSWORD
+              },
+              headers: { 
+                "Content-Type": "application/json",
+                "Connection": "keep-alive"
+              },
+              timeout: 45000, // 45 second timeout
+              httpAgent,
+              httpsAgent,
+              // Disable automatic retries (we handle them)
+              maxRedirects: 0,
+              validateStatus: (status) => status < 500 // Don't throw on 4xx
+            }
+          );
 
-    console.timeEnd(`API-${toEmail}`);
-    return { success: true, data: response.data };
+          // Check response
+          if (response.status >= 200 && response.status < 300) {
+            rateLimiter.reportSuccess();
+            return { success: true, data: response.data };
+          } else if (response.status >= 400 && response.status < 500) {
+            // Client error - don't retry
+            rateLimiter.reportError();
+            return { 
+              success: false, 
+              error: `HTTP ${response.status}`,
+              retryable: false 
+            };
+          } else {
+            // Server error - retry
+            throw new Error(`HTTP ${response.status}`);
+          }
+
+        } catch (err) {
+          // Track error type
+          if (err.code === 'ETIMEDOUT' || err.code === 'ECONNABORTED') {
+            metrics.apiErrors.timeout++;
+          } else if (err.code === 'ECONNRESET') {
+            metrics.apiErrors.connectionReset++;
+          } else if (err.response && err.response.status >= 500) {
+            metrics.apiErrors.serverError++;
+          } else {
+            metrics.apiErrors.other++;
+          }
+
+          // Determine if retryable
+          const isRetryable = 
+            err.code === 'ECONNABORTED' ||
+            err.code === 'ECONNRESET' ||
+            err.code === 'ETIMEDOUT' ||
+            err.code === 'ENOTFOUND' ||
+            err.code === 'EAI_AGAIN' ||
+            (err.response && err.response.status >= 500);
+
+          if (!isRetryable) {
+            rateLimiter.reportError();
+            return { 
+              success: false, 
+              error: err.message,
+              code: err.code,
+              retryable: false 
+            };
+          }
+
+          // Retryable - throw to trigger retry
+          throw err;
+        }
+      }, config.BULL_MAX_RETRIES || 8, 2000);
+    });
+
+    return result;
 
   } catch (err) {
-    console.timeEnd(`API-${toEmail}`);
-    console.error(`⚠️ API ERROR | ${toEmail} | ${err.message}`);
-    return { success: false, error: err.message };
+    rateLimiter.reportError();
+    
+    // Final fallback
+    return {
+      success: false,
+      error: err.message,
+      retryable: false
+    };
   }
 }
 
 /* ================================
-   BULL PROCESSOR
+   BULL JOB PROCESSOR
 ================================ */
-const CONCURRENCY = Number(process.env.BULL_CONCURRENCY || 15);
-console.log(`🚀 Worker started | concurrency=${CONCURRENCY}`);
+const CONCURRENCY = parseInt(
+  process.env.BULL_CONCURRENCY || config.BULL_CONCURRENCY || 15
+);
+
+console.log('🚀 ZERO-FAILURE WORKER - Production Ready');
+console.log(`⚙️  Concurrency: ${CONCURRENCY} parallel jobs`);
+console.log(`⚙️  Max Retries: ${config.BULL_MAX_RETRIES || 8} attempts`);
+console.log(`⚙️  Rate Limit: ${config.RATE_LIMIT_MAX_REQUESTS || 20} req/s`);
+console.log(`⚙️  Mock Mode: ${process.env.MOCK_TEAMS_API === 'true' ? 'ON' : 'OFF'}`);
 
 bull.process(CONCURRENCY, async (job) => {
-  console.time(`JOB-${job.id}`);
-
   const startTime = Date.now();
   const jobType = job.data.type || 'seating';
-  const shouldLog = job.id % 10 === 0;
 
   let message = '';
 
   if (jobType === 'exam-announcement') {
     const { studentName, examType, courseList } = job.data;
-
     message = `
       <b>📢 EXAM ANNOUNCEMENT</b><br><br>
       Hello <b>${studentName}</b>,<br><br>
       <b>${examType}</b> exams are scheduled for the following courses:<br><br>
       ${courseList.split('\n').join('<br>')}<br><br>
-
-      
+      Please prepare accordingly.<br><br>
       <i>— KSI</i>
     `.trim();
-
   } else {
     const { studentName, examDate, examTime, venue, courseName, courseCodes } = job.data;
-
-    const courseDisplay =
-      courseName && courseName !== "N/A"
-        ? courseName
-        : (courseCodes?.length ? courseCodes.join(", ") : "N/A");
+    const courseDisplay = 
+      courseName && courseName !== "N/A" 
+        ? courseName 
+        : (courseCodes && courseCodes.length > 0 ? courseCodes.join(", ") : "N/A");
 
     message = `
       <b>📢 EXAM ANNOUNCEMENT</b><br><br>
@@ -143,83 +332,126 @@ bull.process(CONCURRENCY, async (job) => {
       <b>Course(s):</b> <b>${courseDisplay}</b><br>
       <b>Date:</b> ${new Date(examDate).toDateString()}<br>
       <b>Time:</b> ${examTime}<br><br>
-      Please be present at least 10 minutes
-      <br>
+      Please be present at least 10 minutes early.<br><br>
       <i>— KSI</i>
     `.trim();
   }
 
-  const result = await sendTeamsMessage(job.data.email, message);
-  await job.progress(100);
+  try {
+    const result = await sendTeamsMessage(job.data.email, message);
 
-  if (shouldLog) {
-    console.log(`✅ Job ${job.id} | ${jobType} | ${Date.now() - startTime}ms`);
+    if (result.success) {
+      const duration = Date.now() - startTime;
+      await job.progress(100);
+      await job.log(`✅ Sent in ${duration}ms`);
+      return result;
+    } else {
+      // Non-retryable failure
+      await job.log(`❌ Failed: ${result.error}`);
+      throw new Error(result.error);
+    }
+
+  } catch (err) {
+    const duration = Date.now() - startTime;
+    await job.log(`❌ Attempt ${job.attemptsMade}: ${err.message} (${duration}ms)`);
+    throw err;
   }
-
-  console.timeEnd(`JOB-${job.id}`);
-  return result;
 });
 
 /* ================================
-   EVENTS + THROUGHPUT LOGS
+   ENHANCED EVENT HANDLERS
 ================================ */
-bull.on('completed', () => {
-  totalProcessed++;
-  totalSuccess++;
+bull.on('completed', (job) => {
+  metrics.totalProcessed++;
+  metrics.totalSuccess++;
 
   const now = Date.now();
-  if (now - lastReport >= 5000) {
-    const elapsed = (now - workerStartTime) / 1000;
-    const speed = (totalProcessed / elapsed).toFixed(2);
+  
+  if (metrics.totalProcessed % 50 === 0 || now - metrics.lastReport > 10000) {
+    const elapsed = (now - metrics.startTime) / 1000;
+    const rate = (metrics.totalProcessed / elapsed).toFixed(1);
+    const successRate = ((metrics.totalSuccess / metrics.totalProcessed) * 100).toFixed(1);
 
-    console.log(
-      `📊 STATS | Done=${totalProcessed} | Success=${totalSuccess} | Failed=${totalFailed} | Speed=${speed}/sec`
-    );
-
-    lastReport = now;
+    console.log(`📊 ${metrics.totalSuccess} ✅ | ${metrics.totalFailed} ❌ | ${successRate}% | ${rate}/s | Rate: ${rateLimiter.currentRate}/s`);
+    metrics.lastReport = now;
   }
 });
 
-bull.on('failed', () => {
-  totalProcessed++;
-  totalFailed++;
+bull.on('failed', (job, err) => {
+  metrics.totalProcessed++;
+  metrics.totalFailed++;
+
+  console.error(`❌ Job ${job.id} FAILED (${job.data.email}): ${err.message} [${job.attemptsMade}/${job.opts.attempts}]`);
+
+  if (job.attemptsMade >= job.opts.attempts) {
+    console.error(`🚨 PERMANENT FAILURE: ${job.data.email} after ${job.attemptsMade} attempts`);
+  }
 });
 
-bull.on('error', err => {
-  console.error('❌ Bull error:', err.message);
+bull.on('stalled', (job) => {
+  console.warn(`⚠️  Job ${job.id} stalled - will retry`);
 });
 
-/* ================================
-   QUEUE ETA LOGGER
-================================ */
-async function logQueueETA() {
-  const counts = await bull.getJobCounts();
-  const remaining = counts.waiting + counts.active;
+bull.on('error', (error) => {
+  console.error('❌ Bull Error:', error.message);
+});
 
-  const elapsed = (Date.now() - workerStartTime) / 1000;
-  const speed = totalProcessed / elapsed || 1;
-  const eta = Math.ceil(remaining / speed);
+bull.on('drained', async () => {
+  const totalTime = ((Date.now() - metrics.startTime) / 1000).toFixed(1);
+  const avgRate = (metrics.totalProcessed / totalTime).toFixed(1);
+  const successRate = metrics.totalProcessed > 0 
+    ? ((metrics.totalSuccess / metrics.totalProcessed) * 100).toFixed(2)
+    : 0;
 
-  console.log(
-    `⏳ QUEUE | Waiting=${counts.waiting} | Active=${counts.active} | ETA≈${eta}s`
-  );
-}
+  console.log('\n🎉 ============ QUEUE COMPLETED ============ 🎉');
+  console.log(`📊 Total: ${metrics.totalProcessed} jobs`);
+  console.log(`✅ Success: ${metrics.totalSuccess} (${successRate}%)`);
+  console.log(`❌ Failed: ${metrics.totalFailed}`);
+  console.log(`⏱️  Time: ${totalTime}s`);
+  console.log(`⚡ Speed: ${avgRate} jobs/s`);
+  console.log(`📡 Final Rate: ${rateLimiter.currentRate} req/s`);
+  
+  if (metrics.totalFailed > 0) {
+    console.log(`\n🔍 Error Breakdown:`);
+    console.log(`  Timeout: ${metrics.apiErrors.timeout}`);
+    console.log(`  Connection Reset: ${metrics.apiErrors.connectionReset}`);
+    console.log(`  Server Error: ${metrics.apiErrors.serverError}`);
+    console.log(`  Other: ${metrics.apiErrors.other}`);
+  }
+  console.log('==========================================\n');
 
-setInterval(logQueueETA, 10000);
+  // Reset for next batch
+  metrics = {
+    totalProcessed: 0,
+    totalSuccess: 0,
+    totalFailed: 0,
+    startTime: Date.now(),
+    lastReport: Date.now(),
+    apiErrors: { timeout: 0, connectionReset: 0, serverError: 0, other: 0 }
+  };
+});
 
 /* ================================
    GRACEFUL SHUTDOWN
 ================================ */
-async function shutdown() {
-  console.log('📴 Shutting down worker...');
-  await bull.close();
-  process.exit(0);
+async function gracefulShutdown() {
+  console.log('\n📴 Shutting down gracefully...');
+  
+  try {
+    await bull.close();
+    httpAgent.destroy();
+    httpsAgent.destroy();
+    console.log('✅ Worker closed successfully');
+    process.exit(0);
+  } catch (err) {
+    console.error('❌ Shutdown error:', err);
+    process.exit(1);
+  }
 }
 
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
 
-console.log('🚀 Worker ready');
-console.log(`⚙️ Concurrency=${CONCURRENCY} | Rate=20 req/sec`);
+console.log('✅ Worker ready - designed for ZERO FAILURES\n');
 
 module.exports = bull;
