@@ -28,23 +28,16 @@ console.log('🔧 Initializing Bull Queue:', {
   db: redisConfig.db
 });
 
-/* ===============================
-   ✅ SAFE Bull Queue Initialization
-   =============================== */
 const bull = new Queue('exam-notifications', {
-  redis: {
-    ...redisConfig
-    // ❌ DO NOT add enableReadyCheck
-    // ❌ DO NOT add maxRetriesPerRequest
-  },
+  redis: redisConfig,
 
   defaultJobOptions: {
-    attempts: 5,
+    attempts: parseInt(process.env.BULL_MAX_RETRIES) || 10,
     backoff: {
       type: 'exponential',
-      delay: 3000
+      delay: parseInt(process.env.BULL_RETRY_DELAY) || 3000
     },
-    timeout: 90000,
+    timeout: parseInt(process.env.BULL_JOB_TIMEOUT) || 180000,
     removeOnComplete: 1000,
     removeOnFail: 500
   },
@@ -53,37 +46,35 @@ const bull = new Queue('exam-notifications', {
     maxStalledCount: 3,
     stalledInterval: 30000,
     guardInterval: 5000,
-    retryProcessDelay: 5000
-  },
-
-  limiter: {
-    max: 50,
-    duration: 10000,
-    bounceBack: false
+    retryProcessDelay: 5000,
+    
+    // ✅ CRITICAL: Bull queue-level limiter (10 per 10 seconds)
+    limiter: {
+      max: parseInt(process.env.QUEUE_LIMITER_MAX) || 10,
+      duration: parseInt(process.env.QUEUE_LIMITER_DURATION) || 10000,
+      bounceBack: false
+    }
   }
 });
 
-/* ===============================
-   ✅ Event Logging
-   =============================== */
 bull.on('error', err => {
   console.error('❌ Bull error:', err.message);
 });
 
 bull.on('waiting', id => {
-  if (id % 10 === 0) console.log(`⏳ Job ${id} waiting`);
+  if (id % 50 === 0) console.log(`⏳ Job ${id} waiting`);
 });
 
 bull.on('active', job => {
-  if (job.id % 10 === 0) console.log(`🔄 Job ${job.id} active`);
+  if (job.id % 50 === 0) console.log(`🔄 Job ${job.id} active`);
 });
 
 bull.on('completed', job => {
-  if (job.id % 10 === 0) console.log(`✅ Job ${job.id} completed`);
+  if (job.id % 50 === 0) console.log(`✅ Job ${job.id} completed`);
 });
 
 bull.on('failed', (job, err) => {
-  console.error(`❌ Job ${job.id} failed:`, err.message);
+  console.error(`❌ Job ${job.id} FAILED:`, err.message);
 });
 
 bull.on('stalled', job => {
@@ -91,15 +82,12 @@ bull.on('stalled', job => {
 });
 
 bull.on('drained', () => {
-  console.log('🎉 Queue drained');
+  console.log('🎉 Queue drained - all jobs processed!');
 });
 
-/* ===============================
-   ✅ Health Check
-   =============================== */
 setInterval(async () => {
   try {
-    const stats = await Promise.all([
+    const [waiting, active, completed, failed, delayed] = await Promise.all([
       bull.getWaitingCount(),
       bull.getActiveCount(),
       bull.getCompletedCount(),
@@ -108,7 +96,7 @@ setInterval(async () => {
     ]);
 
     console.log(
-      `📊 Queue: ${stats[0]} waiting | ${stats[1]} active | ${stats[2]} done | ${stats[3]} failed | ${stats[4]} delayed`
+      `📊 Queue: ${waiting} waiting | ${active} active | ${completed} done | ${failed} failed | ${delayed} delayed`
     );
   } catch (err) {
     console.error('❌ Health check error:', err.message);
