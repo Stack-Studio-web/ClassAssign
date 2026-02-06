@@ -158,7 +158,6 @@ router.post("/teams", async (req, res) => {
     // 7️⃣ Queue notifications — each student gets ONLY their own course
     const queued = [];
     const skipped = [];
-    const seen = new Set();
 
     for (const student of studentRecords) {
       const { regn_no, student_name, email } = student;
@@ -167,12 +166,6 @@ router.post("/teams", async (req, res) => {
         skipped.push({ regnNo: regn_no, name: student_name, reason: "No email" });
         continue;
       }
-
-      if (seen.has(email)) {
-        skipped.push({ regnNo: regn_no, email, name: student_name, reason: "Duplicate" });
-        continue;
-      }
-      seen.add(email);
 
       const venueData = studentVenueMap[regn_no];
       if (!venueData) {
