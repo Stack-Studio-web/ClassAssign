@@ -54,20 +54,25 @@ router.delete("/:id", async (req, res) => {
   }
 });
 
+// ✅ FIXED: Changed from 403 to 200 with allowed boolean
 router.get("/:id/can-allocate", async (req, res) => {
   try {
-    const canAllocate = await Faculty.canAllocate(req.params.id);
-
-    if (!canAllocate) {
-      return res.status(403).json({
-        allowed: false,
-        message: "Faculty has reached maximum allocation limit",
-      });
-    }
-
-    res.json({ allowed: true });
+    const facultyId = req.params.id;
+    const canAllocate = await Faculty.canAllocate(facultyId);
+    
+    // Always return 200 with allowed status
+    res.json({ 
+      allowed: canAllocate,
+      message: canAllocate 
+        ? "Faculty can be allocated" 
+        : "Faculty has reached maximum allocation limit"
+    });
   } catch (err) {
-    res.status(500).json(err);
+    console.error("Error checking faculty allocation:", err);
+    res.status(500).json({ 
+      error: err.message,
+      allowed: false 
+    });
   }
 });
 

@@ -48,30 +48,38 @@ router.get("/stats", async (req, res) => {
 ================================ */
 router.post("/", async (req, res) => {
   try {
-    let { name, type, benchesRow, benchesCol, capacity } = req.body;
+    let { name, type, benchesRow, benchesCol, benchConfig } = req.body;
 
     if (
       !name ||
       !type ||
       benchesRow === undefined ||
-      benchesCol === undefined
+      benchesCol === undefined ||
+      !benchConfig ||
+      !Array.isArray(benchConfig)
     ) {
       return res.status(400).json({
         error: "Validation error",
-        details: "Venue name, type, rows, and columns are required.",
+        details: "Venue name, type, rows, columns, and bench configuration are required.",
+      });
+    }
+
+    if (benchConfig.length !== benchesCol) {
+      return res.status(400).json({
+        error: "Validation error",
+        details: "Bench configuration length must match number of columns.",
       });
     }
 
     name = name.trim();
     type = type.trim();
 
-    // MySQL unique constraint will handle duplicates
     const venueId = await Venue.create({
       name,
       type,
       benchesRow,
       benchesCol,
-      capacity,
+      benchConfig,
     });
 
     res.status(201).json({
@@ -99,9 +107,9 @@ router.post("/", async (req, res) => {
 router.put("/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    let { name, type, benchesRow, benchesCol, capacity } = req.body;
+    let { name, type, benchesRow, benchesCol, benchConfig } = req.body;
 
-    if (!name || !type || benchesRow === undefined || benchesCol === undefined) {
+    if (!name || !type || benchesRow === undefined || benchesCol === undefined || !benchConfig) {
       return res.status(400).json({
         error: "All fields are required for update.",
       });
@@ -110,7 +118,7 @@ router.put("/:id", async (req, res) => {
     name = name.trim();
     type = type.trim();
 
-    // ✅ CHECK DUPLICATE (EXCLUDING CURRENT ID)
+    // Check duplicate
     const exists = await Venue.existsByNameAndTypeExceptId(name, type, id);
     if (exists) {
       return res.status(400).json({
@@ -119,18 +127,50 @@ router.put("/:id", async (req, res) => {
       });
     }
 
-    const [result] = await require("../config/db").query(
-      `UPDATE venues
-       SET name = ?, type = ?, benches_row = ?, benches_col = ?, capacity = ?
-       WHERE id = ?`,
-      [name, type, benchesRow, benchesCol, capacity, id]
-    );
+    // Calculate capacity
+    const capacity = benchesRow * benchConfig.reduce((sum, seats) => sum + seats, 0);
 
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: "Venue not found" });
+    const conn = await require("../config/db").getConnection();
+    try {
+      await conn.beginTransaction();
+
+      // Update venue
+      const [result] = await conn.query(
+        `UPDATE venues
+         SET name = ?, type = ?, benches_row = ?, benches_col = ?, capacity = ?
+         WHERE id = ?`,
+        [name, type, benchesRow, benchesCol, capacity, id]
+      );
+
+      if (result.affectedRows === 0) {
+        await conn.rollback();
+        return res.status(404).json({ error: "Venue not found" });
+      }
+
+      // Delete old bench config
+      await conn.query(
+        `DELETE FROM venue_bench_config WHERE venue_id = ?`,
+        [id]
+      );
+
+      // Insert new bench config
+      for (let colIndex = 0; colIndex < benchConfig.length; colIndex++) {
+        await conn.query(
+          `INSERT INTO venue_bench_config
+           (venue_id, column_index, seats_per_bench)
+           VALUES (?, ?, ?)`,
+          [id, colIndex, benchConfig[colIndex]]
+        );
+      }
+
+      await conn.commit();
+      res.json({ message: "Venue updated successfully" });
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
     }
-
-    res.json({ message: "Venue updated successfully" });
   } catch (err) {
     res.status(500).json({
       error: "Server error",
@@ -138,7 +178,6 @@ router.put("/:id", async (req, res) => {
     });
   }
 });
-
 
 /* ================================
    DELETE VENUE

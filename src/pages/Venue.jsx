@@ -20,6 +20,11 @@ export default function AddVenue() {
     benchesCol: "",
   });
 
+  // NEW: Bench configuration state
+  const [benchConfig, setBenchConfig] = useState([]);
+  const [configMode, setConfigMode] = useState("uniform"); // "uniform" or "custom"
+  const [uniformSeats, setUniformSeats] = useState(2);
+
   const [calculatedCapacity, setCalculatedCapacity] = useState(0);
   const [error, setError] = useState("");
   const [isDuplicateError, setIsDuplicateError] = useState(false);
@@ -31,12 +36,35 @@ export default function AddVenue() {
     { value: "hall", label: "Hall" },
   ];
 
-  // Calculate capacity dynamically
+  // Calculate capacity dynamically based on bench configuration
   useEffect(() => {
     const rows = Number(form.benchesRow) || 0;
+    if (benchConfig.length > 0) {
+      const totalSeats = benchConfig.reduce((sum, seats) => sum + seats, 0);
+      setCalculatedCapacity(rows * totalSeats);
+    } else {
+      setCalculatedCapacity(0);
+    }
+  }, [form.benchesRow, benchConfig]);
+
+  // Update bench configuration when columns change
+  useEffect(() => {
     const cols = Number(form.benchesCol) || 0;
-    setCalculatedCapacity(rows * cols * 2);
-  }, [form.benchesRow, form.benchesCol]);
+    if (cols > 0) {
+      if (configMode === "uniform") {
+        setBenchConfig(Array(cols).fill(uniformSeats));
+      } else if (benchConfig.length !== cols) {
+        // Resize array, preserving existing values
+        const newConfig = Array(cols).fill(2);
+        for (let i = 0; i < Math.min(cols, benchConfig.length); i++) {
+          newConfig[i] = benchConfig[i];
+        }
+        setBenchConfig(newConfig);
+      }
+    } else {
+      setBenchConfig([]);
+    }
+  }, [form.benchesCol, configMode, uniformSeats]);
 
   // Fetch total stats
   const fetchStats = async () => {
@@ -77,6 +105,13 @@ export default function AddVenue() {
     setIsDuplicateError(false);
   };
 
+  // Handle bench config change for specific column
+  const handleBenchConfigChange = (index, value) => {
+    const newConfig = [...benchConfig];
+    newConfig[index] = parseInt(value) || 2;
+    setBenchConfig(newConfig);
+  };
+
   // Handle submit (add or update)
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -88,11 +123,16 @@ export default function AddVenue() {
       return;
     }
 
+    if (benchConfig.length === 0) {
+      setError("Please configure bench seating.");
+      return;
+    }
+
     const payload = {
       ...form,
       benchesRow: Number(form.benchesRow),
       benchesCol: Number(form.benchesCol),
-      capacity: calculatedCapacity,
+      benchConfig: benchConfig,
     };
 
     try {
@@ -139,6 +179,8 @@ export default function AddVenue() {
       benchesRow: venue.benchesRow,
       benchesCol: venue.benchesCol,
     });
+    setBenchConfig(venue.benchConfig || Array(venue.benchesCol).fill(2));
+    setConfigMode("custom");
     setCalculatedCapacity(venue.capacity);
     setEditingId(venue._id);
     setActiveTab("basic");
@@ -152,6 +194,9 @@ export default function AddVenue() {
       benchesRow: "",
       benchesCol: "",
     });
+    setBenchConfig([]);
+    setConfigMode("uniform");
+    setUniformSeats(2);
     setCalculatedCapacity(0);
     setEditingId(null);
     setError("");
@@ -208,9 +253,9 @@ export default function AddVenue() {
       </div>
 
       {/* Tabs */}
-      <div className="flex space-x-8 border-b  border-gray-200 mt-10 px-8">
+      <div className="flex space-x-8 border-b border-gray-200 mt-10 px-8">
         <button
-          className={`pb-3 px-1 border-b-2  cursor-pointer ${
+          className={`pb-3 px-1 border-b-2 cursor-pointer ${
             activeTab === "basic"
               ? "border-blue-600 text-blue-600 font-medium"
               : "border-transparent text-gray-500"
@@ -314,19 +359,80 @@ export default function AddVenue() {
                   className="w-full px-4 py-2 border rounded-md focus:ring-2 focus:ring-blue-500"
                 />
               </div>
-              <div className="flex-1">
-                <label className="block text-gray-700 text-sm font-semibold mb-2">
-                  Capacity
-                </label>
-                <input
-                  type="number"
-                  name="capacity"
-                  value={calculatedCapacity}
-                  readOnly
-                  className="w-full px-4 py-2 border rounded-md bg-gray-100 cursor-not-allowed"
-                />
-              </div>
             </div>
+
+            {/* NEW: Bench Configuration Section */}
+            {form.benchesCol > 0 && (
+              <div className="border-t pt-6">
+                <h3 className="text-lg font-semibold mb-4">Bench Seating Configuration</h3>
+                
+                <div className="flex gap-4 mb-4">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      checked={configMode === "uniform"}
+                      onChange={() => setConfigMode("uniform")}
+                    />
+                    <span>Uniform (All columns same)</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      checked={configMode === "custom"}
+                      onChange={() => setConfigMode("custom")}
+                    />
+                    <span>Custom (Different columns)</span>
+                  </label>
+                </div>
+
+                {configMode === "uniform" ? (
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium mb-2">
+                      Seats per bench (all columns)
+                    </label>
+                    <select
+                      value={uniformSeats}
+                      onChange={(e) => {
+                        const seats = parseInt(e.target.value);
+                        setUniformSeats(seats);
+                        setBenchConfig(Array(Number(form.benchesCol)).fill(seats));
+                      }}
+                      className="border px-4 py-2 rounded-md"
+                    >
+                      <option value={2}>2-Seater</option>
+                      <option value={3}>3-Seater</option>
+                    </select>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-5 gap-3">
+                    {benchConfig.map((seats, idx) => (
+                      <div key={idx} className="flex flex-col">
+                        <label className="text-xs font-medium mb-1">
+                          Column {String.fromCharCode(65 + idx)}
+                        </label>
+                        <select
+                          value={seats}
+                          onChange={(e) => handleBenchConfigChange(idx, e.target.value)}
+                          className="border px-2 py-1 rounded text-sm"
+                        >
+                          <option value={2}>2-Seater</option>
+                          <option value={3}>3-Seater</option>
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="mt-4 p-3 bg-blue-50 rounded-md">
+                  <p className="text-sm text-blue-800">
+                    <strong>Configuration:</strong> {benchConfig.join(", ")} seats per column
+                  </p>
+                  <p className="text-sm text-blue-800 mt-1">
+                    <strong>Total Capacity:</strong> {calculatedCapacity} students
+                  </p>
+                </div>
+              </div>
+            )}
 
             <div className="flex gap-4 pt-4">
               <button
@@ -378,9 +484,8 @@ export default function AddVenue() {
                   <th className="p-3 border">Name</th>
                   <th className="p-3 border">Type</th>
                   <th className="p-3 border">Capacity</th>
-                  <th className="p-3 border">Rows</th>
-                  <th className="p-3 border">Cols</th>
-                  <th className="p-3 border">Sessions</th>
+                  <th className="p-3 border">Rows × Cols</th>
+                  <th className="p-3 border">Bench Config</th>
                   <th className="p-3 border">Actions</th>
                 </tr>
               </thead>
@@ -390,18 +495,11 @@ export default function AddVenue() {
                     <td className="p-3 border">{venue.name}</td>
                     <td className="p-3 border">{venue.type}</td>
                     <td className="p-3 border">{venue.capacity}</td>
-                    <td className="p-3 border">{venue.benchesRow}</td>
-                    <td className="p-3 border">{venue.benchesCol}</td>
                     <td className="p-3 border">
-                      {venue.sessions?.length > 0 ? (
-                        venue.sessions.map((s, i) => (
-                          <div key={i} className="text-sm text-gray-700">
-                            {new Date(s.date).toLocaleDateString()} | {s.startTime} - {s.endTime}
-                          </div>
-                        ))
-                      ) : (
-                        <span className="text-gray-400">No sessions</span>
-                      )}
+                      {venue.benchesRow} × {venue.benchesCol}
+                    </td>
+                    <td className="p-3 border text-xs">
+                      {venue.benchConfig?.join(", ") || "N/A"}
                     </td>
                     <td className="p-3 border space-x-2">
                       <button

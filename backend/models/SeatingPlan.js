@@ -61,14 +61,18 @@ const SeatingPlan = {
 
       // 3️⃣ Insert venues and detailed seating grid
       for (const venue of venuesUsed) {
+        // ✅ CRITICAL FIX: Save benchConfig to database
+        const benchConfigJson = venue.benchConfig ? JSON.stringify(venue.benchConfig) : null;
+        
         const [venueRes] = await conn.query(
           `INSERT INTO seating_plan_venues 
-           (seating_plan_id, venue_id, venue_name, faculty_id) 
-           VALUES (?, ?, ?, ?)`,
+           (seating_plan_id, venue_id, venue_name, bench_config, faculty_id) 
+           VALUES (?, ?, ?, ?, ?)`,
           [
             seatingPlanId,
             venue.venueId,
             venue.venueName,
+            benchConfigJson,  // ✅ NEW: Save benchConfig
             venue.facultyId || null
           ]
         );
@@ -76,9 +80,6 @@ const SeatingPlan = {
         const seatingPlanVenueId = venueRes.insertId;
 
         // Insert seating grid (2D arrangement)
-        // Each cell can now be either:
-        //   OLD format: "23BCS090\n23BIT087"          (plain string)
-        //   NEW format: [{regn_no:"23BCS090", course:"TEST002"}, ...]  (object array)
         if (Array.isArray(venue.seatingArrangement)) {
           const arrangementEntries = [];
 
@@ -180,12 +181,13 @@ const SeatingPlan = {
         venuesUsed: []
       };
 
-      // Fetch venues
+      // ✅ Fetch venues WITH benchConfig
       const [venues] = await db.query(`
         SELECT 
           spv.id as internalId,
           spv.venue_id as venueId,
           spv.venue_name as venueName,
+          spv.bench_config as benchConfig,
           f.name as facultyName,
           f.department as facultyDepartment
         FROM seating_plan_venues spv
@@ -194,7 +196,6 @@ const SeatingPlan = {
       `, [row._id]);
 
       // ✅ Build a course lookup map from seating_plan_students for this plan
-      // This is the source of truth for which course each student belongs to
       const [planStudents] = await db.query(`
         SELECT regn_no, course_description
         FROM seating_plan_students
@@ -207,7 +208,19 @@ const SeatingPlan = {
       });
 
       for (let v of venues) {
-        // Fetch every individual seat (no GROUP_CONCAT — we need one row per student)
+        // ✅ Parse benchConfig from JSON
+        if (v.benchConfig) {
+          try {
+            v.benchConfig = typeof v.benchConfig === 'string' 
+              ? JSON.parse(v.benchConfig) 
+              : v.benchConfig;
+          } catch (e) {
+            console.error('Error parsing benchConfig:', e);
+            v.benchConfig = null;
+          }
+        }
+
+        // Fetch every individual seat
         const [seats] = await db.query(`
           SELECT seat_row, seat_col, regn_no
           FROM seating_arrangements
@@ -219,7 +232,7 @@ const SeatingPlan = {
           const maxR = Math.max(...seats.map(s => s.seat_row)) + 1;
           const maxC = Math.max(...seats.map(s => s.seat_col)) + 1;
 
-          // ✅ Initialize grid with empty arrays instead of "Empty" strings
+          // ✅ Initialize grid with empty arrays
           const grid = Array.from({ length: maxR }, () =>
             Array.from({ length: maxC }, () => [])
           );
@@ -273,17 +286,32 @@ const SeatingPlan = {
 
     const plan = plans[0];
 
+    // ✅ Include benchConfig when fetching venue
     const [venues] = await db.query(`
       SELECT 
         spv.id as internalId,
         spv.venue_id as venueId,
         spv.venue_name as venueName,
+        spv.bench_config as benchConfig,
         f.name as facultyName,
         f.department as facultyDepartment
       FROM seating_plan_venues spv
       LEFT JOIN faculty f ON spv.faculty_id = f.id
       WHERE spv.seating_plan_id = ?
     `, [planId]);
+
+    // ✅ Parse benchConfig
+    venues.forEach(v => {
+      if (v.benchConfig) {
+        try {
+          v.benchConfig = typeof v.benchConfig === 'string' 
+            ? JSON.parse(v.benchConfig) 
+            : v.benchConfig;
+        } catch (e) {
+          v.benchConfig = null;
+        }
+      }
+    });
 
     plan.venuesUsed = venues;
     plan.selectedCourses =

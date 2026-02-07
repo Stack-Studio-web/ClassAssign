@@ -3,44 +3,68 @@ const db = require("../config/db");
 
 const Venue = {
   /* ===============================
-     CREATE VENUE WITH SESSIONS
+     CREATE VENUE WITH BENCH CONFIG
   =============================== */
   create: async (venue) => {
     const {
       name,
       type,
-      capacity,
       benchesRow,
       benchesCol,
+      benchConfig, // NEW: Array like [2, 2, 3, 3, 2] representing seats per column
       isAvailable = true,
       sessions = [],
     } = venue;
 
-    // 1️⃣ Insert venue
-    const [venueRes] = await db.query(
-      `INSERT INTO venues
-       (name, type, capacity, benches_row, benches_col, is_available)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [name, type, capacity, benchesRow, benchesCol, isAvailable]
-    );
+    // Calculate total capacity from benchConfig
+    const capacity = benchesRow * benchConfig.reduce((sum, seats) => sum + seats, 0);
 
-    const venueId = venueRes.insertId;
+    const conn = await db.getConnection();
+    try {
+      await conn.beginTransaction();
 
-    // 2️⃣ Insert initial sessions (if any)
-    for (const s of sessions) {
-      await db.query(
-        `INSERT INTO venue_sessions
-         (venue_id, session_date, start_time, end_time)
-         VALUES (?, ?, ?, ?)`,
-        [venueId, s.date, s.startTime, s.endTime]
+      // 1️⃣ Insert venue
+      const [venueRes] = await conn.query(
+        `INSERT INTO venues
+         (name, type, capacity, benches_row, benches_col, is_available)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [name, type, capacity, benchesRow, benchesCol, isAvailable]
       );
-    }
 
-    return venueId;
+      const venueId = venueRes.insertId;
+
+      // 2️⃣ Insert bench configuration
+      for (let colIndex = 0; colIndex < benchConfig.length; colIndex++) {
+        await conn.query(
+          `INSERT INTO venue_bench_config
+           (venue_id, column_index, seats_per_bench)
+           VALUES (?, ?, ?)`,
+          [venueId, colIndex, benchConfig[colIndex]]
+        );
+      }
+
+      // 3️⃣ Insert initial sessions (if any)
+      for (const s of sessions) {
+        await conn.query(
+          `INSERT INTO venue_sessions
+           (venue_id, session_date, start_time, end_time)
+           VALUES (?, ?, ?, ?)`,
+          [venueId, s.date, s.startTime, s.endTime]
+        );
+      }
+
+      await conn.commit();
+      return venueId;
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
   },
 
   /* ===============================
-     GET ALL VENUES + SESSIONS
+     GET ALL VENUES + SESSIONS + BENCH CONFIG
   =============================== */
   getAll: async () => {
     const [venues] = await db.query(`
@@ -55,8 +79,8 @@ const Venue = {
       FROM venues
     `);
 
-    // ✅ FIX: Use _id instead of id
     for (const v of venues) {
+      // Get sessions
       const [sessions] = await db.query(
         `SELECT 
            session_date AS date,
@@ -64,9 +88,20 @@ const Venue = {
            end_time AS endTime
          FROM venue_sessions
          WHERE venue_id = ?`,
-        [v._id]  // ✅ Changed from v.id to v._id
+        [v._id]
       );
       v.sessions = sessions;
+
+      // Get bench configuration
+      const [benchConfig] = await db.query(
+        `SELECT column_index, seats_per_bench
+         FROM venue_bench_config
+         WHERE venue_id = ?
+         ORDER BY column_index`,
+        [v._id]
+      );
+      
+      v.benchConfig = benchConfig.map(b => b.seats_per_bench);
     }
 
     return venues;

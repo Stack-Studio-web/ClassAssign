@@ -48,6 +48,7 @@ const Faculty = {
 
   /* =====================================
      CHECK IF FACULTY CAN BE ALLOCATED
+     ✅ FIXED: Handle case when faculty doesn't exist
   ===================================== */
   canAllocate: async (facultyId) => {
     const [rows] = await db.query(
@@ -64,9 +65,16 @@ const Faculty = {
       `,
       [facultyId]
     );
+    
+    // If faculty doesn't exist, return false
     if (rows.length === 0) return false;
+    
     const { max_classrooms, allocationCount } = rows[0];
-    return allocationCount < max_classrooms;
+    
+    // Default to 1 if max_classrooms is null or 0
+    const maxAllowed = max_classrooms || 1;
+    
+    return allocationCount < maxAllowed;
   },
 
   /* =====================================
@@ -80,9 +88,9 @@ const Faculty = {
         f.name,
         f.department,
         f.email,
-        f.max_classrooms,
+        COALESCE(f.max_classrooms, 1) AS max_classrooms,
         COUNT(spv.id) AS allocation,
-        (f.max_classrooms - COUNT(spv.id)) AS remaining
+        (COALESCE(f.max_classrooms, 1) - COUNT(spv.id)) AS remaining
       FROM faculty f
       LEFT JOIN seating_plan_venues spv 
         ON spv.faculty_id = f.id

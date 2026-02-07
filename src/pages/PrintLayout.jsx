@@ -13,10 +13,6 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
   };
 
   // ✅ Extracts an array of roll numbers from a cell, regardless of format
-  // Handles:
-  //   NEW: [{regn_no: "23BCS090", course: "TEST002"}, ...]
-  //   OLD: "23BCS090\n23BIT087"  (plain string)
-  //   EMPTY: "Empty" or null or undefined
   const getRollsFromCell = (cell) => {
     if (!cell || cell === "Empty") return [];
 
@@ -35,22 +31,6 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
     return [];
   };
 
-  // ✅ Renders cell content for the printed table
-  // NEW format: shows each roll number on its own line
-  // OLD format: renders the raw string (already \n separated)
-  const renderCell = (cell) => {
-    if (!cell || cell === "Empty") return "";
-
-    if (Array.isArray(cell)) {
-      return cell
-        .filter(item => item && item.regn_no)
-        .map(item => item.regn_no)
-        .join("\n");
-    }
-
-    return cell;
-  };
-
   // Count students per hall & batch
   const getBatchCounts = (venue) => {
     const counts = {};
@@ -61,7 +41,7 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
         const rolls = getRollsFromCell(cell);
         rolls.forEach(roll => {
           total += 1;
-          const match = roll.match(/^\d{2}[A-Z]+/); // e.g., 23BCS, 24BCS
+          const match = roll.match(/^\d{2}[A-Z]+/);
           if (match) {
             const prefix = match[0];
             counts[prefix] = (counts[prefix] || 0) + 1;
@@ -84,6 +64,10 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
     >
       {selectedPlan.venuesUsed?.map((venuePlan, arrIndex) => {
         const { counts: batchCounts, total: hallTotal } = getBatchCounts(venuePlan);
+        
+        // Get bench configuration for this venue
+        const benchConfig = venuePlan.benchConfig || 
+          (venuePlan.seatingArrangement?.[0]?.map(() => 2) || []);
 
         return (
           <div key={arrIndex} style={{ pageBreakAfter: "always" }}>
@@ -143,7 +127,7 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
 
             {/* BATCH COUNTS */}
             <div style={{ marginTop: "10px", fontSize: "1.05em" }}>
-              <strong>Student Count :</strong>
+              <strong>Student Count:</strong>
               <div style={{ marginLeft: "20px", marginTop: "5px" }}>
                 {Object.entries(batchCounts).map(([batch, count]) => (
                   <div key={batch}>
@@ -153,52 +137,130 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
               </div>
             </div>
 
-            {/* TABLE */}
+            <div style={{ marginTop: "10px", fontSize: "0.95em", color: "#555" }}>
+              <strong>Bench Config:</strong> {benchConfig.join(", ")} seats/column
+            </div>
+
+            {/* TABLE WITH SUB-COLUMNS */}
             <table
               style={{
                 width: "99.5%",
                 borderCollapse: "collapse",
                 margin: "22px 0 18px 0",
-                fontSize: "1em",
+                fontSize: "0.95em",
               }}
             >
               <thead>
+                {/* First header row: Column letters and seat counts */}
                 <tr>
-                  {venuePlan.seatingArrangement?.[0]?.map((_, i) => (
-                    <th
-                      key={i}
-                      style={{
-                        background: "#edeaff",
-                        fontWeight: "bold",
-                        fontSize: "1.07em",
-                        border: "1px solid #000",
-                        padding: "7px 14px",
-                        textAlign: "center",
-                      }}
-                    >
-                      {String.fromCharCode(65 + i)}
-                    </th>
-                  ))}
+                  <th
+                    rowSpan="2"
+                    style={{
+                      background: "#edeaff",
+                      fontWeight: "bold",
+                      fontSize: "0.9em",
+                      border: "1px solid #000",
+                      padding: "5px",
+                      textAlign: "center",
+                      width: "40px",
+                    }}
+                  >
+                    Row
+                  </th>
+                  {benchConfig.map((seatsInCol, colIndex) => {
+                    return (
+                      <th
+                        key={colIndex}
+                        colSpan={seatsInCol}
+                        style={{
+                          background: "#edeaff",
+                          fontWeight: "bold",
+                          fontSize: "0.95em",
+                          border: "1px solid #000",
+                          padding: "5px",
+                          textAlign: "center",
+                        }}
+                      >
+                        COL {String.fromCharCode(65 + colIndex)} ({seatsInCol}-seat)
+                      </th>
+                    );
+                  })}
+                </tr>
+                {/* Second header row: Sub-column labels (A1, A2, B1, B2, B3, etc.) */}
+                <tr>
+                  {benchConfig.map((seatsInCol, colIndex) => {
+                    const colLetter = String.fromCharCode(65 + colIndex);
+                    return Array.from({ length: seatsInCol }).map((_, seatIndex) => (
+                      <th
+                        key={`${colIndex}-${seatIndex}`}
+                        style={{
+                          background: "#f5f3ff",
+                          fontWeight: "bold",
+                          fontSize: "0.85em",
+                          border: "1px solid #000",
+                          padding: "4px",
+                          textAlign: "center",
+                        }}
+                      >
+                        {colLetter}{seatIndex + 1}
+                      </th>
+                    ));
+                  })}
                 </tr>
               </thead>
               <tbody>
                 {venuePlan.seatingArrangement?.map((row, rIndex) => (
                   <tr key={rIndex}>
-                    {row.map((cell, cIndex) => (
-                      <td
-                        key={cIndex}
-                        style={{
-                          border: "1px solid #000",
-                          padding: "7px 14px",
-                          textAlign: "center",
-                          fontFamily: '"Courier New", Courier, monospace',
-                          whiteSpace: "pre-line",
-                        }}
-                      >
-                        {/* ✅ renderCell handles both object arrays and plain strings */}
-                        {renderCell(cell)}
-                      </td>
-                    ))}
+                    <td
+                      style={{
+                        border: "1px solid #000",
+                        padding: "6px",
+                        textAlign: "center",
+                        fontWeight: "bold",
+                        background: "#f9f9f9",
+                        fontSize: "0.9em",
+                      }}
+                    >
+                      {rIndex + 1}
+                    </td>
+                    {row.map((cell, cIndex) => {
+                      const seatsInCol = benchConfig[cIndex] || 2;
+                      
+                      // Parse cell content
+                      let students = [];
+                      if (cell === "Empty" || !cell) {
+                        students = Array(seatsInCol).fill("");
+                      } else if (Array.isArray(cell)) {
+                        // NEW format: array of {regn_no, course} objects
+                        students = cell.map(s => s.regn_no);
+                        while (students.length < seatsInCol) {
+                          students.push("");
+                        }
+                      } else if (typeof cell === "string") {
+                        // OLD format: plain string
+                        students = cell.split("\n").filter(s => s && s !== "Empty");
+                        while (students.length < seatsInCol) {
+                          students.push("");
+                        }
+                      }
+
+                      return students.map((student, sIdx) => (
+                        <td
+                          key={`${cIndex}-${sIdx}`}
+                          style={{
+                            border: "1px solid #000",
+                            padding: "6px 4px",
+                            textAlign: "center",
+                            fontFamily: '"Courier New", Courier, monospace',
+                            fontSize: "0.85em",
+                            fontWeight: student ? "bold" : "normal",
+                            color: student ? "#000" : "#ccc",
+                          }}
+                        >
+                          {student || "Empty"}
+                        </td>
+                      ));
+                    })}
                   </tr>
                 ))}
               </tbody>
