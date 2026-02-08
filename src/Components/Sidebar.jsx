@@ -8,7 +8,8 @@ import {
   ArrowRightOnRectangleIcon,
   Bars3Icon,
   XMarkIcon,
-  UserPlusIcon
+  UserPlusIcon,
+  UsersIcon
 } from "@heroicons/react/24/outline";
 import { NavLink } from "react-router-dom";
 import Logo from "../assets/logo.png";
@@ -37,7 +38,7 @@ const Sidebar = () => {
     { to: "/faculty", label: "Faculty", icon: UserPlusIcon },
     { to: "/allotment", label: "Allotment", icon: ComputerDesktopIcon },
     { to: "/report", label: "Report", icon: NewspaperIcon },
-    
+    { to: "/users", label: "User Management", icon: UsersIcon },
     { to: "/settings", label: "Settings", icon: Cog6ToothIcon },
   ];
 
