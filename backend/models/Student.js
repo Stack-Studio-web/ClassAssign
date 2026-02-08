@@ -2,14 +2,20 @@
 const db = require("../config/db");
 
 const Student = {
-  /* ===============================
-     INSERT ONE (UNDO SAFE)
-  =============================== */
+  /* ============================================================
+      INSERT OR UPDATE (Final Duplicate Protection)
+  ============================================================ */
   insertOne: async (s) => {
+    // ON DUPLICATE KEY UPDATE ensures that if the (regn_no + course_description)
+    // already exists, we just update the details instead of creating a duplicate.
     const sql = `
-      INSERT INTO students
-      (regn_no, student_name, course_description, course_name, email)
+      INSERT INTO students 
+        (regn_no, student_name, course_description, course_name, email)
       VALUES (?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        student_name = VALUES(student_name),
+        course_name = VALUES(course_name),
+        email = VALUES(email)
     `;
 
     const [result] = await db.query(sql, [
@@ -24,7 +30,7 @@ const Student = {
   },
 
   /* ===============================
-     GET ALL
+      GET ALL
   =============================== */
   getAll: async () => {
     const [rows] = await db.query(`
@@ -42,7 +48,7 @@ const Student = {
   },
 
   /* ===============================
-     COUNT
+      COUNT
   =============================== */
   count: async () => {
     const [[row]] = await db.query(
@@ -52,7 +58,7 @@ const Student = {
   },
 
   /* ===============================
-     DELETE ONE
+      DELETE ONE
   =============================== */
   deleteById: async (id) => {
     const [result] = await db.query(
@@ -63,7 +69,7 @@ const Student = {
   },
 
   /* ===============================
-     GET UNIQUE COURSES
+      GET UNIQUE COURSES
   =============================== */
   getCourses: async () => {
     const [rows] = await db.query(`
@@ -77,7 +83,7 @@ const Student = {
   },
 
   /* ===============================
-     GET BY COURSE
+      GET BY COURSE
   =============================== */
   getByCourse: async (courseDescription) => {
     const [rows] = await db.query(`
@@ -97,7 +103,7 @@ const Student = {
   },
 
   /* ===============================
-     DELETE MANY (UNDO)
+      DELETE MANY (UNDO)
   =============================== */
   deleteByIds: async (ids) => {
     if (!Array.isArray(ids) || ids.length === 0) return;
@@ -108,7 +114,7 @@ const Student = {
   },
 
   /* ===============================
-     DELETE ALL
+      DELETE ALL
   =============================== */
   deleteAll: async () => {
     await db.query("DELETE FROM students");
