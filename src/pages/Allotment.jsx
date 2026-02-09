@@ -70,72 +70,34 @@ const Allotment = () => {
   const [allFaculty, setAllFaculty] = useState([]);
   const [manualFacultyAssignments, setManualFacultyAssignments] = useState({});
 
+  // ✅ NEW: Store ineligible students by course
+  const [ineligibleStudentsByCourse, setIneligibleStudentsByCourse] = useState({});
+  const [ineligibilityStats, setIneligibilityStats] = useState({
+    total: 0,
+    byCourse: {}
+  });
+
   // ✅ User role and permissions
   const [userRole, setUserRole] = useState("");
   const [hasWriteAccess, setHasWriteAccess] = useState(false);
-  const [debugInfo, setDebugInfo] = useState(""); // For debugging
 
   const today = new Date().toISOString().split("T")[0];
 
-  // ✅ ENHANCED: Check user role with extensive debugging
+  // ✅ Check user role
   useEffect(() => {
     const checkUserAccess = () => {
-      // Debug: Log all sessionStorage items
-      const allSessionData = {};
-      for (let i = 0; i < sessionStorage.length; i++) {
-        const key = sessionStorage.key(i);
-        allSessionData[key] = sessionStorage.getItem(key);
-      }
-      
-      console.log("=== SESSION STORAGE DEBUG ===");
-      console.log("All sessionStorage data:", allSessionData);
-      
-      // Try to get role from different possible keys
-      const userRole = sessionStorage.getItem("userRole");
-      const role = sessionStorage.getItem("role");
-      const user = sessionStorage.getItem("user");
-      
-      console.log("userRole key:", userRole);
-      console.log("role key:", role);
-      console.log("user key:", user);
-      
-      // Try to parse user object if it exists
-      let parsedUserRole = null;
-      if (user) {
+      const userStr = sessionStorage.getItem('user');
+      if (userStr) {
         try {
-          const userObj = JSON.parse(user);
-          parsedUserRole = userObj.role;
-          console.log("Parsed user object:", userObj);
-          console.log("Role from user object:", parsedUserRole);
-        } catch (e) {
-          console.log("Could not parse user object");
+          const user = JSON.parse(userStr);
+          setUserRole(user.role);
+          const canWrite = user.role === "admin" || user.role === "faculty_incharge";
+          setHasWriteAccess(canWrite);
+        } catch (err) {
+          console.error('Failed to parse user data:', err);
         }
       }
-      
-      // Determine final role
-      const finalRole = userRole || role || parsedUserRole || "";
-      
-      console.log("Final determined role:", finalRole);
-      
-      // Set debug info for UI display
-      setDebugInfo(`
-        sessionStorage keys: ${Object.keys(allSessionData).join(", ")}
-        userRole: ${userRole || "not found"}
-        role: ${role || "not found"}
-        user object role: ${parsedUserRole || "not found"}
-        Final role: ${finalRole || "NONE"}
-      `);
-      
-      setUserRole(finalRole);
-      
-      // Only admin and faculty_incharge can create/modify seating plans
-      const canWrite = finalRole === "admin" || finalRole === "faculty_incharge";
-      setHasWriteAccess(canWrite);
-      
-      console.log("Has write access:", canWrite);
-      console.log("=== END DEBUG ===");
     };
-
     checkUserAccess();
   }, []);
 
@@ -165,6 +127,63 @@ const Allotment = () => {
     };
     fetchData();
   }, []);
+
+  // ✅ NEW: Fetch ineligible students when exam details change
+  useEffect(() => {
+    const fetchIneligibleStudents = async () => {
+      if (!examDate || !examType || selectedCourses.length === 0) {
+        setIneligibleStudentsByCourse({});
+        setIneligibilityStats({ total: 0, byCourse: {} });
+        return;
+      }
+
+      try {
+        const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
+        const ineligibleMap = {};
+        const statsByCourse = {};
+        let totalIneligible = 0;
+
+        // Fetch ineligible students for each selected course
+        for (const courseCode of selectedCourses) {
+          try {
+            const res = await api.get(`/ineligibility/check`, {
+              params: {
+                examType,
+                courseCode,
+                examDate: dateOnly
+              }
+            });
+
+            const ineligibleList = res.data || [];
+            ineligibleMap[courseCode] = new Set(ineligibleList.map(s => s.regnNo));
+            statsByCourse[courseCode] = ineligibleList.length;
+            totalIneligible += ineligibleList.length;
+
+            console.log(`📋 Course ${courseCode}: ${ineligibleList.length} ineligible students`);
+          } catch (err) {
+            console.error(`Error fetching ineligibility for ${courseCode}:`, err);
+            ineligibleMap[courseCode] = new Set();
+            statsByCourse[courseCode] = 0;
+          }
+        }
+
+        setIneligibleStudentsByCourse(ineligibleMap);
+        setIneligibilityStats({
+          total: totalIneligible,
+          byCourse: statsByCourse
+        });
+
+        if (totalIneligible > 0) {
+          console.log(`⚠️ Total ineligible students: ${totalIneligible}`);
+        }
+
+      } catch (err) {
+        console.error("Error fetching ineligible students:", err);
+      }
+    };
+
+    fetchIneligibleStudents();
+  }, [examDate, examType, selectedCourses]);
 
   // Fetch faculty availability when exam details change
   useEffect(() => {
@@ -290,7 +309,7 @@ const Allotment = () => {
     setSelectedVenues(prev => prev.filter(v => v._id !== venueId));
   };
 
-  // --- Allotment Logic ---
+  // ✅ UPDATED: Allotment Logic with Ineligibility Filtering
   const handleGenerate = async () => {
     setError("");
 
@@ -318,13 +337,58 @@ const Allotment = () => {
       return setError("No venues available.");
     }
 
+    // ✅ Build student list with ineligibility filtering
     let allStudents = [];
+    let totalExcluded = 0;
+    let excludedByIneligibility = 0;
+    let excludedByBatch = 0;
+
     selectedCourses.forEach(courseName => {
       const students = studentsByCourse[courseName] || [];
       const prefixes = (excludedBatches[courseName] || "").split(",").map(p => p.trim().toUpperCase());
-      const filtered = students.filter(s => !prefixes.some(p => p && s.regnNo.toUpperCase().startsWith(p)));
-      allStudents.push(...filtered.map(s => ({ ...s, courseDescription: courseName })));
+      const ineligibleSet = ineligibleStudentsByCourse[courseName] || new Set();
+
+      students.forEach(student => {
+        // Check batch exclusion
+        const isBatchExcluded = prefixes.some(p => p && student.regnNo.toUpperCase().startsWith(p));
+        
+        // ✅ Check ineligibility
+        const isIneligible = ineligibleSet.has(student.regnNo);
+
+        if (isBatchExcluded) {
+          excludedByBatch++;
+          totalExcluded++;
+        } else if (isIneligible) {
+          excludedByIneligibility++;
+          totalExcluded++;
+          console.log(`⚠️ Excluding ineligible student: ${student.regnNo} from ${courseName}`);
+        } else {
+          // ✅ Only include eligible students
+          allStudents.push({ 
+            ...student, 
+            courseDescription: courseName 
+          });
+        }
+      });
     });
+
+    console.log(`📊 Filtering Summary:
+      - Total students before filtering: ${allStudents.length + totalExcluded}
+      - Excluded by batch prefix: ${excludedByBatch}
+      - Excluded by ineligibility: ${excludedByIneligibility}
+      - Eligible students for seating: ${allStudents.length}
+    `);
+
+    // Show info message if students were excluded
+    if (excludedByIneligibility > 0) {
+      const infoMsg = `ℹ️ ${excludedByIneligibility} student(s) excluded due to ineligibility. ${allStudents.length} eligible students will be seated.`;
+      setError(infoMsg);
+      
+      // Clear the message after 5 seconds
+      setTimeout(() => {
+        if (error === infoMsg) setError("");
+      }, 5000);
+    }
 
     const totalCapacity = venuesToUse.reduce((sum, v) => sum + v.capacity, 0);
     if (allStudents.length > totalCapacity) {
@@ -465,20 +529,36 @@ const Allotment = () => {
     <div className="p-6 bg-white min-h-screen text-gray-800">
       <h1 className="text-3xl font-bold text-center mb-6">Exam Seating Allotment</h1>
 
-      {/* ✅ DEBUG INFO - Remove this after fixing */}
-      
-
       {error && (
         <div className={`p-3 rounded mb-4 text-center font-semibold ${
           error.includes("Access denied") 
             ? "bg-yellow-100 text-yellow-800 border-2 border-yellow-400" 
+            : error.includes("ℹ️")
+            ? "bg-blue-100 text-blue-800 border-2 border-blue-400"
             : "bg-red-100 text-red-700 border-2 border-red-400"
         }`}>
           {error}
         </div>
       )}
 
-      {/* Rest of the component remains the same... */}
+      {/* ✅ NEW: Ineligibility Stats Display */}
+      {ineligibilityStats.total > 0 && (
+        <div className="mb-4 p-4 bg-orange-50 border-l-4 border-orange-500 rounded">
+          <h3 className="font-semibold text-orange-800 mb-2">
+            ⚠️ Ineligibility Alert: {ineligibilityStats.total} student(s) will be excluded
+          </h3>
+          <div className="text-sm text-orange-700 space-y-1">
+            {Object.entries(ineligibilityStats.byCourse).map(([course, count]) => (
+              count > 0 && (
+                <div key={course}>
+                  • {course}: {count} ineligible student{count !== 1 ? 's' : ''}
+                </div>
+              )
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* 1. Exam Details */}
       <section className="border p-4 rounded-lg mb-6 shadow-sm">
         <h3 className="font-semibold mb-3 text-lg">1. Exam Details</h3>
@@ -663,23 +743,43 @@ const Allotment = () => {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {selectedCourses.map(c => (
-            <div key={c} className="bg-gray-50 p-3 rounded border shadow-sm">
-              <div className="flex justify-between font-bold mb-1">
-                <span className="text-sm">{c}</span>
-                {hasWriteAccess && (
-                  <button onClick={() => removeCourse(c)} className="text-red-500 text-lg">×</button>
-                )}
+          {selectedCourses.map(c => {
+            const totalStudents = studentsByCourse[c]?.length || 0;
+            const ineligibleCount = ineligibilityStats.byCourse[c] || 0;
+            const eligibleCount = totalStudents - ineligibleCount;
+            
+            return (
+              <div key={c} className="bg-gray-50 p-3 rounded border shadow-sm">
+                <div className="flex justify-between font-bold mb-1">
+                  <span className="text-sm">{c}</span>
+                  {hasWriteAccess && (
+                    <button onClick={() => removeCourse(c)} className="text-red-500 text-lg">×</button>
+                  )}
+                </div>
+                
+                {/* ✅ Show student counts */}
+                <div className="text-xs text-gray-600 mb-2">
+                  <div>Total: {totalStudents} students</div>
+                  {ineligibleCount > 0 && (
+                    <div className="text-orange-600 font-semibold">
+                      ⚠️ Ineligible: {ineligibleCount}
+                    </div>
+                  )}
+                  <div className="text-green-600 font-semibold">
+                    ✓ Eligible: {eligibleCount}
+                  </div>
+                </div>
+                
+                <input 
+                  type="text" 
+                  placeholder="Exclude prefix (e.g. 24BAD)" 
+                  className="w-full text-xs p-1 border rounded disabled:bg-gray-100 disabled:cursor-not-allowed"
+                  onChange={e => setExcludedBatches(prev => ({...prev, [c]: e.target.value}))}
+                  disabled={!hasWriteAccess}
+                />
               </div>
-              <input 
-                type="text" 
-                placeholder="Exclude prefix (e.g. 24BAD)" 
-                className="w-full text-xs p-1 border rounded disabled:bg-gray-100 disabled:cursor-not-allowed"
-                onChange={e => setExcludedBatches(prev => ({...prev, [c]: e.target.value}))}
-                disabled={!hasWriteAccess}
-              />
-            </div>
-          ))}
+            );
+          })}
         </div>
       </section>
 
@@ -702,6 +802,138 @@ const Allotment = () => {
           </button>
         )}
       </div>
+
+      {/* ✅ RESTORED: Seating Preview Section from Old Code */}
+      {generatedSeating && (
+        <div className="space-y-10">
+          <h2 className="text-2xl font-bold border-b pb-2">Seating Layout Preview</h2>
+          
+          {facultyMode === "MANUAL" && (
+            <div className="bg-indigo-50 p-4 rounded-lg border border-indigo-200 grid md:grid-cols-2 gap-4">
+                {generatedSeating.map(item => (
+                  <div key={item.venue._id} className="flex items-center justify-between bg-white p-2 rounded border shadow-sm">
+                      <span className="text-sm font-medium">{item.venue.name}</span>
+                      <select 
+                          className="text-sm border rounded p-1"
+                          onChange={e => setManualFacultyAssignments(prev => ({...prev, [item.venue._id]: e.target.value}))}
+                          value={manualFacultyAssignments[item.venue._id] || ""}
+                      >
+                        <option value="">Assign Faculty</option>
+                        {allFaculty.map(f => (
+                          <option 
+                            key={f.id} 
+                            value={f.id} 
+                            disabled={!f.canAllocate || f.hasTimeConflict}
+                          >
+                            {f.name} {!f.canAllocate ? "(Full)" : ""} {f.hasTimeConflict ? "(Busy)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                  </div>
+                ))}
+            </div>
+          )}
+
+          {generatedSeating.map((item, idx) => (
+            <div key={`${item.venue._id}-${idx}`} className="bg-gray-50 p-4 rounded-xl border">
+              <div className="flex justify-between items-center mb-4">
+                <div>
+                  <h3 className="text-xl font-bold text-indigo-900">{item.venue.name}</h3>
+                  <p className="text-xs text-gray-500">Capacity: {item.venue.capacity}</p>
+                  {item.venue.benchConfig && (
+                    <p className="text-xs text-gray-500">
+                      Bench Config: {item.venue.benchConfig.join(", ")} seats/column
+                    </p>
+                  )}
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] uppercase font-bold text-gray-400">Invigilator</p>
+                  <p className="font-bold text-indigo-700">
+                    {facultyMode === "AUTO" ? item.previewFacultyName : (allFaculty.find(f => String(f.id) === String(manualFacultyAssignments[item.venue._id]))?.name || "Unassigned")}
+                  </p>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse bg-white shadow-sm">
+                  <thead>
+                    <tr>
+                      <th className="border p-2 bg-gray-100 text-[10px] w-12">Row</th>
+                      {Array.from({ length: item.venue.benchesCol }).map((_, c) => {
+                        const benchConfig = item.venue.benchConfig || [];
+                        const seatsInCol = benchConfig[c] || 2;
+                        return (
+                          <th 
+                            key={`col-header-${c}`} 
+                            className="border bg-gray-100"
+                            colSpan={seatsInCol}
+                          >
+                            <div className="text-[10px] font-bold p-1">
+                              COL {String.fromCharCode(65 + c)} ({seatsInCol}-seat)
+                            </div>
+                            <div className="flex border-t border-gray-300">
+                              {Array.from({ length: seatsInCol }).map((_, s) => (
+                                <div 
+                                  key={`subcol-${s}`} 
+                                  className="flex-1 text-[8px] p-1 border-r last:border-r-0 border-gray-300 bg-gray-50"
+                                >
+                                  {String.fromCharCode(65 + c)}{s + 1}
+                                </div>
+                              ))}
+                            </div>
+                          </th>
+                        );
+                      })}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {item.seats.map((row, rIdx) => (
+                      <tr key={`row-${rIdx}`}>
+                        <td className="border p-2 text-center font-bold text-xs bg-gray-50">{rIdx + 1}</td>
+                        {row.map((cell, cIdx) => {
+                          const benchConfig = item.venue.benchConfig || [];
+                          const seatsInCol = benchConfig[cIdx] || 2;
+                          
+                          let students = [];
+                          if (cell === "Empty" || !cell) {
+                            students = Array(seatsInCol).fill("");
+                          } else if (Array.isArray(cell)) {
+                            students = cell.map(s => s.regn_no);
+                            while (students.length < seatsInCol) {
+                              students.push("");
+                            }
+                          }
+                          
+                          return (
+                            <td 
+                              key={`cell-${rIdx}-${cIdx}`} 
+                              className="border p-0"
+                              colSpan={seatsInCol}
+                            >
+                              <div className="flex h-full">
+                                {students.map((student, sIdx) => (
+                                  <div 
+                                    key={`seat-${sIdx}`}
+                                    className={`flex-1 p-2 text-[10px] text-center border-r last:border-r-0 border-gray-300 ${
+                                      student ? "font-bold" : "text-gray-200 italic"
+                                    }`}
+                                  >
+                                    {student || "Empty"}
+                                  </div>
+                                ))}
+                              </div>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 };

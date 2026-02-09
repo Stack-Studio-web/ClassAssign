@@ -1,11 +1,13 @@
-// Student.jsx - WITH NOTIFICATIONS TAB
+// Student.jsx - FIXED VERSION WITH PROPER AUTH HEADERS
 import React, { useState, useEffect, useMemo } from "react";
 import axios from "axios";
+import { MagnifyingGlassIcon, XMarkIcon } from "@heroicons/react/24/outline";
 
 export default function Student() {
   const [totalStudents, setTotalStudents] = useState(0);
   const [students, setStudents] = useState([]);
-  const [activeTab, setActiveTab] = useState("import");
+  const [activeTab, setActiveTab] = useState("all");
+  const [userRole, setUserRole] = useState(null);
 
   // Status/Import States
   const [loading, setLoading] = useState(false);
@@ -28,7 +30,7 @@ export default function Student() {
   const [searchQuery, setSearchQuery] = useState("");
   const [sortOrder, setSortOrder] = useState("asc");
 
-  // 🔴 NEW: Notification States
+  // Notification States
   const [notificationForm, setNotificationForm] = useState({
     examType: "",
     department: "",
@@ -41,6 +43,33 @@ export default function Student() {
     error: false,
     details: null
   });
+
+  // ✅ NEW: Ineligibility Modal States
+  const [showIneligibilityModal, setShowIneligibilityModal] = useState(false);
+  const [currentCourseForIneligibility, setCurrentCourseForIneligibility] = useState(null);
+  const [ineligibilityData, setIneligibilityData] = useState({
+    examDate: "",
+    courseStudents: [],
+    ineligibleSet: new Set()
+  });
+  const [ineligibilitySearch, setIneligibilitySearch] = useState("");
+  const [ineligibilityLoading, setIneligibilityLoading] = useState(false);
+
+  // ✅ Store ineligibility data per course
+  const [courseIneligibilityMap, setCourseIneligibilityMap] = useState({});
+
+  /* ================= GET USER ROLE ================= */
+  useEffect(() => {
+    const userStr = sessionStorage.getItem('user');
+    if (userStr) {
+      try {
+        const user = JSON.parse(userStr);
+        setUserRole(user.role);
+      } catch (err) {
+        console.error('Failed to parse user data:', err);
+      }
+    }
+  }, []);
 
   /* ================= FETCH DATA ================= */
   const fetchStudentStats = async () => {
@@ -61,7 +90,6 @@ export default function Student() {
     }
   };
 
-  // 🔴 NEW: Fetch courses for notification dropdown
   const fetchCourses = async () => {
     try {
       const res = await axios.get("/api/students/courses");
@@ -77,7 +105,6 @@ export default function Student() {
     fetchCourses();
   }, []);
 
-  // Derive unique values for filter dropdowns
   useEffect(() => {
     if (students.length > 0) {
       const courseNames = [...new Set(students.map((s) => s.courseName))];
@@ -152,16 +179,210 @@ export default function Student() {
     }
   };
 
-  /* ================= 🔴 NEW: NOTIFICATION LOGIC ================= */
-  const handleCourseToggle = (courseCode) => {
-    setNotificationForm(prev => ({
-      ...prev,
-      selectedCourses: prev.selectedCourses.includes(courseCode)
-        ? prev.selectedCourses.filter(c => c !== courseCode)
-        : [...prev.selectedCourses, courseCode]
-    }));
+  /* ================= FILTER & SORT LOGIC ================= */
+  const handleFilterChange = (e) => {
+    const { name, value } = e.target;
+    setFilters((prev) => ({ ...prev, [name]: value }));
   };
 
+  const clearFilters = () => {
+    setFilters({ courseName: "", courseDescription: "", year: "", department: "" });
+    setSearchQuery("");
+  };
+
+  const filteredStudents = useMemo(() => {
+    return students
+      .filter((student) => {
+        if (filters.department) {
+          if (filters.department === "IT" && !student.regnNo.includes("BIT")) return false;
+          if (filters.department === "CS" && !student.regnNo.includes("BCS")) return false;
+          if (filters.department === "AIDS" && !student.regnNo.includes("BAD")) return false;
+        }
+        if (filters.year) {
+          if (filters.year === "3" && !student.regnNo.startsWith("23")) return false;
+          if (filters.year === "2" && !student.regnNo.startsWith("24")) return false;
+        }
+        if (filters.courseName && student.courseName !== filters.courseName) return false;
+        if (filters.courseDescription && student.courseDescription !== filters.courseDescription) return false;
+        const query = searchQuery.toLowerCase();
+        if (query && !(student.studentName.toLowerCase().includes(query) || student.regnNo.toLowerCase().includes(query))) return false;
+
+        return true;
+      })
+      .sort((a, b) => {
+        const nameA = a.studentName.toLowerCase();
+        const nameB = b.studentName.toLowerCase();
+        return sortOrder === "asc" ? nameA.localeCompare(nameB) : nameB.localeCompare(nameA);
+      });
+  }, [students, filters, searchQuery, sortOrder]);
+
+  /* ================= NEW: INELIGIBILITY MODAL LOGIC ================= */
+  
+  const handleCourseToggle = async (courseCode) => {
+    const isCurrentlySelected = notificationForm.selectedCourses.includes(courseCode);
+    
+    if (isCurrentlySelected) {
+      setNotificationForm(prev => ({
+        ...prev,
+        selectedCourses: prev.selectedCourses.filter(c => c !== courseCode)
+      }));
+      
+      const newMap = { ...courseIneligibilityMap };
+      delete newMap[courseCode];
+      setCourseIneligibilityMap(newMap);
+    } else {
+      setCurrentCourseForIneligibility(courseCode);
+      setShowIneligibilityModal(true);
+      await loadStudentsForCourse(courseCode);
+    }
+  };
+
+  const loadStudentsForCourse = async (courseCode) => {
+    setIneligibilityLoading(true);
+    try {
+      const res = await axios.get(`/api/ineligibility/students/${encodeURIComponent(courseCode)}`);
+
+      const existingData = courseIneligibilityMap[courseCode];
+      
+      setIneligibilityData({
+        examDate: existingData?.examDate || "",
+        courseStudents: res.data,
+        ineligibleSet: existingData?.ineligibleStudents 
+          ? new Set(existingData.ineligibleStudents) 
+          : new Set()
+      });
+    } catch (err) {
+      console.error("Error loading students:", err);
+      const errorMsg = err.response?.data?.error || err.response?.data?.message || err.message;
+      alert(`Failed to load students for this course: ${errorMsg}`);
+    } finally {
+      setIneligibilityLoading(false);
+    }
+  };
+
+  const toggleStudentIneligibility = (regnNo) => {
+    const newSet = new Set(ineligibilityData.ineligibleSet);
+    if (newSet.has(regnNo)) {
+      newSet.delete(regnNo);
+    } else {
+      newSet.add(regnNo);
+    }
+    setIneligibilityData(prev => ({ ...prev, ineligibleSet: newSet }));
+  };
+
+  const saveIneligibilityAndClose = async () => {
+    if (!ineligibilityData.examDate) {
+      alert("⚠️ Please select exam date");
+      return;
+    }
+
+    if (!notificationForm.examType) {
+      alert("⚠️ Please select exam type first");
+      return;
+    }
+
+    setIneligibilityLoading(true);
+
+    try {
+      const token = sessionStorage.getItem("authToken");
+      
+      console.log('🔐 Auth Check:', {
+        hasToken: !!token,
+        tokenPreview: token ? token.substring(0, 20) + '...' : 'none',
+        examType: notificationForm.examType,
+        courseCode: currentCourseForIneligibility,
+        examDate: ineligibilityData.examDate
+      });
+      
+      const ineligibleStudents = ineligibilityData.courseStudents
+        .filter(s => ineligibilityData.ineligibleSet.has(s.regnNo))
+        .map(s => ({
+          regnNo: s.regnNo,
+          studentName: s.studentName,
+          email: s.email,
+          reason: "Lack of attendance"
+        }));
+
+      console.log(`📝 Marking ${ineligibleStudents.length} students as ineligible`);
+
+      const response = await axios.post(
+        "/api/ineligibility/bulk-update",
+        {
+          examType: notificationForm.examType,
+          courseCode: currentCourseForIneligibility,
+          examDate: ineligibilityData.examDate,
+          ineligibleStudents
+        },
+        { 
+          headers: { 
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          } 
+        }
+      );
+
+      console.log('✅ Save successful:', response.data);
+
+      const newMap = {
+        ...courseIneligibilityMap,
+        [currentCourseForIneligibility]: {
+          examDate: ineligibilityData.examDate,
+          ineligibleStudents: Array.from(ineligibilityData.ineligibleSet)
+        }
+      };
+      setCourseIneligibilityMap(newMap);
+
+      setNotificationForm(prev => ({
+        ...prev,
+        selectedCourses: [...prev.selectedCourses, currentCourseForIneligibility]
+      }));
+
+      setShowIneligibilityModal(false);
+      setCurrentCourseForIneligibility(null);
+      setIneligibilityData({
+        examDate: "",
+        courseStudents: [],
+        ineligibleSet: new Set()
+      });
+      setIneligibilitySearch("");
+
+      alert(`✅ Saved! ${ineligibleStudents.length} students marked ineligible for ${currentCourseForIneligibility}`);
+    } catch (err) {
+      console.error("❌ Error saving ineligibility:", err);
+      console.error("Response:", err.response?.data);
+      console.error("Status:", err.response?.status);
+      
+      if (err.response?.status === 401) {
+        const errorMsg = err.response?.data?.hint || "Authentication failed. Please logout and login again.";
+        alert(`❌ ${errorMsg}`);
+        
+        if (window.confirm("Your session has expired. Would you like to logout and login again?")) {
+          sessionStorage.clear();
+          window.location.href = '/';
+        }
+      } else if (err.response?.status === 403) {
+        alert("❌ You don't have permission to perform this action.");
+      } else {
+        const errorMsg = err.response?.data?.error || err.response?.data?.message || err.message;
+        alert(`❌ Failed to save ineligibility data: ${errorMsg}`);
+      }
+    } finally {
+      setIneligibilityLoading(false);
+    }
+  };
+
+  const closeModalWithoutSaving = () => {
+    setShowIneligibilityModal(false);
+    setCurrentCourseForIneligibility(null);
+    setIneligibilityData({
+      examDate: "",
+      courseStudents: [],
+      ineligibleSet: new Set()
+    });
+    setIneligibilitySearch("");
+  };
+
+  /* ================= ✅ FIXED: SEND NOTIFICATIONS WITH AUTH HEADER ================= */
   const handleSendNotifications = async () => {
     const { examType, selectedCourses } = notificationForm;
 
@@ -185,6 +406,19 @@ export default function Student() {
       return;
     }
 
+    // Validate all courses have dates
+    for (const course of selectedCourses) {
+      if (!courseIneligibilityMap[course]?.examDate) {
+        setNotificationStatus({
+          loading: false,
+          message: `Missing exam date for course ${course}`,
+          error: true,
+          details: null
+        });
+        return;
+      }
+    }
+
     setNotificationStatus({
       loading: true,
       message: "Sending notifications...",
@@ -193,11 +427,49 @@ export default function Student() {
     });
 
     try {
-      const res = await axios.post("/api/notifications/exam-announcement", {
+      // ✅ GET AUTH TOKEN
+      const token = sessionStorage.getItem("authToken");
+      
+      if (!token) {
+        setNotificationStatus({
+          loading: false,
+          message: "You are not logged in. Please login again.",
+          error: true,
+          details: null
+        });
+        return;
+      }
+
+      // Prepare request with course-specific dates
+      const coursesWithDates = selectedCourses.map(course => ({
+        courseCode: course,
+        examDate: courseIneligibilityMap[course].examDate
+      }));
+
+      console.log('📤 Sending notifications with auth:', {
+        hasToken: !!token,
+        tokenPreview: token.substring(0, 20) + '...',
         examType,
-        courses: selectedCourses,
-        department: notificationForm.department
+        coursesCount: coursesWithDates.length
       });
+
+      // ✅ INCLUDE AUTH HEADER
+      const res = await axios.post(
+        "/api/notifications/exam-announcement-v2", 
+        {
+          examType,
+          coursesWithDates,
+          department: notificationForm.department
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      console.log('✅ Notifications sent successfully:', res.data);
 
       setNotificationStatus({
         loading: false,
@@ -212,17 +484,43 @@ export default function Student() {
         department: "",
         selectedCourses: []
       });
+      setCourseIneligibilityMap({});
     } catch (err) {
-      setNotificationStatus({
-        loading: false,
-        message: err.response?.data?.error || "Failed to send notifications",
-        error: true,
-        details: err.response?.data
-      });
+      console.error("❌ Send notifications error:", err);
+      console.error("Error response:", err.response?.data);
+      console.error("Error status:", err.response?.status);
+      
+      // Better error handling
+      if (err.response?.status === 401) {
+        setNotificationStatus({
+          loading: false,
+          message: "Your session has expired. Please logout and login again.",
+          error: true,
+          details: err.response?.data
+        });
+        
+        if (window.confirm("Your session has expired. Would you like to logout and login again?")) {
+          sessionStorage.clear();
+          window.location.href = '/';
+        }
+      } else if (err.response?.status === 403) {
+        setNotificationStatus({
+          loading: false,
+          message: "You don't have permission to send notifications.",
+          error: true,
+          details: err.response?.data
+        });
+      } else {
+        setNotificationStatus({
+          loading: false,
+          message: err.response?.data?.error || "Failed to send notifications",
+          error: true,
+          details: err.response?.data
+        });
+      }
     }
   };
 
-  // Filter courses based on department
   const filteredCourses = useMemo(() => {
     if (!notificationForm.department) return courses;
     
@@ -233,46 +531,27 @@ export default function Student() {
     });
   }, [courses, notificationForm.department]);
 
-  /* ================= FILTER & SORT LOGIC ================= */
-  const handleFilterChange = (e) => {
-    const { name, value } = e.target;
-    setFilters((prev) => ({ ...prev, [name]: value }));
-  };
+  const filteredIneligibilityStudents = useMemo(() => {
+    if (!ineligibilitySearch) return ineligibilityData.courseStudents;
+    
+    const query = ineligibilitySearch.toLowerCase();
+    return ineligibilityData.courseStudents.filter(s =>
+      s.regnNo.toLowerCase().includes(query) ||
+      s.studentName.toLowerCase().includes(query)
+    );
+  }, [ineligibilityData.courseStudents, ineligibilitySearch]);
 
-  const clearFilters = () => {
-    setFilters({ courseName: "", courseDescription: "", year: "", department: "" });
-    setSearchQuery("");
-  };
+  /* ================= DEFINE AVAILABLE TABS ================= */
+  const availableTabs = useMemo(() => {
+    if (userRole === 'admin' || userRole === 'faculty_incharge') {
+      return ['import', 'all', 'notifications'];
+    } else if (userRole === 'coe') {
+      return ['all', 'notifications'];
+    }
+    return ['all'];
+  }, [userRole]);
 
-  const filteredStudents = useMemo(() => {
-    return students
-      .filter((student) => {
-        // Department Filter
-        if (filters.department) {
-          if (filters.department === "IT" && !student.regnNo.includes("BIT")) return false;
-          if (filters.department === "CS" && !student.regnNo.includes("BCS")) return false;
-          if (filters.department === "AIDS" && !student.regnNo.includes("BAD")) return false;
-        }
-        // Year Filter
-        if (filters.year) {
-          if (filters.year === "3" && !student.regnNo.startsWith("23")) return false;
-          if (filters.year === "2" && !student.regnNo.startsWith("24")) return false;
-        }
-        // Course Filter
-        if (filters.courseName && student.courseName !== filters.courseName) return false;
-        if (filters.courseDescription && student.courseDescription !== filters.courseDescription) return false;
-        // Search Filter
-        const query = searchQuery.toLowerCase();
-        if (query && !(student.studentName.toLowerCase().includes(query) || student.regnNo.toLowerCase().includes(query))) return false;
-
-        return true;
-      })
-      .sort((a, b) => {
-        const nameA = a.studentName.toLowerCase();
-        const nameB = b.studentName.toLowerCase();
-        return sortOrder === "asc" ? nameA.localeCompare(nameB) : nameB.localeCompare(nameA);
-      });
-  }, [students, filters, searchQuery, sortOrder]);
+  const today = new Date().toISOString().split("T")[0];
 
   return (
     <div className="min-h-screen bg-gray-50 px-6 py-8 font-sans">
@@ -294,9 +573,9 @@ export default function Student() {
         </div>
       </div>
 
-      {/* 🔴 UPDATED: Tabs - Added Notifications */}
+      {/* TABS */}
       <div className="flex gap-8 border-b mb-8">
-        {["import", "all", "notifications"].map((tab) => (
+        {availableTabs.map((tab) => (
           <button
             key={tab}
             onClick={() => {
@@ -316,7 +595,7 @@ export default function Student() {
       </div>
 
       {/* Tab Content: Import */}
-      {activeTab === "import" && (
+      {activeTab === "import" && (userRole === 'admin' || userRole === 'faculty_incharge') && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 animate-fadeIn">
           <div className="max-w-md bg-white p-8 rounded-xl shadow-md border border-gray-100">
             <h2 className="text-xl font-semibold mb-6 text-gray-700">Excel Import</h2>
@@ -348,7 +627,6 @@ export default function Student() {
             </button>
           </div>
 
-          {/* Skipped Section */}
           {skippedRecords.length > 0 && (
             <div className="bg-yellow-50 border border-yellow-200 p-6 rounded-xl shadow-sm">
               <h3 className="font-bold text-yellow-800 mb-3">⚠️ Skipped Records</h3>
@@ -392,7 +670,6 @@ export default function Student() {
             </button>
           </div>
 
-          {/* Filter Panel */}
           {showFilters && (
             <div className="bg-white p-6 rounded-xl border shadow-sm mb-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 animate-fadeIn">
               <select name="year" value={filters.year} onChange={handleFilterChange} className="p-2 border rounded-lg outline-none focus:ring-2 focus:ring-blue-500">
@@ -425,7 +702,6 @@ export default function Student() {
             </div>
           )}
 
-          {/* Table */}
           <div className="overflow-x-auto bg-white rounded-xl shadow-lg border border-gray-200">
             <table className="w-full text-left">
               <thead className="bg-gray-50 border-b border-gray-200">
@@ -468,13 +744,12 @@ export default function Student() {
         </div>
       )}
 
-      {/* 🔴 NEW: Tab Content - Notifications */}
+      {/* Tab Content: Notifications */}
       {activeTab === "notifications" && (
         <div className="animate-fadeIn max-w-4xl">
           <div className="bg-white p-8 rounded-xl shadow-md border border-gray-100">
             <h2 className="text-2xl font-bold mb-6 text-gray-800">📢 Send Exam Notifications</h2>
             
-            {/* Notification Status */}
             {notificationStatus.message && (
               <div className={`p-4 mb-6 rounded-lg border-l-4 ${
                 notificationStatus.error 
@@ -490,61 +765,85 @@ export default function Student() {
               </div>
             )}
 
-            {/* Form */}
             <div className="space-y-6">
-              {/* Exam Type */}
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">Exam Type *</label>
-                <select
-                  value={notificationForm.examType}
-                  onChange={(e) => setNotificationForm({...notificationForm, examType: e.target.value})}
-                  className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-                >
-                  <option value="">-- Select Exam Type --</option>
-                  <option value="CAT 1">CAT 1</option>
-                  <option value="CAT 2">CAT 2</option>
-                  <option value="Semester">Semester</option>
-                </select>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Exam Type *</label>
+                  <select
+                    value={notificationForm.examType}
+                    onChange={(e) => setNotificationForm({...notificationForm, examType: e.target.value})}
+                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                  >
+                    <option value="">-- Select Exam Type --</option>
+                    <option value="CAT 1">CAT 1</option>
+                    <option value="CAT 2">CAT 2</option>
+                    <option value="Semester">Semester</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Department (Optional Filter)</label>
+                  <select
+                    value={notificationForm.department}
+                    onChange={(e) => setNotificationForm({...notificationForm, department: e.target.value})}
+                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                  >
+                    <option value="">All Departments</option>
+                    <option value="CSE">CSE</option>
+                    <option value="IT">IT</option>
+                    <option value="AIDS">AIDS</option>
+                  </select>
+                </div>
               </div>
 
-              {/* Department Filter (Optional) */}
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">Department (Optional Filter)</label>
-                <select
-                  value={notificationForm.department}
-                  onChange={(e) => setNotificationForm({...notificationForm, department: e.target.value})}
-                  className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-                >
-                  <option value="">All Departments</option>
-                  <option value="CSE">CSE</option>
-                  <option value="IT">IT</option>
-                  <option value="AIDS">AIDS</option>
-                </select>
-              </div>
-
-              {/* Courses Selection */}
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">Select Courses *</label>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Select Courses * 
+                  <span className="text-xs text-gray-500 ml-2">(Click to set date & mark ineligible students)</span>
+                </label>
                 <div className="border border-gray-300 rounded-lg p-4 max-h-64 overflow-y-auto bg-gray-50">
-                  {filteredCourses.length > 0 ? (
+                  {!notificationForm.examType ? (
+                    <p className="text-center text-gray-500 py-4">Please select exam type first</p>
+                  ) : filteredCourses.length > 0 ? (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      {filteredCourses.map((course) => (
-                        <label
-                          key={course.courseDescription}
-                          className="flex items-start gap-3 p-3 bg-white rounded-lg border border-gray-200 hover:bg-blue-50 cursor-pointer transition-colors"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={notificationForm.selectedCourses.includes(course.courseDescription)}
-                            onChange={() => handleCourseToggle(course.courseDescription)}
-                            className="mt-1 w-4 h-4 text-blue-600 focus:ring-2 focus:ring-blue-500"
-                          />
-                          <div className="flex-1">
-                            <p className="font-semibold text-sm text-gray-800">{course.courseDescription}</p>
-                            <p className="text-xs text-gray-500">{course.courseName}</p>
+                      {filteredCourses.map((course) => {
+                        const isSelected = notificationForm.selectedCourses.includes(course.courseDescription);
+                        const hasDate = courseIneligibilityMap[course.courseDescription]?.examDate;
+                        const ineligibleCount = courseIneligibilityMap[course.courseDescription]?.ineligibleStudents?.length || 0;
+                        
+                        return (
+                          <div
+                            key={course.courseDescription}
+                            onClick={() => handleCourseToggle(course.courseDescription)}
+                            className={`p-3 rounded-lg border-2 cursor-pointer transition-all ${
+                              isSelected
+                                ? "bg-blue-50 border-blue-500"
+                                : "bg-white border-gray-200 hover:bg-gray-50"
+                            }`}
+                          >
+                            <div className="flex items-start gap-3">
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={() => {}}
+                                className="mt-1 w-4 h-4 text-blue-600 pointer-events-none"
+                              />
+                              <div className="flex-1">
+                                <p className="font-semibold text-sm text-gray-800">{course.courseDescription}</p>
+                                <p className="text-xs text-gray-500">{course.courseName}</p>
+                                {isSelected && hasDate && (
+                                  <div className="mt-1 text-xs">
+                                    <p className="text-blue-600">📅 {hasDate}</p>
+                                    {ineligibleCount > 0 && (
+                                      <p className="text-red-600">⚠️ {ineligibleCount} ineligible</p>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
                           </div>
-                        </label>
-                      ))}
+                        );
+                      })}
                     </div>
                   ) : (
                     <p className="text-center text-gray-500 py-4">No courses available</p>
@@ -552,12 +851,11 @@ export default function Student() {
                 </div>
                 {notificationForm.selectedCourses.length > 0 && (
                   <p className="text-sm text-blue-600 mt-2">
-                    {notificationForm.selectedCourses.length} course(s) selected
+                    {notificationForm.selectedCourses.length} course(s) configured
                   </p>
                 )}
               </div>
 
-              {/* Send Button */}
               <button
                 onClick={handleSendNotifications}
                 disabled={notificationStatus.loading || !notificationForm.examType || notificationForm.selectedCourses.length === 0}
@@ -574,7 +872,133 @@ export default function Student() {
         </div>
       )}
 
-      {/* Message Toast */}
+      {/* ✅ INELIGIBILITY MODAL */}
+      {showIneligibilityModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-gray-200 flex justify-between items-center bg-blue-50">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-800">
+                  Mark Ineligible Students
+                </h2>
+                <p className="text-sm text-gray-600 mt-1">
+                  Course: <span className="font-semibold">{currentCourseForIneligibility}</span>
+                </p>
+              </div>
+              <button
+                onClick={closeModalWithoutSaving}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                <XMarkIcon className="h-6 w-6" />
+              </button>
+            </div>
+
+            <div className="p-6 flex-1 overflow-y-auto">
+              {ineligibilityLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+                </div>
+              ) : (
+                <>
+                  <div className="mb-6">
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                      Exam Date * <span className="text-red-500">(Required)</span>
+                    </label>
+                    <input
+                      type="date"
+                      value={ineligibilityData.examDate}
+                      min={today}
+                      onChange={(e) => setIneligibilityData(prev => ({ ...prev, examDate: e.target.value }))}
+                      className="w-full md:w-1/2 p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                    />
+                  </div>
+
+                  <div className="mb-4">
+                    <div className="relative">
+                      <MagnifyingGlassIcon className="absolute left-3 top-3.5 h-5 w-5 text-gray-400" />
+                      <input
+                        type="text"
+                        placeholder="Search by name or registration number..."
+                        value={ineligibilitySearch}
+                        onChange={(e) => setIneligibilitySearch(e.target.value)}
+                        className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="bg-gray-50 rounded-lg border border-gray-200 overflow-hidden">
+                    <div className="overflow-x-auto max-h-96">
+                      <table className="w-full">
+                        <thead className="bg-gray-100 sticky top-0">
+                          <tr>
+                            <th className="p-3 text-left font-bold text-gray-700">Reg. No.</th>
+                            <th className="p-3 text-left font-bold text-gray-700">Name</th>
+                            <th className="p-3 text-left font-bold text-gray-700">Email</th>
+                            <th className="p-3 text-center font-bold text-gray-700">Ineligible</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-200">
+                          {filteredIneligibilityStudents.map((student) => {
+                            const isIneligible = ineligibilityData.ineligibleSet.has(student.regnNo);
+                            return (
+                              <tr
+                                key={student.id}
+                                className={`hover:bg-gray-100 transition-colors ${
+                                  isIneligible ? "bg-red-50" : "bg-white"
+                                }`}
+                              >
+                                <td className="p-3 font-medium text-blue-700">{student.regnNo}</td>
+                                <td className="p-3 font-semibold text-gray-800">{student.studentName}</td>
+                                <td className="p-3 text-gray-600 text-sm">{student.email || "N/A"}</td>
+                                <td className="p-3 text-center">
+                                  <label className="relative inline-flex items-center cursor-pointer">
+                                    <input
+                                      type="checkbox"
+                                      checked={isIneligible}
+                                      onChange={() => toggleStudentIneligibility(student.regnNo)}
+                                      className="sr-only peer"
+                                    />
+                                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-red-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-red-600"></div>
+                                  </label>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <p className="text-sm text-gray-600 mt-3">
+                    {ineligibilityData.ineligibleSet.size} student(s) marked ineligible
+                  </p>
+                </>
+              )}
+            </div>
+
+            <div className="p-6 border-t border-gray-200 bg-gray-50 flex gap-3">
+              <button
+                onClick={closeModalWithoutSaving}
+                className="flex-1 px-6 py-3 border border-gray-300 rounded-lg font-semibold text-gray-700 hover:bg-gray-100 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveIneligibilityAndClose}
+                disabled={ineligibilityLoading || !ineligibilityData.examDate}
+                className={`flex-1 px-6 py-3 rounded-lg font-semibold text-white transition-colors ${
+                  ineligibilityLoading || !ineligibilityData.examDate
+                    ? "bg-gray-400 cursor-not-allowed"
+                    : "bg-green-600 hover:bg-green-700"
+                }`}
+              >
+                💾 Save & Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {message && (
         <div className={`fixed bottom-10 right-10 p-4 rounded-xl shadow-2xl border text-white transition-all transform animate-bounce z-50 ${
           message.includes("Success") || message.includes("✅") ? "bg-green-600" : "bg-blue-700"
@@ -584,4 +1008,4 @@ export default function Student() {
       )}
     </div>
   );
-}
+}     

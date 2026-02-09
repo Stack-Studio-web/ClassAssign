@@ -17,6 +17,7 @@ const notificationRoutes = require("./routes/notificationRoutes");
 const facultyRoutes = require("./routes/facultyRoutes");
 const userManagementRoutes = require("./routes/userManagementRoutes");
 const auditLogRoutes = require("./routes/auditLogRoutes"); // ✅ NEW
+const ineligibilityRoutes = require("./routes/ineligibilityRoutes");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -52,6 +53,7 @@ app.use("/api/users", userManagementRoutes);
 
 // AUDIT LOGS (ADMIN ONLY) ✅ NEW
 app.use("/api/audit-logs", auditLogRoutes);
+app.use("/api/ineligibility", ineligibilityRoutes);
 
 // NOTIFICATIONS
 app.use("/api/notifications", notificationRoutes);

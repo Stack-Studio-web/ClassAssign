@@ -85,23 +85,42 @@ router.post(
         });
       }
 
-      // Check faculty availability if manual mode
+      // ✅ FIXED: Check faculty availability if manual mode
       if (facultyMode === "MANUAL") {
         const facultyIds = venuesUsed
           .map(v => v.facultyId)
           .filter(id => id != null);
 
         for (const fId of facultyIds) {
+          // ✅ Use correct column structure
           const [allocCheck] = await connection.query(
-            `SELECT can_allocate_count FROM faculty WHERE id = ?`,
+            `SELECT 
+              f.id,
+              COALESCE(f.max_classrooms, 1) AS max_classrooms,
+              COUNT(spv.id) AS current_allocation
+             FROM faculty f
+             LEFT JOIN seating_plan_venues spv ON spv.faculty_id = f.id
+             WHERE f.id = ?
+             GROUP BY f.id, f.max_classrooms`,
             [fId]
           );
 
-          if (!allocCheck.length || allocCheck[0].can_allocate_count <= 0) {
+          if (!allocCheck.length) {
+            await connection.rollback();
+            return res.status(400).json({
+              error: "Faculty not found",
+              details: `Faculty ID ${fId} does not exist`
+            });
+          }
+
+          const { max_classrooms, current_allocation } = allocCheck[0];
+          const remaining = max_classrooms - current_allocation;
+
+          if (remaining <= 0) {
             await connection.rollback();
             return res.status(400).json({
               error: "Faculty unavailable",
-              details: `Faculty ID ${fId} has reached allocation limit`
+              details: `Faculty ID ${fId} has reached allocation limit (${current_allocation}/${max_classrooms})`
             });
           }
 
@@ -142,16 +161,6 @@ router.post(
       // Book venues (add sessions)
       for (const v of venuesUsed) {
         await Venue.addSession(v.venueId, dateOnly, examStartTime, examEndTime);
-
-        // Update faculty allocation count if manual mode
-        if (facultyMode === "MANUAL" && v.facultyId) {
-          await connection.query(
-            `UPDATE faculty 
-             SET can_allocate_count = can_allocate_count - 1
-             WHERE id = ?`,
-            [v.facultyId]
-          );
-        }
       }
 
       await connection.commit();
@@ -222,7 +231,7 @@ router.delete(
       );
 
       if (examDetails.length > 0) {
-        const { exam_date, exam_start_time, exam_end_time, faculty_mode } = examDetails[0];
+        const { exam_date, exam_start_time, exam_end_time } = examDetails[0];
 
         // Release venue sessions
         for (const v of venues) {
@@ -232,16 +241,6 @@ router.delete(
             exam_start_time,
             exam_end_time
           );
-
-          // Restore faculty allocation count if manual mode
-          if (faculty_mode === "MANUAL" && v.faculty_id) {
-            await connection.query(
-              `UPDATE faculty 
-               SET can_allocate_count = can_allocate_count + 1
-               WHERE id = ?`,
-              [v.faculty_id]
-            );
-          }
         }
       }
 
@@ -325,6 +324,7 @@ router.get("/:id",
     POST: CHECK FACULTY AVAILABILITY
     Roles: admin, faculty_incharge
     (NO AUDIT LOG - HELPER ENDPOINT)
+    ✅ FIXED: Use correct database schema
 ===================================================== */
 router.post("/check-faculty-availability",
   sessionAuth,
@@ -342,9 +342,17 @@ router.post("/check-faculty-availability",
 
       const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
 
-      // Get all faculty
+      // ✅ FIXED: Get all faculty with current allocation count (matching Faculty model)
       const [allFaculty] = await db.query(
-        `SELECT id, name, department, can_allocate_count FROM faculty`
+        `SELECT 
+          f.id,
+          f.name,
+          f.department,
+          COALESCE(f.max_classrooms, 1) AS max_classrooms,
+          COUNT(spv.id) AS current_allocation
+         FROM faculty f
+         LEFT JOIN seating_plan_venues spv ON spv.faculty_id = f.id
+         GROUP BY f.id, f.name, f.department, f.max_classrooms`
       );
 
       // Check time conflicts for each faculty
@@ -361,13 +369,17 @@ router.post("/check-faculty-availability",
             [f.id, dateOnly, examStartTime, examEndTime]
           );
 
+          const remaining = f.max_classrooms - f.current_allocation;
+
           return {
             id: f.id,
             name: f.name,
             department: f.department,
-            canAllocate: f.can_allocate_count > 0,
+            canAllocate: remaining > 0,
             hasTimeConflict: conflicts.length > 0,
-            allocationsRemaining: f.can_allocate_count
+            allocationsRemaining: remaining,
+            maxClassrooms: f.max_classrooms,
+            currentAllocation: f.current_allocation
           };
         })
       );

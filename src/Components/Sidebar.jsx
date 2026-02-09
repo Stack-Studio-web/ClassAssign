@@ -9,7 +9,8 @@ import {
   Bars3Icon,
   XMarkIcon,
   UserPlusIcon,
-  UsersIcon
+  UsersIcon,
+  ExclamationTriangleIcon
 } from "@heroicons/react/24/outline";
 import { NavLink } from "react-router-dom";
 import Logo from "../assets/logo.png";
@@ -39,20 +40,29 @@ const Sidebar = () => {
   };
 
   /* ================= NAVIGATION ITEMS ================= */
-  // Base items visible to everyone (Admin, Faculty, CEO)
+  // Base items visible to everyone (Admin, Faculty, COE)
   const navItems = [
     { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
     { to: "/student", label: "Student", icon: UserGroupIcon },
     { to: "/faculty", label: "Faculty", icon: UserPlusIcon },
   ];
 
-  // ✅ Add Allotment ONLY if user is NOT a CEO (coe)
+  // ✅ Add Allotment ONLY if user is NOT a COE (coe)
   if (userRole !== "coe") {
     navItems.push({ to: "/allotment", label: "Allotment", icon: ComputerDesktopIcon });
   }
 
   // Add Report for everyone
   navItems.push({ to: "/report", label: "Report", icon: NewspaperIcon });
+
+  // ✅ NEW: Add Ineligibility for Admin & Faculty Incharge ONLY
+  if (userRole === "admin" || userRole === "faculty_incharge") {
+    navItems.push({ 
+      to: "/ineligibility/view", 
+      label: "Ineligibility", 
+      icon: ExclamationTriangleIcon 
+    });
+  }
 
   // ✅ Add Admin-only items
   if (userRole === "admin") {

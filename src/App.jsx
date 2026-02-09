@@ -13,6 +13,7 @@ import Faculty from './pages/Faculty';
 import UserManagement from './pages/UserManagement';
 import Logs from './pages/Logs'; 
 import { StudentAttendance } from './Components/StudentAttendance';
+import IneligibleStudentsView from './pages/IneligibleStudentsView';
 
 /* ===============================
     AUTH GUARD COMPONENT
@@ -154,6 +155,15 @@ function App() {
         element={
           <AuthGuard allowedRoles={['admin', 'faculty_incharge','coe']}>
             <Layout><StudentImport /></Layout>
+          </AuthGuard>
+        }
+      />
+
+      <Route
+        path="/ineligibility/view"
+        element={
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge']}>
+            <Layout><IneligibleStudentsView /></Layout>
           </AuthGuard>
         }
       />
