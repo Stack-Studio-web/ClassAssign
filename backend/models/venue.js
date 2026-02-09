@@ -1,4 +1,4 @@
-// Class/backend/models/venue.js
+// Class/backend/models/venue.js - CLEANED VERSION
 const db = require("../config/db");
 
 const Venue = {
@@ -11,7 +11,7 @@ const Venue = {
       type,
       benchesRow,
       benchesCol,
-      benchConfig, // NEW: Array like [2, 2, 3, 3, 2] representing seats per column
+      benchConfig, // Array like [2, 2, 3, 3, 2] representing seats per column
       isAvailable = true,
       sessions = [],
     } = venue;

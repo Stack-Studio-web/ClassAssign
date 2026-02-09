@@ -10,13 +10,15 @@ import Report from './pages/Report';
 import Hall from './pages/StudentArrangement';
 import StudentImport from './pages/Student';
 import Faculty from './pages/Faculty'; 
-import UserManagement from './pages/UserManagement'; // ✅ NEW
+import UserManagement from './pages/UserManagement';
+import Logs from './pages/Logs'; 
 import { StudentAttendance } from './Components/StudentAttendance';
 
 /* ===============================
     AUTH GUARD COMPONENT
+    Updated to handle specific allowed roles
 =============================== */
-const AuthGuard = ({ children, requireAdmin = false }) => {
+const AuthGuard = ({ children, allowedRoles = [] }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const [isChecking, setIsChecking] = useState(true);
@@ -26,14 +28,14 @@ const AuthGuard = ({ children, requireAdmin = false }) => {
       const token = sessionStorage.getItem('authToken');
       const userStr = sessionStorage.getItem('user');
 
-      // Check if token exists
+      // 1. Check if token exists
       if (!token) {
         navigate('/login', { replace: true });
         return;
       }
 
-      // Check if admin access is required
-      if (requireAdmin) {
+      // 2. Check Role permissions if allowedRoles are specified
+      if (allowedRoles.length > 0) {
         if (!userStr) {
           navigate('/login', { replace: true });
           return;
@@ -42,9 +44,16 @@ const AuthGuard = ({ children, requireAdmin = false }) => {
         try {
           const user = JSON.parse(userStr);
           
-          if (user.role !== 'admin') {
-            alert('Access denied: Admin privileges required');
-            navigate('/allotment', { replace: true });
+          // Check if current user's role is in the allowed list
+          if (!allowedRoles.includes(user.role)) {
+            alert(`Access denied: ${user.role} role does not have permission to view this page.`);
+            
+            // Redirect based on role if they hit a restricted page
+            if (user.role === 'coe') {
+              navigate('/dashboard', { replace: true });
+            } else {
+              navigate('/allotment', { replace: true });
+            }
             return;
           }
         } catch (err) {
@@ -58,7 +67,7 @@ const AuthGuard = ({ children, requireAdmin = false }) => {
     };
 
     checkAuth();
-  }, [navigate, location.pathname, requireAdmin]);
+  }, [navigate, location.pathname, allowedRoles]);
 
   if (isChecking) {
     return (
@@ -80,34 +89,17 @@ const AuthGuard = ({ children, requireAdmin = false }) => {
 function App() {
   return (
     <Routes>
-      {/* ================================
-          PUBLIC ROUTES (NO AUTH REQUIRED)
-      ================================ */}
+      {/* PUBLIC ROUTES */}
       <Route path="/" element={<Landing />} />      
       <Route path="/login" element={<Landing />} />
       <Route path="/api/auth/microsoft/callback" element={<Landing />} />
 
-      {/* ================================
-          PROTECTED ROUTES (AUTH REQUIRED)
-      ================================ */}
+      {/* PROTECTED ROUTES - ACCESSIBLE BY ALL ROLES (Admin, Faculty, CEO) */}
       <Route
         path="/dashboard"
         element={
-          <AuthGuard>
-            <Layout>
-              <DashBoard />
-            </Layout>
-          </AuthGuard>
-        }
-      />
-
-      <Route
-        path="/allotment"
-        element={
-          <AuthGuard>
-            <Layout>
-              <Allotment />
-            </Layout>
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'coe']}>
+            <Layout><DashBoard /></Layout>
           </AuthGuard>
         }
       />
@@ -115,10 +107,8 @@ function App() {
       <Route
         path="/attendance"
         element={
-          <AuthGuard>
-            <Layout>
-              <StudentAttendance />
-            </Layout>
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'coe']}>
+            <Layout><StudentAttendance /></Layout>
           </AuthGuard>
         }
       />
@@ -126,10 +116,8 @@ function App() {
       <Route
         path="/venue"
         element={
-          <AuthGuard>
-            <Layout>
-              <Venue />
-            </Layout>
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'coe']}>
+            <Layout><Venue /></Layout>
           </AuthGuard>
         }
       />
@@ -137,10 +125,8 @@ function App() {
       <Route
         path="/faculty"
         element={
-          <AuthGuard>
-            <Layout>
-              <Faculty />
-            </Layout>
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'coe']}>
+            <Layout><Faculty /></Layout>
           </AuthGuard>
         }
       />
@@ -148,10 +134,8 @@ function App() {
       <Route
         path="/report"
         element={
-          <AuthGuard>
-            <Layout>
-              <Report />
-            </Layout>
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'coe']}>
+            <Layout><Report /></Layout>
           </AuthGuard>
         }
       />
@@ -159,10 +143,8 @@ function App() {
       <Route
         path="/Hall"
         element={
-          <AuthGuard>
-            <Layout>
-              <Hall />
-            </Layout>
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'coe']}>
+            <Layout><Hall /></Layout>
           </AuthGuard>
         }
       />
@@ -170,31 +152,47 @@ function App() {
       <Route
         path="/Student"
         element={
-          <AuthGuard>
-            <Layout>
-              <StudentImport />
-            </Layout>
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge','coe']}>
+            <Layout><StudentImport /></Layout>
           </AuthGuard>
         }
       />
 
-      {/* ================================
-          ADMIN-ONLY ROUTES
-      ================================ */}
+      {/* ======================================================
+          RESTRICTED ROUTES - ALLOTMENT (Admin & Faculty Only)
+          CEO is NOT allowed here
+      ====================================================== */}
+      <Route
+        path="/allotment"
+        element={
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge']}>
+            <Layout><Allotment /></Layout>
+          </AuthGuard>
+        }
+      />
+
+      {/* ======================================================
+          ADMIN-ONLY ROUTES (User Management & Audit Logs)
+      ====================================================== */}
       <Route
         path="/users"
         element={
-          <AuthGuard requireAdmin={true}>
-            <Layout>
-              <UserManagement />
-            </Layout>
+          <AuthGuard allowedRoles={['admin']}>
+            <Layout><UserManagement /></Layout>
           </AuthGuard>
         }
       />
 
-      {/* ================================
-          404 FALLBACK
-      ================================ */}
+      <Route
+        path="/logs"
+        element={
+          <AuthGuard allowedRoles={['admin']}>
+            <Layout><Logs /></Layout>
+          </AuthGuard>
+        }
+      />
+
+      {/* 404 FALLBACK */}
       <Route 
         path="*" 
         element={

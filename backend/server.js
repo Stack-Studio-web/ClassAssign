@@ -1,4 +1,4 @@
-// server.js
+// server.js - UPDATED WITH AUDIT LOGGING
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
@@ -15,7 +15,8 @@ const authRoutes = require("./routes/authRoutes");
 const microsoftAuthRoutes = require("./routes/microsoftAuthRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
 const facultyRoutes = require("./routes/facultyRoutes");
-const userManagementRoutes = require("./routes/userManagementRoutes"); // ✅ NEW
+const userManagementRoutes = require("./routes/userManagementRoutes");
+const auditLogRoutes = require("./routes/auditLogRoutes"); // ✅ NEW
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -46,8 +47,11 @@ app.use("/api/faculty", facultyRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/auth/microsoft", microsoftAuthRoutes);
 
-// USER MANAGEMENT (ADMIN ONLY) ✅ NEW
+// USER MANAGEMENT (ADMIN ONLY)
 app.use("/api/users", userManagementRoutes);
+
+// AUDIT LOGS (ADMIN ONLY) ✅ NEW
+app.use("/api/audit-logs", auditLogRoutes);
 
 // NOTIFICATIONS
 app.use("/api/notifications", notificationRoutes);
@@ -83,6 +87,7 @@ app.listen(PORT, () => {
 ║   Routes:                                      ║
 ║   - /api/auth (Login & SSO)                    ║
 ║   - /api/users (User Management - Admin)       ║
+║   - /api/audit-logs (Audit Logs - Admin)       ║
 ║   - /api/venues                                ║
 ║   - /api/seating                               ║
 ║   - /api/faculty                               ║

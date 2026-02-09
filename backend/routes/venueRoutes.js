@@ -1,246 +1,175 @@
-//venueRoutes.js
 const express = require("express");
 const router = express.Router();
 const Venue = require("../models/venue");
+const db = require("../config/db");
+const sessionAuth = require("../middleware/sessionAuth");
+const checkRole = require("../middleware/checkRole"); // New flexible middleware
+const auditLogger = require("../middleware/auditLogger");
 
 /* ================================
    GET ALL VENUES
+   Roles: admin, faculty_incharge, coe (CEO)
 ================================ */
-router.get("/", async (req, res) => {
-  try {
-    const venues = await Venue.getAll();
-    res.json(venues);
-  } catch (err) {
-    res.status(500).json({
-      error: "Server error",
-      details: err.message,
-    });
-  }
+router.get("/", 
+  sessionAuth, 
+  checkRole(['admin', 'faculty_incharge', 'coe']), 
+  async (req, res) => {
+    try {
+      const venues = await Venue.getAll();
+      res.json(venues);
+    } catch (err) {
+      res.status(500).json({ error: "Server error", details: err.message });
+    }
 });
 
 /* ================================
    GET VENUE STATS
+   Roles: admin, faculty_incharge, coe (CEO)
 ================================ */
-router.get("/stats", async (req, res) => {
-  try {
-    const venues = await Venue.getAll();
-
-    const totalVenues = venues.length;
-    const totalCapacity = venues.reduce(
-      (sum, v) => sum + (v.capacity || 0),
-      0
-    );
-
-    res.json({
-      totalVenues,
-      totalCapacity,
-    });
-  } catch (err) {
-    res.status(500).json({
-      error: "Server error",
-      details: err.message,
-    });
-  }
+router.get("/stats", 
+  sessionAuth, 
+  checkRole(['admin', 'faculty_incharge', 'coe']), 
+  async (req, res) => {
+    try {
+      const venues = await Venue.getAll();
+      const totalVenues = venues.length;
+      const totalCapacity = venues.reduce((sum, v) => sum + (v.capacity || 0), 0);
+      res.json({ totalVenues, totalCapacity });
+    } catch (err) {
+      res.status(500).json({ error: "Server error", details: err.message });
+    }
 });
 
 /* ================================
    ADD NEW VENUE
+   Roles: admin, faculty_incharge
 ================================ */
-router.post("/", async (req, res) => {
-  try {
-    let { name, type, benchesRow, benchesCol, benchConfig } = req.body;
+router.post("/",
+  sessionAuth,
+  checkRole(['admin', 'faculty_incharge']),
+  auditLogger("CREATE_VENUE", "Venue"),
+  async (req, res) => {
+    try {
+      let { name, type, benchesRow, benchesCol, benchConfig } = req.body;
 
-    if (
-      !name ||
-      !type ||
-      benchesRow === undefined ||
-      benchesCol === undefined ||
-      !benchConfig ||
-      !Array.isArray(benchConfig)
-    ) {
-      return res.status(400).json({
-        error: "Validation error",
-        details: "Venue name, type, rows, columns, and bench configuration are required.",
+      if (!name || !type || benchesRow === undefined || benchesCol === undefined || !Array.isArray(benchConfig)) {
+        return res.status(400).json({ error: "Validation error", details: "All fields are required." });
+      }
+
+      if (benchConfig.length !== benchesCol) {
+        return res.status(400).json({ error: "Validation error", details: "Bench configuration mismatch." });
+      }
+
+      const venueId = await Venue.create({
+        name: name.trim(),
+        type: type.trim(),
+        benchesRow,
+        benchesCol,
+        benchConfig,
       });
+
+      res.status(201).json({ message: "Venue created successfully", venueId, id: venueId });
+    } catch (err) {
+      res.status(err.code === "ER_DUP_ENTRY" ? 400 : 500).json({ error: err.message });
     }
-
-    if (benchConfig.length !== benchesCol) {
-      return res.status(400).json({
-        error: "Validation error",
-        details: "Bench configuration length must match number of columns.",
-      });
-    }
-
-    name = name.trim();
-    type = type.trim();
-
-    const venueId = await Venue.create({
-      name,
-      type,
-      benchesRow,
-      benchesCol,
-      benchConfig,
-    });
-
-    res.status(201).json({
-      message: "Venue created successfully",
-      venueId,
-    });
-  } catch (err) {
-    if (err.code === "ER_DUP_ENTRY") {
-      return res.status(400).json({
-        error: "Duplicate venue",
-        details: "Venue with this name and type already exists.",
-      });
-    }
-
-    res.status(400).json({
-      error: "Validation error",
-      details: err.message,
-    });
-  }
 });
 
 /* ================================
    UPDATE VENUE
+   Roles: admin, faculty_incharge
 ================================ */
-router.put("/:id", async (req, res) => {
-  try {
+router.put("/:id",
+  sessionAuth,
+  checkRole(['admin', 'faculty_incharge']),
+  auditLogger("UPDATE_VENUE", "Venue"),
+  async (req, res) => {
     const { id } = req.params;
     let { name, type, benchesRow, benchesCol, benchConfig } = req.body;
 
-    if (!name || !type || benchesRow === undefined || benchesCol === undefined || !benchConfig) {
-      return res.status(400).json({
-        error: "All fields are required for update.",
-      });
-    }
-
-    name = name.trim();
-    type = type.trim();
-
-    // Check duplicate
-    const exists = await Venue.existsByNameAndTypeExceptId(name, type, id);
-    if (exists) {
-      return res.status(400).json({
-        error: "Duplicate venue",
-        details: "Another venue with this name and type already exists.",
-      });
-    }
-
-    // Calculate capacity
-    const capacity = benchesRow * benchConfig.reduce((sum, seats) => sum + seats, 0);
-
-    const conn = await require("../config/db").getConnection();
     try {
+      if (!name || !type || benchesRow === undefined || benchesCol === undefined || !benchConfig) {
+        return res.status(400).json({ error: "All fields are required." });
+      }
+
+      const exists = await Venue.existsByNameAndTypeExceptId(name.trim(), type.trim(), id);
+      if (exists) return res.status(400).json({ error: "Duplicate venue" });
+
+      const capacity = benchesRow * benchConfig.reduce((sum, seats) => sum + seats, 0);
+      const conn = await db.getConnection();
+
+      try {
+        await conn.beginTransaction();
+        const [result] = await conn.query(
+          "UPDATE venues SET name=?, type=?, benches_row=?, benches_col=?, capacity=? WHERE id=?",
+          [name.trim(), type.trim(), benchesRow, benchesCol, capacity, id]
+        );
+
+        if (result.affectedRows === 0) throw new Error("Venue not found");
+
+        await conn.query("DELETE FROM venue_bench_config WHERE venue_id = ?", [id]);
+        for (let i = 0; i < benchConfig.length; i++) {
+          await conn.query(
+            "INSERT INTO venue_bench_config (venue_id, column_index, seats_per_bench) VALUES (?, ?, ?)",
+            [id, i, benchConfig[i]]
+          );
+        }
+
+        await conn.commit();
+        res.json({ message: "Venue updated successfully", id });
+      } catch (err) {
+        await conn.rollback();
+        throw err;
+      } finally {
+        conn.release();
+      }
+    } catch (err) {
+      res.status(500).json({ error: "Server error", details: err.message });
+    }
+});
+
+/* ================================
+   DELETE VENUE (With Foreign Key Checks)
+   Roles: admin, faculty_incharge
+================================ */
+router.delete("/:id",
+  sessionAuth,
+  checkRole(['admin', 'faculty_incharge']),
+  auditLogger("DELETE_VENUE", "Venue"),
+  async (req, res) => {
+    const conn = await db.getConnection();
+    try {
+      const { id } = req.params;
       await conn.beginTransaction();
 
-      // Update venue
-      const [result] = await conn.query(
-        `UPDATE venues
-         SET name = ?, type = ?, benches_row = ?, benches_col = ?, capacity = ?
-         WHERE id = ?`,
-        [name, type, benchesRow, benchesCol, capacity, id]
-      );
-
-      if (result.affectedRows === 0) {
-        await conn.rollback();
-        return res.status(404).json({ error: "Venue not found" });
-      }
-
-      // Delete old bench config
-      await conn.query(
-        `DELETE FROM venue_bench_config WHERE venue_id = ?`,
+      // Check if venue is linked to any active seating plans
+      const [usage] = await conn.query(
+        "SELECT COUNT(*) as count FROM seating_plan_venues WHERE venue_id = ?", 
         [id]
       );
-
-      // Insert new bench config
-      for (let colIndex = 0; colIndex < benchConfig.length; colIndex++) {
-        await conn.query(
-          `INSERT INTO venue_bench_config
-           (venue_id, column_index, seats_per_bench)
-           VALUES (?, ?, ?)`,
-          [id, colIndex, benchConfig[colIndex]]
-        );
+      
+      if (usage[0].count > 0) {
+        await conn.rollback();
+        return res.status(400).json({ 
+          error: "Cannot delete venue", 
+          details: `This venue is linked to ${usage[0].count} seating plan(s).` 
+        });
       }
 
+      // Cleanup child tables
+      await conn.query("DELETE FROM venue_bench_config WHERE venue_id = ?", [id]);
+      await conn.query("DELETE FROM venue_sessions WHERE venue_id = ?", [id]);
+      
+      // Delete parent record
+      const [result] = await conn.query("DELETE FROM venues WHERE id = ?", [id]);
+
       await conn.commit();
-      res.json({ message: "Venue updated successfully" });
+      res.json({ message: "Venue deleted successfully", id });
     } catch (err) {
       await conn.rollback();
-      throw err;
+      res.status(500).json({ error: "Server error", details: err.message });
     } finally {
       conn.release();
     }
-  } catch (err) {
-    res.status(500).json({
-      error: "Server error",
-      details: err.message,
-    });
-  }
-});
-
-/* ================================
-   DELETE VENUE
-================================ */
-router.delete("/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const [result] = await require("../config/db").query(
-      "DELETE FROM venues WHERE id = ?",
-      [id]
-    );
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: "Venue not found" });
-    }
-
-    res.json({ message: "Venue deleted successfully" });
-  } catch (err) {
-    res.status(500).json({
-      error: "Server error",
-      details: err.message,
-    });
-  }
-});
-
-/* ================================
-   ADD SESSION TO VENUE
-================================ */
-router.post("/:id/sessions", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { date, startTime, endTime } = req.body;
-
-    if (!date || !startTime || !endTime) {
-      return res
-        .status(400)
-        .json({ error: "All session fields are required." });
-    }
-
-    // Check conflicts
-    const available = await Venue.isAvailable(
-      id,
-      date,
-      startTime,
-      endTime
-    );
-
-    if (!available) {
-      return res.status(400).json({
-        error: "Venue already booked for this time slot",
-      });
-    }
-
-    await Venue.addSession(id, date, startTime, endTime);
-
-    res.json({ message: "Session added successfully" });
-  } catch (err) {
-    res.status(500).json({
-      error: "Server error",
-      details: err.message,
-    });
-  }
 });
 
 module.exports = router;

@@ -17,6 +17,12 @@ import Logo from "../assets/logo.png";
 const Sidebar = () => {
   const [open, setOpen] = useState(false);
 
+  // 🔐 Read user role from session storage
+  const user = JSON.parse(sessionStorage.getItem("user"));
+  const userRole = user?.role;
+
+  if (!userRole) return null;
+
   /* ================= LOGOUT ================= */
   const handleLogout = async () => {
     try {
@@ -27,20 +33,37 @@ const Sidebar = () => {
     } catch (error) {
       console.error("Logout error:", error);
     } finally {
-      sessionStorage.removeItem("authToken");
+      sessionStorage.clear();
       window.location.href = "/";
     }
   };
 
+  /* ================= NAVIGATION ITEMS ================= */
+  // Base items visible to everyone (Admin, Faculty, CEO)
   const navItems = [
     { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
     { to: "/student", label: "Student", icon: UserGroupIcon },
     { to: "/faculty", label: "Faculty", icon: UserPlusIcon },
-    { to: "/allotment", label: "Allotment", icon: ComputerDesktopIcon },
-    { to: "/report", label: "Report", icon: NewspaperIcon },
-    { to: "/users", label: "User Management", icon: UsersIcon },
-    { to: "/settings", label: "Settings", icon: Cog6ToothIcon },
   ];
+
+  // ✅ Add Allotment ONLY if user is NOT a CEO (coe)
+  if (userRole !== "coe") {
+    navItems.push({ to: "/allotment", label: "Allotment", icon: ComputerDesktopIcon });
+  }
+
+  // Add Report for everyone
+  navItems.push({ to: "/report", label: "Report", icon: NewspaperIcon });
+
+  // ✅ Add Admin-only items
+  if (userRole === "admin") {
+    navItems.push(
+      { to: "/users", label: "User Management", icon: UsersIcon },
+      { to: "/logs", label: "Logs", icon: NewspaperIcon }
+    );
+  }
+
+  // Add Settings for everyone
+  navItems.push({ to: "/settings", label: "Settings", icon: Cog6ToothIcon });
 
   return (
     <>
@@ -95,7 +118,7 @@ const Sidebar = () => {
                 `flex items-center space-x-3 px-5 py-3 rounded-lg text-sm font-medium transition-all duration-200
                 ${
                   isActive
-                    ? "border-b-2 border-[#1e3c72] text-[#1e3c72] font-semibold"
+                    ? "border-b-2 border-[#1e3c72] text-[#1e3c72] font-semibold bg-[#eaf1fb]"
                     : "text-gray-700 hover:bg-[#eaf1fb]"
                 }`
               }
@@ -110,7 +133,7 @@ const Sidebar = () => {
         <div className="p-4 border-t border-gray-200">
           <button
             onClick={handleLogout}
-            className="w-full flex items-center space-x-3 px-5 py-3 rounded-lg text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100"
+            className="w-full flex items-center space-x-3 px-5 py-3 rounded-lg text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 transition-colors"
           >
             <ArrowRightOnRectangleIcon className="h-5 w-5" />
             <span>Logout</span>
