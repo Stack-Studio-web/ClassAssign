@@ -466,15 +466,7 @@ const Allotment = () => {
       <h1 className="text-3xl font-bold text-center mb-6">Exam Seating Allotment</h1>
 
       {/* ✅ DEBUG INFO - Remove this after fixing */}
-      <div className="mb-4 p-4 bg-blue-50 border-2 border-blue-300 rounded text-xs">
-        <strong>DEBUG INFO (Remove after fixing):</strong>
-        <pre className="whitespace-pre-wrap mt-2">{debugInfo}</pre>
-        <div className="mt-2">
-          <strong>Current State:</strong>
-          <div>User Role: {userRole || "NONE"}</div>
-          <div>Has Write Access: {hasWriteAccess ? "YES" : "NO"}</div>
-        </div>
-      </div>
+      
 
       {error && (
         <div className={`p-3 rounded mb-4 text-center font-semibold ${

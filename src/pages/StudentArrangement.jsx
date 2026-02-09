@@ -1,4 +1,4 @@
-// StudentArrangement.jsx - UPDATED WITH AUTH & RBAC
+// StudentArrangement.jsx - UPDATED WITH AUTH, RBAC & IMPROVED NOTIFICATION FEEDBACK
 import React, { useEffect, useState, useRef } from "react";
 import axios from "axios";
 import { useReactToPrint } from "react-to-print";
@@ -16,6 +16,24 @@ api.interceptors.request.use((config) => {
   }
   return config;
 });
+
+// ✅ Response interceptor for better error handling
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      sessionStorage.clear();
+      window.location.href = "/login";
+    } else if (error.response?.status === 403) {
+      return Promise.reject({
+        ...error,
+        isForbidden: true,
+        message: error.response?.data?.details || "You do not have permission to perform this action."
+      });
+    }
+    return Promise.reject(error);
+  }
+);
 
 const getNumericPart = (rollNo) => {
   if (!rollNo) return NaN;
@@ -99,6 +117,7 @@ const ExamHallAllotment = () => {
   const [error, setError] = useState(null);
   const [filters, setFilters] = useState({ date: "", session: "" });
   const [userRole, setUserRole] = useState(""); // ✅ 2. Role state
+  const [hasNotificationAccess, setHasNotificationAccess] = useState(false);
   const [notificationStatus, setNotificationStatus] = useState({
     message: "",
     loading: false,
@@ -120,7 +139,11 @@ const ExamHallAllotment = () => {
       try {
         const user = JSON.parse(userStr);
         setUserRole(user.role);
-      } catch (e) { console.error("Session parse error", e); }
+        // Only admin and faculty_incharge can send notifications
+        setHasNotificationAccess(user.role === 'admin' || user.role === 'faculty_incharge');
+      } catch (e) { 
+        console.error("Session parse error", e); 
+      }
     }
 
     const fetchHalls = async () => {
@@ -132,6 +155,8 @@ const ExamHallAllotment = () => {
         console.error(err);
         if (err.response?.status === 401) {
           setError("Session expired. Please log in again.");
+        } else if (err.isForbidden) {
+          setError("Access denied: " + err.message);
         } else {
           setError("Failed to load hall data.");
         }
@@ -144,21 +169,76 @@ const ExamHallAllotment = () => {
 
   const handleSendNotifications = async () => {
     const { date, session } = filters;
-    setNotificationStatus({ message: "Preparing to send notifications...", loading: true, error: false, details: null });
+    
+    // Reset previous notification status
+    setNotificationStatus({ 
+      message: "Preparing to send notifications...", 
+      loading: true, 
+      error: false, 
+      details: null 
+    });
 
+    // Validation
     if (!date || (session !== "FN" && session !== "AN")) {
-      setNotificationStatus({ message: "Please select a valid Date and Session.", loading: false, error: true, details: null });
+      setNotificationStatus({ 
+        message: "Please select a valid Date and Session.", 
+        loading: false, 
+        error: true, 
+        details: null 
+      });
+      return;
+    }
+
+    // Check access
+    if (!hasNotificationAccess) {
+      setNotificationStatus({ 
+        message: "Access denied: Only Admin and Faculty Incharge can send notifications.", 
+        loading: false, 
+        error: true, 
+        details: null 
+      });
       return;
     }
 
     try {
-      // ✅ 5. Use 'api' instance
+      // ✅ 5. Use 'api' instance with proper error handling
       const res = await api.post("/notifications/teams", { date, session });
-      setNotificationStatus({ message: res.data.message || "Notification sent successfully.", loading: false, error: false, details: res.data });
+      
+      // Simple success message
+      setNotificationStatus({ 
+        message: "✅ Notification queued successfully!",
+        loading: false, 
+        error: false, 
+        details: null // Don't pass details to avoid showing recipient list
+      });
+
+      // Auto-hide success message after 5 seconds
+      setTimeout(() => {
+        setNotificationStatus(prev => ({
+          ...prev,
+          message: ""
+        }));
+      }, 5000);
+
     } catch (err) {
       console.error("Notification error:", err);
-      const msg = err.response?.data?.error || "Failed to send notification.";
-      setNotificationStatus({ message: msg, loading: false, error: true, details: null });
+      
+      let errorMessage = "Failed to send notification.";
+      
+      if (err.isForbidden) {
+        errorMessage = `Access Denied: ${err.message}`;
+      } else if (err.response?.status === 404) {
+        errorMessage = err.response?.data?.error || "No seating plans found for selected date/session.";
+      } else if (err.response?.data?.error) {
+        errorMessage = err.response.data.error;
+      }
+      
+      setNotificationStatus({ 
+        message: errorMessage, 
+        loading: false, 
+        error: true, 
+        details: null 
+      });
     }
   };
 
@@ -235,9 +315,74 @@ const ExamHallAllotment = () => {
 
   return (
     <div className="p-6 max-w-6xl mx-auto font-poppins">
+      {/* ✅ Enhanced Notification Status Display */}
       {notificationStatus.message && (
-        <div className={`p-3 mb-4 rounded-md border-l-4 ${notificationStatus.error ? "bg-red-100 border-red-500 text-red-700" : "bg-green-100 border-green-500 text-green-700"}`}>
-          <p className="font-semibold">{notificationStatus.message}</p>
+        <div className={`p-4 mb-4 rounded-lg border-l-4 ${
+          notificationStatus.error 
+            ? "bg-red-50 border-red-500 text-red-800" 
+            : "bg-green-50 border-green-500 text-green-800"
+        }`}>
+          <div className="flex items-start gap-3">
+            <div className="flex-shrink-0">
+              {notificationStatus.loading ? (
+                <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+              ) : notificationStatus.error ? (
+                <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd"/>
+                </svg>
+              ) : (
+                <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd"/>
+                </svg>
+              )}
+            </div>
+            <div className="flex-1">
+              <pre className="font-sans whitespace-pre-wrap text-sm">{notificationStatus.message}</pre>
+              
+              {/* Show detailed breakdown if available */}
+              {notificationStatus.details?.queued && notificationStatus.details.queued.length > 0 && (
+                <details className="mt-3">
+                  <summary className="cursor-pointer font-semibold hover:underline">
+                    View Recipients ({notificationStatus.details.queued.length})
+                  </summary>
+                  <div className="mt-2 max-h-40 overflow-y-auto bg-white bg-opacity-50 rounded p-2 text-xs">
+                    {notificationStatus.details.queued.slice(0, 10).map((item, idx) => (
+                      <div key={idx} className="py-1 border-b border-gray-200 last:border-0">
+                        <span className="font-medium">{item.name}</span> ({item.regnNo}) - {item.email}
+                        <br />
+                        <span className="text-gray-600">Venue: {item.venue} | Course: {item.courses}</span>
+                      </div>
+                    ))}
+                    {notificationStatus.details.queued.length > 10 && (
+                      <p className="text-gray-600 mt-2">
+                        ... and {notificationStatus.details.queued.length - 10} more
+                      </p>
+                    )}
+                  </div>
+                </details>
+              )}
+
+              {/* Show skipped students if any */}
+              {notificationStatus.details?.skipped && notificationStatus.details.skipped.length > 0 && (
+                <details className="mt-3">
+                  <summary className="cursor-pointer font-semibold hover:underline text-orange-700">
+                    ⚠️ Skipped Students ({notificationStatus.details.skipped.length})
+                  </summary>
+                  <div className="mt-2 max-h-40 overflow-y-auto bg-white bg-opacity-50 rounded p-2 text-xs">
+                    {notificationStatus.details.skipped.map((item, idx) => (
+                      <div key={idx} className="py-1 border-b border-gray-200 last:border-0">
+                        <span className="font-medium">{item.name || item.regnNo}</span> - 
+                        <span className="text-orange-700"> Reason: {item.reason}</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
@@ -246,10 +391,19 @@ const ExamHallAllotment = () => {
           <h1 className="text-2xl font-bold mb-2 text-indigo-900">Filter Exam Hall Allotment</h1>
           <div className="flex gap-4 items-center">
             <label className="text-sm font-medium">Date:
-              <input type="date" value={filters.date} onChange={(e) => setFilters({ ...filters, date: e.target.value })} className="border px-2 py-1 ml-2 rounded" />
+              <input 
+                type="date" 
+                value={filters.date} 
+                onChange={(e) => setFilters({ ...filters, date: e.target.value })} 
+                className="border px-2 py-1 ml-2 rounded" 
+              />
             </label>
             <label className="text-sm font-medium">Session:
-              <select value={filters.session} onChange={(e) => setFilters({ ...filters, session: e.target.value })} className="border px-2 py-1 ml-2 rounded">
+              <select 
+                value={filters.session} 
+                onChange={(e) => setFilters({ ...filters, session: e.target.value })} 
+                className="border px-2 py-1 ml-2 rounded"
+              >
                 <option value="">All</option>
                 <option value="FN">FN</option>
                 <option value="AN">AN</option>
@@ -259,17 +413,45 @@ const ExamHallAllotment = () => {
         </div>
 
         <div className="flex flex-col space-y-2">
-          {/* ✅ Hide Send Notification for CEO */}
-          {userRole !== 'coe' && (
+          {/*  Show Send Notification only for admin and faculty_incharge */}
+          {hasNotificationAccess && (
             <button
               onClick={handleSendNotifications}
               disabled={!filters.date || !["FN", "AN"].includes(filters.session) || filteredHalls.length === 0 || notificationStatus.loading}
-              className={`text-white px-4 py-2 rounded-md shadow transition ${notificationStatus.loading ? "bg-yellow-500 cursor-wait" : "bg-orange-500 hover:bg-orange-600 disabled:bg-gray-400"}`}
+              className={`text-white px-4 py-2 rounded-md shadow transition flex items-center gap-2 ${
+                notificationStatus.loading 
+                  ? "bg-yellow-500 cursor-wait" 
+                  : "bg-orange-500 hover:bg-orange-600 disabled:bg-gray-400 disabled:cursor-not-allowed"
+              }`}
+              title={!hasNotificationAccess ? "Only Admin and Faculty Incharge can send notifications" : ""}
             >
-              {notificationStatus.loading ? "📤 Sending..." : "📨 Send Teams Notification"}
+              {notificationStatus.loading ? (
+                <>
+                  <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  Sending...
+                </>
+              ) : (
+                <>
+                  📨 Send Teams Notification
+                </>
+              )}
             </button>
           )}
-          <button onClick={handlePrint} disabled={filteredHalls.length === 0} className="bg-blue-600 text-white px-4 py-2 rounded-md shadow hover:bg-blue-700 disabled:bg-gray-400">
+          
+          {!hasNotificationAccess && userRole === 'coe' && (
+            <div className="text-xs text-gray-500 italic text-center">
+              COE role: View only access
+            </div>
+          )}
+          
+          <button 
+            onClick={handlePrint} 
+            disabled={filteredHalls.length === 0} 
+            className="bg-blue-600 text-white px-4 py-2 rounded-md shadow hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
+          >
             📄 Export as PDF
           </button>
         </div>
