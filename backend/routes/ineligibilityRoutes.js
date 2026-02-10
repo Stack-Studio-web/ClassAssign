@@ -1,4 +1,4 @@
-// Class/backend/routes/ineligibilityRoutes.js - UPDATED WITH PROPER CHECK ENDPOINT
+// Class/backend/routes/ineligibilityRoutes.js
 const express = require("express");
 const router = express.Router();
 const IneligibleStudent = require("../models/IneligibleStudent");
@@ -9,6 +9,7 @@ const auditLogger = require("../middleware/auditLogger");
 /* ===============================
     GET /api/ineligibility/students/:courseCode
     ✅ NO AUTH - Public endpoint for listing students
+    Used by: Student Management > Notifications
 =============================== */
 router.get("/students/:courseCode", async (req, res) => {
   try {
@@ -19,6 +20,30 @@ router.get("/students/:courseCode", async (req, res) => {
     res.json(students);
   } catch (err) {
     console.error("❌ Error fetching students:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ===============================
+    ✅ NEW: GET /api/ineligibility/students/:courseCode/:department
+    ✅ NO AUTH - Public endpoint for course+dept matching
+    Used by: Allotment page
+    Returns students matching BOTH course code AND department
+=============================== */
+router.get("/students/:courseCode/:department", async (req, res) => {
+  try {
+    const { courseCode, department } = req.params;
+    
+    console.log(`📋 Request: students for ${courseCode}, dept ${department}`);
+    
+    const students = await IneligibleStudent.getStudentsByCourseAndDept(
+      decodeURIComponent(courseCode),
+      department.toUpperCase()
+    );
+    
+    res.json(students);
+  } catch (err) {
+    console.error("❌ Error fetching students by course and dept:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -45,7 +70,7 @@ router.get(
         });
       }
 
-      // Normalize exam date (remove time component if present)
+      // Normalize exam date
       const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
 
       const ineligible = await IneligibleStudent.getIneligibleStudents(
@@ -85,7 +110,7 @@ router.get(
 
 /* ===============================
     POST /api/ineligibility/bulk-update
-    ✅ AUTH REQUIRED - This is the critical endpoint
+    ✅ AUTH REQUIRED
 =============================== */
 router.post(
   "/bulk-update",

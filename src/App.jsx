@@ -1,4 +1,4 @@
-// src/App.jsx
+// src/App.jsx - UPDATED WITH TIMETABLE ROUTE
 import React, { useEffect, useState } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import DashBoard from './pages/DashBoard';
@@ -12,6 +12,7 @@ import StudentImport from './pages/Student';
 import Faculty from './pages/Faculty'; 
 import UserManagement from './pages/UserManagement';
 import Logs from './pages/Logs'; 
+import Timetable from './pages/Timetable'; // ✅ NEW
 import { StudentAttendance } from './Components/StudentAttendance';
 import IneligibleStudentsView from './pages/IneligibleStudentsView';
 
@@ -95,7 +96,7 @@ function App() {
       <Route path="/login" element={<Landing />} />
       <Route path="/api/auth/microsoft/callback" element={<Landing />} />
 
-      {/* PROTECTED ROUTES - ACCESSIBLE BY ALL ROLES (Admin, Faculty, CEO) */}
+      {/* PROTECTED ROUTES - ACCESSIBLE BY ALL ROLES (Admin, Faculty, COE) */}
       <Route
         path="/dashboard"
         element={
@@ -159,6 +160,16 @@ function App() {
         }
       />
 
+      {/* ✅ NEW: TIMETABLE ROUTE - ALL ROLES */}
+      <Route
+        path="/timetable"
+        element={
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'coe']}>
+            <Layout><Timetable /></Layout>
+          </AuthGuard>
+        }
+      />
+
       <Route
         path="/ineligibility/view"
         element={
@@ -170,7 +181,7 @@ function App() {
 
       {/* ======================================================
           RESTRICTED ROUTES - ALLOTMENT (Admin & Faculty Only)
-          CEO is NOT allowed here
+          COE is NOT allowed here
       ====================================================== */}
       <Route
         path="/allotment"

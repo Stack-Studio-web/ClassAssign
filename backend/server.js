@@ -1,4 +1,4 @@
-// server.js - UPDATED WITH AUDIT LOGGING
+// server.js - UPDATED WITH TIMETABLE ROUTES
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
@@ -16,8 +16,9 @@ const microsoftAuthRoutes = require("./routes/microsoftAuthRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
 const facultyRoutes = require("./routes/facultyRoutes");
 const userManagementRoutes = require("./routes/userManagementRoutes");
-const auditLogRoutes = require("./routes/auditLogRoutes"); // ✅ NEW
+const auditLogRoutes = require("./routes/auditLogRoutes");
 const ineligibilityRoutes = require("./routes/ineligibilityRoutes");
+const timetableRoutes = require("./routes/timetableRoutes"); // ✅ NEW
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -51,9 +52,14 @@ app.use("/api/auth/microsoft", microsoftAuthRoutes);
 // USER MANAGEMENT (ADMIN ONLY)
 app.use("/api/users", userManagementRoutes);
 
-// AUDIT LOGS (ADMIN ONLY) ✅ NEW
+// AUDIT LOGS (ADMIN ONLY)
 app.use("/api/audit-logs", auditLogRoutes);
+
+// INELIGIBILITY
 app.use("/api/ineligibility", ineligibilityRoutes);
+
+// TIMETABLE ✅ NEW
+app.use("/api/timetable", timetableRoutes);
 
 // NOTIFICATIONS
 app.use("/api/notifications", notificationRoutes);
@@ -90,6 +96,7 @@ app.listen(PORT, () => {
 ║   - /api/auth (Login & SSO)                    ║
 ║   - /api/users (User Management - Admin)       ║
 ║   - /api/audit-logs (Audit Logs - Admin)       ║
+║   - /api/timetable (Timetable Management)      ║
 ║   - /api/venues                                ║
 ║   - /api/seating                               ║
 ║   - /api/faculty                               ║

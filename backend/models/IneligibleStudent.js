@@ -3,7 +3,7 @@ const db = require("../config/db");
 
 const IneligibleStudent = {
   /* ===============================
-      GET STUDENTS BY COURSE
+      GET STUDENTS BY COURSE (Simple - for notifications)
   =============================== */
   getStudentsByCourse: async (courseCode) => {
     const [rows] = await db.query(`
@@ -18,6 +18,33 @@ const IneligibleStudent = {
       WHERE course_description = ?
       ORDER BY regn_no
     `, [courseCode]);
+    return rows;
+  },
+
+  /* ===============================
+      ✅ NEW: GET STUDENTS BY COURSE AND DEPARTMENT
+      This is used by Allotment to get properly matched students
+      Matches BOTH course code AND department in regno
+  =============================== */
+  getStudentsByCourseAndDept: async (courseCode, department) => {
+    console.log(`📋 Fetching students for course: ${courseCode}, dept: ${department}`);
+    
+    const [rows] = await db.query(`
+      SELECT
+        id,
+        regn_no AS regnNo,
+        student_name AS studentName,
+        email,
+        course_description AS courseCode,
+        course_name AS courseName
+      FROM students
+      WHERE course_description = ?     -- Course match
+        AND regn_no LIKE ?              -- Department match
+      ORDER BY regn_no
+    `, [courseCode, `%${department}%`]);
+
+    console.log(`✅ Found ${rows.length} students matching course ${courseCode} and dept ${department}`);
+    
     return rows;
   },
 
@@ -40,6 +67,9 @@ const IneligibleStudent = {
       WHERE exam_type = ? AND course_code = ? AND exam_date = ?
       ORDER BY regn_no
     `, [examType, courseCode, examDate]);
+    
+    console.log(`📋 Ineligible check for ${courseCode} on ${examDate}: ${rows.length} students`);
+    
     return rows;
   },
 
@@ -103,6 +133,9 @@ const IneligibleStudent = {
       }
 
       await conn.commit();
+      
+      console.log(`✅ Updated ineligibility: ${ineligibleStudents.length} students for ${courseCode}`);
+      
       return { success: true, count: ineligibleStudents.length };
     } catch (err) {
       await conn.rollback();

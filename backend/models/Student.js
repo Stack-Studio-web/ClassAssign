@@ -1,4 +1,4 @@
-// Class/backend/models/Student.js
+// Class/backend/models/Student.js - UPDATED WITH DEPARTMENT FILTERING
 const db = require("../config/db");
 
 const Student = {
@@ -6,8 +6,6 @@ const Student = {
       INSERT OR UPDATE (Final Duplicate Protection)
   ============================================================ */
   insertOne: async (s) => {
-    // ON DUPLICATE KEY UPDATE ensures that if the (regn_no + course_description)
-    // already exists, we just update the details instead of creating a duplicate.
     const sql = `
       INSERT INTO students 
         (regn_no, student_name, course_description, course_name, email)
@@ -98,6 +96,50 @@ const Student = {
       WHERE course_description = ?
       ORDER BY regn_no
     `, [courseDescription]);
+
+    return rows;
+  },
+
+  /* ===============================
+      ✅ NEW: GET BY DEPARTMENT
+      Matches students whose regno contains the department code
+      Example: department = "BCS" matches "23BCS090", "24BCS045"
+  =============================== */
+  getByDepartment: async (department) => {
+    const [rows] = await db.query(`
+      SELECT
+        id,
+        regn_no AS regnNo,
+        student_name AS studentName,
+        course_name AS courseName,
+        course_description AS courseDescription,
+        email
+      FROM students
+      WHERE regn_no LIKE ?
+      ORDER BY regn_no
+    `, [`%${department}%`]);
+
+    return rows;
+  },
+
+  /* ===============================
+      ✅ NEW: GET BY COURSE CODE AND DEPARTMENT
+      Gets students for a specific course that match department
+  =============================== */
+  getByCourseAndDepartment: async (courseCode, department) => {
+    const [rows] = await db.query(`
+      SELECT
+        id,
+        regn_no AS regnNo,
+        student_name AS studentName,
+        course_name AS courseName,
+        course_description AS courseDescription,
+        email
+      FROM students
+      WHERE course_description = ?
+        AND regn_no LIKE ?
+      ORDER BY regn_no
+    `, [courseCode, `%${department}%`]);
 
     return rows;
   },

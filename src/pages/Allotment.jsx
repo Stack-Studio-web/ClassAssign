@@ -1,3 +1,4 @@
+// Allotment.jsx - Complete File with Course Priority Seating
 import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
@@ -7,7 +8,6 @@ const api = axios.create({
   baseURL: "/api",
 });
 
-// Request interceptor to add auth token
 api.interceptors.request.use(
   (config) => {
     const token = sessionStorage.getItem("authToken");
@@ -21,7 +21,6 @@ api.interceptors.request.use(
   }
 );
 
-// Response interceptor for 401 and 403 handling
 api.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -44,10 +43,9 @@ const Allotment = () => {
   
   // --- State Management ---
   const [venues, setVenues] = useState([]);
-  const [courses, setCourses] = useState([]);
-  const [selectedCourses, setSelectedCourses] = useState([]);
+  const [timetableCourses, setTimetableCourses] = useState([]);
   const [studentsByCourse, setStudentsByCourse] = useState({});
-  const [currentCourse, setCurrentCourse] = useState("");
+  
   const [seatingMode, setSeatingMode] = useState("auto");
   const [manualVenueId, setManualVenueId] = useState("");
   const [selectedVenues, setSelectedVenues] = useState([]);
@@ -58,6 +56,7 @@ const Allotment = () => {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isFetchingCourses, setIsFetchingCourses] = useState(false);
 
   const [examDate, setExamDate] = useState("");
   const [examSession, setExamSession] = useState("FN");
@@ -70,14 +69,12 @@ const Allotment = () => {
   const [allFaculty, setAllFaculty] = useState([]);
   const [manualFacultyAssignments, setManualFacultyAssignments] = useState({});
 
-  // ✅ NEW: Store ineligible students by course
   const [ineligibleStudentsByCourse, setIneligibleStudentsByCourse] = useState({});
   const [ineligibilityStats, setIneligibilityStats] = useState({
     total: 0,
     byCourse: {}
   });
 
-  // ✅ User role and permissions
   const [userRole, setUserRole] = useState("");
   const [hasWriteAccess, setHasWriteAccess] = useState(false);
 
@@ -105,14 +102,12 @@ const Allotment = () => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [vRes, cRes, fRes] = await Promise.all([
+        const [vRes, fRes] = await Promise.all([
           api.get("/venues"),
-          api.get("/students/courses"),
           api.get("/faculty")
         ]);
 
         setVenues(vRes.data.filter((v) => v.isAvailable));
-        setCourses(cRes.data);
         setAllFaculty(fRes.data);
       } catch (err) {
         if (err.response?.status === 401) {
@@ -128,10 +123,108 @@ const Allotment = () => {
     fetchData();
   }, []);
 
-  // ✅ NEW: Fetch ineligible students when exam details change
+  // ✅ UPDATED: Fetch courses from timetable when date/time/session change
+  useEffect(() => {
+    const fetchCoursesFromTimetable = async () => {
+      // Reset if any required field is missing
+      if (!examDate || !examStartTime || !examEndTime || !examSession) {
+        setTimetableCourses([]);
+        setStudentsByCourse({});
+        setExamType("");
+        setIneligibleStudentsByCourse({});
+        setIneligibilityStats({ total: 0, byCourse: {} });
+        return;
+      }
+
+      if (!hasWriteAccess) {
+        return;
+      }
+
+      setIsFetchingCourses(true);
+      setError("");
+
+      try {
+        const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
+        
+        console.log('📋 Fetching courses from timetable:', {
+          date: dateOnly,
+          startTime: examStartTime,
+          endTime: examEndTime,
+          session: examSession
+        });
+
+        // Fetch courses from timetable
+        const res = await api.get("/timetable/by-exam-details", {
+          params: {
+            date: dateOnly,
+            startTime: examStartTime,
+            endTime: examEndTime,
+            session: examSession
+          }
+        });
+
+        const courses = res.data;
+
+        if (courses.length === 0) {
+          setError("ℹ️ No courses scheduled for this date, time, and session in the timetable.");
+          setTimetableCourses([]);
+          setStudentsByCourse({});
+          setExamType("");
+          return;
+        }
+
+        console.log(`✅ Found ${courses.length} course(s) from timetable`);
+
+        // Set exam type from first course
+        if (courses[0].examType) {
+          setExamType(courses[0].examType);
+        }
+
+        // ✅ CRITICAL: Fetch students for each course based on BOTH course code AND department
+        const studentsData = {};
+        
+        for (const course of courses) {
+          try {
+            console.log(`📚 Fetching students for ${course.courseCode} (Dept: ${course.department})`);
+            
+            // ✅ NEW ENDPOINT: Get students matching BOTH course code AND department
+            const studentsRes = await api.get(
+              `/ineligibility/students/${encodeURIComponent(course.courseCode)}/${course.department}`
+            );
+            
+            studentsData[course.courseCode] = studentsRes.data;
+            
+            console.log(`✅ Found ${studentsRes.data.length} students for ${course.courseCode} in dept ${course.department}`);
+          } catch (err) {
+            console.error(`Error fetching students for ${course.courseCode}:`, err);
+            studentsData[course.courseCode] = [];
+          }
+        }
+
+        setTimetableCourses(courses);
+        setStudentsByCourse(studentsData);
+
+      } catch (err) {
+        console.error("Error fetching courses from timetable:", err);
+        if (err.isForbidden) {
+          setError("Access denied: " + err.message);
+        } else {
+          setError("Failed to fetch courses from timetable");
+        }
+        setTimetableCourses([]);
+        setStudentsByCourse({});
+      } finally {
+        setIsFetchingCourses(false);
+      }
+    };
+
+    fetchCoursesFromTimetable();
+  }, [examDate, examStartTime, examEndTime, examSession, hasWriteAccess]);
+
+  // ✅ Fetch ineligible students when exam details and courses change
   useEffect(() => {
     const fetchIneligibleStudents = async () => {
-      if (!examDate || !examType || selectedCourses.length === 0) {
+      if (!examDate || !examType || timetableCourses.length === 0) {
         setIneligibleStudentsByCourse({});
         setIneligibilityStats({ total: 0, byCourse: {} });
         return;
@@ -143,27 +236,26 @@ const Allotment = () => {
         const statsByCourse = {};
         let totalIneligible = 0;
 
-        // Fetch ineligible students for each selected course
-        for (const courseCode of selectedCourses) {
+        for (const course of timetableCourses) {
           try {
             const res = await api.get(`/ineligibility/check`, {
               params: {
                 examType,
-                courseCode,
+                courseCode: course.courseCode,
                 examDate: dateOnly
               }
             });
 
             const ineligibleList = res.data || [];
-            ineligibleMap[courseCode] = new Set(ineligibleList.map(s => s.regnNo));
-            statsByCourse[courseCode] = ineligibleList.length;
+            ineligibleMap[course.courseCode] = new Set(ineligibleList.map(s => s.regnNo));
+            statsByCourse[course.courseCode] = ineligibleList.length;
             totalIneligible += ineligibleList.length;
 
-            console.log(`📋 Course ${courseCode}: ${ineligibleList.length} ineligible students`);
+            console.log(`📋 Course ${course.courseCode}: ${ineligibleList.length} ineligible students`);
           } catch (err) {
-            console.error(`Error fetching ineligibility for ${courseCode}:`, err);
-            ineligibleMap[courseCode] = new Set();
-            statsByCourse[courseCode] = 0;
+            console.error(`Error fetching ineligibility for ${course.courseCode}:`, err);
+            ineligibleMap[course.courseCode] = new Set();
+            statsByCourse[course.courseCode] = 0;
           }
         }
 
@@ -183,9 +275,9 @@ const Allotment = () => {
     };
 
     fetchIneligibleStudents();
-  }, [examDate, examType, selectedCourses]);
+  }, [examDate, examType, timetableCourses]);
 
-  // Fetch faculty availability when exam details change
+  // Fetch faculty availability
   useEffect(() => {
     const checkFacultyAvailability = async () => {
       if (!examDate || !examStartTime || !examEndTime || allFaculty.length === 0) {
@@ -239,49 +331,7 @@ const Allotment = () => {
   }, [examDate, examStartTime, examEndTime, examSession, hasWriteAccess]);
 
   // --- Handlers ---
-  const handleAddCourse = async () => {
-    if (!currentCourse || selectedCourses.includes(currentCourse)) return;
-    
-    if (!hasWriteAccess) {
-      setError("You do not have permission to modify seating arrangements.");
-      return;
-    }
-    
-    setLoading(true);
-    setError("");
-    
-    try {
-      const res = await api.get(`/students/course/${encodeURIComponent(currentCourse)}`);
-      setStudentsByCourse(prev => ({ ...prev, [currentCourse]: res.data }));
-      setSelectedCourses(prev => [...prev, currentCourse]);
-      setCurrentCourse("");
-    } catch (err) {
-      if (err.response?.status === 401) return;
-      
-      if (err.isForbidden) {
-        setError("Access denied: " + err.message);
-      } else {
-        setError(`Failed to fetch students for ${currentCourse}`);
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const removeCourse = (course) => {
-    if (!hasWriteAccess) {
-      setError("You do not have permission to modify seating arrangements.");
-      return;
-    }
-    
-    setSelectedCourses(prev => prev.filter(c => c !== course));
-    setStudentsByCourse(prev => { 
-        const copy = { ...prev }; 
-        delete copy[course]; 
-        return copy; 
-    });
-  };
-
+  
   const handleAddVenueManual = () => {
     if (!hasWriteAccess) {
       setError("You do not have permission to modify venue selection.");
@@ -309,162 +359,225 @@ const Allotment = () => {
     setSelectedVenues(prev => prev.filter(v => v._id !== venueId));
   };
 
-  // ✅ UPDATED: Allotment Logic with Ineligibility Filtering
+  // ✅ ENHANCED: Allotment Logic with COURSE PRIORITY + Anti-Cheating Constraints
   const handleGenerate = async () => {
-    setError("");
+  setError("");
 
-    if (!hasWriteAccess) {
-      return setError("Access denied: Only Admin and Faculty Incharge can generate seating plans.");
-    }
+  if (!hasWriteAccess) {
+    return setError("Access denied: Only Admin and Faculty Incharge can generate seating plans.");
+  }
 
-    if (examDate && examDate < today) {
-      return setError("Invalid Date: Seating cannot be generated for past dates.");
-    }
+  if (examDate && examDate < today) {
+    return setError("Invalid Date: Seating cannot be generated for past dates.");
+  }
 
-    if (!examDate || !examType || !examStartTime || !examEndTime) 
-      return setError("Fill all exam details.");
-    if (selectedCourses.length === 0) 
-      return setError("Add at least one course.");
+  if (!examDate || !examType || !examStartTime || !examEndTime) 
+    return setError("Fill all exam details.");
+  
+  if (timetableCourses.length === 0) 
+    return setError("No courses found in timetable for selected date/time/session.");
 
-    setIsGenerating(true);
+  setIsGenerating(true);
 
-    const venuesToUse = seatingMode === "auto" 
-      ? [...venues].sort((a, b) => b.capacity - a.capacity) 
-      : [...selectedVenues];
+  const venuesToUse = seatingMode === "auto" 
+    ? [...venues].sort((a, b) => b.capacity - a.capacity) 
+    : [...selectedVenues];
 
-    if (venuesToUse.length === 0) {
-      setIsGenerating(false);
-      return setError("No venues available.");
-    }
+  if (venuesToUse.length === 0) {
+    setIsGenerating(false);
+    return setError("No venues available.");
+  }
 
-    // ✅ Build student list with ineligibility filtering
-    let allStudents = [];
-    let totalExcluded = 0;
-    let excludedByIneligibility = 0;
-    let excludedByBatch = 0;
+  // ✅ Build student list BY COURSE
+  let studentsByCourseCode = {};
+  let totalExcluded = 0;
+  let excludedByIneligibility = 0;
+  let excludedByBatch = 0;
 
-    selectedCourses.forEach(courseName => {
-      const students = studentsByCourse[courseName] || [];
-      const prefixes = (excludedBatches[courseName] || "").split(",").map(p => p.trim().toUpperCase());
-      const ineligibleSet = ineligibleStudentsByCourse[courseName] || new Set();
+  console.log('\n📊 ===== STUDENT FILTERING PROCESS =====');
 
-      students.forEach(student => {
-        // Check batch exclusion
-        const isBatchExcluded = prefixes.some(p => p && student.regnNo.toUpperCase().startsWith(p));
-        
-        // ✅ Check ineligibility
-        const isIneligible = ineligibleSet.has(student.regnNo);
+  timetableCourses.forEach(course => {
+    const courseName = course.courseCode;
+    const department = course.department;
+    
+    const students = studentsByCourse[courseName] || [];
+    
+    console.log(`\n📚 Processing ${courseName} (Dept: ${department})`);
+    console.log(`   Total students from API (already course+dept matched): ${students.length}`);
+    
+    const prefixes = (excludedBatches[courseName] || "").split(",").map(p => p.trim().toUpperCase());
+    const ineligibleSet = ineligibleStudentsByCourse[courseName] || new Set();
 
-        if (isBatchExcluded) {
-          excludedByBatch++;
-          totalExcluded++;
-        } else if (isIneligible) {
-          excludedByIneligibility++;
-          totalExcluded++;
-          console.log(`⚠️ Excluding ineligible student: ${student.regnNo} from ${courseName}`);
-        } else {
-          // ✅ Only include eligible students
-          allStudents.push({ 
-            ...student, 
-            courseDescription: courseName 
-          });
-        }
+    let courseEligibleStudents = [];
+    let courseBatchExcluded = 0;
+    let courseIneligibleExcluded = 0;
+
+    students.forEach(student => {
+      const isBatchExcluded = prefixes.some(p => p && student.regnNo.toUpperCase().startsWith(p));
+      
+      if (isBatchExcluded) {
+        excludedByBatch++;
+        totalExcluded++;
+        courseBatchExcluded++;
+        console.log(`   ❌ Batch excluded: ${student.regnNo}`);
+        return;
+      }
+
+      const isIneligible = ineligibleSet.has(student.regnNo);
+
+      if (isIneligible) {
+        excludedByIneligibility++;
+        totalExcluded++;
+        courseIneligibleExcluded++;
+        console.log(`   ⚠️ Ineligible: ${student.regnNo}`);
+        return;
+      }
+
+      courseEligibleStudents.push({ 
+        ...student, 
+        courseDescription: courseName 
       });
     });
 
-    console.log(`📊 Filtering Summary:
-      - Total students before filtering: ${allStudents.length + totalExcluded}
-      - Excluded by batch prefix: ${excludedByBatch}
-      - Excluded by ineligibility: ${excludedByIneligibility}
-      - Eligible students for seating: ${allStudents.length}
-    `);
+    if (courseEligibleStudents.length > 0) {
+      studentsByCourseCode[courseName] = courseEligibleStudents;
+    }
 
-    // Show info message if students were excluded
-    if (excludedByIneligibility > 0) {
-      const infoMsg = `ℹ️ ${excludedByIneligibility} student(s) excluded due to ineligibility. ${allStudents.length} eligible students will be seated.`;
-      setError(infoMsg);
+    console.log(`   ✅ Eligible for seating: ${courseEligibleStudents.length}`);
+  });
+
+  // ✅ Sort courses by student count (HIGHEST TO LOWEST)
+  const sortedCourses = Object.entries(studentsByCourseCode)
+    .sort(([, studentsA], [, studentsB]) => studentsB.length - studentsA.length)
+    .map(([courseCode, students]) => ({ courseCode, students, index: 0 }));
+
+  console.log('\n📊 ===== COURSE PRIORITY ORDER (By Student Count) =====');
+  sortedCourses.forEach(({ courseCode, students }, index) => {
+    console.log(`${index + 1}. ${courseCode}: ${students.length} students`);
+  });
+
+  // ✅ NEW: INTERLEAVE students from different courses
+  let allStudents = [];
+  let totalStudents = sortedCourses.reduce((sum, { students }) => sum + students.length, 0);
+  
+  // Round-robin distribution: pick from each course in turn
+  while (allStudents.length < totalStudents) {
+    for (const courseData of sortedCourses) {
+      if (courseData.index < courseData.students.length) {
+        allStudents.push(courseData.students[courseData.index]);
+        courseData.index++;
+      }
+    }
+  }
+
+  console.log(`\n📊 ===== OVERALL FILTERING SUMMARY =====`);
+  console.log(`Total students processed: ${allStudents.length + totalExcluded}`);
+  console.log(`Excluded by batch prefix: ${excludedByBatch}`);
+  console.log(`Excluded by ineligibility: ${excludedByIneligibility}`);
+  console.log(`✅ FINAL ELIGIBLE FOR SEATING: ${allStudents.length}`);
+  console.log(`✅ Students interleaved from ${sortedCourses.length} courses\n`);
+
+  if (excludedByIneligibility > 0 || excludedByBatch > 0) {
+    const infoMsg = `ℹ️ ${excludedByBatch} student(s) excluded by batch prefix. ${excludedByIneligibility} student(s) excluded due to ineligibility. ${allStudents.length} eligible students will be seated.`;
+    setError(infoMsg);
+    
+    setTimeout(() => {
+      if (error === infoMsg) setError("");
+    }, 8000);
+  }
+
+  const totalCapacity = venuesToUse.reduce((sum, v) => sum + v.capacity, 0);
+  if (allStudents.length > totalCapacity) {
+    setIsGenerating(false);
+    return setError(`Capacity error: Need ${allStudents.length}, have ${totalCapacity}`);
+  }
+
+  // ✅ SEATING ALGORITHM: Column-first with anti-cheating constraints
+  const venuesResult = [];
+  let studentIndex = 0;
+
+  for (const venue of venuesToUse) {
+    if (studentIndex >= allStudents.length) break;
+
+    const grid = Array.from({ length: venue.benchesRow }, () => 
+      Array(venue.benchesCol).fill("Empty")
+    );
+
+    const benchConfig = venue.benchConfig || Array(venue.benchesCol).fill(2);
+
+    // Fill COLUMN by COLUMN
+    for (let c = 0; c < venue.benchesCol; c++) {
+      const seatsInThisColumn = benchConfig[c] || 2;
       
-      // Clear the message after 5 seconds
-      setTimeout(() => {
-        if (error === infoMsg) setError("");
-      }, 5000);
-    }
-
-    const totalCapacity = venuesToUse.reduce((sum, v) => sum + v.capacity, 0);
-    if (allStudents.length > totalCapacity) {
-      setIsGenerating(false);
-      return setError(`Capacity error: Need ${allStudents.length}, have ${totalCapacity}`);
-    }
-
-    const venuesResult = [];
-    let studentIndex = 0;
-
-    for (const venue of venuesToUse) {
-      if (studentIndex >= allStudents.length) break;
-
-      const grid = Array.from({ length: venue.benchesRow }, () => 
-        Array(venue.benchesCol).fill("Empty")
-      );
-
-      const benchConfig = venue.benchConfig || Array(venue.benchesCol).fill(2);
-
-      for (let c = 0; c < venue.benchesCol; c++) {
-        const seatsInThisColumn = benchConfig[c] || 2;
-        for (let r = 0; r < venue.benchesRow; r++) {
+      // Fill ROW by ROW within this column
+      for (let r = 0; r < venue.benchesRow; r++) {
+        if (studentIndex >= allStudents.length) break;
+        
+        const cellStudents = [];
+        
+        // Fill SEATS within this bench
+        for (let s = 0; s < seatsInThisColumn; s++) {
           if (studentIndex >= allStudents.length) break;
-          const cellStudents = [];
-          for (let s = 0; s < seatsInThisColumn; s++) {
-            if (studentIndex >= allStudents.length) break;
-            const student = allStudents[studentIndex];
-            const shouldAdd = cellStudents.length === 0 || 
-              cellStudents[cellStudents.length - 1].courseDescription !== student.courseDescription;
-            if (shouldAdd) {
-              cellStudents.push(student);
-              studentIndex++;
-            } else {
-              let found = false;
-              for (let j = studentIndex + 1; j < allStudents.length && j < studentIndex + 20; j++) {
-                if (allStudents[j].courseDescription !== cellStudents[cellStudents.length - 1].courseDescription) {
-                  cellStudents.push(allStudents[j]);
-                  [allStudents[studentIndex], allStudents[j]] = [allStudents[j], allStudents[studentIndex]];
-                  studentIndex++;
-                  found = true;
-                  break;
-                }
-              }
-              if (!found) {
+          
+          const student = allStudents[studentIndex];
+          
+          // ✅ ANTI-CHEATING: Check if student can sit here
+          const shouldAdd = cellStudents.length === 0 || 
+            cellStudents[cellStudents.length - 1].courseDescription !== student.courseDescription;
+          
+          if (shouldAdd) {
+            cellStudents.push(student);
+            studentIndex++;
+          } else {
+            // ✅ SMART SWAPPING: Look ahead for different course student
+            let found = false;
+            for (let j = studentIndex + 1; j < allStudents.length && j < studentIndex + 20; j++) {
+              if (allStudents[j].courseDescription !== cellStudents[cellStudents.length - 1].courseDescription) {
+                cellStudents.push(allStudents[j]);
+                // Swap positions in the array
+                [allStudents[studentIndex], allStudents[j]] = [allStudents[j], allStudents[studentIndex]];
                 studentIndex++;
+                found = true;
                 break;
               }
             }
-          }
-          if (cellStudents.length > 0) {
-            grid[r][c] = cellStudents.map(s => ({
-              regn_no: s.regnNo,
-              course: s.courseDescription
-            }));
+            
+            if (!found) {
+              // No different course found nearby, skip this seat
+              studentIndex++;
+              break;
+            }
           }
         }
+        
+        // Store the bench arrangement
+        if (cellStudents.length > 0) {
+          grid[r][c] = cellStudents.map(s => ({
+            regn_no: s.regnNo,
+            course: s.courseDescription
+          }));
+        }
       }
-
-      let previewFaculty = "Not Assigned";
-      const availableFaculty = allFaculty.filter(f => f.canAllocate && !f.hasTimeConflict);
-      if (facultyMode === "AUTO" && availableFaculty.length > 0) {
-        const f = availableFaculty[venuesResult.length % availableFaculty.length];
-        previewFaculty = `${f.name} (${f.department})`;
-      }
-
-      venuesResult.push({ 
-        venue, 
-        seats: grid, 
-        previewFacultyName: previewFaculty 
-      });
     }
 
-    setAllottedStudents(allStudents.slice(0, studentIndex));
-    setGeneratedSeating(venuesResult);
-    setIsGenerating(false);
-  };
+    let previewFaculty = "Not Assigned";
+    const availableFaculty = allFaculty.filter(f => f.canAllocate && !f.hasTimeConflict);
+    if (facultyMode === "AUTO" && availableFaculty.length > 0) {
+      const f = availableFaculty[venuesResult.length % availableFaculty.length];
+      previewFaculty = `${f.name} (${f.department})`;
+    }
+
+    venuesResult.push({ 
+      venue, 
+      seats: grid, 
+      previewFacultyName: previewFaculty 
+    });
+  }
+
+  setAllottedStudents(allStudents.slice(0, studentIndex));
+  setGeneratedSeating(venuesResult);
+  setIsGenerating(false);
+};
 
   const handleSave = async () => {
     if (!hasWriteAccess) {
@@ -483,6 +596,8 @@ const Allotment = () => {
     if (invalidFaculty) {
       return setError("One or more selected faculty are unavailable.");
     }
+
+    const selectedCourses = timetableCourses.map(c => c.courseCode);
 
     const payload = {
       examDate, 
@@ -508,7 +623,7 @@ const Allotment = () => {
       alert("✅ Seating Plan Saved Successfully!");
       setGeneratedSeating(null);
       setAllottedStudents([]);
-      setSelectedCourses([]);
+      setTimetableCourses([]);
       setStudentsByCourse({});
       setError("");
     } catch (err) {
@@ -541,7 +656,6 @@ const Allotment = () => {
         </div>
       )}
 
-      {/* ✅ NEW: Ineligibility Stats Display */}
       {ineligibilityStats.total > 0 && (
         <div className="mb-4 p-4 bg-orange-50 border-l-4 border-orange-500 rounded">
           <h3 className="font-semibold text-orange-800 mb-2">
@@ -559,12 +673,11 @@ const Allotment = () => {
         </div>
       )}
 
-      {/* 1. Exam Details */}
       <section className="border p-4 rounded-lg mb-6 shadow-sm">
         <h3 className="font-semibold mb-3 text-lg">1. Exam Details</h3>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
           <div>
-            <label className="text-sm font-medium">Date</label>
+            <label className="text-sm font-medium">Date *</label>
             <input 
               type="date" 
               value={examDate} 
@@ -575,7 +688,7 @@ const Allotment = () => {
             />
           </div>
           <div>
-            <label className="text-sm font-medium">Session</label>
+            <label className="text-sm font-medium">Session *</label>
             <select 
               value={examSession} 
               onChange={e => setExamSession(e.target.value)} 
@@ -587,21 +700,7 @@ const Allotment = () => {
             </select>
           </div>
           <div>
-            <label className="text-sm font-medium">Type</label>
-            <select 
-              value={examType} 
-              onChange={e => setExamType(e.target.value)} 
-              className="border p-2 rounded-md w-full disabled:bg-gray-100 disabled:cursor-not-allowed"
-              disabled={!hasWriteAccess}
-            >
-              <option value="">Select</option>
-              <option value="CAT1">CAT 1</option>
-              <option value="CAT2">CAT 2</option>
-              <option value="SEM">Semester</option>
-            </select>
-          </div>
-          <div>
-            <label className="text-sm font-medium">Start</label>
+            <label className="text-sm font-medium">Start Time *</label>
             <input 
               type="time" 
               value={examStartTime} 
@@ -611,7 +710,7 @@ const Allotment = () => {
             />
           </div>
           <div>
-            <label className="text-sm font-medium">End</label>
+            <label className="text-sm font-medium">End Time *</label>
             <input 
               type="time" 
               value={examEndTime} 
@@ -620,10 +719,26 @@ const Allotment = () => {
               disabled={!hasWriteAccess}
             />
           </div>
+          <div>
+            <label className="text-sm font-medium">Type (Auto)</label>
+            <input 
+              type="text" 
+              value={examType || "Loading..."} 
+              readOnly
+              className="border p-2 rounded-md w-full bg-gray-100 cursor-not-allowed"
+              title="Exam type is automatically filled from timetable"
+            />
+          </div>
         </div>
+
+        {isFetchingCourses && (
+          <div className="mt-3 text-blue-600 text-sm flex items-center gap-2">
+            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+            Fetching courses from timetable...
+          </div>
+        )}
       </section>
 
-      {/* 2. Configuration */}
       <section className="border p-4 rounded-lg mb-6 shadow-sm bg-gray-50">
         <h3 className="font-semibold mb-3 text-lg">2. Configuration</h3>
         <div className="grid md:grid-cols-2 gap-8">
@@ -716,77 +831,85 @@ const Allotment = () => {
         </div>
       </section>
 
-      {/* 3. Courses */}
       <section className="border p-4 rounded-lg mb-6 shadow-sm">
-        <h3 className="font-semibold mb-3">3. Courses & Students</h3>
-        <div className="flex gap-3 mb-4">
-          <select 
-            value={currentCourse} 
-            onChange={e => setCurrentCourse(e.target.value)} 
-            className="border p-2 rounded-md flex-1 disabled:bg-gray-100 disabled:cursor-not-allowed"
-            disabled={!hasWriteAccess}
-          >
-            <option value="">-- Select Course --</option>
-            {courses.map(c => (
-              <option key={c.courseDescription} value={c.courseDescription}>
-                {c.courseDescription}
-              </option>
-            ))}
-          </select>
-          <button 
-            onClick={handleAddCourse} 
-            disabled={loading || !hasWriteAccess} 
-            className="bg-indigo-600 text-white px-6 py-2 rounded-md hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
-          >
-            {loading ? "Adding..." : "Add Course"}
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {selectedCourses.map(c => {
-            const totalStudents = studentsByCourse[c]?.length || 0;
-            const ineligibleCount = ineligibilityStats.byCourse[c] || 0;
-            const eligibleCount = totalStudents - ineligibleCount;
-            
-            return (
-              <div key={c} className="bg-gray-50 p-3 rounded border shadow-sm">
-                <div className="flex justify-between font-bold mb-1">
-                  <span className="text-sm">{c}</span>
-                  {hasWriteAccess && (
-                    <button onClick={() => removeCourse(c)} className="text-red-500 text-lg">×</button>
-                  )}
+        <h3 className="font-semibold mb-3">
+          3. Scheduled Courses (From Timetable)
+          <span className="text-xs text-gray-500 ml-2 font-normal">
+            ✅ Students auto-matched by course code AND department
+          </span>
+        </h3>
+        
+        {timetableCourses.length === 0 ? (
+          <div className="text-center text-gray-500 py-6 bg-gray-50 rounded-lg">
+            {examDate && examStartTime && examEndTime && examSession ? (
+              isFetchingCourses ? (
+                <div className="flex items-center justify-center gap-2">
+                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
+                  <span>Loading courses...</span>
                 </div>
-                
-                {/* ✅ Show student counts */}
-                <div className="text-xs text-gray-600 mb-2">
-                  <div>Total: {totalStudents} students</div>
-                  {ineligibleCount > 0 && (
-                    <div className="text-orange-600 font-semibold">
-                      ⚠️ Ineligible: {ineligibleCount}
+              ) : (
+                "No courses scheduled for selected date/time/session"
+              )
+            ) : (
+              "Select date, start time, end time, and session to view scheduled courses"
+            )}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {timetableCourses.map(course => {
+              const totalStudents = studentsByCourse[course.courseCode]?.length || 0;
+              const ineligibleCount = ineligibilityStats.byCourse[course.courseCode] || 0;
+              const eligibleCount = totalStudents - ineligibleCount;
+              
+              return (
+                <div key={course.id} className="bg-gradient-to-br from-blue-50 to-indigo-50 p-4 rounded-lg border-2 border-blue-200 shadow-sm">
+                  <div className="flex justify-between items-start mb-2">
+                    <div>
+                      <div className="font-bold text-blue-900">{course.courseCode}</div>
+                      <div className="text-xs text-gray-600">{course.courseName}</div>
                     </div>
-                  )}
-                  <div className="text-green-600 font-semibold">
-                    ✓ Eligible: {eligibleCount}
+                    <span className="px-2 py-1 bg-purple-100 text-purple-800 rounded text-xs font-semibold">
+                      {course.department}
+                    </span>
                   </div>
+                  
+                  <div className="text-xs text-gray-600 mt-3 space-y-1">
+                    <div className="flex justify-between">
+                      <span>✅ Matched (Course+Dept):</span>
+                      <span className="font-semibold text-green-600">{totalStudents}</span>
+                    </div>
+                    {ineligibleCount > 0 && (
+                      <div className="flex justify-between text-orange-600">
+                        <span>⚠️ Ineligible:</span>
+                        <span className="font-semibold">{ineligibleCount}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between text-blue-600 border-t pt-1">
+                      <span>🎓 Final Eligible:</span>
+                      <span className="font-bold">{eligibleCount}</span>
+                    </div>
+                  </div>
+                  
+                  {hasWriteAccess && (
+                    <input 
+                      type="text" 
+                      placeholder="Exclude prefix (e.g. 24BAD)" 
+                      className="w-full text-xs p-2 border rounded mt-2 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                      onChange={e => setExcludedBatches(prev => ({...prev, [course.courseCode]: e.target.value}))}
+                      disabled={!hasWriteAccess}
+                    />
+                  )}
                 </div>
-                
-                <input 
-                  type="text" 
-                  placeholder="Exclude prefix (e.g. 24BAD)" 
-                  className="w-full text-xs p-1 border rounded disabled:bg-gray-100 disabled:cursor-not-allowed"
-                  onChange={e => setExcludedBatches(prev => ({...prev, [c]: e.target.value}))}
-                  disabled={!hasWriteAccess}
-                />
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )}
       </section>
 
       <div className="flex gap-4 mb-10">
         <button 
           onClick={handleGenerate} 
-          disabled={isGenerating || !hasWriteAccess} 
+          disabled={isGenerating || !hasWriteAccess || timetableCourses.length === 0} 
           className="bg-green-600 text-white px-8 py-3 rounded-lg font-bold shadow-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
           title={!hasWriteAccess ? "Only Admin and Faculty Incharge can generate seating plans" : ""}
         >
@@ -803,7 +926,6 @@ const Allotment = () => {
         )}
       </div>
 
-      {/* ✅ RESTORED: Seating Preview Section from Old Code */}
       {generatedSeating && (
         <div className="space-y-10">
           <h2 className="text-2xl font-bold border-b pb-2">Seating Layout Preview</h2>

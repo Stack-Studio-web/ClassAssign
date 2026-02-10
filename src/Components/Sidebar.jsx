@@ -10,7 +10,8 @@ import {
   XMarkIcon,
   UserPlusIcon,
   UsersIcon,
-  ExclamationTriangleIcon
+  ExclamationTriangleIcon,
+  CalendarDaysIcon
 } from "@heroicons/react/24/outline";
 import { NavLink } from "react-router-dom";
 import Logo from "../assets/logo.png";
@@ -47,6 +48,9 @@ const Sidebar = () => {
     { to: "/faculty", label: "Faculty", icon: UserPlusIcon },
   ];
 
+  // ✅ NEW: Add Timetable for all roles
+  navItems.push({ to: "/timetable", label: "Timetable", icon: CalendarDaysIcon });
+
   // ✅ Add Allotment ONLY if user is NOT a COE (coe)
   if (userRole !== "coe") {
     navItems.push({ to: "/allotment", label: "Allotment", icon: ComputerDesktopIcon });
@@ -55,7 +59,7 @@ const Sidebar = () => {
   // Add Report for everyone
   navItems.push({ to: "/report", label: "Report", icon: NewspaperIcon });
 
-  // ✅ NEW: Add Ineligibility for Admin & Faculty Incharge ONLY
+  // ✅ Add Ineligibility for Admin & Faculty Incharge ONLY
   if (userRole === "admin" || userRole === "faculty_incharge") {
     navItems.push({ 
       to: "/ineligibility/view", 
