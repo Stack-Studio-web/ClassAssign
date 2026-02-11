@@ -1,6 +1,12 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
+import { 
+  ArrowUpTrayIcon, 
+  DocumentArrowDownIcon,
+  ArrowUturnLeftIcon,
+  TrashIcon 
+} from "@heroicons/react/24/outline";
 
 // ✅ Create axios instance
 const api = axios.create({
@@ -59,6 +65,13 @@ export default function AddVenue() {
   const [error, setError] = useState("");
   const [isDuplicateError, setIsDuplicateError] = useState(false);
 
+  // ✅ NEW: Bulk Import State
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [importStatus, setImportStatus] = useState("");
+  const [importError, setImportError] = useState("");
+  const [lastImportInfo, setLastImportInfo] = useState(null);
+  const [isImporting, setIsImporting] = useState(false);
+
   const venueTypes = [
     { value: "", label: "Select" },
     { value: "classroom", label: "Classroom" },
@@ -116,9 +129,20 @@ export default function AddVenue() {
     }
   };
 
+  // ✅ NEW: Check last import status
+  const checkLastImport = async () => {
+    try {
+      const res = await api.get("/import/last-venue-import");
+      setLastImportInfo(res.data);
+    } catch (err) {
+      console.error("Failed to fetch last import info", err);
+    }
+  };
+
   useEffect(() => {
     fetchStats();
     fetchVenues();
+    checkLastImport();
   }, []);
 
   const handleChange = (e) => {
@@ -180,7 +204,6 @@ export default function AddVenue() {
     }
   };
 
-  // ✅ ENHANCED DELETE HANDLER WITH PROPER ERROR DISPLAY
   const handleDelete = async (id) => {
     if (!id) {
       alert("❌ Invalid Venue ID.");
@@ -195,36 +218,19 @@ export default function AddVenue() {
       fetchStats();
       fetchVenues();
     } catch (err) {
-      // Handle 401 silently (interceptor handles redirect)
-      if (err.response?.status === 401) {
-        return;
-      }
+      if (err.response?.status === 401) return;
       
-      // Handle 400 errors (foreign key constraints, validation)
       if (err.response?.status === 400) {
         const errorData = err.response?.data;
         
-        // Check if it's a foreign key constraint error
-        if (errorData?.usageCount !== undefined) {
-          // Custom error message with usage count
-          alert(
-            `❌ Cannot Delete Venue\n\n` +
-            `${errorData.details}\n\n` +
-            `This venue is used in ${errorData.usageCount} seating plan(s).\n\n` +
-            `Please remove or reassign those seating plans before deleting this venue.`
-          );
-        } else if (errorData?.details) {
-          // Generic detailed error
+        if (errorData?.details) {
           alert(`❌ ${errorData.details}`);
         } else if (errorData?.error) {
-          // Generic error message
           alert(`❌ ${errorData.error}`);
         } else {
-          // Fallback
           alert("❌ Cannot delete this venue. It may be in use.");
         }
       } else {
-        // Handle other errors (500, etc.)
         alert("❌ Failed to delete venue. Please try again or contact support.");
       }
       
@@ -257,6 +263,136 @@ export default function AddVenue() {
     setIsDuplicateError(false);
   };
 
+  // ✅ NEW: Bulk Import Handlers
+  const handleFileSelect = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      if (!file.name.endsWith(".xlsx") && !file.name.endsWith(".xls")) {
+        setImportError("Please select a valid Excel file (.xlsx or .xls)");
+        setSelectedFile(null);
+        return;
+      }
+      setSelectedFile(file);
+      setImportError("");
+      setImportStatus("");
+    }
+  };
+
+  const handleBulkImport = async () => {
+    if (!selectedFile) {
+      setImportError("Please select a file first");
+      return;
+    }
+
+    setIsImporting(true);
+    setImportError("");
+    setImportStatus("");
+
+    const formData = new FormData();
+    formData.append("file", selectedFile);
+
+    try {
+      const res = await api.post("/import/import-venues", formData, {
+        headers: { "Content-Type": "multipart/form-data" }
+      });
+
+      setImportStatus(
+        `✅ Import completed!\n` +
+        `• Inserted: ${res.data.inserted}\n` +
+        `• Skipped: ${res.data.skipped || 0}\n` +
+        (res.data.duplicates?.length > 0 
+          ? `• Duplicates: ${res.data.duplicates.join(", ")}\n`
+          : "") +
+        (res.data.skippedRecords?.length > 0
+          ? `• Errors: ${res.data.skippedRecords.join(", ")}`
+          : "")
+      );
+
+      setSelectedFile(null);
+      document.getElementById("venue-file-input").value = "";
+      
+      await fetchStats();
+      await fetchVenues();
+      await checkLastImport();
+
+    } catch (err) {
+      if (err.response?.status === 401) return;
+      
+      const errorMsg = err.response?.data?.message || "Import failed";
+      const details = err.response?.data?.skippedRecords?.join("\n") || "";
+      setImportError(`❌ ${errorMsg}\n${details}`);
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  const handleUndoImport = async () => {
+    if (!window.confirm("⚠️ This will delete all venues from the last import. Continue?")) {
+      return;
+    }
+
+    try {
+      const res = await api.post("/import/undo-venue-import");
+      alert(res.data.message);
+      
+      await fetchStats();
+      await fetchVenues();
+      await checkLastImport();
+      
+    } catch (err) {
+      if (err.response?.status === 401) return;
+      alert(err.response?.data?.message || "Undo failed");
+    }
+  };
+
+  const downloadTemplate = () => {
+    const template = [
+      {
+        "Venue Name": "AD101",
+        "Type": "classroom",
+        "Rows": 10,
+        "Columns": 5,
+        "Bench Config": "2,2,3,3,2"
+      },
+      {
+        "Venue Name": "AD102",
+        "Type": "classroom",
+        "Rows": 10,
+        "Columns": 5,
+        "Bench Config": "2,2,2,2,2"
+      },
+      {
+        "Venue Name": "B201",
+        "Type": "lab",
+        "Rows": 8,
+        "Columns": 4,
+        "Bench Config": "2,2,2,2"
+      },
+      {
+        "Venue Name": "Hall-A",
+        "Type": "hall",
+        "Rows": 15,
+        "Columns": 6,
+        "Bench Config": "3,3,3,3,3,3"
+      }
+    ];
+
+    const csvContent = [
+      ["Venue Name", "Type", "Rows", "Columns", "Bench Config"].join(","),
+      ...template.map(row => 
+        [row["Venue Name"], row.Type, row.Rows, row.Columns, row["Bench Config"]].join(",")
+      )
+    ].join("\n");
+
+    const blob = new Blob([csvContent], { type: "text/csv" });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "venue_import_template.csv";
+    a.click();
+    window.URL.revokeObjectURL(url);
+  };
+
   const handleSearch = (e) => setSearchQuery(e.target.value);
   const handleSort = () =>
     setSortOrder((prev) => (prev === "highToLow" ? "lowToHigh" : "highToLow"));
@@ -282,7 +418,7 @@ export default function AddVenue() {
           ←
         </button>
         <h1 className="text-3xl font-semibold">
-          {editingId ? "Edit Venue" : "Add Venue"}
+          {editingId ? "Edit Venue" : "Venue Management"}
         </h1>
       </div>
 
@@ -316,6 +452,16 @@ export default function AddVenue() {
         </button>
         <button
           className={`pb-3 px-1 border-b-2 cursor-pointer ${
+            activeTab === "bulk"
+              ? "border-blue-600 text-blue-600 font-medium"
+              : "border-transparent text-gray-500"
+          }`}
+          onClick={() => setActiveTab("bulk")}
+        >
+          📦 Bulk Import
+        </button>
+        <button
+          className={`pb-3 px-1 border-b-2 cursor-pointer ${
             activeTab === "hall"
               ? "border-blue-600 text-blue-600 font-medium"
               : "border-transparent text-gray-500"
@@ -326,6 +472,7 @@ export default function AddVenue() {
         </button>
       </div>
 
+      {/* ============ BASIC DETAILS TAB ============ */}
       {activeTab === "basic" && (
         <div className="px-8 py-8">
           <h2 className="text-xl font-semibold mb-6">
@@ -502,6 +649,118 @@ export default function AddVenue() {
         </div>
       )}
 
+      {/* ============ BULK IMPORT TAB ============ */}
+      {activeTab === "bulk" && (
+        <div className="px-8 py-8">
+          <div className="max-w-4xl">
+            <h2 className="text-xl font-semibold mb-6">📦 Bulk Import Venues</h2>
+
+            {/* Template Download */}
+            <div className="bg-blue-50 border-l-4 border-blue-500 p-4 mb-6">
+              <div className="flex items-start">
+                <DocumentArrowDownIcon className="h-6 w-6 text-blue-500 mr-3 flex-shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <h3 className="font-semibold text-blue-900 mb-2">
+                    Download Template First
+                  </h3>
+                  <p className="text-sm text-blue-800 mb-3">
+                    Use our template to ensure your data is formatted correctly.
+                  </p>
+                  <button
+                    onClick={downloadTemplate}
+                    className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm font-medium transition-colors inline-flex items-center gap-2"
+                  >
+                    <DocumentArrowDownIcon className="h-5 w-5" />
+                    Download Excel Template
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* File Upload */}
+            <div className="bg-white border-2 border-dashed border-gray-300 rounded-lg p-6 mb-6">
+              <div className="text-center">
+                <ArrowUpTrayIcon className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                <input
+                  id="venue-file-input"
+                  type="file"
+                  accept=".xlsx,.xls"
+                  onChange={handleFileSelect}
+                  className="hidden"
+                />
+                <label
+                  htmlFor="venue-file-input"
+                  className="cursor-pointer inline-flex items-center gap-2 bg-white border border-gray-300 hover:bg-gray-50 px-4 py-2 rounded text-sm font-medium transition-colors"
+                >
+                  <ArrowUpTrayIcon className="h-5 w-5" />
+                  Choose Excel File
+                </label>
+                {selectedFile && (
+                  <p className="mt-3 text-sm text-gray-600">
+                    Selected: <span className="font-medium">{selectedFile.name}</span>
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Import Button */}
+            <div className="flex gap-4 mb-6">
+              <button
+                onClick={handleBulkImport}
+                disabled={!selectedFile || isImporting}
+                className={`px-6 py-2 rounded font-medium text-white transition-colors ${
+                  !selectedFile || isImporting
+                    ? "bg-gray-400 cursor-not-allowed"
+                    : "bg-green-600 hover:bg-green-700"
+                }`}
+              >
+                {isImporting ? "Importing..." : "Import Venues"}
+              </button>
+
+              {lastImportInfo?.insertedIds?.length > 0 && (
+                <button
+                  onClick={handleUndoImport}
+                  className="px-6 py-2 rounded font-medium bg-red-600 hover:bg-red-700 text-white transition-colors inline-flex items-center gap-2"
+                >
+                  <ArrowUturnLeftIcon className="h-5 w-5" />
+                  Undo Last Import ({lastImportInfo.insertedIds.length})
+                </button>
+              )}
+            </div>
+
+            {/* Status Messages */}
+            {importStatus && (
+              <div className="bg-green-50 border-l-4 border-green-500 p-4 mb-6">
+                <pre className="text-sm text-green-800 whitespace-pre-wrap font-mono">
+                  {importStatus}
+                </pre>
+              </div>
+            )}
+
+            {importError && (
+              <div className="bg-red-50 border-l-4 border-red-500 p-4 mb-6">
+                <pre className="text-sm text-red-800 whitespace-pre-wrap font-mono">
+                  {importError}
+                </pre>
+              </div>
+            )}
+
+            {/* Instructions */}
+            <div className="bg-gray-50 rounded-lg p-6">
+              <h3 className="font-semibold text-gray-900 mb-3">📋 Excel Format Required:</h3>
+              <div className="space-y-2 text-sm text-gray-700">
+                <p><strong>Column Headers:</strong> Venue Name | Type | Rows | Columns | Bench Config</p>
+                <p><strong>Example Row:</strong> AD101 | classroom | 10 | 5 | 2,2,3,3,2</p>
+                <p><strong>Valid Types:</strong> classroom, lab, hall</p>
+                <p><strong>Bench Config:</strong> Comma-separated seats per column (2 or 3 only)</p>
+                <p><strong>Note:</strong> Bench config length must match number of columns</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============ ALL VENUES TAB ============ */}
       {activeTab === "hall" && (
         <div className="px-8 py-8">
           <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-4">

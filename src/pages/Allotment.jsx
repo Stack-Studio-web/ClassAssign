@@ -1,4 +1,4 @@
-// Allotment.jsx - Complete File with Course Priority Seating
+// Allotment.jsx - Complete File with Sequential Multi-Pass Seating
 import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
@@ -123,10 +123,9 @@ const Allotment = () => {
     fetchData();
   }, []);
 
-  // ✅ UPDATED: Fetch courses from timetable when date/time/session change
+  // ✅ Fetch courses from timetable when date/time/session change
   useEffect(() => {
     const fetchCoursesFromTimetable = async () => {
-      // Reset if any required field is missing
       if (!examDate || !examStartTime || !examEndTime || !examSession) {
         setTimetableCourses([]);
         setStudentsByCourse({});
@@ -146,14 +145,6 @@ const Allotment = () => {
       try {
         const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
         
-        console.log('📋 Fetching courses from timetable:', {
-          date: dateOnly,
-          startTime: examStartTime,
-          endTime: examEndTime,
-          session: examSession
-        });
-
-        // Fetch courses from timetable
         const res = await api.get("/timetable/by-exam-details", {
           params: {
             date: dateOnly,
@@ -173,28 +164,19 @@ const Allotment = () => {
           return;
         }
 
-        console.log(`✅ Found ${courses.length} course(s) from timetable`);
-
-        // Set exam type from first course
         if (courses[0].examType) {
           setExamType(courses[0].examType);
         }
 
-        // ✅ CRITICAL: Fetch students for each course based on BOTH course code AND department
         const studentsData = {};
         
         for (const course of courses) {
           try {
-            console.log(`📚 Fetching students for ${course.courseCode} (Dept: ${course.department})`);
-            
-            // ✅ NEW ENDPOINT: Get students matching BOTH course code AND department
             const studentsRes = await api.get(
               `/ineligibility/students/${encodeURIComponent(course.courseCode)}/${course.department}`
             );
             
             studentsData[course.courseCode] = studentsRes.data;
-            
-            console.log(`✅ Found ${studentsRes.data.length} students for ${course.courseCode} in dept ${course.department}`);
           } catch (err) {
             console.error(`Error fetching students for ${course.courseCode}:`, err);
             studentsData[course.courseCode] = [];
@@ -221,7 +203,7 @@ const Allotment = () => {
     fetchCoursesFromTimetable();
   }, [examDate, examStartTime, examEndTime, examSession, hasWriteAccess]);
 
-  // ✅ Fetch ineligible students when exam details and courses change
+  // ✅ Fetch ineligible students
   useEffect(() => {
     const fetchIneligibleStudents = async () => {
       if (!examDate || !examType || timetableCourses.length === 0) {
@@ -250,8 +232,6 @@ const Allotment = () => {
             ineligibleMap[course.courseCode] = new Set(ineligibleList.map(s => s.regnNo));
             statsByCourse[course.courseCode] = ineligibleList.length;
             totalIneligible += ineligibleList.length;
-
-            console.log(`📋 Course ${course.courseCode}: ${ineligibleList.length} ineligible students`);
           } catch (err) {
             console.error(`Error fetching ineligibility for ${course.courseCode}:`, err);
             ineligibleMap[course.courseCode] = new Set();
@@ -264,10 +244,6 @@ const Allotment = () => {
           total: totalIneligible,
           byCourse: statsByCourse
         });
-
-        if (totalIneligible > 0) {
-          console.log(`⚠️ Total ineligible students: ${totalIneligible}`);
-        }
 
       } catch (err) {
         console.error("Error fetching ineligible students:", err);
@@ -359,225 +335,235 @@ const Allotment = () => {
     setSelectedVenues(prev => prev.filter(v => v._id !== venueId));
   };
 
-  // ✅ ENHANCED: Allotment Logic with COURSE PRIORITY + Anti-Cheating Constraints
+  // ✅ CORRECTED: Sequential Multi-Pass Seating Algorithm
   const handleGenerate = async () => {
-  setError("");
+    setError("");
 
-  if (!hasWriteAccess) {
-    return setError("Access denied: Only Admin and Faculty Incharge can generate seating plans.");
-  }
+    if (!hasWriteAccess) {
+      return setError("Access denied: Only Admin and Faculty Incharge can generate seating plans.");
+    }
 
-  if (examDate && examDate < today) {
-    return setError("Invalid Date: Seating cannot be generated for past dates.");
-  }
+    if (examDate && examDate < today) {
+      return setError("Invalid Date: Seating cannot be generated for past dates.");
+    }
 
-  if (!examDate || !examType || !examStartTime || !examEndTime) 
-    return setError("Fill all exam details.");
-  
-  if (timetableCourses.length === 0) 
-    return setError("No courses found in timetable for selected date/time/session.");
-
-  setIsGenerating(true);
-
-  const venuesToUse = seatingMode === "auto" 
-    ? [...venues].sort((a, b) => b.capacity - a.capacity) 
-    : [...selectedVenues];
-
-  if (venuesToUse.length === 0) {
-    setIsGenerating(false);
-    return setError("No venues available.");
-  }
-
-  // ✅ Build student list BY COURSE
-  let studentsByCourseCode = {};
-  let totalExcluded = 0;
-  let excludedByIneligibility = 0;
-  let excludedByBatch = 0;
-
-  console.log('\n📊 ===== STUDENT FILTERING PROCESS =====');
-
-  timetableCourses.forEach(course => {
-    const courseName = course.courseCode;
-    const department = course.department;
+    if (!examDate || !examType || !examStartTime || !examEndTime) 
+      return setError("Fill all exam details.");
     
-    const students = studentsByCourse[courseName] || [];
-    
-    console.log(`\n📚 Processing ${courseName} (Dept: ${department})`);
-    console.log(`   Total students from API (already course+dept matched): ${students.length}`);
-    
-    const prefixes = (excludedBatches[courseName] || "").split(",").map(p => p.trim().toUpperCase());
-    const ineligibleSet = ineligibleStudentsByCourse[courseName] || new Set();
+    if (timetableCourses.length === 0) 
+      return setError("No courses found in timetable for selected date/time/session.");
 
-    let courseEligibleStudents = [];
-    let courseBatchExcluded = 0;
-    let courseIneligibleExcluded = 0;
+    setIsGenerating(true);
 
-    students.forEach(student => {
-      const isBatchExcluded = prefixes.some(p => p && student.regnNo.toUpperCase().startsWith(p));
+    const venuesToUse = seatingMode === "auto" 
+      ? [...venues].sort((a, b) => b.capacity - a.capacity) 
+      : [...selectedVenues];
+
+    if (venuesToUse.length === 0) {
+      setIsGenerating(false);
+      return setError("No venues available.");
+    }
+
+    // ✅ Build student list BY COURSE
+    let studentsByCourseCode = {};
+    let totalExcluded = 0;
+    let excludedByIneligibility = 0;
+    let excludedByBatch = 0;
+
+    console.log('\n📊 ===== STUDENT FILTERING PROCESS =====');
+
+    timetableCourses.forEach(course => {
+      const courseName = course.courseCode;
+      const department = course.department;
       
-      if (isBatchExcluded) {
-        excludedByBatch++;
-        totalExcluded++;
-        courseBatchExcluded++;
-        console.log(`   ❌ Batch excluded: ${student.regnNo}`);
-        return;
-      }
+      const students = studentsByCourse[courseName] || [];
+      
+      const prefixes = (excludedBatches[courseName] || "").split(",").map(p => p.trim().toUpperCase());
+      const ineligibleSet = ineligibleStudentsByCourse[courseName] || new Set();
 
-      const isIneligible = ineligibleSet.has(student.regnNo);
+      let courseEligibleStudents = [];
 
-      if (isIneligible) {
-        excludedByIneligibility++;
-        totalExcluded++;
-        courseIneligibleExcluded++;
-        console.log(`   ⚠️ Ineligible: ${student.regnNo}`);
-        return;
-      }
+      students.forEach(student => {
+        const isBatchExcluded = prefixes.some(p => p && student.regnNo.toUpperCase().startsWith(p));
+        
+        if (isBatchExcluded) {
+          excludedByBatch++;
+          totalExcluded++;
+          return;
+        }
 
-      courseEligibleStudents.push({ 
-        ...student, 
-        courseDescription: courseName 
+        const isIneligible = ineligibleSet.has(student.regnNo);
+
+        if (isIneligible) {
+          excludedByIneligibility++;
+          totalExcluded++;
+          return;
+        }
+
+        courseEligibleStudents.push({ 
+          ...student, 
+          courseDescription: courseName 
+        });
       });
+
+      if (courseEligibleStudents.length > 0) {
+        studentsByCourseCode[courseName] = courseEligibleStudents;
+      }
     });
 
-    if (courseEligibleStudents.length > 0) {
-      studentsByCourseCode[courseName] = courseEligibleStudents;
-    }
+    // ✅ Sort courses by student count (HIGHEST TO LOWEST)
+    const sortedCourses = Object.entries(studentsByCourseCode)
+      .sort(([, studentsA], [, studentsB]) => studentsB.length - studentsA.length)
+      .map(([courseCode, students]) => ({ courseCode, students }));
 
-    console.log(`   ✅ Eligible for seating: ${courseEligibleStudents.length}`);
-  });
+    console.log('\n📊 ===== COURSE PRIORITY ORDER (By Student Count) =====');
+    sortedCourses.forEach(({ courseCode, students }, index) => {
+      console.log(`${index + 1}. ${courseCode}: ${students.length} students`);
+    });
 
-  // ✅ Sort courses by student count (HIGHEST TO LOWEST)
-  const sortedCourses = Object.entries(studentsByCourseCode)
-    .sort(([, studentsA], [, studentsB]) => studentsB.length - studentsA.length)
-    .map(([courseCode, students]) => ({ courseCode, students, index: 0 }));
+    const totalStudents = sortedCourses.reduce((sum, { students }) => sum + students.length, 0);
 
-  console.log('\n📊 ===== COURSE PRIORITY ORDER (By Student Count) =====');
-  sortedCourses.forEach(({ courseCode, students }, index) => {
-    console.log(`${index + 1}. ${courseCode}: ${students.length} students`);
-  });
+    console.log(`\n📊 ===== OVERALL FILTERING SUMMARY =====`);
+    console.log(`Excluded by batch prefix: ${excludedByBatch}`);
+    console.log(`Excluded by ineligibility: ${excludedByIneligibility}`);
+    console.log(`✅ FINAL ELIGIBLE FOR SEATING: ${totalStudents}\n`);
 
-  // ✅ NEW: INTERLEAVE students from different courses
-  let allStudents = [];
-  let totalStudents = sortedCourses.reduce((sum, { students }) => sum + students.length, 0);
-  
-  // Round-robin distribution: pick from each course in turn
-  while (allStudents.length < totalStudents) {
-    for (const courseData of sortedCourses) {
-      if (courseData.index < courseData.students.length) {
-        allStudents.push(courseData.students[courseData.index]);
-        courseData.index++;
-      }
-    }
-  }
-
-  console.log(`\n📊 ===== OVERALL FILTERING SUMMARY =====`);
-  console.log(`Total students processed: ${allStudents.length + totalExcluded}`);
-  console.log(`Excluded by batch prefix: ${excludedByBatch}`);
-  console.log(`Excluded by ineligibility: ${excludedByIneligibility}`);
-  console.log(`✅ FINAL ELIGIBLE FOR SEATING: ${allStudents.length}`);
-  console.log(`✅ Students interleaved from ${sortedCourses.length} courses\n`);
-
-  if (excludedByIneligibility > 0 || excludedByBatch > 0) {
-    const infoMsg = `ℹ️ ${excludedByBatch} student(s) excluded by batch prefix. ${excludedByIneligibility} student(s) excluded due to ineligibility. ${allStudents.length} eligible students will be seated.`;
-    setError(infoMsg);
-    
-    setTimeout(() => {
-      if (error === infoMsg) setError("");
-    }, 8000);
-  }
-
-  const totalCapacity = venuesToUse.reduce((sum, v) => sum + v.capacity, 0);
-  if (allStudents.length > totalCapacity) {
-    setIsGenerating(false);
-    return setError(`Capacity error: Need ${allStudents.length}, have ${totalCapacity}`);
-  }
-
-  // ✅ SEATING ALGORITHM: Column-first with anti-cheating constraints
-  const venuesResult = [];
-  let studentIndex = 0;
-
-  for (const venue of venuesToUse) {
-    if (studentIndex >= allStudents.length) break;
-
-    const grid = Array.from({ length: venue.benchesRow }, () => 
-      Array(venue.benchesCol).fill("Empty")
-    );
-
-    const benchConfig = venue.benchConfig || Array(venue.benchesCol).fill(2);
-
-    // Fill COLUMN by COLUMN
-    for (let c = 0; c < venue.benchesCol; c++) {
-      const seatsInThisColumn = benchConfig[c] || 2;
+    if (excludedByIneligibility > 0 || excludedByBatch > 0) {
+      const infoMsg = `ℹ️ ${excludedByBatch} student(s) excluded by batch prefix. ${excludedByIneligibility} student(s) excluded due to ineligibility. ${totalStudents} eligible students will be seated.`;
+      setError(infoMsg);
       
-      // Fill ROW by ROW within this column
-      for (let r = 0; r < venue.benchesRow; r++) {
-        if (studentIndex >= allStudents.length) break;
+      setTimeout(() => {
+        if (error === infoMsg) setError("");
+      }, 8000);
+    }
+
+    const totalCapacity = venuesToUse.reduce((sum, v) => sum + v.capacity, 0);
+    if (totalStudents > totalCapacity) {
+      setIsGenerating(false);
+      return setError(`Capacity error: Need ${totalStudents}, have ${totalCapacity}`);
+    }
+
+    // ✅ Initialize venue grids
+    const venueGrids = venuesToUse.map(venue => ({
+      venue,
+      grid: Array.from({ length: venue.benchesRow }, () => 
+        Array(venue.benchesCol).fill(null)
+      ),
+      benchConfig: venue.benchConfig || Array(venue.benchesCol).fill(2)
+    }));
+
+    const allSeatedStudents = [];
+
+    // ✅ MULTI-PASS FILLING: One course at a time, restart from beginning
+    for (let courseIdx = 0; courseIdx < sortedCourses.length; courseIdx++) {
+      const courseData = sortedCourses[courseIdx];
+      const { courseCode, students } = courseData;
+      let studentIndex = 0;
+
+      console.log(`\n🎯 PASS ${courseIdx + 1}: Filling ${courseCode} (${students.length} students)`);
+
+      // ✅ RESTART FROM BEGINNING for each course
+      venueLoop: for (const venueData of venueGrids) {
+        const { venue, grid, benchConfig } = venueData;
         
-        const cellStudents = [];
-        
-        // Fill SEATS within this bench
-        for (let s = 0; s < seatsInThisColumn; s++) {
-          if (studentIndex >= allStudents.length) break;
+        // Column by column
+        for (let c = 0; c < venue.benchesCol; c++) {
+          const seatsInCol = benchConfig[c] || 2;
           
-          const student = allStudents[studentIndex];
-          
-          // ✅ ANTI-CHEATING: Check if student can sit here
-          const shouldAdd = cellStudents.length === 0 || 
-            cellStudents[cellStudents.length - 1].courseDescription !== student.courseDescription;
-          
-          if (shouldAdd) {
-            cellStudents.push(student);
-            studentIndex++;
-          } else {
-            // ✅ SMART SWAPPING: Look ahead for different course student
-            let found = false;
-            for (let j = studentIndex + 1; j < allStudents.length && j < studentIndex + 20; j++) {
-              if (allStudents[j].courseDescription !== cellStudents[cellStudents.length - 1].courseDescription) {
-                cellStudents.push(allStudents[j]);
-                // Swap positions in the array
-                [allStudents[studentIndex], allStudents[j]] = [allStudents[j], allStudents[studentIndex]];
+          // Row by row
+          for (let r = 0; r < venue.benchesRow; r++) {
+            if (studentIndex >= students.length) {
+              console.log(`   ✅ All ${studentIndex} students placed for ${courseCode}`);
+              break venueLoop;
+            }
+
+            // Initialize cell if needed
+            if (!grid[r][c]) {
+              grid[r][c] = [];
+            }
+
+            const cellStudents = grid[r][c];
+
+            // Fill seats in this bench
+            for (let s = 0; s < seatsInCol; s++) {
+              if (studentIndex >= students.length) break;
+
+              // Check if seat is already occupied
+              if (cellStudents[s]) {
+                continue; // Seat taken
+              }
+
+              const student = students[studentIndex];
+
+              // ✅ ANTI-CHEATING: Check adjacent seat
+              const canPlace = s === 0 || 
+                !cellStudents[s - 1] || 
+                cellStudents[s - 1].courseDescription !== student.courseDescription;
+
+              if (canPlace) {
+                cellStudents[s] = student;
+                allSeatedStudents.push(student);
                 studentIndex++;
-                found = true;
+              } else {
+                // Cannot place due to same course in adjacent seat
+                // Skip this entire bench
                 break;
               }
             }
-            
-            if (!found) {
-              // No different course found nearby, skip this seat
-              studentIndex++;
-              break;
-            }
           }
         }
-        
-        // Store the bench arrangement
-        if (cellStudents.length > 0) {
-          grid[r][c] = cellStudents.map(s => ({
-            regn_no: s.regnNo,
-            course: s.courseDescription
-          }));
-        }
       }
+
+      console.log(`   📊 Placed ${studentIndex}/${students.length} students for ${courseCode}`);
     }
 
-    let previewFaculty = "Not Assigned";
-    const availableFaculty = allFaculty.filter(f => f.canAllocate && !f.hasTimeConflict);
-    if (facultyMode === "AUTO" && availableFaculty.length > 0) {
-      const f = availableFaculty[venuesResult.length % availableFaculty.length];
-      previewFaculty = `${f.name} (${f.department})`;
-    }
+    // ✅ Convert grids to final format
+    const venuesResult = [];
 
-    venuesResult.push({ 
-      venue, 
-      seats: grid, 
-      previewFacultyName: previewFaculty 
+    venueGrids.forEach((venueData, idx) => {
+      const { venue, grid, benchConfig } = venueData;
+      
+      // Format grid for display
+      const formattedGrid = grid.map((row, rowIdx) => 
+        row.map((cell, colIdx) => {
+          if (!cell || cell.length === 0) return "Empty";
+          
+          const seatsNeeded = benchConfig[colIdx] || 2;
+          
+          // Ensure array has correct length
+          while (cell.length < seatsNeeded) {
+            cell.push(null);
+          }
+
+          return cell.map(student => 
+            student ? {
+              regn_no: student.regnNo,
+              course: student.courseDescription
+            } : null
+          ).filter(s => s !== null);
+        })
+      );
+
+      let previewFaculty = "Not Assigned";
+      const availableFaculty = allFaculty.filter(f => f.canAllocate && !f.hasTimeConflict);
+      if (facultyMode === "AUTO" && availableFaculty.length > 0) {
+        const f = availableFaculty[idx % availableFaculty.length];
+        previewFaculty = `${f.name} (${f.department})`;
+      }
+
+      venuesResult.push({ 
+        venue, 
+        seats: formattedGrid, 
+        previewFacultyName: previewFaculty 
+      });
     });
-  }
 
-  setAllottedStudents(allStudents.slice(0, studentIndex));
-  setGeneratedSeating(venuesResult);
-  setIsGenerating(false);
-};
+    console.log(`\n✅ Total students seated: ${allSeatedStudents.length}/${totalStudents}\n`);
+
+    setAllottedStudents(allSeatedStudents);
+    setGeneratedSeating(venuesResult);
+    setIsGenerating(false);
+  };
 
   const handleSave = async () => {
     if (!hasWriteAccess) {

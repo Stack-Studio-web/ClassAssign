@@ -1,3 +1,4 @@
+//venueRoutes.js - Routes for managing venues (CRUD operations, stats, etc.)
 const express = require("express");
 const router = express.Router();
 const Venue = require("../models/venue");

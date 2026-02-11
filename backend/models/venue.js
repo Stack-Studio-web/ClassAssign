@@ -1,29 +1,24 @@
-// Class/backend/models/venue.js - CLEANED VERSION
+// Class/backend/models/venue.js - WITH DELETE BY IDS
 const db = require("../config/db");
 
 const Venue = {
-  /* ===============================
-     CREATE VENUE WITH BENCH CONFIG
-  =============================== */
   create: async (venue) => {
     const {
       name,
       type,
       benchesRow,
       benchesCol,
-      benchConfig, // Array like [2, 2, 3, 3, 2] representing seats per column
+      benchConfig,
       isAvailable = true,
       sessions = [],
     } = venue;
 
-    // Calculate total capacity from benchConfig
     const capacity = benchesRow * benchConfig.reduce((sum, seats) => sum + seats, 0);
 
     const conn = await db.getConnection();
     try {
       await conn.beginTransaction();
 
-      // 1️⃣ Insert venue
       const [venueRes] = await conn.query(
         `INSERT INTO venues
          (name, type, capacity, benches_row, benches_col, is_available)
@@ -33,7 +28,6 @@ const Venue = {
 
       const venueId = venueRes.insertId;
 
-      // 2️⃣ Insert bench configuration
       for (let colIndex = 0; colIndex < benchConfig.length; colIndex++) {
         await conn.query(
           `INSERT INTO venue_bench_config
@@ -43,7 +37,6 @@ const Venue = {
         );
       }
 
-      // 3️⃣ Insert initial sessions (if any)
       for (const s of sessions) {
         await conn.query(
           `INSERT INTO venue_sessions
@@ -63,9 +56,6 @@ const Venue = {
     }
   },
 
-  /* ===============================
-     GET ALL VENUES + SESSIONS + BENCH CONFIG
-  =============================== */
   getAll: async () => {
     const [venues] = await db.query(`
       SELECT
@@ -80,7 +70,6 @@ const Venue = {
     `);
 
     for (const v of venues) {
-      // Get sessions
       const [sessions] = await db.query(
         `SELECT 
            session_date AS date,
@@ -92,7 +81,6 @@ const Venue = {
       );
       v.sessions = sessions;
 
-      // Get bench configuration
       const [benchConfig] = await db.query(
         `SELECT column_index, seats_per_bench
          FROM venue_bench_config
@@ -107,9 +95,6 @@ const Venue = {
     return venues;
   },
 
-  /* ===============================
-     CHECK AVAILABILITY
-  =============================== */
   isAvailable: async (venueId, date, startTime, endTime) => {
     const [rows] = await db.query(
       `SELECT 1 FROM venue_sessions
@@ -122,9 +107,6 @@ const Venue = {
     return rows.length === 0;
   },
 
-  /* ===============================
-     CHECK DUPLICATE (EXCLUDING CURRENT ID)
-  =============================== */
   existsByNameAndTypeExceptId: async (name, type, id) => {
     const [rows] = await db.query(
       `SELECT id FROM venues
@@ -134,9 +116,6 @@ const Venue = {
     return rows.length > 0;
   },
 
-  /* ===============================
-     ADD SESSION (book venue)
-  =============================== */
   addSession: async (venueId, date, startTime, endTime) => {
     await db.query(
       `INSERT INTO venue_sessions
@@ -146,9 +125,6 @@ const Venue = {
     );
   },
 
-  /* ===============================
-     REMOVE SESSION (free venue)
-  =============================== */
   removeSession: async (venueId, date, startTime, endTime) => {
     await db.query(
       `DELETE FROM venue_sessions
@@ -159,6 +135,33 @@ const Venue = {
       [venueId, date, startTime, endTime]
     );
   },
+
+  // ✅ NEW: DELETE BY IDS (For Undo Import)
+  deleteByIds: async (ids) => {
+    if (!Array.isArray(ids) || ids.length === 0) return;
+    
+    const conn = await db.getConnection();
+    try {
+      await conn.beginTransaction();
+
+      for (const id of ids) {
+        await conn.query("DELETE FROM venue_bench_config WHERE venue_id = ?", [id]);
+        await conn.query("DELETE FROM venue_sessions WHERE venue_id = ?", [id]);
+      }
+
+      await conn.query(
+        `DELETE FROM venues WHERE id IN (${ids.map(() => "?").join(",")})`,
+        ids
+      );
+
+      await conn.commit();
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
+  }
 };
 
 module.exports = Venue;
