@@ -1,13 +1,13 @@
-// Allotment.jsx - Complete File with Sequential Multi-Pass Seating
+// Allotment.jsx - FIXED: Properly fetches students from multiple departments for same course
 import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
-
+ 
 // ✅ Create axios instance with auth
 const api = axios.create({
   baseURL: "/api",
 });
-
+ 
 api.interceptors.request.use(
   (config) => {
     const token = sessionStorage.getItem("authToken");
@@ -20,7 +20,7 @@ api.interceptors.request.use(
     return Promise.reject(error);
   }
 );
-
+ 
 api.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -37,49 +37,49 @@ api.interceptors.response.use(
     return Promise.reject(error);
   }
 );
-
+ 
 const Allotment = () => {
   const navigate = useNavigate();
-  
+ 
   // --- State Management ---
   const [venues, setVenues] = useState([]);
   const [timetableCourses, setTimetableCourses] = useState([]);
   const [studentsByCourse, setStudentsByCourse] = useState({});
-  
+ 
   const [seatingMode, setSeatingMode] = useState("auto");
   const [manualVenueId, setManualVenueId] = useState("");
   const [selectedVenues, setSelectedVenues] = useState([]);
-
+ 
   const [generatedSeating, setGeneratedSeating] = useState(null);
   const [allottedStudents, setAllottedStudents] = useState([]);
-
+ 
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isFetchingCourses, setIsFetchingCourses] = useState(false);
-
+ 
   const [examDate, setExamDate] = useState("");
   const [examSession, setExamSession] = useState("FN");
   const [examType, setExamType] = useState("");
   const [examStartTime, setExamStartTime] = useState("");
   const [examEndTime, setExamEndTime] = useState("");
-
+ 
   const [excludedBatches, setExcludedBatches] = useState({});
   const [facultyMode, setFacultyMode] = useState("AUTO");
   const [allFaculty, setAllFaculty] = useState([]);
   const [manualFacultyAssignments, setManualFacultyAssignments] = useState({});
-
+ 
   const [ineligibleStudentsByCourse, setIneligibleStudentsByCourse] = useState({});
   const [ineligibilityStats, setIneligibilityStats] = useState({
     total: 0,
     byCourse: {}
   });
-
+ 
   const [userRole, setUserRole] = useState("");
   const [hasWriteAccess, setHasWriteAccess] = useState(false);
-
+ 
   const today = new Date().toISOString().split("T")[0];
-
+ 
   // ✅ Check user role
   useEffect(() => {
     const checkUserAccess = () => {
@@ -97,7 +97,7 @@ const Allotment = () => {
     };
     checkUserAccess();
   }, []);
-
+ 
   // --- Initial Data Fetch ---
   useEffect(() => {
     const fetchData = async () => {
@@ -106,7 +106,7 @@ const Allotment = () => {
           api.get("/venues"),
           api.get("/faculty")
         ]);
-
+ 
         setVenues(vRes.data.filter((v) => v.isAvailable));
         setAllFaculty(fRes.data);
       } catch (err) {
@@ -122,8 +122,8 @@ const Allotment = () => {
     };
     fetchData();
   }, []);
-
-  // ✅ Fetch courses from timetable when date/time/session change
+ 
+  // ✅ FIXED: Fetch courses AND students from timetable when date/time/session change
   useEffect(() => {
     const fetchCoursesFromTimetable = async () => {
       if (!examDate || !examStartTime || !examEndTime || !examSession) {
@@ -134,17 +134,18 @@ const Allotment = () => {
         setIneligibilityStats({ total: 0, byCourse: {} });
         return;
       }
-
+ 
       if (!hasWriteAccess) {
         return;
       }
-
+ 
       setIsFetchingCourses(true);
       setError("");
-
+ 
       try {
         const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
-        
+       
+        // 1️⃣ Get all timetable entries for this date/time/session
         const res = await api.get("/timetable/by-exam-details", {
           params: {
             date: dateOnly,
@@ -153,9 +154,9 @@ const Allotment = () => {
             session: examSession
           }
         });
-
+ 
         const courses = res.data;
-
+ 
         if (courses.length === 0) {
           setError("ℹ️ No courses scheduled for this date, time, and session in the timetable.");
           setTimetableCourses([]);
@@ -163,29 +164,49 @@ const Allotment = () => {
           setExamType("");
           return;
         }
-
+ 
+        // Set exam type from first course
         if (courses[0].examType) {
           setExamType(courses[0].examType);
         }
-
+ 
+        console.log('\n🔍 ===== FETCHING STUDENTS FOR TIMETABLE COURSES =====');
+        console.log(`Found ${courses.length} timetable entries:`);
+        courses.forEach(c => {
+          console.log(`  - ${c.courseCode} (${c.department})`);
+        });
+ 
+        // 2️⃣ ✅ CRITICAL FIX: Fetch students for EACH timetable entry (course + department combo)
         const studentsData = {};
-        
+       
         for (const course of courses) {
           try {
+            console.log(`\n📋 Fetching students for: ${course.courseCode} - ${course.department}`);
+           
             const studentsRes = await api.get(
               `/ineligibility/students/${encodeURIComponent(course.courseCode)}/${course.department}`
             );
-            
-            studentsData[course.courseCode] = studentsRes.data;
+           
+            const students = studentsRes.data;
+            console.log(`✅ Fetched ${students.length} students for ${course.courseCode} - ${course.department}`);
+           
+            // ✅ Store students under unique key: courseCode-department
+            const uniqueKey = `${course.courseCode}-${course.department}`;
+            studentsData[uniqueKey] = students;
+           
           } catch (err) {
-            console.error(`Error fetching students for ${course.courseCode}:`, err);
-            studentsData[course.courseCode] = [];
+            console.error(`❌ Error fetching students for ${course.courseCode} - ${course.department}:`, err);
+            const uniqueKey = `${course.courseCode}-${course.department}`;
+            studentsData[uniqueKey] = [];
           }
         }
-
+ 
+        console.log('\n✅ Total unique course-department combinations:', Object.keys(studentsData).length);
+        console.log('===== STUDENT FETCH COMPLETE =====\n');
+ 
         setTimetableCourses(courses);
         setStudentsByCourse(studentsData);
-
+ 
       } catch (err) {
         console.error("Error fetching courses from timetable:", err);
         if (err.isForbidden) {
@@ -199,10 +220,10 @@ const Allotment = () => {
         setIsFetchingCourses(false);
       }
     };
-
+ 
     fetchCoursesFromTimetable();
   }, [examDate, examStartTime, examEndTime, examSession, hasWriteAccess]);
-
+ 
   // ✅ Fetch ineligible students
   useEffect(() => {
     const fetchIneligibleStudents = async () => {
@@ -211,13 +232,14 @@ const Allotment = () => {
         setIneligibilityStats({ total: 0, byCourse: {} });
         return;
       }
-
+ 
       try {
         const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
         const ineligibleMap = {};
         const statsByCourse = {};
         let totalIneligible = 0;
-
+ 
+        // ✅ Check ineligibility for each timetable entry
         for (const course of timetableCourses) {
           try {
             const res = await api.get(`/ineligibility/check`, {
@@ -227,50 +249,53 @@ const Allotment = () => {
                 examDate: dateOnly
               }
             });
-
+ 
             const ineligibleList = res.data || [];
-            ineligibleMap[course.courseCode] = new Set(ineligibleList.map(s => s.regnNo));
-            statsByCourse[course.courseCode] = ineligibleList.length;
+            const uniqueKey = `${course.courseCode}-${course.department}`;
+           
+            ineligibleMap[uniqueKey] = new Set(ineligibleList.map(s => s.regnNo));
+            statsByCourse[uniqueKey] = ineligibleList.length;
             totalIneligible += ineligibleList.length;
           } catch (err) {
-            console.error(`Error fetching ineligibility for ${course.courseCode}:`, err);
-            ineligibleMap[course.courseCode] = new Set();
-            statsByCourse[course.courseCode] = 0;
+            console.error(`Error fetching ineligibility for ${course.courseCode} - ${course.department}:`, err);
+            const uniqueKey = `${course.courseCode}-${course.department}`;
+            ineligibleMap[uniqueKey] = new Set();
+            statsByCourse[uniqueKey] = 0;
           }
         }
-
+ 
         setIneligibleStudentsByCourse(ineligibleMap);
         setIneligibilityStats({
           total: totalIneligible,
           byCourse: statsByCourse
         });
-
+ 
       } catch (err) {
         console.error("Error fetching ineligible students:", err);
       }
     };
-
+ 
     fetchIneligibleStudents();
   }, [examDate, examType, timetableCourses]);
-
+ 
   // Fetch faculty availability
   useEffect(() => {
     const checkFacultyAvailability = async () => {
       if (!examDate || !examStartTime || !examEndTime || allFaculty.length === 0) {
         return;
       }
-
+ 
       if (!hasWriteAccess) {
         return;
       }
-
+ 
       try {
         const facultyWithStatus = await Promise.all(
           allFaculty.map(async (f) => {
             try {
               const allocRes = await api.get(`/faculty/${f.id}/can-allocate`);
               const canAllocate = allocRes.data.allowed;
-
+ 
               const availRes = await api.post("/seating/check-faculty-availability", {
                 examDate,
                 examSession,
@@ -278,14 +303,14 @@ const Allotment = () => {
                 examEndTime,
                 venueCount: 1
               });
-
+ 
               const facultyStatus = availRes.data.facultyStatus?.find(fs => fs.id === f.id);
               const hasTimeConflict = facultyStatus?.hasTimeConflict || false;
-
-              return { 
-                ...f, 
+ 
+              return {
+                ...f,
                 canAllocate: canAllocate && !hasTimeConflict,
-                hasTimeConflict 
+                hasTimeConflict
               };
             } catch (err) {
               console.error(`Error checking faculty ${f.id}:`, err);
@@ -293,7 +318,7 @@ const Allotment = () => {
             }
           })
         );
-
+ 
         setAllFaculty(facultyWithStatus);
       } catch (err) {
         if (err.response?.status === 401) return;
@@ -302,18 +327,18 @@ const Allotment = () => {
         }
       }
     };
-
+ 
     checkFacultyAvailability();
   }, [examDate, examStartTime, examEndTime, examSession, hasWriteAccess]);
-
+ 
   // --- Handlers ---
-  
+ 
   const handleAddVenueManual = () => {
     if (!hasWriteAccess) {
       setError("You do not have permission to modify venue selection.");
       return;
     }
-    
+   
     if (!manualVenueId || manualVenueId === "") return;
     if (selectedVenues.some(v => String(v._id) === String(manualVenueId))) {
         setManualVenueId("");
@@ -325,181 +350,189 @@ const Allotment = () => {
         setManualVenueId("");
     }
   };
-
+ 
   const removeManualVenue = (venueId) => {
     if (!hasWriteAccess) {
       setError("You do not have permission to modify venue selection.");
       return;
     }
-    
+   
     setSelectedVenues(prev => prev.filter(v => v._id !== venueId));
   };
-
-  // ✅ CORRECTED: Sequential Multi-Pass Seating Algorithm
+ 
+  // ✅ UPDATED: Sequential Multi-Pass Seating Algorithm with fixed course-department keys
   const handleGenerate = async () => {
     setError("");
-
+ 
     if (!hasWriteAccess) {
       return setError("Access denied: Only Admin and Faculty Incharge can generate seating plans.");
     }
-
+ 
     if (examDate && examDate < today) {
       return setError("Invalid Date: Seating cannot be generated for past dates.");
     }
-
-    if (!examDate || !examType || !examStartTime || !examEndTime) 
+ 
+    if (!examDate || !examType || !examStartTime || !examEndTime)
       return setError("Fill all exam details.");
-    
-    if (timetableCourses.length === 0) 
+   
+    if (timetableCourses.length === 0)
       return setError("No courses found in timetable for selected date/time/session.");
-
+ 
     setIsGenerating(true);
-
-    const venuesToUse = seatingMode === "auto" 
-      ? [...venues].sort((a, b) => b.capacity - a.capacity) 
+ 
+    const venuesToUse = seatingMode === "auto"
+      ? [...venues].sort((a, b) => b.capacity - a.capacity)
       : [...selectedVenues];
-
+ 
     if (venuesToUse.length === 0) {
       setIsGenerating(false);
       return setError("No venues available.");
     }
-
-    // ✅ Build student list BY COURSE
-    let studentsByCourseCode = {};
+ 
+    // ✅ Build student list BY COURSE-DEPARTMENT COMBINATION
+    let studentsByCourseKey = {};
     let totalExcluded = 0;
     let excludedByIneligibility = 0;
     let excludedByBatch = 0;
-
+ 
     console.log('\n📊 ===== STUDENT FILTERING PROCESS =====');
-
+ 
     timetableCourses.forEach(course => {
-      const courseName = course.courseCode;
+      const courseCode = course.courseCode;
       const department = course.department;
-      
-      const students = studentsByCourse[courseName] || [];
-      
-      const prefixes = (excludedBatches[courseName] || "").split(",").map(p => p.trim().toUpperCase());
-      const ineligibleSet = ineligibleStudentsByCourse[courseName] || new Set();
-
+      const uniqueKey = `${courseCode}-${department}`;
+     
+      console.log(`\n🔍 Processing: ${uniqueKey}`);
+     
+      const students = studentsByCourse[uniqueKey] || [];
+      console.log(`  📋 Total students in database: ${students.length}`);
+     
+      const prefixes = (excludedBatches[uniqueKey] || "").split(",").map(p => p.trim().toUpperCase());
+      const ineligibleSet = ineligibleStudentsByCourse[uniqueKey] || new Set();
+ 
       let courseEligibleStudents = [];
-
+ 
       students.forEach(student => {
         const isBatchExcluded = prefixes.some(p => p && student.regnNo.toUpperCase().startsWith(p));
-        
+       
         if (isBatchExcluded) {
           excludedByBatch++;
           totalExcluded++;
           return;
         }
-
+ 
         const isIneligible = ineligibleSet.has(student.regnNo);
-
+ 
         if (isIneligible) {
           excludedByIneligibility++;
           totalExcluded++;
           return;
         }
-
-        courseEligibleStudents.push({ 
-          ...student, 
-          courseDescription: courseName 
+ 
+        courseEligibleStudents.push({
+          ...student,
+          courseDescription: courseCode,
+          department: department // ✅ Add department for tracking
         });
       });
-
+ 
       if (courseEligibleStudents.length > 0) {
-        studentsByCourseCode[courseName] = courseEligibleStudents;
+        studentsByCourseKey[uniqueKey] = courseEligibleStudents;
+        console.log(`  ✅ Eligible students: ${courseEligibleStudents.length}`);
+      } else {
+        console.log(`  ⚠️ No eligible students`);
       }
     });
-
-    // ✅ Sort courses by student count (HIGHEST TO LOWEST)
-    const sortedCourses = Object.entries(studentsByCourseCode)
+ 
+    // ✅ Sort course-department combinations by student count (HIGHEST TO LOWEST)
+    const sortedCourses = Object.entries(studentsByCourseKey)
       .sort(([, studentsA], [, studentsB]) => studentsB.length - studentsA.length)
-      .map(([courseCode, students]) => ({ courseCode, students }));
-
-    console.log('\n📊 ===== COURSE PRIORITY ORDER (By Student Count) =====');
-    sortedCourses.forEach(({ courseCode, students }, index) => {
-      console.log(`${index + 1}. ${courseCode}: ${students.length} students`);
+      .map(([key, students]) => ({ key, students }));
+ 
+    console.log('\n📊 ===== COURSE-DEPARTMENT PRIORITY ORDER (By Student Count) =====');
+    sortedCourses.forEach(({ key, students }, index) => {
+      console.log(`${index + 1}. ${key}: ${students.length} students`);
     });
-
+ 
     const totalStudents = sortedCourses.reduce((sum, { students }) => sum + students.length, 0);
-
+ 
     console.log(`\n📊 ===== OVERALL FILTERING SUMMARY =====`);
     console.log(`Excluded by batch prefix: ${excludedByBatch}`);
     console.log(`Excluded by ineligibility: ${excludedByIneligibility}`);
     console.log(`✅ FINAL ELIGIBLE FOR SEATING: ${totalStudents}\n`);
-
+ 
     if (excludedByIneligibility > 0 || excludedByBatch > 0) {
       const infoMsg = `ℹ️ ${excludedByBatch} student(s) excluded by batch prefix. ${excludedByIneligibility} student(s) excluded due to ineligibility. ${totalStudents} eligible students will be seated.`;
       setError(infoMsg);
-      
+     
       setTimeout(() => {
         if (error === infoMsg) setError("");
       }, 8000);
     }
-
+ 
     const totalCapacity = venuesToUse.reduce((sum, v) => sum + v.capacity, 0);
     if (totalStudents > totalCapacity) {
       setIsGenerating(false);
       return setError(`Capacity error: Need ${totalStudents}, have ${totalCapacity}`);
     }
-
+ 
     // ✅ Initialize venue grids
     const venueGrids = venuesToUse.map(venue => ({
       venue,
-      grid: Array.from({ length: venue.benchesRow }, () => 
+      grid: Array.from({ length: venue.benchesRow }, () =>
         Array(venue.benchesCol).fill(null)
       ),
       benchConfig: venue.benchConfig || Array(venue.benchesCol).fill(2)
     }));
-
+ 
     const allSeatedStudents = [];
-
-    // ✅ MULTI-PASS FILLING: One course at a time, restart from beginning
+ 
+    // ✅ MULTI-PASS FILLING: One course-department at a time, restart from beginning
     for (let courseIdx = 0; courseIdx < sortedCourses.length; courseIdx++) {
       const courseData = sortedCourses[courseIdx];
-      const { courseCode, students } = courseData;
+      const { key, students } = courseData;
       let studentIndex = 0;
-
-      console.log(`\n🎯 PASS ${courseIdx + 1}: Filling ${courseCode} (${students.length} students)`);
-
-      // ✅ RESTART FROM BEGINNING for each course
+ 
+      console.log(`\n🎯 PASS ${courseIdx + 1}: Filling ${key} (${students.length} students)`);
+ 
+      // ✅ RESTART FROM BEGINNING for each course-department combination
       venueLoop: for (const venueData of venueGrids) {
         const { venue, grid, benchConfig } = venueData;
-        
+       
         // Column by column
         for (let c = 0; c < venue.benchesCol; c++) {
           const seatsInCol = benchConfig[c] || 2;
-          
+         
           // Row by row
           for (let r = 0; r < venue.benchesRow; r++) {
             if (studentIndex >= students.length) {
-              console.log(`   ✅ All ${studentIndex} students placed for ${courseCode}`);
+              console.log(`   ✅ All ${studentIndex} students placed for ${key}`);
               break venueLoop;
             }
-
+ 
             // Initialize cell if needed
             if (!grid[r][c]) {
               grid[r][c] = [];
             }
-
+ 
             const cellStudents = grid[r][c];
-
+ 
             // Fill seats in this bench
             for (let s = 0; s < seatsInCol; s++) {
               if (studentIndex >= students.length) break;
-
+ 
               // Check if seat is already occupied
               if (cellStudents[s]) {
                 continue; // Seat taken
               }
-
+ 
               const student = students[studentIndex];
-
+ 
               // ✅ ANTI-CHEATING: Check adjacent seat
-              const canPlace = s === 0 || 
-                !cellStudents[s - 1] || 
+              const canPlace = s === 0 ||
+                !cellStudents[s - 1] ||
                 cellStudents[s - 1].courseDescription !== student.courseDescription;
-
+ 
               if (canPlace) {
                 cellStudents[s] = student;
                 allSeatedStudents.push(student);
@@ -513,29 +546,29 @@ const Allotment = () => {
           }
         }
       }
-
-      console.log(`   📊 Placed ${studentIndex}/${students.length} students for ${courseCode}`);
+ 
+      console.log(`   📊 Placed ${studentIndex}/${students.length} students for ${key}`);
     }
-
+ 
     // ✅ Convert grids to final format
     const venuesResult = [];
-
+ 
     venueGrids.forEach((venueData, idx) => {
       const { venue, grid, benchConfig } = venueData;
-      
+     
       // Format grid for display
-      const formattedGrid = grid.map((row, rowIdx) => 
+      const formattedGrid = grid.map((row, rowIdx) =>
         row.map((cell, colIdx) => {
           if (!cell || cell.length === 0) return "Empty";
-          
+         
           const seatsNeeded = benchConfig[colIdx] || 2;
-          
+         
           // Ensure array has correct length
           while (cell.length < seatsNeeded) {
             cell.push(null);
           }
-
-          return cell.map(student => 
+ 
+          return cell.map(student =>
             student ? {
               regn_no: student.regnNo,
               course: student.courseDescription
@@ -543,53 +576,54 @@ const Allotment = () => {
           ).filter(s => s !== null);
         })
       );
-
+ 
       let previewFaculty = "Not Assigned";
       const availableFaculty = allFaculty.filter(f => f.canAllocate && !f.hasTimeConflict);
       if (facultyMode === "AUTO" && availableFaculty.length > 0) {
         const f = availableFaculty[idx % availableFaculty.length];
         previewFaculty = `${f.name} (${f.department})`;
       }
-
-      venuesResult.push({ 
-        venue, 
-        seats: formattedGrid, 
-        previewFacultyName: previewFaculty 
+ 
+      venuesResult.push({
+        venue,
+        seats: formattedGrid,
+        previewFacultyName: previewFaculty
       });
     });
-
+ 
     console.log(`\n✅ Total students seated: ${allSeatedStudents.length}/${totalStudents}\n`);
-
+ 
     setAllottedStudents(allSeatedStudents);
     setGeneratedSeating(venuesResult);
     setIsGenerating(false);
   };
-
+ 
   const handleSave = async () => {
     if (!hasWriteAccess) {
       return setError("Access denied: Only Admin and Faculty Incharge can save seating plans.");
     }
-
+ 
     if (facultyMode === "MANUAL" && generatedSeating.some(v => !manualFacultyAssignments[v.venue._id])) {
       return setError("Assign faculty to all rooms.");
     }
-
+ 
     const invalidFaculty = Object.values(manualFacultyAssignments).some(fid => {
       const faculty = allFaculty.find(f => String(f.id) === String(fid));
       return faculty && (!faculty.canAllocate || faculty.hasTimeConflict);
     });
-
+ 
     if (invalidFaculty) {
       return setError("One or more selected faculty are unavailable.");
     }
-
-    const selectedCourses = timetableCourses.map(c => c.courseCode);
-
+ 
+    // ✅ Extract unique course codes from all timetable entries
+    const selectedCourses = [...new Set(timetableCourses.map(c => c.courseCode))];
+ 
     const payload = {
-      examDate, 
-      examStartTime, 
-      examEndTime, 
-      examSession, 
+      examDate,
+      examStartTime,
+      examEndTime,
+      examSession,
       examType,
       selectedCourses,
       students: allottedStudents,
@@ -602,7 +636,7 @@ const Allotment = () => {
         facultyId: facultyMode === "MANUAL" ? manualFacultyAssignments[v.venue._id] : null
       }))
     };
-
+ 
     try {
       setLoading(true);
       await api.post("/seating/save-plan", payload);
@@ -614,7 +648,7 @@ const Allotment = () => {
       setError("");
     } catch (err) {
       if (err.response?.status === 401) return;
-      
+     
       if (err.isForbidden) {
         setError("Access denied: " + err.message);
       } else {
@@ -625,15 +659,15 @@ const Allotment = () => {
       setLoading(false);
     }
   };
-
+ 
   return (
     <div className="p-6 bg-white min-h-screen text-gray-800">
       <h1 className="text-3xl font-bold text-center mb-6">Exam Seating Allotment</h1>
-
+ 
       {error && (
         <div className={`p-3 rounded mb-4 text-center font-semibold ${
-          error.includes("Access denied") 
-            ? "bg-yellow-100 text-yellow-800 border-2 border-yellow-400" 
+          error.includes("Access denied")
+            ? "bg-yellow-100 text-yellow-800 border-2 border-yellow-400"
             : error.includes("ℹ️")
             ? "bg-blue-100 text-blue-800 border-2 border-blue-400"
             : "bg-red-100 text-red-700 border-2 border-red-400"
@@ -641,43 +675,43 @@ const Allotment = () => {
           {error}
         </div>
       )}
-
+ 
       {ineligibilityStats.total > 0 && (
         <div className="mb-4 p-4 bg-orange-50 border-l-4 border-orange-500 rounded">
           <h3 className="font-semibold text-orange-800 mb-2">
             ⚠️ Ineligibility Alert: {ineligibilityStats.total} student(s) will be excluded
           </h3>
           <div className="text-sm text-orange-700 space-y-1">
-            {Object.entries(ineligibilityStats.byCourse).map(([course, count]) => (
+            {Object.entries(ineligibilityStats.byCourse).map(([key, count]) => (
               count > 0 && (
-                <div key={course}>
-                  • {course}: {count} ineligible student{count !== 1 ? 's' : ''}
+                <div key={key}>
+                  • {key}: {count} ineligible student{count !== 1 ? 's' : ''}
                 </div>
               )
             ))}
           </div>
         </div>
       )}
-
+ 
       <section className="border p-4 rounded-lg mb-6 shadow-sm">
         <h3 className="font-semibold mb-3 text-lg">1. Exam Details</h3>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
           <div>
             <label className="text-sm font-medium">Date *</label>
-            <input 
-              type="date" 
-              value={examDate} 
+            <input
+              type="date"
+              value={examDate}
               min={today}
-              onChange={e => setExamDate(e.target.value)} 
+              onChange={e => setExamDate(e.target.value)}
               className="border p-2 rounded-md w-full disabled:bg-gray-100 disabled:cursor-not-allowed"
               disabled={!hasWriteAccess}
             />
           </div>
           <div>
             <label className="text-sm font-medium">Session *</label>
-            <select 
-              value={examSession} 
-              onChange={e => setExamSession(e.target.value)} 
+            <select
+              value={examSession}
+              onChange={e => setExamSession(e.target.value)}
               className="border p-2 rounded-md w-full disabled:bg-gray-100 disabled:cursor-not-allowed"
               disabled={!hasWriteAccess}
             >
@@ -687,36 +721,36 @@ const Allotment = () => {
           </div>
           <div>
             <label className="text-sm font-medium">Start Time *</label>
-            <input 
-              type="time" 
-              value={examStartTime} 
-              onChange={e => setExamStartTime(e.target.value)} 
+            <input
+              type="time"
+              value={examStartTime}
+              onChange={e => setExamStartTime(e.target.value)}
               className="border p-2 rounded-md w-full disabled:bg-gray-100 disabled:cursor-not-allowed"
               disabled={!hasWriteAccess}
             />
           </div>
           <div>
             <label className="text-sm font-medium">End Time *</label>
-            <input 
-              type="time" 
-              value={examEndTime} 
-              onChange={e => setExamEndTime(e.target.value)} 
+            <input
+              type="time"
+              value={examEndTime}
+              onChange={e => setExamEndTime(e.target.value)}
               className="border p-2 rounded-md w-full disabled:bg-gray-100 disabled:cursor-not-allowed"
               disabled={!hasWriteAccess}
             />
           </div>
           <div>
             <label className="text-sm font-medium">Type (Auto)</label>
-            <input 
-              type="text" 
-              value={examType || "Loading..."} 
+            <input
+              type="text"
+              value={examType || "Loading..."}
               readOnly
               className="border p-2 rounded-md w-full bg-gray-100 cursor-not-allowed"
               title="Exam type is automatically filled from timetable"
             />
           </div>
         </div>
-
+ 
         {isFetchingCourses && (
           <div className="mt-3 text-blue-600 text-sm flex items-center gap-2">
             <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
@@ -724,7 +758,7 @@ const Allotment = () => {
           </div>
         )}
       </section>
-
+ 
       <section className="border p-4 rounded-lg mb-6 shadow-sm bg-gray-50">
         <h3 className="font-semibold mb-3 text-lg">2. Configuration</h3>
         <div className="grid md:grid-cols-2 gap-8">
@@ -732,31 +766,31 @@ const Allotment = () => {
             <label className="block font-medium mb-2">Venue Selection</label>
             <div className="flex gap-4 mb-3">
               <label className={`flex items-center gap-2 ${hasWriteAccess ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
-                <input 
-                  type="radio" 
-                  checked={seatingMode === "auto"} 
+                <input
+                  type="radio"
+                  checked={seatingMode === "auto"}
                   onChange={() => setSeatingMode("auto")}
                   disabled={!hasWriteAccess}
-                /> 
+                />
                 Auto (All)
               </label>
               <label className={`flex items-center gap-2 ${hasWriteAccess ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
-                <input 
-                  type="radio" 
-                  checked={seatingMode === "manual"} 
+                <input
+                  type="radio"
+                  checked={seatingMode === "manual"}
                   onChange={() => setSeatingMode("manual")}
                   disabled={!hasWriteAccess}
-                /> 
+                />
                 Manual (Select)
               </label>
             </div>
-
+ 
             {seatingMode === "manual" && (
               <div className="space-y-3">
                 <div className="flex gap-2">
-                  <select 
-                    value={manualVenueId} 
-                    onChange={e => setManualVenueId(e.target.value)} 
+                  <select
+                    value={manualVenueId}
+                    onChange={e => setManualVenueId(e.target.value)}
                     className="border p-2 rounded-md flex-1 disabled:bg-gray-100 disabled:cursor-not-allowed"
                     disabled={!hasWriteAccess}
                   >
@@ -767,8 +801,8 @@ const Allotment = () => {
                       </option>
                     ))}
                   </select>
-                  <button 
-                    onClick={handleAddVenueManual} 
+                  <button
+                    onClick={handleAddVenueManual}
                     className="bg-blue-600 text-white px-4 py-2 rounded shadow hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
                     disabled={!hasWriteAccess}
                   >
@@ -780,8 +814,8 @@ const Allotment = () => {
                         <span key={v._id} className="bg-indigo-100 text-indigo-800 text-xs font-semibold px-2.5 py-1 rounded-full flex items-center gap-2 border">
                             {v.name}
                             {hasWriteAccess && (
-                              <button 
-                                onClick={() => removeManualVenue(v._id)} 
+                              <button
+                                onClick={() => removeManualVenue(v._id)}
                                 className="text-red-500 font-bold ml-1"
                               >
                                 ×
@@ -797,17 +831,17 @@ const Allotment = () => {
             <label className="block font-medium mb-2">Faculty Assignment</label>
             <div className="flex gap-4">
               <label className={`flex items-center gap-2 ${hasWriteAccess ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
-                <input 
-                  type="radio" 
-                  checked={facultyMode === "AUTO"} 
+                <input
+                  type="radio"
+                  checked={facultyMode === "AUTO"}
                   onChange={() => setFacultyMode("AUTO")}
                   disabled={!hasWriteAccess}
                 /> Auto
               </label>
               <label className={`flex items-center gap-2 ${hasWriteAccess ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
-                <input 
-                  type="radio" 
-                  checked={facultyMode === "MANUAL"} 
+                <input
+                  type="radio"
+                  checked={facultyMode === "MANUAL"}
                   onChange={() => setFacultyMode("MANUAL")}
                   disabled={!hasWriteAccess}
                 /> Manual
@@ -816,15 +850,15 @@ const Allotment = () => {
           </div>
         </div>
       </section>
-
+ 
       <section className="border p-4 rounded-lg mb-6 shadow-sm">
         <h3 className="font-semibold mb-3">
           3. Scheduled Courses (From Timetable)
           <span className="text-xs text-gray-500 ml-2 font-normal">
-            ✅ Students auto-matched by course code AND department
+            ✅ Shows ALL course-department combinations for this date/time
           </span>
         </h3>
-        
+       
         {timetableCourses.length === 0 ? (
           <div className="text-center text-gray-500 py-6 bg-gray-50 rounded-lg">
             {examDate && examStartTime && examEndTime && examSession ? (
@@ -843,10 +877,11 @@ const Allotment = () => {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {timetableCourses.map(course => {
-              const totalStudents = studentsByCourse[course.courseCode]?.length || 0;
-              const ineligibleCount = ineligibilityStats.byCourse[course.courseCode] || 0;
+              const uniqueKey = `${course.courseCode}-${course.department}`;
+              const totalStudents = studentsByCourse[uniqueKey]?.length || 0;
+              const ineligibleCount = ineligibilityStats.byCourse[uniqueKey] || 0;
               const eligibleCount = totalStudents - ineligibleCount;
-              
+             
               return (
                 <div key={course.id} className="bg-gradient-to-br from-blue-50 to-indigo-50 p-4 rounded-lg border-2 border-blue-200 shadow-sm">
                   <div className="flex justify-between items-start mb-2">
@@ -858,7 +893,7 @@ const Allotment = () => {
                       {course.department}
                     </span>
                   </div>
-                  
+                 
                   <div className="text-xs text-gray-600 mt-3 space-y-1">
                     <div className="flex justify-between">
                       <span>✅ Matched (Course+Dept):</span>
@@ -875,13 +910,13 @@ const Allotment = () => {
                       <span className="font-bold">{eligibleCount}</span>
                     </div>
                   </div>
-                  
+                 
                   {hasWriteAccess && (
-                    <input 
-                      type="text" 
-                      placeholder="Exclude prefix (e.g. 24BAD)" 
+                    <input
+                      type="text"
+                      placeholder="Exclude prefix (e.g. 24BAD)"
                       className="w-full text-xs p-2 border rounded mt-2 disabled:bg-gray-100 disabled:cursor-not-allowed"
-                      onChange={e => setExcludedBatches(prev => ({...prev, [course.courseCode]: e.target.value}))}
+                      onChange={e => setExcludedBatches(prev => ({...prev, [uniqueKey]: e.target.value}))}
                       disabled={!hasWriteAccess}
                     />
                   )}
@@ -891,46 +926,46 @@ const Allotment = () => {
           </div>
         )}
       </section>
-
+ 
       <div className="flex gap-4 mb-10">
-        <button 
-          onClick={handleGenerate} 
-          disabled={isGenerating || !hasWriteAccess || timetableCourses.length === 0} 
+        <button
+          onClick={handleGenerate}
+          disabled={isGenerating || !hasWriteAccess || timetableCourses.length === 0}
           className="bg-green-600 text-white px-8 py-3 rounded-lg font-bold shadow-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
           title={!hasWriteAccess ? "Only Admin and Faculty Incharge can generate seating plans" : ""}
         >
           {isGenerating ? "Generating..." : "Generate Seating Plan"}
         </button>
         {generatedSeating && hasWriteAccess && (
-          <button 
-            onClick={handleSave} 
-            disabled={loading} 
+          <button
+            onClick={handleSave}
+            disabled={loading}
             className="bg-indigo-600 text-white px-8 py-3 rounded-lg font-bold shadow-md hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
           >
             {loading ? "Saving..." : "Save & Finalize"}
           </button>
         )}
       </div>
-
+ 
       {generatedSeating && (
         <div className="space-y-10">
           <h2 className="text-2xl font-bold border-b pb-2">Seating Layout Preview</h2>
-          
+         
           {facultyMode === "MANUAL" && (
             <div className="bg-indigo-50 p-4 rounded-lg border border-indigo-200 grid md:grid-cols-2 gap-4">
                 {generatedSeating.map(item => (
                   <div key={item.venue._id} className="flex items-center justify-between bg-white p-2 rounded border shadow-sm">
                       <span className="text-sm font-medium">{item.venue.name}</span>
-                      <select 
+                      <select
                           className="text-sm border rounded p-1"
                           onChange={e => setManualFacultyAssignments(prev => ({...prev, [item.venue._id]: e.target.value}))}
                           value={manualFacultyAssignments[item.venue._id] || ""}
                       >
                         <option value="">Assign Faculty</option>
                         {allFaculty.map(f => (
-                          <option 
-                            key={f.id} 
-                            value={f.id} 
+                          <option
+                            key={f.id}
+                            value={f.id}
                             disabled={!f.canAllocate || f.hasTimeConflict}
                           >
                             {f.name} {!f.canAllocate ? "(Full)" : ""} {f.hasTimeConflict ? "(Busy)" : ""}
@@ -941,7 +976,7 @@ const Allotment = () => {
                 ))}
             </div>
           )}
-
+ 
           {generatedSeating.map((item, idx) => (
             <div key={`${item.venue._id}-${idx}`} className="bg-gray-50 p-4 rounded-xl border">
               <div className="flex justify-between items-center mb-4">
@@ -961,7 +996,7 @@ const Allotment = () => {
                   </p>
                 </div>
               </div>
-
+ 
               <div className="overflow-x-auto">
                 <table className="w-full border-collapse bg-white shadow-sm">
                   <thead>
@@ -971,8 +1006,8 @@ const Allotment = () => {
                         const benchConfig = item.venue.benchConfig || [];
                         const seatsInCol = benchConfig[c] || 2;
                         return (
-                          <th 
-                            key={`col-header-${c}`} 
+                          <th
+                            key={`col-header-${c}`}
                             className="border bg-gray-100"
                             colSpan={seatsInCol}
                           >
@@ -981,8 +1016,8 @@ const Allotment = () => {
                             </div>
                             <div className="flex border-t border-gray-300">
                               {Array.from({ length: seatsInCol }).map((_, s) => (
-                                <div 
-                                  key={`subcol-${s}`} 
+                                <div
+                                  key={`subcol-${s}`}
                                   className="flex-1 text-[8px] p-1 border-r last:border-r-0 border-gray-300 bg-gray-50"
                                 >
                                   {String.fromCharCode(65 + c)}{s + 1}
@@ -1001,7 +1036,7 @@ const Allotment = () => {
                         {row.map((cell, cIdx) => {
                           const benchConfig = item.venue.benchConfig || [];
                           const seatsInCol = benchConfig[cIdx] || 2;
-                          
+                         
                           let students = [];
                           if (cell === "Empty" || !cell) {
                             students = Array(seatsInCol).fill("");
@@ -1011,16 +1046,16 @@ const Allotment = () => {
                               students.push("");
                             }
                           }
-                          
+                         
                           return (
-                            <td 
-                              key={`cell-${rIdx}-${cIdx}`} 
+                            <td
+                              key={`cell-${rIdx}-${cIdx}`}
                               className="border p-0"
                               colSpan={seatsInCol}
                             >
                               <div className="flex h-full">
                                 {students.map((student, sIdx) => (
-                                  <div 
+                                  <div
                                     key={`seat-${sIdx}`}
                                     className={`flex-1 p-2 text-[10px] text-center border-r last:border-r-0 border-gray-300 ${
                                       student ? "font-bold" : "text-gray-200 italic"
@@ -1045,5 +1080,5 @@ const Allotment = () => {
     </div>
   );
 };
-
+ 
 export default Allotment;

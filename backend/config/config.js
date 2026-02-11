@@ -7,7 +7,7 @@ class Config {
     // Secret Key
     this.SECRET_KEY = process.env.SECRET_KEY || 'dev';
     
-    // Database Configuration
+    // Database Configuration 
     this.DB_HOST = process.env.DB_HOST || 'localhost';
     this.DB_USER = process.env.DB_USER || 'root';
     this.DB_PASSWORD = process.env.DB_PASSWORD;
