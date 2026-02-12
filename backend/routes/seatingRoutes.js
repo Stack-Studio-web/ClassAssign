@@ -1,4 +1,4 @@
-// Class/backend/routes/seatingRoutes.js - WITH FIXED ATTENDANCE-V2 ENDPOINT
+// Class/backend/routes/seatingRoutes.js - FIXED ROUTE ORDER
 const express = require("express");
 const router = express.Router();
 const SeatingPlan = require("../models/SeatingPlan");
@@ -282,104 +282,224 @@ router.get("/",
 );
 
 /* =====================================================
-    GET: SINGLE SEATING PLAN
+    ✅ GET ATTENDANCE SHEET DATA V2 - MOVED BEFORE /:id
     Roles: admin, faculty_incharge, coe
 ===================================================== */
-router.get("/:id",
-  sessionAuth,
+router.get("/attendance", 
+  sessionAuth, 
   checkRole(['admin', 'faculty_incharge', 'coe']),
   async (req, res) => {
     try {
-      const plan = await SeatingPlan.getPlanById(req.params.id);
-      if (!plan) {
-        return res.status(404).json({ error: "Seating plan not found" });
-      }
-      res.status(200).json(plan);
-    } catch (err) {
-      console.error("FETCH PLAN ERROR:", err);
-      res.status(500).json({
-        error: "Failed to fetch seating plan",
-        message: err.message
-      });
-    }
-  }
-);
-
-/* =====================================================
-    ✅ FIXED: GET ATTENDANCE SHEET DATA V2
-    Roles: admin, faculty_incharge, coe
-    Matches StudentAttendance.jsx call with date, session, startTime, endTime, venue
-===================================================== */
-router.get("/attendance-v2", sessionAuth, async (req, res) => {
-    try {
         const { date, session, startTime, endTime, venue } = req.query;
 
+        console.log("\n📋 ========== ATTENDANCE REQUEST ==========");
+        console.log("Query params:", { date, session, startTime, endTime, venue });
+
         if (!date || !session || !startTime || !endTime || !venue) {
-            return res.status(400).json({ error: "Missing required parameters" });
+            return res.status(400).json({ 
+              error: "Missing required parameters",
+              received: { date, session, startTime, endTime, venue }
+            });
         }
 
         const dateOnly = date.includes("T") ? date.split("T")[0] : date;
+        console.log("🗓️  Normalized date:", dateOnly);
 
-        // Step 1: Find the seating plan (using LIKE for flexible time matching)
+        // ✅ Step 1: Find ALL plans for this date and session
         const [plans] = await db.query(
             `SELECT id, exam_type, exam_date, exam_session, exam_start_time, exam_end_time 
              FROM seating_plans 
-             WHERE exam_date = ? AND exam_session = ? 
-               AND exam_start_time LIKE ? AND exam_end_time LIKE ?`,
-            [dateOnly, session, `${startTime}%`, `${endTime}%`]
+             WHERE exam_date = ? AND exam_session = ?`,
+            [dateOnly, session]
         );
+
+        console.log(`🔍 Found ${plans.length} plans for date=${dateOnly}, session=${session}`);
+        
+        if (plans.length > 0) {
+            console.log("📊 Available plans:");
+            plans.forEach(p => {
+                console.log(`  - Plan ID ${p.id}: ${p.exam_start_time} to ${p.exam_end_time}`);
+            });
+        }
 
         if (plans.length === 0) {
-            return res.status(404).json({ error: "Seating plan not found" });
-        }
-        const plan = plans[0];
+            const [allPlans] = await db.query(
+                `SELECT DISTINCT exam_date, exam_session 
+                 FROM seating_plans 
+                 ORDER BY exam_date DESC, exam_session`
+            );
+            
+            console.log("❌ No plans found. Available dates/sessions in database:");
+            allPlans.forEach(p => {
+                console.log(`  - ${p.exam_date} / ${p.exam_session}`);
+            });
 
-        // Step 2: Find the specific venue link
-        const [venues] = await db.query(
-            `SELECT id FROM seating_plan_venues WHERE seating_plan_id = ? AND venue_name = ?`,
-            [plan.id, venue]
+            return res.status(404).json({ 
+              error: "Seating plan not found",
+              searchedFor: { date: dateOnly, session },
+              availableDatesAndSessions: allPlans.map(p => ({
+                  date: p.exam_date,
+                  session: p.exam_session
+              }))
+            });
+        }
+
+        // ✅ Step 2: Find plan matching the time slot
+        console.log(`🕐 Looking for time match: ${startTime} - ${endTime}`);
+        
+        const plan = plans.find(p => {
+          const planStart = p.exam_start_time.substring(0, 5);
+          const planEnd = p.exam_end_time.substring(0, 5);
+          const reqStart = startTime.substring(0, 5);
+          const reqEnd = endTime.substring(0, 5);
+          
+          console.log(`  Comparing: Plan(${planStart}-${planEnd}) vs Request(${reqStart}-${reqEnd})`);
+          
+          return planStart === reqStart && planEnd === reqEnd;
+        });
+
+        if (!plan) {
+            console.log("❌ No time match found!");
+            return res.status(404).json({ 
+              error: "No matching time slot found",
+              requestedTime: `${startTime} - ${endTime}`,
+              availableTimes: plans.map(p => ({
+                planId: p.id,
+                start: p.exam_start_time,
+                end: p.exam_end_time
+              }))
+            });
+        }
+
+        console.log(`✅ Matched plan ID: ${plan.id}`);
+
+        // ✅ Step 3: Get selected courses for this plan
+        const [planDetails] = await db.query(
+            `SELECT selected_courses FROM seating_plans WHERE id = ?`,
+            [plan.id]
         );
 
-        if (venues.length === 0) {
-            return res.status(404).json({ error: "Venue not found in plan" });
+        let selectedCourses = [];
+        if (planDetails.length > 0 && planDetails[0].selected_courses) {
+            try {
+                selectedCourses = typeof planDetails[0].selected_courses === 'string' 
+                    ? JSON.parse(planDetails[0].selected_courses) 
+                    : planDetails[0].selected_courses;
+            } catch (e) {
+                console.error("Error parsing selected_courses:", e);
+            }
         }
-        const venueId = venues[0].id;
 
-        // Step 3: Get students from seating_arrangements JOINED with master students table
+        console.log(`📚 Selected courses for this plan:`, selectedCourses.map(c => c.courseDescription || c));
+
+        // ✅ Step 4: Find the specific venue
+        const [venues] = await db.query(
+            `SELECT id, venue_name FROM seating_plan_venues 
+             WHERE seating_plan_id = ?`,
+            [plan.id]
+        );
+
+        console.log(`🏢 Found ${venues.length} venues for plan ${plan.id}:`);
+        venues.forEach(v => console.log(`  - ${v.venue_name}`));
+
+        const matchedVenue = venues.find(v => v.venue_name === venue);
+
+        if (!matchedVenue) {
+            console.log(`❌ Venue "${venue}" not found in plan`);
+            return res.status(404).json({ 
+              error: "Venue not found in plan",
+              requestedVenue: venue,
+              availableVenues: venues.map(v => v.venue_name)
+            });
+        }
+
+        console.log(`✅ Matched venue: ${matchedVenue.venue_name} (ID: ${matchedVenue.id})`);
+        
+        const venueId = matchedVenue.id;
+
+        // ✅ Step 5: Get students with course info from seating_plan_students (not master students table)
         const [studentList] = await db.query(
-            `SELECT sa.regn_no as regNo, s.student_name as name, s.course_description as courseCode, s.course_name as courseName
-             FROM seating_arrangements sa
-             JOIN students s ON sa.regn_no = s.regn_no
-             WHERE sa.seating_plan_venue_id = ?
-             ORDER BY s.course_description, sa.regn_no`,
+            `SELECT 
+               sps.regn_no as regNo, 
+               sps.student_name as name, 
+               sps.course_description as courseCode
+             FROM seating_plan_students sps
+             WHERE sps.seating_plan_id = ?
+             ORDER BY sps.course_description, sps.regn_no`,
+            [plan.id]
+        );
+
+        console.log(`👥 Found ${studentList.length} students for this plan`);
+
+        if (studentList.length === 0) {
+            console.log("⚠️  Warning: No students found for this plan!");
+        }
+
+        // ✅ Step 6: Filter students who are seated in this specific venue
+        const [seatedInVenue] = await db.query(
+            `SELECT DISTINCT regn_no FROM seating_arrangements WHERE seating_plan_venue_id = ?`,
             [venueId]
         );
 
-        // Step 4: Group students by course
-        const courseMap = {};
-        studentList.forEach(s => {
-            if (!courseMap[s.courseCode]) {
-                courseMap[s.courseCode] = { 
-                    courseCode: s.courseCode, 
-                    courseName: s.courseName, 
-                    students: [] 
-                };
-            }
-            courseMap[s.courseCode].students.push({ regNo: s.regNo, name: s.name });
+        const seatedRegNos = new Set(seatedInVenue.map(s => s.regn_no));
+        const venueStudents = studentList.filter(s => seatedRegNos.has(s.regNo));
+
+        console.log(`🪑 ${venueStudents.length} students are seated in venue ${venue}`);
+
+        // ✅ Step 7: Create a map of courseCode -> courseName from selected courses
+        const courseNameMap = {};
+        selectedCourses.forEach(course => {
+            const courseCode = course.courseDescription || course;
+            const courseName = course.courseName || course.courseDescription || course;
+            courseNameMap[courseCode] = courseName;
         });
 
-        res.json({
+        // ✅ Step 8: Group by SELECTED courses only
+        const courseMap = {};
+        venueStudents.forEach(s => {
+            // Only include if this course is in selected courses
+            const isSelected = selectedCourses.some(c => 
+                (c.courseDescription || c) === s.courseCode
+            );
+
+            if (isSelected) {
+                if (!courseMap[s.courseCode]) {
+                    courseMap[s.courseCode] = { 
+                        courseCode: s.courseCode, 
+                        courseName: courseNameMap[s.courseCode] || s.courseCode,
+                        students: [] 
+                    };
+                }
+                courseMap[s.courseCode].students.push({ 
+                  regNo: s.regNo, 
+                  name: s.name 
+                });
+            }
+        });
+
+        console.log(`📋 Filtered to ${Object.keys(courseMap).length} selected courses`);
+
+        const result = {
             examDate: plan.exam_date,
             examSession: plan.exam_session,
-            examType: plan.exam_type,
-            examTime: `${plan.exam_start_time} - ${plan.exam_end_time}`,
             hallNo: venue,
             courses: Object.values(courseMap)
-        });
+        };
+
+        console.log("✅ SUCCESS! Sending attendance data:");
+        console.log(`  - ${result.courses.length} selected courses`);
+        console.log(`  - ${venueStudents.length} total students in venue`);
+        console.log("==========================================\n");
+
+        res.json(result);
 
     } catch (err) {
-        console.error("Attendance API Error:", err);
-        res.status(500).json({ error: "Server error", details: err.message });
+        console.error("❌ Attendance API Error:", err);
+        res.status(500).json({ 
+          error: "Server error", 
+          details: err.message,
+          stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+        });
     }
 });
 
@@ -459,6 +579,31 @@ router.post("/check-faculty-availability",
       console.error("CHECK AVAILABILITY ERROR:", err);
       res.status(500).json({
         error: "Failed to check availability",
+        message: err.message
+      });
+    }
+  }
+);
+
+/* =====================================================
+    GET: SINGLE SEATING PLAN - NOW AFTER /attendance
+    Roles: admin, faculty_incharge, coe
+    ⚠️ IMPORTANT: This MUST come AFTER /attendance route!
+===================================================== */
+router.get("/:id",
+  sessionAuth,
+  checkRole(['admin', 'faculty_incharge', 'coe']),
+  async (req, res) => {
+    try {
+      const plan = await SeatingPlan.getPlanById(req.params.id);
+      if (!plan) {
+        return res.status(404).json({ error: "Seating plan not found" });
+      }
+      res.status(200).json(plan);
+    } catch (err) {
+      console.error("FETCH PLAN ERROR:", err);
+      res.status(500).json({
+        error: "Failed to fetch seating plan",
         message: err.message
       });
     }
