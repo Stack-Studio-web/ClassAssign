@@ -1,3 +1,4 @@
+// notificationRoutes.js
 const express = require("express");
 const router = express.Router();
 const db = require("../config/db");
@@ -7,10 +8,51 @@ const sessionAuth = require("../middleware/sessionAuth");
 const checkRole = require("../middleware/checkRole");
 const auditLogger = require("../middleware/auditLogger");
 
+// ✅ Store batch tracking for progress updates
+let currentBatch = {
+  total: 0,
+  startTime: null,
+  initialCompleted: 0
+};
+
 /* ================================
-   POST /api/notifications/exam-announcement-v2
-   ✅ NEW: WITH COURSE-SPECIFIC DATES & INELIGIBILITY
+   GET /api/notifications/progress
+   Poll this to get current progress
 ================================ */
+router.get("/progress", sessionAuth, async (req, res) => {
+  try {
+    const [completed, failed, waiting, active] = await Promise.all([
+      bull.getCompletedCount(),
+      bull.getFailedCount(),
+      bull.getWaitingCount(),
+      bull.getActiveCount()
+    ]);
+    
+    const sent = Math.max(0, completed - currentBatch.initialCompleted);
+    const total = currentBatch.total;
+    const isComplete = sent >= total && waiting === 0 && active === 0;
+    
+    let message;
+    if (isComplete && total > 0) {
+      message = `Notification sent to ${sent}/${total} students`;
+    } else if (total > 0) {
+      message = `Sending notification ${sent}/${total}`;
+    } else {
+      message = "No notifications in progress";
+    }
+    
+    res.json({
+      message,
+      sent,
+      total,
+      failed,
+      isComplete
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post(
   "/exam-announcement-v2",
   sessionAuth,
@@ -25,7 +67,6 @@ router.post(
       });
     }
 
-    // Validate format
     for (const item of coursesWithDates) {
       if (!item.courseCode || !item.examDate) {
         return res.status(400).json({
@@ -35,15 +76,16 @@ router.post(
     }
 
     try {
-      // Extract all course codes
+      console.log('\n' + '='.repeat(60));
+      console.log('📢 EXAM ANNOUNCEMENT V2 - PROCESSING');
+      console.log(`Exam Type: ${examType} | Courses: ${coursesWithDates.length}`);
+
       const courses = coursesWithDates.map(c => c.courseCode);
       const placeholders = courses.map(() => "?").join(",");
 
-      // Get all students enrolled in selected courses
       const [students] = await db.query(
         `SELECT regn_no, student_name, email, course_description, course_name
-         FROM students
-         WHERE course_description IN (${placeholders})
+         FROM students WHERE course_description IN (${placeholders})
          GROUP BY regn_no, student_name, email, course_description, course_name`,
         courses
       );
@@ -52,9 +94,9 @@ router.post(
         return res.status(404).json({ error: "No students found" });
       }
 
-      // Build student map with courses
-      const studentMap = {};
+      console.log(`✅ Found ${students.length} student records`);
 
+      const studentMap = {};
       students.forEach(s => {
         if (!s.email) return;
         if (!studentMap[s.email]) {
@@ -66,9 +108,7 @@ router.post(
           };
         }
         
-        // Find exam date for this course
         const courseData = coursesWithDates.find(c => c.courseCode === s.course_description);
-        
         studentMap[s.email].courses.push({
           code: s.course_description,
           name: s.course_name,
@@ -76,29 +116,27 @@ router.post(
         });
       });
 
-      // Check ineligibility for each student-course combination
+      let totalEligible = 0;
+      let totalIneligible = 0;
+
       for (const email in studentMap) {
         const student = studentMap[email];
-        
         for (const course of student.courses) {
           const isIneligible = await IneligibleStudent.isIneligible(
-            student.regnNo,
-            course.code,
-            examType,
-            course.examDate
+            student.regnNo, course.code, examType, course.examDate
           );
-          
           course.eligible = !isIneligible;
+          if (isIneligible) totalIneligible++; else totalEligible++;
         }
       }
+
+      console.log(`Eligible: ${totalEligible} | Ineligible: ${totalIneligible}`);
 
       const queued = [];
       const skipped = [];
 
       for (const email in studentMap) {
         const student = studentMap[email];
-        
-        // Separate eligible and ineligible courses
         const eligibleCourses = student.courses.filter(c => c.eligible);
         const ineligibleCourses = student.courses.filter(c => !c.eligible);
 
@@ -107,48 +145,33 @@ router.post(
           continue;
         }
 
-        // Build message
-        let message = `
-          <b>📢 EXAM ANNOUNCEMENT</b><br><br>
-          Hello <b>${student.studentName}</b>,<br><br>
-        `;
+        let message = `<b>📢 EXAM ANNOUNCEMENT</b><br><br>Hello <b>${student.studentName}</b>,<br><br>`;
 
-        // Add eligible courses section
         if (eligibleCourses.length > 0) {
-          message += `<b>${examType}</b> exams are scheduled for the following courses:<br><br>`;
+          message += `<b>${examType}</b> exams are scheduled for:<br><br>`;
           eligibleCourses.forEach(c => {
             const dateStr = new Date(c.examDate).toLocaleDateString('en-IN', {
-              weekday: 'long',
-              year: 'numeric',
-              month: 'long',
-              day: 'numeric'
+              weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
             });
-            message += `📘 <b>${c.code}</b> - ${c.name || c.code}<br>`;
-            message += `   📅 ${dateStr}<br><br>`;
+            message += `📘 <b>${c.code}</b> - ${c.name || c.code}<br>   📅 ${dateStr}<br><br>`;
           });
         }
 
-        // Add ineligible courses section
         if (ineligibleCourses.length > 0) {
           message += `<br><b style="color: red;">⚠️ IMPORTANT NOTICE</b><br><br>`;
-          message += `You are <b>INELIGIBLE</b> to write the following exam(s) due to lack of attendance:<br><br>`;
+          message += `You are <b>INELIGIBLE</b> for the following exam(s):<br><br>`;
           ineligibleCourses.forEach(c => {
             const dateStr = new Date(c.examDate).toLocaleDateString('en-IN', {
-              weekday: 'long',
-              year: 'numeric',
-              month: 'long',
-              day: 'numeric'
+              weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
             });
-            message += `❌ <b>${c.code}</b> - ${c.name || c.code}<br>`;
-            message += `   📅 ${dateStr}<br><br>`;
+            message += `❌ <b>${c.code}</b> - ${c.name || c.code}<br>   📅 ${dateStr}<br><br>`;
           });
-          message += `<i>Please contact your faculty advisor immediately.</i><br><br>`;
+          message += `<i>Contact your faculty advisor immediately.</i><br><br>`;
         }
 
         if (eligibleCourses.length > 0) {
-          message += `Please be present at least 10 minutes early.<br><br>`;
+          message += `Please arrive 10 minutes early.<br><br>`;
         }
-
         message += `<i>— KSI</i>`;
 
         const job = await bull.add({
@@ -161,12 +184,7 @@ router.post(
           customMessage: message.trim()
         });
 
-        queued.push({ 
-          jobId: job.id, 
-          email,
-          eligible: eligibleCourses.length,
-          ineligible: ineligibleCourses.length
-        });
+        queued.push({ jobId: job.id, email });
       }
 
       const [waiting, active, completed, failed] = await Promise.all([
@@ -176,10 +194,21 @@ router.post(
         bull.getFailedCount()
       ]);
 
+      // ✅ Set batch tracking
+      currentBatch = {
+        total: queued.length,
+        startTime: Date.now(),
+        initialCompleted: completed
+      };
+
+      console.log(`✅ Queued: ${queued.length} | Skipped: ${skipped.length}`);
+      console.log('='.repeat(60) + '\n');
+
+      // ✅ Return initial message - your frontend will poll /progress for updates
       res.json({
         success: true,
-        message: `${examType} notifications queued for ${queued.length} students`,
-        id: `${examType}_${Date.now()}`, // For audit log
+        message: `Sending notification 0/${queued.length}`,
+        id: `${examType}_${Date.now()}`,
         examType,
         courses: coursesWithDates,
         stats: {
@@ -192,16 +221,12 @@ router.post(
       });
 
     } catch (err) {
-      console.error("Exam Announcement Error:", err);
+      console.error("Error:", err);
       res.status(500).json({ error: err.message });
     }
   }
 );
 
-/* ================================
-   POST /api/notifications/teams
-   (EXISTING - UNCHANGED)
-================================ */
 router.post(
   "/teams",
   sessionAuth,
@@ -211,20 +236,18 @@ router.post(
     const { date, session } = req.body;
 
     if (!date || !session) {
-      return res.status(400).json({
-        error: "Date and session are required",
-      });
+      return res.status(400).json({ error: "Date and session required" });
     }
 
     try {
+      console.log('\n' + '='.repeat(60));
+      console.log(`📧 SEATING NOTIFICATIONS: ${date} ${session}`);
+
       const dateOnly = date.includes("T") ? date.split("T")[0] : date;
 
       const [plans] = await db.query(
-        `SELECT 
-          id, exam_date, exam_session, exam_type,
-          exam_start_time, exam_end_time, selected_courses
-        FROM seating_plans
-        WHERE exam_date = ? AND exam_session = ?`,
+        `SELECT id, exam_date, exam_session, exam_type, exam_start_time, exam_end_time, selected_courses
+         FROM seating_plans WHERE exam_date = ? AND exam_session = ?`,
         [dateOnly, session]
       );
 
@@ -234,23 +257,14 @@ router.post(
 
       const planIds = plans.map(p => p.id);
       const [venues] = await db.query(
-        `SELECT 
-          spv.id as venue_plan_id,
-          spv.seating_plan_id,
-          spv.venue_name
-        FROM seating_plan_venues spv
-        WHERE spv.seating_plan_id IN (${planIds.map(() => "?").join(",")})`,
+        `SELECT spv.id as venue_plan_id, spv.seating_plan_id, spv.venue_name
+         FROM seating_plan_venues spv WHERE spv.seating_plan_id IN (${planIds.map(() => "?").join(",")})`,
         planIds
       );
 
-      if (venues.length === 0) {
-        return res.status(404).json({ error: "No venues found" });
-      }
-
       const venuePlanIds = venues.map(v => v.venue_plan_id);
       const [seatingArrangements] = await db.query(
-        `SELECT seating_plan_venue_id, regn_no
-         FROM seating_arrangements
+        `SELECT seating_plan_venue_id, regn_no FROM seating_arrangements
          WHERE seating_plan_venue_id IN (${venuePlanIds.map(() => "?").join(",")})`,
         venuePlanIds
       );
@@ -261,12 +275,9 @@ router.post(
 
       for (const plan of plans) {
         const [planStudents] = await db.query(
-          `SELECT regn_no, course_description
-           FROM seating_plan_students
-           WHERE seating_plan_id = ?`,
+          `SELECT regn_no, course_description FROM seating_plan_students WHERE seating_plan_id = ?`,
           [plan.id]
         );
-
         planStudents.forEach(s => {
           if (s.regn_no && s.course_description) {
             studentCourseMap[s.regn_no.trim()] = s.course_description;
@@ -277,7 +288,6 @@ router.post(
       seatingArrangements.forEach(seat => {
         const regnNo = seat.regn_no?.trim();
         if (!regnNo) return;
-
         studentSet.add(regnNo);
 
         const venue = venues.find(v => v.venue_plan_id === seat.seating_plan_venue_id);
@@ -290,8 +300,7 @@ router.post(
             examDate: plan.exam_date,
             examType: plan.exam_type,
             allSelectedCourses: typeof plan.selected_courses === "string"
-              ? JSON.parse(plan.selected_courses)
-              : plan.selected_courses || []
+              ? JSON.parse(plan.selected_courses) : plan.selected_courses || []
           };
         }
       });
@@ -302,21 +311,14 @@ router.post(
 
       const regnNos = Array.from(studentSet);
       const [studentRecords] = await db.query(
-        `SELECT 
-          regn_no,
-          MIN(student_name) AS student_name,
-          MIN(email) AS email
-        FROM students
-        WHERE regn_no IN (${regnNos.map(() => "?").join(",")})
-        GROUP BY regn_no`,
+        `SELECT regn_no, MIN(student_name) AS student_name, MIN(email) AS email
+         FROM students WHERE regn_no IN (${regnNos.map(() => "?").join(",")}) GROUP BY regn_no`,
         regnNos
       );
 
       const allCourseCodes = new Set(Object.values(studentCourseMap));
       plans.forEach(plan => {
-        const courses = typeof plan.selected_courses === "string"
-          ? JSON.parse(plan.selected_courses)
-          : plan.selected_courses;
+        const courses = typeof plan.selected_courses === "string" ? JSON.parse(plan.selected_courses) : plan.selected_courses;
         if (courses) courses.forEach(code => allCourseCodes.add(code));
       });
 
@@ -324,16 +326,12 @@ router.post(
       if (allCourseCodes.size > 0) {
         const courseCodesArray = Array.from(allCourseCodes);
         const [courses] = await db.query(
-          `SELECT DISTINCT course_description AS courseCode, course_name
-           FROM students
+          `SELECT DISTINCT course_description AS courseCode, course_name FROM students
            WHERE course_description IN (${courseCodesArray.map(() => "?").join(",")})`,
           courseCodesArray
         );
-
         courses.forEach(c => {
-          if (c.courseCode && c.course_name) {
-            courseMap[c.courseCode] = c.course_name;
-          }
+          if (c.courseCode && c.course_name) courseMap[c.courseCode] = c.course_name;
         });
       }
 
@@ -344,13 +342,13 @@ router.post(
         const { regn_no, student_name, email } = student;
 
         if (!email || !email.trim()) {
-          skipped.push({ regnNo: regn_no, name: student_name, reason: "No email" });
+          skipped.push({ regnNo: regn_no, reason: "No email" });
           continue;
         }
 
         const venueData = studentVenueMap[regn_no];
         if (!venueData) {
-          skipped.push({ regnNo: regn_no, email, name: student_name, reason: "No venue" });
+          skipped.push({ regnNo: regn_no, reason: "No venue" });
           continue;
         }
 
@@ -377,14 +375,7 @@ router.post(
           courseCodes
         });
 
-        queued.push({
-          jobId: job.id,
-          regnNo: regn_no,
-          email,
-          name: student_name,
-          venue: venueData.venueName,
-          courses: courseName
-        });
+        queued.push({ jobId: job.id, regnNo: regn_no, email });
       }
 
       const [waiting, active, completed, failed] = await Promise.all([
@@ -394,9 +385,20 @@ router.post(
         bull.getFailedCount()
       ]);
 
+      // ✅ Set batch tracking
+      currentBatch = {
+        total: queued.length,
+        startTime: Date.now(),
+        initialCompleted: completed
+      };
+
+      console.log(`✅ Queued: ${queued.length} | Skipped: ${skipped.length}`);
+      console.log('='.repeat(60) + '\n');
+
+      // ✅ Return initial message - your frontend will poll /progress for updates
       res.json({
         success: true,
-        message: "Notifications queued successfully",
+        message: `Sending notification 0/${queued.length}`,
         id: `${dateOnly}_${session}`,
         examDate: dateOnly,
         examSession: session,
@@ -411,156 +413,61 @@ router.post(
       });
 
     } catch (err) {
-      console.error("❌ Teams Notification Error:", err);
+      console.error("Error:", err);
       res.status(500).json({ error: err.message });
     }
   }
 );
 
-/* ================================
-   POST /api/notifications/exam-announcement
-   (EXISTING - UNCHANGED)
-================================ */
-router.post(
-  "/exam-announcement",
-  sessionAuth,
-  checkRole(['admin', 'faculty_incharge', 'coe']),
-  auditLogger("SEND_EXAM_ANNOUNCEMENT", "Notification"),
-  async (req, res) => {
-    const { examType, courses } = req.body;
-
-    if (!examType || !courses || courses.length === 0) {
-      return res.status(400).json({
-        error: "Exam type and at least one course are required",
-      });
+// Other routes unchanged
+router.post("/exam-announcement", sessionAuth, checkRole(['admin', 'faculty_incharge', 'coe']), auditLogger("SEND_EXAM_ANNOUNCEMENT", "Notification"), async (req, res) => {
+  const { examType, courses } = req.body;
+  if (!examType || !courses || courses.length === 0) return res.status(400).json({ error: "Required fields missing" });
+  try {
+    const placeholders = courses.map(() => "?").join(",");
+    const [students] = await db.query(`SELECT regn_no, student_name, email, course_description, course_name FROM students WHERE course_description IN (${placeholders}) GROUP BY regn_no, student_name, email, course_description, course_name`, courses);
+    if (students.length === 0) return res.status(404).json({ error: "No students found" });
+    const studentMap = {};
+    students.forEach(s => {
+      if (!s.email) return;
+      if (!studentMap[s.email]) studentMap[s.email] = { regnNo: s.regn_no, studentName: s.student_name, email: s.email, courses: [] };
+      studentMap[s.email].courses.push({ code: s.course_description, name: s.course_name });
+    });
+    const queued = [];
+    for (const email in studentMap) {
+      const student = studentMap[email];
+      if (student.courses.length === 0) continue;
+      const courseList = student.courses.map(c => `📘 ${c.code} - ${c.name || c.code}`).join("\n");
+      const job = await bull.add({ type: "exam-announcement", email, studentName: student.studentName, examType, courseList });
+      queued.push({ jobId: job.id, email });
     }
-
-    try {
-      const placeholders = courses.map(() => "?").join(",");
-
-      const [students] = await db.query(
-        `SELECT regn_no, student_name, email, course_description, course_name
-         FROM students
-         WHERE course_description IN (${placeholders})
-         GROUP BY regn_no, student_name, email, course_description, course_name`,
-        courses
-      );
-
-      if (students.length === 0) {
-        return res.status(404).json({ error: "No students found" });
-      }
-
-      const studentMap = {};
-
-      students.forEach(s => {
-        if (!s.email) return;
-        if (!studentMap[s.email]) {
-          studentMap[s.email] = {
-            regnNo: s.regn_no,
-            studentName: s.student_name,
-            email: s.email,
-            courses: []
-          };
-        }
-        studentMap[s.email].courses.push({
-          code: s.course_description,
-          name: s.course_name
-        });
-      });
-
-      const queued = [];
-      const skipped = [];
-
-      for (const email in studentMap) {
-        const student = studentMap[email];
-        if (student.courses.length === 0) {
-          skipped.push({ email, reason: "No courses" });
-          continue;
-        }
-
-        const courseList = student.courses
-          .map(c => `📘 ${c.code} - ${c.name || c.code}`)
-          .join("\n");
-
-        const job = await bull.add({
-          type: "exam-announcement",
-          email,
-          studentName: student.studentName,
-          examType,
-          courseList
-        });
-
-        queued.push({ jobId: job.id, email });
-      }
-
-      const [waiting, active, completed, failed] = await Promise.all([
-        bull.getWaitingCount(),
-        bull.getActiveCount(),
-        bull.getCompletedCount(),
-        bull.getFailedCount()
-      ]);
-
-      res.json({
-        success: true,
-        message: `${examType} notifications queued`,
-        id: `${examType}_${Date.now()}`,
-        examType,
-        courses,
-        stats: {
-          queued: queued.length,
-          skipped: skipped.length,
-          queueStats: { waiting, active, completed, failed }
-        }
-      });
-
-    } catch (err) {
-      console.error("Exam Announcement Error:", err);
-      res.status(500).json({ error: err.message });
-    }
+    const [completed] = await Promise.all([bull.getCompletedCount()]);
+    currentBatch = { total: queued.length, startTime: Date.now(), initialCompleted: completed };
+    res.json({ success: true, message: `Sending notification 0/${queued.length}`, id: `${examType}_${Date.now()}`, stats: { queued: queued.length } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-);
+});
 
-/* ================================
-   GET /api/notifications/queue/stats
-   (EXISTING - UNCHANGED)
-================================ */
 router.get("/queue/stats", sessionAuth, async (req, res) => {
   try {
-    const [waiting, active, completed, failed] = await Promise.all([
-      bull.getWaitingCount(),
-      bull.getActiveCount(),
-      bull.getCompletedCount(),
-      bull.getFailedCount()
-    ]);
+    const [waiting, active, completed, failed] = await Promise.all([bull.getWaitingCount(), bull.getActiveCount(), bull.getCompletedCount(), bull.getFailedCount()]);
     res.json({ stats: { waiting, active, completed, failed } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-/* ================================
-   POST /api/notifications/queue/clear
-   (EXISTING - UNCHANGED)
-================================ */
-router.post(
-  "/queue/clear",
-  sessionAuth,
-  checkRole(['admin']),
-  auditLogger("CLEAR_NOTIFICATION_QUEUE", "NotificationQueue"),
-  async (req, res) => {
-    try {
-      await bull.empty();
-      await bull.clean(0, "completed");
-      await bull.clean(0, "failed");
-      
-      res.json({ 
-        message: "Bull queue cleared",
-        id: `queue_clear_${Date.now()}`
-      });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
+router.post("/queue/clear", sessionAuth, checkRole(['admin']), auditLogger("CLEAR_NOTIFICATION_QUEUE", "NotificationQueue"), async (req, res) => {
+  try {
+    await bull.empty();
+    await bull.clean(0, "completed");
+    await bull.clean(0, "failed");
+    currentBatch = { total: 0, startTime: null, initialCompleted: 0 };
+    res.json({ message: "Bull queue cleared", id: `queue_clear_${Date.now()}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-);
+});
 
 module.exports = router;

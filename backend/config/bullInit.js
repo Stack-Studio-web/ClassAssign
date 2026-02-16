@@ -1,3 +1,4 @@
+// bullInit.js - FIXED: Limiter at correct level
 const Queue = require('bull');
 const config = require('./config');
 
@@ -42,18 +43,18 @@ const bull = new Queue('exam-notifications', {
     removeOnFail: 500
   },
 
+  // ✅ CRITICAL FIX: Limiter MUST be at top level (not inside settings)
+  limiter: {
+    max: parseInt(process.env.QUEUE_LIMITER_MAX) || 10,
+    duration: parseInt(process.env.QUEUE_LIMITER_DURATION) || 10000,
+    bounceBack: false
+  },
+
   settings: {
     maxStalledCount: 3,
     stalledInterval: 30000,
     guardInterval: 5000,
-    retryProcessDelay: 5000,
-    
-    // ✅ CRITICAL: Bull queue-level limiter (10 per 10 seconds)
-    limiter: {
-      max: parseInt(process.env.QUEUE_LIMITER_MAX) || 10,
-      duration: parseInt(process.env.QUEUE_LIMITER_DURATION) || 10000,
-      bounceBack: false
-    }
+    retryProcessDelay: 5000
   }
 });
 
@@ -102,5 +103,7 @@ setInterval(async () => {
     console.error('❌ Health check error:', err.message);
   }
 }, 60000);
+
+console.log('✅ Bull Queue initialized with rate limiter: 10 jobs per 10 seconds');
 
 module.exports = bull;
