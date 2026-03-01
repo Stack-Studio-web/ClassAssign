@@ -1,0 +1,52 @@
+{
+  "name": "ksi",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@heroicons/react": "^2.2.0",
+    "@react-pdf/renderer": "^4.3.1",
+    "@tailwindcss/vite": "^4.1.12",
+    "axios": "^1.13.0",
+    "cors": "^2.8.5",
+    "docx": "^9.5.1",
+    "express": "^5.2.1",
+    "file-saver": "^2.0.5",
+    "heroicons": "^2.2.0",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.0.0",
+    "jspdf-autotable": "^5.0.2",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "react-router-dom": "^7.9.3",
+    "react-to-print": "^3.2.0",
+    "swiper": "^12.1.2",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.33.0",
+    "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.1.7",
+    "@vitejs/plugin-react": "^5.0.0",
+    "autoprefixer": "^10.4.21",
+    "eslint": "^9.33.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint-plugin-react-refresh": "^0.4.20",
+    "globals": "^16.3.0",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.12",
+    "vite": "^7.1.2"
+  },
+  "proxy": "http://localhost:5000",
+  "description": "This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.",
+  "main": "eslint.config.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
