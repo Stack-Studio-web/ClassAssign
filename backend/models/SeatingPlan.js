@@ -45,10 +45,10 @@ const SeatingPlan = {
       if (students.length > 0) {
         const studentValues = students.map(s => [
           seatingPlanId,
-          s.regnNo,
-          s.studentName || "",
-          s.courseDescription,
-          s.examCode || examType
+          s.regnNo ?? null,
+          s.studentName ?? "",
+          s.courseDescription ?? null,
+          s.examCode ?? examType ?? null
         ]);
 
         await conn.query(
@@ -77,7 +77,10 @@ const SeatingPlan = {
           ]
         );
 
-        const seatingPlanVenueId = venueRes.insertId;
+        const seatingPlanVenueId = venueRes.insertId ?? venueRes.insertid;
+        if (seatingPlanVenueId == null) {
+          throw new Error(`Failed to get venue ID for ${venue.venueName || venue.venueId}`);
+        }
 
         // Insert seating grid (2D arrangement)
         if (Array.isArray(venue.seatingArrangement)) {
@@ -96,12 +99,15 @@ const SeatingPlan = {
               if (Array.isArray(cellContent)) {
                 cellContent.forEach(item => {
                   if (item && item.regn_no) {
-                    arrangementEntries.push([
-                      seatingPlanVenueId,
-                      r,
-                      c,
-                      item.regn_no.trim()
-                    ]);
+                    const regNo = (item.regn_no ?? "").toString().trim();
+                    if (regNo) {
+                      arrangementEntries.push([
+                        seatingPlanVenueId,
+                        r,
+                        c,
+                        regNo
+                      ]);
+                    }
                   }
                 });
               }
@@ -166,18 +172,21 @@ const SeatingPlan = {
     const plans = [];
 
     for (let row of rows) {
+      const planId = row._id ?? row.id;
       const plan = {
-        _id: row._id,
-        examDate: row.exam_date,
-        examSession: row.exam_session,
-        examType: row.exam_type,
-        examStartTime: row.exam_start_time,
-        examEndTime: row.exam_end_time,
-        facultyMode: row.faculty_mode,
-        createdAt: row.created_at,
-        selectedCourses: typeof row.selected_courses === "string"
-          ? JSON.parse(row.selected_courses)
-          : row.selected_courses,
+        _id: planId,
+        id: planId,
+        examDate: row.exam_date ?? row.examdate,
+        examSession: row.exam_session ?? row.examsession,
+        examType: row.exam_type ?? row.examtype,
+        examStartTime: row.exam_start_time ?? row.examstarttime,
+        examEndTime: row.exam_end_time ?? row.examendtime,
+        facultyMode: row.faculty_mode ?? row.facultymode,
+        createdAt: row.created_at ?? row.createdat,
+        selectedCourses: (() => {
+          const sc = row.selected_courses ?? row.selectedcourses;
+          return typeof sc === "string" ? JSON.parse(sc) : sc;
+        })(),
         venuesUsed: []
       };
 
@@ -193,32 +202,37 @@ const SeatingPlan = {
         FROM seating_plan_venues spv
         LEFT JOIN faculty f ON spv.faculty_id = f.id
         WHERE spv.seating_plan_id = ?
-      `, [row._id]);
+      `, [planId]);
 
       // ✅ Build a course lookup map from seating_plan_students for this plan
       const [planStudents] = await db.query(`
         SELECT regn_no, course_description
         FROM seating_plan_students
         WHERE seating_plan_id = ?
-      `, [row._id]);
+      `, [planId]);
 
       const studentCourseMap = new Map();
-      planStudents.forEach(s => {
-        studentCourseMap.set(s.regn_no, s.course_description);
+      (planStudents || []).forEach(s => {
+        const regn = s.regn_no ?? s.regnno;
+        const desc = s.course_description ?? s.coursedescription;
+        if (regn) studentCourseMap.set(regn, desc);
       });
 
-      for (let v of venues) {
-        // ✅ Parse benchConfig from JSON
-        if (v.benchConfig) {
+      for (let v of venues || []) {
+        const internalId = v.internalId ?? v.internalid ?? v.id;
+        const benchConfigRaw = v.benchConfig ?? v.benchconfig;
+        if (benchConfigRaw) {
           try {
-            v.benchConfig = typeof v.benchConfig === 'string' 
-              ? JSON.parse(v.benchConfig) 
-              : v.benchConfig;
+            v.benchConfig = typeof benchConfigRaw === 'string' 
+              ? JSON.parse(benchConfigRaw) 
+              : benchConfigRaw;
           } catch (e) {
             console.error('Error parsing benchConfig:', e);
             v.benchConfig = null;
           }
         }
+        v.venueName = v.venueName ?? v.venuename ?? v.venue_name;
+        v.venueId = v.venueId ?? v.venueid ?? v.venue_id;
 
         // Fetch every individual seat
         const [seats] = await db.query(`
@@ -226,27 +240,24 @@ const SeatingPlan = {
           FROM seating_arrangements
           WHERE seating_plan_venue_id = ?
           ORDER BY seat_row, seat_col
-        `, [v.internalId]);
+        `, [internalId]);
 
-        if (seats.length > 0) {
-          const maxR = Math.max(...seats.map(s => s.seat_row)) + 1;
-          const maxC = Math.max(...seats.map(s => s.seat_col)) + 1;
+        if (seats && seats.length > 0) {
+          const maxR = Math.max(...seats.map(s => (s.seat_row ?? s.seatrow) ?? 0)) + 1;
+          const maxC = Math.max(...seats.map(s => (s.seat_col ?? s.seatcol) ?? 0)) + 1;
 
-          // ✅ Initialize grid with empty arrays
           const grid = Array.from({ length: maxR }, () =>
             Array.from({ length: maxC }, () => [])
           );
 
-          // ✅ Push { regn_no, course } objects into each cell
           seats.forEach(s => {
-            const course = studentCourseMap.get(s.regn_no) || null;
-            grid[s.seat_row][s.seat_col].push({
-              regn_no: s.regn_no,
-              course: course
-            });
+            const regn = s.regn_no ?? s.regnno;
+            const course = studentCourseMap.get(regn) || null;
+            const r = s.seat_row ?? s.seatrow ?? 0;
+            const c = s.seat_col ?? s.seatcol ?? 0;
+            grid[r][c].push({ regn_no: regn, course });
           });
 
-          // ✅ Convert empty arrays to "Empty" string for UI compatibility
           v.seatingArrangement = grid.map(row =>
             row.map(cell => (cell.length === 0 ? "Empty" : cell))
           );
@@ -255,7 +266,7 @@ const SeatingPlan = {
         }
       }
 
-      plan.venuesUsed = venues;
+      plan.venuesUsed = venues || [];
       plans.push(plan);
     }
 
@@ -276,17 +287,33 @@ const SeatingPlan = {
         exam_start_time,
         exam_end_time,
         selected_courses,
-        faculty_mode
+        faculty_mode,
+        created_at
        FROM seating_plans
        WHERE id = ?`,
       [planId]
     );
 
-    if (plans.length === 0) return null;
+    if (!plans || plans.length === 0) return null;
 
-    const plan = plans[0];
+    const row = plans[0];
+    const pid = row._id ?? row.id;
+    const plan = {
+      _id: pid,
+      id: pid,
+      examDate: row.exam_date ?? row.examdate,
+      examSession: row.exam_session ?? row.examsession,
+      examType: row.exam_type ?? row.examtype,
+      examStartTime: row.exam_start_time ?? row.examstarttime,
+      examEndTime: row.exam_end_time ?? row.examendtime,
+      facultyMode: row.faculty_mode ?? row.facultymode,
+      createdAt: row.created_at ?? row.createdat,
+      selectedCourses: (() => {
+        const sc = row.selected_courses ?? row.selectedcourses;
+        return typeof sc === "string" ? JSON.parse(sc) : sc;
+      })()
+    };
 
-    // ✅ Include benchConfig when fetching venue
     const [venues] = await db.query(`
       SELECT 
         spv.id as internalId,
@@ -300,25 +327,63 @@ const SeatingPlan = {
       WHERE spv.seating_plan_id = ?
     `, [planId]);
 
-    // ✅ Parse benchConfig
-    venues.forEach(v => {
-      if (v.benchConfig) {
+    const [planStudents] = await db.query(`
+      SELECT regn_no, course_description
+      FROM seating_plan_students
+      WHERE seating_plan_id = ?
+    `, [planId]);
+
+    const studentCourseMap = new Map();
+    (planStudents || []).forEach(s => {
+      const regn = s.regn_no ?? s.regnno;
+      const desc = s.course_description ?? s.coursedescription;
+      if (regn) studentCourseMap.set(regn, desc);
+    });
+
+    for (let v of venues || []) {
+      const internalId = v.internalId ?? v.internalid ?? v.id;
+      const benchConfigRaw = v.benchConfig ?? v.benchconfig;
+      if (benchConfigRaw) {
         try {
-          v.benchConfig = typeof v.benchConfig === 'string' 
-            ? JSON.parse(v.benchConfig) 
-            : v.benchConfig;
+          v.benchConfig = typeof benchConfigRaw === 'string' 
+            ? JSON.parse(benchConfigRaw) 
+            : benchConfigRaw;
         } catch (e) {
           v.benchConfig = null;
         }
       }
-    });
+      v.venueName = v.venueName ?? v.venuename ?? v.venue_name;
+      v.venueId = v.venueId ?? v.venueid ?? v.venue_id;
 
-    plan.venuesUsed = venues;
-    plan.selectedCourses =
-      typeof plan.selected_courses === "string"
-        ? JSON.parse(plan.selected_courses)
-        : plan.selected_courses;
+      const [seats] = await db.query(`
+        SELECT seat_row, seat_col, regn_no
+        FROM seating_arrangements
+        WHERE seating_plan_venue_id = ?
+        ORDER BY seat_row, seat_col
+      `, [internalId]);
 
+      if (seats && seats.length > 0) {
+        const maxR = Math.max(...seats.map(s => (s.seat_row ?? s.seatrow) ?? 0)) + 1;
+        const maxC = Math.max(...seats.map(s => (s.seat_col ?? s.seatcol) ?? 0)) + 1;
+        const grid = Array.from({ length: maxR }, () =>
+          Array.from({ length: maxC }, () => [])
+        );
+        seats.forEach(s => {
+          const regn = s.regn_no ?? s.regnno;
+          const course = studentCourseMap.get(regn) || null;
+          const r = s.seat_row ?? s.seatrow ?? 0;
+          const c = s.seat_col ?? s.seatcol ?? 0;
+          grid[r][c].push({ regn_no: regn, course });
+        });
+        v.seatingArrangement = grid.map(row =>
+          row.map(cell => (cell.length === 0 ? "Empty" : cell))
+        );
+      } else {
+        v.seatingArrangement = [];
+      }
+    }
+
+    plan.venuesUsed = venues || [];
     return plan;
   },
 
@@ -330,12 +395,12 @@ const SeatingPlan = {
     try {
       await conn.beginTransaction();
 
-      // 1️⃣ Delete seating arrangements
+      // 1️⃣ Delete seating arrangements (PostgreSQL-compatible)
       await conn.query(
-        `DELETE sa FROM seating_arrangements sa
-         JOIN seating_plan_venues spv 
-           ON sa.seating_plan_venue_id = spv.id
-         WHERE spv.seating_plan_id = ?`,
+        `DELETE FROM seating_arrangements
+         WHERE seating_plan_venue_id IN (
+           SELECT id FROM seating_plan_venues WHERE seating_plan_id = ?
+         )`,
         [planId]
       );
 

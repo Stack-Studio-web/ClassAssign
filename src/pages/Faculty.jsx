@@ -33,7 +33,7 @@ export default function Faculty() {
   const fetchFacultyStats = async () => {
     try {
       const res = await axios.get("/api/faculty/stats");
-      setTotalFaculty(res.data.totalFaculty);
+      setTotalFaculty(res.data?.totalFaculty ?? res.data?.totalfaculty ?? 0);
     } catch {
       setTotalFaculty(0);
     }
@@ -66,7 +66,7 @@ export default function Faculty() {
   /* ================= EDIT LOGIC ================= */
   const handleEditClick = (f) => {
     setEditingId(f.id);
-    setEditValue(f.max_classrooms || 0);
+    setEditValue(f.maxClassrooms ?? f.max_classrooms ?? 0);
   };
 
   const handleUpdateMaxClassrooms = async (id) => {
@@ -108,19 +108,24 @@ export default function Faculty() {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
-      setInsertedCount(res.data.inserted);
-      setSkippedEmails(res.data.skippedEmails || []);
-      setMessage(`🎉 Added: ${res.data.inserted}, Skipped: ${res.data.skipped || 0}`);
+      const inserted = res.data?.inserted ?? 0;
+      const skipped = res.data?.skipped ?? res.data?.skippedEmails?.length ?? 0;
+      setInsertedCount(inserted);
+      setSkippedEmails(res.data?.skippedEmails || []);
+      setMessage(`🎉 Added: ${inserted}, Skipped: ${skipped}`);
 
       setSelectedFile(null);
       if (document.getElementById("fileInput")) {
         document.getElementById("fileInput").value = "";
       }
 
-      fetchFaculty();
-      fetchFacultyStats();
+      await fetchFaculty();
+      await fetchFacultyStats();
     } catch (err) {
       setMessage("❌ Import failed. Check file format.");
+      // Refresh list anyway - data may have been partially inserted
+      await fetchFaculty();
+      await fetchFacultyStats();
     } finally {
       setLoading(false);
     }
@@ -356,14 +361,14 @@ export default function Faculty() {
       {/* MAX */}
       <td className="p-4 text-center">
         <span className="font-bold text-blue-800 bg-blue-100 px-3 py-1 rounded-full text-xs">
-          {f.max_classrooms || 0}
+          {f.maxClassrooms ?? f.max_classrooms ?? 0}
         </span>
       </td>
 
       {/* ALLOCATED */}
       <td className="p-4 text-center">
         <span className="font-bold text-orange-700 bg-orange-100 px-3 py-1 rounded-full text-xs">
-          {f.allocation || 0}
+          {f.allocation ?? 0}
         </span>
       </td>
 

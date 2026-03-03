@@ -84,7 +84,11 @@ export default function Student() {
   const fetchStudents = async () => {
     try {
       const res = await axios.get("/api/students");
-      setStudents(res.data);
+      setStudents((res.data || []).map(s => ({
+        ...s,
+        studentName: s.studentName ?? "",
+        regnNo: s.regnNo ?? ""
+      })));
     } catch (err) {
       setStudents([]);
     }
@@ -193,25 +197,28 @@ export default function Student() {
   const filteredStudents = useMemo(() => {
     return students
       .filter((student) => {
+        const regnNo = student.regnNo ?? "";
         if (filters.department) {
-          if (filters.department === "IT" && !student.regnNo.includes("BIT")) return false;
-          if (filters.department === "CS" && !student.regnNo.includes("BCS")) return false;
-          if (filters.department === "AIDS" && !student.regnNo.includes("BAD")) return false;
+          if (filters.department === "IT" && !regnNo.includes("BIT")) return false;
+          if (filters.department === "CS" && !regnNo.includes("BCS")) return false;
+          if (filters.department === "AIDS" && !regnNo.includes("BAD")) return false;
         }
         if (filters.year) {
-          if (filters.year === "3" && !student.regnNo.startsWith("23")) return false;
-          if (filters.year === "2" && !student.regnNo.startsWith("24")) return false;
+          if (filters.year === "3" && !regnNo.startsWith("23")) return false;
+          if (filters.year === "2" && !regnNo.startsWith("24")) return false;
         }
         if (filters.courseName && student.courseName !== filters.courseName) return false;
         if (filters.courseDescription && student.courseDescription !== filters.courseDescription) return false;
         const query = searchQuery.toLowerCase();
-        if (query && !(student.studentName.toLowerCase().includes(query) || student.regnNo.toLowerCase().includes(query))) return false;
+        const name = (student.studentName ?? "").toLowerCase();
+        const reg = regnNo.toLowerCase();
+        if (query && !(name.includes(query) || reg.includes(query))) return false;
 
         return true;
       })
       .sort((a, b) => {
-        const nameA = a.studentName.toLowerCase();
-        const nameB = b.studentName.toLowerCase();
+        const nameA = (a.studentName ?? "").toLowerCase();
+        const nameB = (b.studentName ?? "").toLowerCase();
         return sortOrder === "asc" ? nameA.localeCompare(nameB) : nameB.localeCompare(nameA);
       });
   }, [students, filters, searchQuery, sortOrder]);
@@ -246,7 +253,12 @@ export default function Student() {
       
       setIneligibilityData({
         examDate: existingData?.examDate || "",
-        courseStudents: res.data,
+        courseStudents: (res.data || []).map(s => ({
+          ...s,
+          regnNo: s.regnNo ?? "",
+          studentName: s.studentName ?? "",
+          email: s.email ?? ""
+        })),
         ineligibleSet: existingData?.ineligibleStudents 
           ? new Set(existingData.ineligibleStudents) 
           : new Set()
@@ -295,11 +307,11 @@ export default function Student() {
       });
       
       const ineligibleStudents = ineligibilityData.courseStudents
-        .filter(s => ineligibilityData.ineligibleSet.has(s.regnNo))
+        .filter(s => ineligibilityData.ineligibleSet.has(s.regnNo ?? ""))
         .map(s => ({
-          regnNo: s.regnNo,
-          studentName: s.studentName,
-          email: s.email,
+          regnNo: s.regnNo ?? "",
+          studentName: s.studentName ?? "",
+          email: s.email ?? "",
           reason: "Lack of attendance"
         }));
 
@@ -525,8 +537,8 @@ export default function Student() {
     if (!notificationForm.department) return courses;
     
     return courses.filter(course => {
-      const desc = course.courseDescription.toLowerCase();
-      const dept = notificationForm.department.toLowerCase();
+      const desc = (course.courseDescription ?? "").toLowerCase();
+      const dept = (notificationForm.department ?? "").toLowerCase();
       return desc.includes(dept);
     });
   }, [courses, notificationForm.department]);
@@ -536,8 +548,8 @@ export default function Student() {
     
     const query = ineligibilitySearch.toLowerCase();
     return ineligibilityData.courseStudents.filter(s =>
-      s.regnNo.toLowerCase().includes(query) ||
-      s.studentName.toLowerCase().includes(query)
+      (s.regnNo ?? "").toLowerCase().includes(query) ||
+      (s.studentName ?? "").toLowerCase().includes(query)
     );
   }, [ineligibilityData.courseStudents, ineligibilitySearch]);
 
@@ -718,7 +730,7 @@ export default function Student() {
                   filteredStudents.map((s) => (
                     <tr key={s.id} className="hover:bg-blue-50 transition-colors">
                       <td className="p-4 font-medium text-blue-700">{s.regnNo}</td>
-                      <td className="p-4 font-semibold text-gray-800">{s.studentName}</td>
+                      <td className="p-4 font-semibold text-gray-800">{s.studentName ?? "—"}</td>
                       <td className="p-4 text-gray-600 text-sm">{s.courseName}</td>
                       <td className="p-4 text-gray-500 text-xs">{s.courseDescription}</td>
                       <td className="p-4 text-center">
@@ -947,8 +959,8 @@ export default function Student() {
                                   isIneligible ? "bg-red-50" : "bg-white"
                                 }`}
                               >
-                                <td className="p-3 font-medium text-blue-700">{student.regnNo}</td>
-                                <td className="p-3 font-semibold text-gray-800">{student.studentName}</td>
+                                <td className="p-3 font-medium text-blue-700">{student.regnNo ?? "—"}</td>
+                                <td className="p-3 font-semibold text-gray-800">{student.studentName ?? "—"}</td>
                                 <td className="p-3 text-gray-600 text-sm">{student.email || "N/A"}</td>
                                 <td className="p-3 text-center">
                                   <label className="relative inline-flex items-center cursor-pointer">

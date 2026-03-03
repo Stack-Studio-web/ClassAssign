@@ -1,6 +1,20 @@
 // Class/backend/models/Faculty.js
 const db = require("../config/db");
 
+// PostgreSQL returns unquoted column names in lowercase; map to camelCase for API
+function toFacultyRow(row) {
+  if (!row || typeof row !== "object") return row;
+  return {
+    id: row.id,
+    name: row.name ?? "",
+    department: row.department ?? "",
+    email: row.email ?? "",
+    maxClassrooms: Number(row.max_classrooms ?? row.maxclassrooms ?? row.maxClassrooms ?? 1) || 1,
+    allocation: Number(row.allocation ?? 0) || 0,
+    remaining: Number(row.remaining ?? 0) || 0
+  };
+}
+
 const Faculty = {
   create: async ({ name, department, email }) => {
     const sql =
@@ -12,14 +26,17 @@ const Faculty = {
     const [rows] = await db.query(
       "SELECT * FROM faculty ORDER BY name ASC"
     );
-    return rows;
+    return (rows || []).map(toFacultyRow);
   },
 
   count: async () => {
     const [rows] = await db.query(
       "SELECT COUNT(*) AS totalFaculty FROM faculty"
     );
-    return rows[0];
+    const r = rows?.[0];
+    return {
+      totalFaculty: Number(r?.totalFaculty ?? r?.totalfaculty ?? 0) || 0
+    };
   },
 
   updateMaxClassrooms: async (id, max) => {
@@ -69,10 +86,10 @@ const Faculty = {
     // If faculty doesn't exist, return false
     if (rows.length === 0) return false;
     
-    const { max_classrooms, allocationCount } = rows[0];
-    
-    // Default to 1 if max_classrooms is null or 0
-    const maxAllowed = max_classrooms || 1;
+    const r = rows[0];
+    // PostgreSQL returns lowercase (allocationcount); handle both
+    const maxAllowed = Number(r.max_classrooms ?? r.maxclassrooms ?? 1) || 1;
+    const allocationCount = Number(r.allocationcount ?? r.allocationCount ?? 0) || 0;
     
     return allocationCount < maxAllowed;
   },
@@ -97,7 +114,7 @@ const Faculty = {
       GROUP BY f.id
       ORDER BY f.name ASC
     `);
-    return rows;
+    return (rows || []).map(toFacultyRow);
   },
 };
 

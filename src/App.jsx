@@ -152,7 +152,7 @@ function App() {
       />
 
       <Route
-        path="/Student"
+        path="/student"
         element={
           <AuthGuard allowedRoles={['admin', 'faculty_incharge','coe']}>
             <Layout><StudentImport /></Layout>

@@ -108,6 +108,10 @@ bull.process(CONCURRENCY, async (job) => {
       <b>Course:</b> ${courseName}<br>
       <b>Date:</b> ${new Date(examDate).toDateString()}<br>
       <b>Time:</b> ${examTime}<br><br>
+
+      <br>
+      Please arrive 10 minutes early.
+      <br>
       <i>— KSI</i>
     `.trim();
   }

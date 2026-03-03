@@ -1,6 +1,19 @@
 // Class/backend/models/Student.js - UPDATED WITH DEPARTMENT FILTERING
 const db = require("../config/db");
 
+// PostgreSQL returns unquoted column names in lowercase; map to camelCase for API
+function toStudentRow(row) {
+  if (!row || typeof row !== "object") return row;
+  return {
+    id: row.id,
+    regnNo: row.regnno ?? row.regnNo,
+    studentName: row.studentname ?? row.studentName,
+    courseName: row.coursename ?? row.courseName,
+    courseDescription: row.coursedescription ?? row.courseDescription,
+    email: row.email
+  };
+}
+
 const Student = {
   /* ============================================================
       INSERT OR UPDATE (Final Duplicate Protection)
@@ -9,13 +22,16 @@ const Student = {
     const sql = `
       INSERT INTO students 
         (regn_no, student_name, course_description, course_name, email)
-      VALUES (?, ?, ?, ?, ?)
-      ON DUPLICATE KEY UPDATE
-        student_name = VALUES(student_name),
-        course_name = VALUES(course_name),
-        email = VALUES(email)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (regn_no)
+      DO UPDATE SET
+        student_name = EXCLUDED.student_name,
+        course_description = EXCLUDED.course_description,
+        course_name = EXCLUDED.course_name,
+        email = EXCLUDED.email
+      RETURNING id;
     `;
-
+  
     const [result] = await db.query(sql, [
       s.regnNo,
       s.studentName,
@@ -23,10 +39,8 @@ const Student = {
       s.courseName,
       s.email?.trim().toLowerCase() || null,
     ]);
-
-    return result.insertId;
+    return result?.insertId ?? result?.rows?.[0]?.id;
   },
-
   /* ===============================
       GET ALL
   =============================== */
@@ -42,7 +56,7 @@ const Student = {
       FROM students
       ORDER BY regn_no
     `);
-    return rows;
+    return (rows || []).map(toStudentRow);
   },
 
   /* ===============================
@@ -75,9 +89,12 @@ const Student = {
         course_description AS courseDescription,
         course_name AS courseName
       FROM students
-      ORDER BY courseDescription
+      ORDER BY course_description
     `);
-    return rows;
+    return (rows || []).map(r => ({
+      courseDescription: r.coursedescription ?? r.courseDescription,
+      courseName: r.coursename ?? r.courseName
+    }));
   },
 
   /* ===============================
@@ -97,7 +114,7 @@ const Student = {
       ORDER BY regn_no
     `, [courseDescription]);
 
-    return rows;
+    return (rows || []).map(toStudentRow);
   },
 
   /* ===============================
@@ -119,7 +136,7 @@ const Student = {
       ORDER BY regn_no
     `, [`%${department}%`]);
 
-    return rows;
+    return (rows || []).map(toStudentRow);
   },
 
   /* ===============================
@@ -141,7 +158,7 @@ const Student = {
       ORDER BY regn_no
     `, [courseCode, `%${department}%`]);
 
-    return rows;
+    return (rows || []).map(toStudentRow);
   },
 
   /* ===============================

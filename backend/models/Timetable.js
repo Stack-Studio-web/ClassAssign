@@ -1,6 +1,23 @@
 // backend/models/Timetable.js - UPDATED WITH EXAM DETAILS QUERY
 const db = require("../config/db");
 
+// PostgreSQL returns unquoted column names in lowercase; map to camelCase for API
+function toTimetableRow(row) {
+  if (!row || typeof row !== "object") return row;
+  return {
+    id: row.id,
+    date: row.date,
+    startTime: row.starttime ?? row.startTime ?? "",
+    endTime: row.endtime ?? row.endTime ?? "",
+    session: row.session ?? "",
+    courseCode: row.coursecode ?? row.courseCode ?? "",
+    courseName: row.coursename ?? row.courseName ?? "",
+    department: row.department ?? "",
+    examType: row.examtype ?? row.examType ?? "",
+    createdAt: row.createdat ?? row.createdAt
+  };
+}
+
 const Timetable = {
   
   /* ===============================
@@ -22,7 +39,7 @@ const Timetable = {
        FROM timetable
        ORDER BY date DESC, start_time ASC`
     );
-    return rows;
+    return (rows || []).map(toTimetableRow);
   },
 
   /* ===============================
@@ -49,7 +66,7 @@ const Timetable = {
        ORDER BY department, course_code`,
       [date, startTime, endTime, session]
     );
-    return rows;
+    return (rows || []).map(toTimetableRow);
   },
 
   /* ===============================
@@ -141,7 +158,7 @@ const Timetable = {
       [startDate, endDate]
     );
 
-    return rows;
+    return (rows || []).map(toTimetableRow);
   },
 
   /* ===============================
@@ -193,7 +210,7 @@ const Timetable = {
     query += ` ORDER BY date DESC, start_time ASC`;
 
     const [rows] = await db.query(query, params);
-    return rows;
+    return (rows || []).map(toTimetableRow);
   }
 };
 

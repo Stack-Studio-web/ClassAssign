@@ -38,6 +38,23 @@ api.interceptors.response.use(
   }
 );
  
+// Normalize student/ineligible objects (PostgreSQL may return lowercase keys)
+const normalizeStudent = (s) => ({
+  ...s,
+  regnNo: s.regnNo ?? s.regnno ?? "",
+  studentName: s.studentName ?? s.studentname ?? "",
+  courseCode: s.courseCode ?? s.coursecode ?? "",
+  courseName: s.courseName ?? s.coursename ?? ""
+});
+
+// Normalize timetable course (PostgreSQL may return lowercase keys)
+const normalizeCourse = (c) => ({
+  ...c,
+  courseCode: c.courseCode ?? c.coursecode ?? "",
+  department: c.department ?? "",
+  examType: c.examType ?? c.examtype ?? ""
+});
+
 const Allotment = () => {
   const navigate = useNavigate();
  
@@ -154,8 +171,8 @@ const Allotment = () => {
           }
         });
  
-        const courses = res.data;
- 
+        const courses = (res.data || []).map(normalizeCourse);
+
         if (courses.length === 0) {
           setError("ℹ️ No courses scheduled for this date, time, and session in the timetable.");
           setTimetableCourses([]);
@@ -184,7 +201,7 @@ const Allotment = () => {
               `/ineligibility/students/${encodeURIComponent(course.courseCode)}/${course.department}`
             );
            
-            const students = studentsRes.data;
+            const students = (studentsRes.data || []).map(normalizeStudent);
             console.log(`✅ Fetched ${students.length} students for ${course.courseCode} - ${course.department}`);
            
             const uniqueKey = `${course.courseCode}-${course.department}`;
@@ -245,10 +262,10 @@ const Allotment = () => {
               }
             });
  
-            const ineligibleList = res.data || [];
+            const ineligibleList = (res.data || []).map(normalizeStudent);
             const uniqueKey = `${course.courseCode}-${course.department}`;
            
-            ineligibleMap[uniqueKey] = new Set(ineligibleList.map(s => s.regnNo));
+            ineligibleMap[uniqueKey] = new Set(ineligibleList.map(s => s.regnNo ?? ""));
             statsByCourse[uniqueKey] = ineligibleList.length;
             totalIneligible += ineligibleList.length;
           } catch (err) {
@@ -273,7 +290,7 @@ const Allotment = () => {
     fetchIneligibleStudents();
   }, [examDate, examType, timetableCourses]);
  
-  // Fetch faculty availability
+  // Fetch faculty availability (runs when exam details OR faculty list changes)
   useEffect(() => {
     const checkFacultyAvailability = async () => {
       if (!examDate || !examStartTime || !examEndTime || allFaculty.length === 0) {
@@ -289,7 +306,7 @@ const Allotment = () => {
           allFaculty.map(async (f) => {
             try {
               const allocRes = await api.get(`/faculty/${f.id}/can-allocate`);
-              const canAllocate = allocRes.data.allowed;
+              const canAllocate = allocRes.data?.allowed ?? false;
  
               const availRes = await api.post("/seating/check-faculty-availability", {
                 examDate,
@@ -324,7 +341,7 @@ const Allotment = () => {
     };
  
     checkFacultyAvailability();
-  }, [examDate, examStartTime, examEndTime, examSession, hasWriteAccess]);
+  }, [examDate, examStartTime, examEndTime, examSession, hasWriteAccess, allFaculty.length]);
  
   // --- Handlers ---
  
@@ -408,7 +425,7 @@ const Allotment = () => {
       let courseEligibleStudents = [];
  
       students.forEach(student => {
-        const isBatchExcluded = prefixes.some(p => p && student.regnNo.toUpperCase().startsWith(p));
+        const isBatchExcluded = prefixes.some(p => p && (student.regnNo ?? "").toUpperCase().startsWith(p));
        
         if (isBatchExcluded) {
           excludedByBatch++;
@@ -416,7 +433,7 @@ const Allotment = () => {
           return;
         }
  
-        const isIneligible = ineligibleSet.has(student.regnNo);
+        const isIneligible = ineligibleSet.has(student.regnNo ?? "");
  
         if (isIneligible) {
           excludedByIneligibility++;

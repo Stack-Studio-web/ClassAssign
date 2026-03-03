@@ -1,6 +1,32 @@
 // Class/backend/models/venue.js - WITH DELETE BY IDS
 const db = require("../config/db");
 
+// PostgreSQL returns unquoted column names in lowercase; map to camelCase for API
+function toVenueRow(row) {
+  if (!row || typeof row !== "object") return row;
+  const benchesRow = Number(row.benchesrow ?? row.benchesRow ?? 0) || 1;
+  const benchesCol = Number(row.benchescol ?? row.benchesCol ?? 0) || 1;
+  return {
+    _id: row._id ?? row.id,
+    id: row.id ?? row._id,
+    name: row.name,
+    type: row.type,
+    capacity: Number(row.capacity ?? 0) || benchesRow * benchesCol * 2,
+    benchesRow,
+    benchesCol,
+    isAvailable: row.isavailable ?? row.isAvailable
+  };
+}
+
+function toSessionRow(row) {
+  if (!row || typeof row !== "object") return row;
+  return {
+    date: row.date,
+    startTime: row.starttime ?? row.startTime,
+    endTime: row.endtime ?? row.endTime
+  };
+}
+
 const Venue = {
   create: async (venue) => {
     const {
@@ -13,7 +39,7 @@ const Venue = {
       sessions = [],
     } = venue;
 
-    const capacity = benchesRow * benchConfig.reduce((sum, seats) => sum + seats, 0);
+    const capacity = benchesRow * benchConfig.reduce((sum, seats) => sum + (Number(seats) || 0), 0);
 
     const conn = await db.getConnection();
     try {
@@ -26,14 +52,18 @@ const Venue = {
         [name, type, capacity, benchesRow, benchesCol, isAvailable]
       );
 
-      const venueId = venueRes.insertId;
+      const venueId = venueRes.insertId ?? venueRes.insertid;
+      if (venueId == null) {
+        throw new Error("Failed to get venue ID from insert");
+      }
 
       for (let colIndex = 0; colIndex < benchConfig.length; colIndex++) {
+        const seats = Number(benchConfig[colIndex]) || 2;
         await conn.query(
           `INSERT INTO venue_bench_config
            (venue_id, column_index, seats_per_bench)
            VALUES (?, ?, ?)`,
-          [venueId, colIndex, benchConfig[colIndex]]
+          [venueId, colIndex, seats]
         );
       }
 
@@ -57,9 +87,9 @@ const Venue = {
   },
 
   getAll: async () => {
-    const [venues] = await db.query(`
+    const [rawVenues] = await db.query(`
       SELECT
-        id AS _id,
+        id,
         name,
         type,
         capacity,
@@ -68,28 +98,33 @@ const Venue = {
         is_available AS isAvailable
       FROM venues
     `);
+    const venues = (rawVenues || []).map(toVenueRow);
 
     for (const v of venues) {
-      const [sessions] = await db.query(
+      const venueId = v._id ?? v.id;
+      const [rawSessions] = await db.query(
         `SELECT 
            session_date AS date,
            start_time AS startTime,
            end_time AS endTime
          FROM venue_sessions
          WHERE venue_id = ?`,
-        [v._id]
+        [venueId]
       );
-      v.sessions = sessions;
+      v.sessions = (rawSessions || []).map(toSessionRow);
 
       const [benchConfig] = await db.query(
         `SELECT column_index, seats_per_bench
          FROM venue_bench_config
          WHERE venue_id = ?
          ORDER BY column_index`,
-        [v._id]
+        [venueId]
       );
-      
-      v.benchConfig = benchConfig.map(b => b.seats_per_bench);
+      const seatsPerBench = (benchConfig || []).map(b => Number(b.seats_per_bench ?? b.seatsPerBench ?? 2) || 2);
+      // Ensure we have benchConfig for every column (fallback if DB has fewer)
+      const cols = v.benchesCol || 1;
+      while (seatsPerBench.length < cols) seatsPerBench.push(2);
+      v.benchConfig = seatsPerBench;
     }
 
     return venues;

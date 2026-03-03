@@ -84,8 +84,9 @@ export const StudentAttendance = () => {
       try {
         setLoading(true);
         const res = await api.get("/seating");
-        setSeatingPlans(res.data || []);
-        const dates = [...new Set(res.data.map(p => normalizeDateToYYYYMMDD(p.examDate)))].sort();
+        const plans = Array.isArray(res.data) ? res.data : [];
+        setSeatingPlans(plans);
+        const dates = [...new Set(plans.map(p => normalizeDateToYYYYMMDD(p.examDate ?? p.examdate)))].filter(Boolean).sort();
         setAvailableDates(dates);
       } catch (err) {
         console.error("❌ Fetch error:", err);
@@ -103,8 +104,8 @@ export const StudentAttendance = () => {
       setAvailableSessions([]);
       return;
     }
-    const plans = seatingPlans.filter(p => normalizeDateToYYYYMMDD(p.examDate) === filters.date);
-    setAvailableSessions([...new Set(plans.map(p => p.examSession))].sort());
+    const plans = seatingPlans.filter(p => normalizeDateToYYYYMMDD(p.examDate ?? p.examdate) === filters.date);
+    setAvailableSessions([...new Set(plans.map(p => p.examSession ?? p.examsession))].filter(Boolean).sort());
     setFilters(f => ({ ...f, session: "", examTime: "", venue: "" }));
   }, [filters.date, seatingPlans]);
 
@@ -115,10 +116,10 @@ export const StudentAttendance = () => {
       return;
     }
     const plans = seatingPlans.filter(p => 
-      normalizeDateToYYYYMMDD(p.examDate) === filters.date && 
-      p.examSession === filters.session
+      normalizeDateToYYYYMMDD(p.examDate ?? p.examdate) === filters.date && 
+      (p.examSession ?? p.examsession) === filters.session
     );
-    const times = [...new Set(plans.map(p => `${p.examStartTime}-${p.examEndTime}`))].sort();
+    const times = [...new Set(plans.map(p => `${p.examStartTime ?? p.examstarttime ?? ""}-${p.examEndTime ?? p.examendtime ?? ""}`))].filter(Boolean).sort();
     setAvailableExamTimes(times);
     setFilters(f => ({ ...f, examTime: "", venue: "" }));
   }, [filters.session]);
@@ -131,12 +132,12 @@ export const StudentAttendance = () => {
     }
     const [start, end] = filters.examTime.split('-');
     const plans = seatingPlans.filter(p => 
-      normalizeDateToYYYYMMDD(p.examDate) === filters.date && 
-      p.examStartTime === start && 
-      p.examEndTime === end
+      normalizeDateToYYYYMMDD(p.examDate ?? p.examdate) === filters.date && 
+      (p.examStartTime ?? p.examstarttime) === start && 
+      (p.examEndTime ?? p.examendtime) === end
     );
     let venues = [];
-    plans.forEach(p => p.venuesUsed?.forEach(v => venues.push(v.venueName)));
+    plans.forEach(p => p.venuesUsed?.forEach(v => venues.push(v.venueName ?? v.venue_name ?? "")));
     setAvailableVenues([...new Set(venues)].sort());
     setFilters(f => ({ ...f, venue: "" }));
   }, [filters.examTime]);
@@ -253,8 +254,8 @@ export const StudentAttendance = () => {
         {attendanceData && (
           <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded">
             <p className="text-green-700 font-medium">
-              ✅ Attendance sheet ready: {attendanceData.courses.length} course(s), {' '}
-              {attendanceData.courses.reduce((sum, c) => sum + c.students.length, 0)} student(s)
+              ✅ Attendance sheet ready: {(attendanceData.courses ?? []).length} course(s), {' '}
+              {(attendanceData.courses ?? []).reduce((sum, c) => sum + (c.students ?? []).length, 0)} student(s)
             </p>
           </div>
         )}
@@ -321,8 +322,12 @@ export const StudentAttendance = () => {
         `}</style>
 
         {attendanceData && attendanceData.courses && attendanceData.courses.map((course, courseIndex) => {
-          const studentsWithSno = course.students.map((s, i) => ({
-            ...s,
+          const courseCode = course.courseCode ?? course.coursecode ?? "";
+          const courseName = course.courseName ?? course.coursename ?? "";
+          const students = course.students ?? [];
+          const studentsWithSno = students.map((s, i) => ({
+            regNo: s.regNo ?? s.regnno ?? s.regn_no ?? "",
+            name: s.name ?? s.student_name ?? "",
             sno: i + 1
           }));
 
@@ -371,10 +376,10 @@ export const StudentAttendance = () => {
                       <strong>Hall No:</strong> {attendanceData.hallNo}
                     </td>
                     <td colSpan="2">
-                      <strong>Course Code:</strong> {course.courseCode}
+                      <strong>Course Code:</strong> {courseCode}
                     </td>
                     <td colSpan="2">
-                      <strong>Course Name:</strong> {course.courseName}
+                      <strong>Course Name:</strong> {courseName}
                     </td>
                   </tr>
                 </tbody>

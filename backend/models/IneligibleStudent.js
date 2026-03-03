@@ -1,6 +1,35 @@
 // Class/backend/models/IneligibleStudent.js
 const db = require("../config/db");
 
+// PostgreSQL returns unquoted column names in lowercase; map to camelCase for API
+function toStudentRow(row) {
+  if (!row || typeof row !== "object") return row;
+  return {
+    id: row.id,
+    regnNo: row.regnno ?? row.regnNo ?? "",
+    studentName: row.studentname ?? row.studentName ?? "",
+    email: row.email ?? "",
+    courseCode: row.coursecode ?? row.courseCode ?? "",
+    courseName: row.coursename ?? row.courseName ?? ""
+  };
+}
+
+function toIneligibleRow(row) {
+  if (!row || typeof row !== "object") return row;
+  return {
+    id: row.id,
+    regnNo: row.regnno ?? row.regnNo ?? "",
+    studentName: row.studentname ?? row.studentName ?? "",
+    email: row.email ?? "",
+    courseCode: row.coursecode ?? row.courseCode ?? "",
+    examType: row.examtype ?? row.examType ?? "",
+    examDate: row.examdate ?? row.examDate ?? "",
+    reason: row.reason ?? "",
+    createdAt: row.createdat ?? row.createdAt,
+    markedBy: row.markedby ?? row.markedBy
+  };
+}
+
 const IneligibleStudent = {
   /* ===============================
       GET STUDENTS BY COURSE (Simple - for notifications)
@@ -18,7 +47,7 @@ const IneligibleStudent = {
       WHERE course_description = ?
       ORDER BY regn_no
     `, [courseCode]);
-    return rows;
+    return (rows || []).map(toStudentRow);
   },
 
   /* ===============================
@@ -45,7 +74,7 @@ const IneligibleStudent = {
 
     console.log(`✅ Found ${rows.length} students matching course ${courseCode} and dept ${department}`);
     
-    return rows;
+    return (rows || []).map(toStudentRow);
   },
 
   /* ===============================
@@ -70,7 +99,7 @@ const IneligibleStudent = {
     
     console.log(`📋 Ineligible check for ${courseCode} on ${examDate}: ${rows.length} students`);
     
-    return rows;
+    return (rows || []).map(toIneligibleRow);
   },
 
   /* ===============================
@@ -93,7 +122,7 @@ const IneligibleStudent = {
       LEFT JOIN users u ON i.marked_by = u.id
       ORDER BY i.exam_date DESC, i.regn_no
     `);
-    return rows;
+    return (rows || []).map(toIneligibleRow);
   },
 
   /* ===============================
