@@ -115,6 +115,39 @@ router.get("/course-dept/:courseCode/:dept", async (req, res) => {
   }
 });
 
+// ✅ DELETE all students (AUTH REQUIRED)
+router.delete("/all", async (req, res) => {
+  try {
+    console.log("🗑️ DELETE /api/students/all");
+    const deletedCount = await Student.deleteAll();
+    console.log(`✅ Deleted ${deletedCount} students`);
+    res.json({ message: "All students deleted.", deletedCount });
+  } catch (error) {
+    console.error("❌ Error deleting all students:", error);
+    res.status(500).json({
+      message: "Server error deleting students.",
+      error: error.message,
+    });
+  }
+});
+
+// ✅ DELETE students by course code (AUTH REQUIRED)
+router.delete("/by-course/:courseCode", async (req, res) => {
+  try {
+    const courseCode = decodeURIComponent(req.params.courseCode);
+    console.log("🗑️ DELETE /api/students/by-course/" + courseCode);
+    const deletedCount = await Student.deleteByCourseCode(courseCode);
+    console.log(`✅ Deleted ${deletedCount} students for course ${courseCode}`);
+    res.json({ message: `Deleted ${deletedCount} student(s) for course ${courseCode}.`, deletedCount });
+  } catch (error) {
+    console.error("❌ Error deleting students by course:", error);
+    res.status(500).json({
+      message: "Server error deleting students by course.",
+      error: error.message,
+    });
+  }
+});
+
 // ✅ DELETE student by ID (AUTH REQUIRED - write operation)
 router.delete("/:id", async (req, res) => {
   try {

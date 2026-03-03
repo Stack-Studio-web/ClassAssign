@@ -38,7 +38,8 @@ function buildBulkInsert(sql, params) {
       const cols = row.map(() => `$${++idx}`).join(', ');
       return `(${cols})`;
     });
-    const flatParams = rows.flat();
+    // Replace undefined with null - PostgreSQL bind fails on undefined
+    const flatParams = rows.flat().map(v => (v === undefined ? null : v));
     const newSql = sql.replace(/VALUES\s*\?/i, `VALUES ${rowPlaceholders.join(', ')}`);
     return { sql: newSql, params: flatParams };
   }
@@ -49,16 +50,18 @@ function buildBulkInsert(sql, params) {
     const newParams = [];
     const newSql = sql.replace(/IN\s*\(\s*\?\s*\)/gi, () => {
       const arr = params[paramIdx++];
-      const placeholders = arr.map((_, i) => `$${newParams.length + i + 1}`).join(', ');
-      newParams.push(...arr);
+      const sanitizedArr = (arr || []).map(v => (v === undefined ? null : v));
+      const placeholders = sanitizedArr.map((_, i) => `$${newParams.length + i + 1}`).join(', ');
+      newParams.push(...sanitizedArr);
       return `IN (${placeholders})`;
     });
-    // Append remaining params
-    for (let i = paramIdx; i < params.length; i++) newParams.push(params[i]);
+    for (let i = paramIdx; i < params.length; i++) newParams.push(params[i] === undefined ? null : params[i]);
     return { sql: newSql, params: newParams };
   }
 
-  return { sql: convertPlaceholders(sql), params };
+  // Sanitize params: undefined -> null (PostgreSQL bind fails on undefined)
+  const sanitized = Array.isArray(params) ? params.map(p => (p === undefined ? null : p)) : params;
+  return { sql: convertPlaceholders(sql), params: sanitized };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -67,27 +70,25 @@ function buildBulkInsert(sql, params) {
 // ─────────────────────────────────────────────────────────────
 async function query(sql, params = []) {
   const { sql: pgSql, params: pgParams } = buildBulkInsert(sql, params);
-  const finalSql = pgParams === params ? convertPlaceholders(pgSql) : pgSql;
+  let finalSql = pgParams === params ? convertPlaceholders(pgSql) : pgSql;
+
+  // For INSERT: run ONCE with RETURNING id (avoid double-insert and aborted transaction)
+  if (/^\s*INSERT/i.test(sql) && !/RETURNING\s+/i.test(finalSql)) {
+    finalSql = finalSql.replace(/;?\s*$/, ' RETURNING id');
+  }
 
   const [results] = await sequelize.query(finalSql, {
     bind: pgParams,
     type: Sequelize.QueryTypes.RAW
   });
 
-  // Attach insertId for INSERT statements (PostgreSQL uses RETURNING)
   if (/^\s*INSERT/i.test(sql)) {
-    // Re-run with RETURNING id to get insertId
-    const returningSql = finalSql.replace(/;?\s*$/, ' RETURNING id');
-    try {
-      const [rows] = await sequelize.query(returningSql, {
-        bind: pgParams,
-        type: Sequelize.QueryTypes.RAW
-      });
-      const insertId = rows?.[0]?.id ?? null;
-      return [{ insertId, affectedRows: 1 }, []];
-    } catch {
-      return [{ insertId: null, affectedRows: 1 }, []];
+    let insertId = null;
+    if (Array.isArray(results) && results[0]) {
+      const row = results[0];
+      insertId = row.id ?? row.ID ?? (Array.isArray(row) ? row[0] : null);
     }
+    return [{ insertId, affectedRows: 1 }, []];
   }
 
   // For DELETE/UPDATE, return affectedRows
@@ -108,7 +109,11 @@ async function getConnection() {
   return {
     query: async (sql, params = []) => {
       const { sql: pgSql, params: pgParams } = buildBulkInsert(sql, params);
-      const finalSql = pgParams === params ? convertPlaceholders(pgSql) : pgSql;
+      let finalSql = pgParams === params ? convertPlaceholders(pgSql) : pgSql;
+
+      if (/^\s*INSERT/i.test(sql) && !/RETURNING\s+/i.test(finalSql)) {
+        finalSql = finalSql.replace(/;?\s*$/, ' RETURNING id');
+      }
 
       const [results] = await sequelize.query(finalSql, {
         bind: pgParams,
@@ -117,18 +122,12 @@ async function getConnection() {
       });
 
       if (/^\s*INSERT/i.test(sql)) {
-        const returningSql = finalSql.replace(/;?\s*$/, ' RETURNING id');
-        try {
-          const [rows] = await sequelize.query(returningSql, {
-            bind: pgParams,
-            type: Sequelize.QueryTypes.RAW,
-            transaction: t
-          });
-          const insertId = rows?.[0]?.id ?? null;
-          return [{ insertId, affectedRows: 1 }, []];
-        } catch {
-          return [{ insertId: null, affectedRows: 1 }, []];
+        let insertId = null;
+        if (Array.isArray(results) && results[0]) {
+          const row = results[0];
+          insertId = row.id ?? row.ID ?? (Array.isArray(row) ? row[0] : null);
         }
+        return [{ insertId, affectedRows: 1 }, []];
       }
 
       if (/^\s*(DELETE|UPDATE)/i.test(sql)) {

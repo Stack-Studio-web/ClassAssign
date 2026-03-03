@@ -19,8 +19,8 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
     // NEW format: array of objects
     if (Array.isArray(cell)) {
       return cell
-        .filter(item => item && item.regn_no)
-        .map(item => item.regn_no.trim());
+        .filter(item => item && (item.regn_no ?? item.regnNo))
+        .map(item => (item.regn_no ?? item.regnNo ?? "").toString().trim());
     }
 
     // OLD format: plain string with \n separators
@@ -36,7 +36,7 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
     const counts = {};
     let total = 0;
 
-    venue.seatingArrangement?.forEach(row => {
+    (venue.seatingArrangement || []).forEach(row => {
       row.forEach(cell => {
         const rolls = getRollsFromCell(cell);
         rolls.forEach(roll => {
@@ -56,9 +56,10 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
   return (
     <div
       ref={ref}
+      className="print-layout"
       style={{
         fontFamily: "Times New Roman, serif",
-        margin: "40px",
+        margin: "20px",
         background: "#fff",
       }}
     >
@@ -67,7 +68,23 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
         
         // Get bench configuration for this venue
         const benchConfig = venuePlan.benchConfig || 
-          (venuePlan.seatingArrangement?.[0]?.map(() => 2) || []);
+          (venuePlan.seatingArrangement?.[0]?.map(() => 2) || [2, 2]);
+        const numCols = benchConfig.length;
+        const MIN_ROWS = 10; // Pad with empty rows when fewer students
+
+        // Build display grid: pad with empty rows if seating has fewer rows
+        let displayRows = venuePlan.seatingArrangement || [];
+        if (displayRows.length < MIN_ROWS) {
+          const emptyRow = Array(numCols).fill("Empty");
+          const padCount = MIN_ROWS - displayRows.length;
+          displayRows = [...displayRows, ...Array(padCount).fill(null).map(() => [...emptyRow])];
+        }
+        // Ensure each row has correct column count
+        displayRows = displayRows.map(row => {
+          const r = Array.isArray(row) ? [...row] : [];
+          while (r.length < numCols) r.push("Empty");
+          return r.slice(0, numCols);
+        });
 
         return (
           <div key={arrIndex} style={{ pageBreakAfter: "always" }}>
@@ -108,20 +125,20 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
             >
               SEATING ARRANGEMENT — HALL NO:{" "}
               <span style={{ color: "#d41a1a", fontWeight: "bold" }}>
-                {venuePlan.venueName || "N/A"}
+                {venuePlan.venueName ?? venuePlan.venue_name ?? "N/A"}
               </span>
             </div>
 
             {/* EXAM DETAILS */}
             <div style={{ margin: "15px 0 0 2px", fontSize: "1.06em" }}>
               <strong>
-                DATE: {formatDate(selectedPlan.examDate)} ({selectedPlan.examSession})
+                DATE: {formatDate(selectedPlan.examDate)} ({selectedPlan.examSession ?? ""})
               </strong>
             </div>
 
             <div style={{ margin: "10px 0 0 2px", fontSize: "1.06em" }}>
               <strong>
-                EXAM TIME: {selectedPlan.examStartTime || "N/A"} - {selectedPlan.examEndTime || "N/A"}
+                EXAM TIME: {selectedPlan.examStartTime ?? "N/A"} - {selectedPlan.examEndTime ?? "N/A"}
               </strong>
             </div>
 
@@ -141,13 +158,14 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
               <strong>Bench Config:</strong> {benchConfig.join(", ")} seats/column
             </div>
 
-            {/* TABLE WITH SUB-COLUMNS */}
+            {/* TABLE WITH SUB-COLUMNS - fixed layout for print alignment */}
             <table
               style={{
-                width: "99.5%",
+                width: "100%",
+                tableLayout: "fixed",
                 borderCollapse: "collapse",
                 margin: "22px 0 18px 0",
-                fontSize: "0.95em",
+                fontSize: "0.9em",
               }}
             >
               <thead>
@@ -160,9 +178,10 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
                       fontWeight: "bold",
                       fontSize: "0.9em",
                       border: "1px solid #000",
-                      padding: "5px",
+                      padding: "6px 8px",
                       textAlign: "center",
-                      width: "40px",
+                      width: "45px",
+                      minWidth: "45px",
                     }}
                   >
                     Row
@@ -177,7 +196,7 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
                           fontWeight: "bold",
                           fontSize: "0.95em",
                           border: "1px solid #000",
-                          padding: "5px",
+                          padding: "6px 4px",
                           textAlign: "center",
                         }}
                       >
@@ -198,7 +217,7 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
                           fontWeight: "bold",
                           fontSize: "0.85em",
                           border: "1px solid #000",
-                          padding: "4px",
+                          padding: "5px 4px",
                           textAlign: "center",
                         }}
                       >
@@ -209,39 +228,37 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
                 </tr>
               </thead>
               <tbody>
-                {venuePlan.seatingArrangement?.map((row, rIndex) => (
+                {displayRows.map((row, rIndex) => (
                   <tr key={rIndex}>
                     <td
                       style={{
                         border: "1px solid #000",
-                        padding: "6px",
+                        padding: "5px 6px",
                         textAlign: "center",
                         fontWeight: "bold",
                         background: "#f9f9f9",
-                        fontSize: "0.9em",
+                        fontSize: "0.88em",
+                        width: "40px",
+                        minWidth: "40px",
                       }}
                     >
                       {rIndex + 1}
                     </td>
-                    {row.map((cell, cIndex) => {
+                    {Array.from({ length: numCols }).map((_, cIndex) => {
+                      const cell = row[cIndex];
                       const seatsInCol = benchConfig[cIndex] || 2;
                       
-                      // Parse cell content
                       let students = [];
                       if (cell === "Empty" || !cell) {
                         students = Array(seatsInCol).fill("");
                       } else if (Array.isArray(cell)) {
-                        // NEW format: array of {regn_no, course} objects
-                        students = cell.map(s => s.regn_no);
-                        while (students.length < seatsInCol) {
-                          students.push("");
-                        }
+                        students = cell.map(s => s.regn_no ?? s.regnNo ?? "");
+                        while (students.length < seatsInCol) students.push("");
                       } else if (typeof cell === "string") {
-                        // OLD format: plain string
                         students = cell.split("\n").filter(s => s && s !== "Empty");
-                        while (students.length < seatsInCol) {
-                          students.push("");
-                        }
+                        while (students.length < seatsInCol) students.push("");
+                      } else {
+                        students = Array(seatsInCol).fill("");
                       }
 
                       return students.map((student, sIdx) => (
@@ -249,15 +266,16 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
                           key={`${cIndex}-${sIdx}`}
                           style={{
                             border: "1px solid #000",
-                            padding: "6px 4px",
+                            padding: "4px 3px",
                             textAlign: "center",
                             fontFamily: '"Courier New", Courier, monospace',
-                            fontSize: "0.85em",
+                            fontSize: "0.78em",
                             fontWeight: student ? "bold" : "normal",
-                            color: student ? "#000" : "#ccc",
+                            color: student ? "#000" : "#999",
+                            minWidth: "32px",
                           }}
                         >
-                          {student || "Empty"}
+                          {student || "—"}
                         </td>
                       ));
                     })}

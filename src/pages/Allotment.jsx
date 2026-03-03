@@ -1,7 +1,16 @@
 // Allotment.jsx - FIXED: AUTO faculty assignment now saves faculty ID to database
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import axios from "axios";
-import { useNavigate } from "react-router-dom";
+import {
+  BuildingOffice2Icon,
+  UserGroupIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  InformationCircleIcon,
+  BoltIcon,
+  PlusIcon,
+  TrashIcon,
+} from "@heroicons/react/24/outline";
  
 // ✅ Create axios instance with auth
 const api = axios.create({
@@ -38,8 +47,49 @@ api.interceptors.response.use(
   }
 );
  
+// Normalize student/ineligible objects (PostgreSQL may return lowercase keys)
+const normalizeStudent = (s) => ({
+  ...s,
+  regnNo: s.regnNo ?? s.regnno ?? "",
+  studentName: s.studentName ?? s.studentname ?? "",
+  courseCode: s.courseCode ?? s.coursecode ?? "",
+  courseName: s.courseName ?? s.coursename ?? ""
+});
+
+// Normalize timetable course (PostgreSQL may return lowercase keys)
+const normalizeCourse = (c) => ({
+  ...c,
+  courseCode: c.courseCode ?? c.coursecode ?? "",
+  department: c.department ?? "",
+  examType: c.examType ?? c.examtype ?? ""
+});
+
+// Compute session duration in hours from "HH:mm" start/end
+const getSessionDurationHours = (start, end) => {
+  if (!start || !end) return null;
+  const [sh, sm] = start.split(":").map(Number);
+  const [eh, em] = end.split(":").map(Number);
+  const mins = (eh * 60 + em) - (sh * 60 + sm);
+  return mins <= 0 ? null : (mins / 60).toFixed(1);
+};
+
+// Get calendar month grid for a given date (YYYY-MM-DD)
+const getCalendarMonth = (dateStr) => {
+  const d = dateStr ? new Date(dateStr + "T12:00:00") : new Date();
+  const year = d.getFullYear();
+  const month = d.getMonth();
+  const first = new Date(year, month, 1);
+  const last = new Date(year, month + 1, 0);
+  const startPad = first.getDay();
+  const daysInMonth = last.getDate();
+  const grid = [];
+  for (let i = 0; i < startPad; i++) grid.push(null);
+  for (let day = 1; day <= daysInMonth; day++) grid.push(day);
+  const monthName = d.toLocaleString("default", { month: "long" });
+  return { year, month, grid, monthName };
+};
+
 const Allotment = () => {
-  const navigate = useNavigate();
  
   // --- State Management ---
   const [venues, setVenues] = useState([]);
@@ -77,8 +127,42 @@ const Allotment = () => {
  
   const [userRole, setUserRole] = useState("");
   const [hasWriteAccess, setHasWriteAccess] = useState(false);
+  const [calendarView, setCalendarView] = useState(() => {
+    const t = new Date();
+    return { year: t.getFullYear(), month: t.getMonth() };
+  });
  
   const today = new Date().toISOString().split("T")[0];
+  const sessionDuration = getSessionDurationHours(examStartTime, examEndTime);
+  const calendar = useMemo(
+    () =>
+      getCalendarMonth(
+        `${calendarView.year}-${String(calendarView.month + 1).padStart(2, "0")}-01`
+      ),
+    [calendarView]
+  );
+  const selectedDay =
+    examDate &&
+    new Date(examDate + "T12:00:00").getFullYear() === calendarView.year &&
+    new Date(examDate + "T12:00:00").getMonth() === calendarView.month
+      ? new Date(examDate + "T12:00:00").getDate()
+      : null;
+
+  const handleCalendarDay = (day) => {
+    if (!day || !hasWriteAccess) return;
+    const dateStr = `${calendarView.year}-${String(calendarView.month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    if (dateStr >= today) setExamDate(dateStr);
+  };
+  const handleCalendarPrevMonth = () => {
+    setCalendarView((v) =>
+      v.month === 0 ? { year: v.year - 1, month: 11 } : { year: v.year, month: v.month - 1 }
+    );
+  };
+  const handleCalendarNextMonth = () => {
+    setCalendarView((v) =>
+      v.month === 11 ? { year: v.year + 1, month: 0 } : { year: v.year, month: v.month + 1 }
+    );
+  };
  
   // ✅ Check user role
   useEffect(() => {
@@ -154,8 +238,8 @@ const Allotment = () => {
           }
         });
  
-        const courses = res.data;
- 
+        const courses = (res.data || []).map(normalizeCourse);
+
         if (courses.length === 0) {
           setError("ℹ️ No courses scheduled for this date, time, and session in the timetable.");
           setTimetableCourses([]);
@@ -184,7 +268,7 @@ const Allotment = () => {
               `/ineligibility/students/${encodeURIComponent(course.courseCode)}/${course.department}`
             );
            
-            const students = studentsRes.data;
+            const students = (studentsRes.data || []).map(normalizeStudent);
             console.log(`✅ Fetched ${students.length} students for ${course.courseCode} - ${course.department}`);
            
             const uniqueKey = `${course.courseCode}-${course.department}`;
@@ -245,10 +329,10 @@ const Allotment = () => {
               }
             });
  
-            const ineligibleList = res.data || [];
+            const ineligibleList = (res.data || []).map(normalizeStudent);
             const uniqueKey = `${course.courseCode}-${course.department}`;
            
-            ineligibleMap[uniqueKey] = new Set(ineligibleList.map(s => s.regnNo));
+            ineligibleMap[uniqueKey] = new Set(ineligibleList.map(s => s.regnNo ?? ""));
             statsByCourse[uniqueKey] = ineligibleList.length;
             totalIneligible += ineligibleList.length;
           } catch (err) {
@@ -273,7 +357,7 @@ const Allotment = () => {
     fetchIneligibleStudents();
   }, [examDate, examType, timetableCourses]);
  
-  // Fetch faculty availability
+  // Fetch faculty availability (runs when exam details OR faculty list changes)
   useEffect(() => {
     const checkFacultyAvailability = async () => {
       if (!examDate || !examStartTime || !examEndTime || allFaculty.length === 0) {
@@ -289,7 +373,7 @@ const Allotment = () => {
           allFaculty.map(async (f) => {
             try {
               const allocRes = await api.get(`/faculty/${f.id}/can-allocate`);
-              const canAllocate = allocRes.data.allowed;
+              const canAllocate = allocRes.data?.allowed ?? false;
  
               const availRes = await api.post("/seating/check-faculty-availability", {
                 examDate,
@@ -324,7 +408,7 @@ const Allotment = () => {
     };
  
     checkFacultyAvailability();
-  }, [examDate, examStartTime, examEndTime, examSession, hasWriteAccess]);
+  }, [examDate, examStartTime, examEndTime, examSession, hasWriteAccess, allFaculty.length]);
  
   // --- Handlers ---
  
@@ -351,8 +435,17 @@ const Allotment = () => {
       setError("You do not have permission to modify venue selection.");
       return;
     }
-   
     setSelectedVenues(prev => prev.filter(v => v._id !== venueId));
+  };
+
+  const toggleVenueSelection = (venue) => {
+    if (!hasWriteAccess) return;
+    const isSelected = selectedVenues.some((v) => v._id === venue._id);
+    if (isSelected) removeManualVenue(venue._id);
+    else {
+      if (!selectedVenues.some((v) => String(v._id) === String(venue._id)))
+        setSelectedVenues((prev) => [...prev, venue]);
+    }
   };
  
   // ✅ UPDATED: Sequential Multi-Pass Seating Algorithm with AUTO faculty assignment
@@ -408,7 +501,7 @@ const Allotment = () => {
       let courseEligibleStudents = [];
  
       students.forEach(student => {
-        const isBatchExcluded = prefixes.some(p => p && student.regnNo.toUpperCase().startsWith(p));
+        const isBatchExcluded = prefixes.some(p => p && (student.regnNo ?? "").toUpperCase().startsWith(p));
        
         if (isBatchExcluded) {
           excludedByBatch++;
@@ -416,7 +509,7 @@ const Allotment = () => {
           return;
         }
  
-        const isIneligible = ineligibleSet.has(student.regnNo);
+        const isIneligible = ineligibleSet.has(student.regnNo ?? "");
  
         if (isIneligible) {
           excludedByIneligibility++;
@@ -739,422 +832,601 @@ const Allotment = () => {
   };
  
   return (
-    <div className="p-6 bg-white min-h-screen text-gray-800">
-      <h1 className="text-3xl font-bold text-center mb-6">Exam Seating Allotment</h1>
- 
-      {error && (
-        <div className={`p-3 rounded mb-4 text-center font-semibold ${
-          error.includes("Access denied")
-            ? "bg-yellow-100 text-yellow-800 border-2 border-yellow-400"
-            : error.includes("ℹ️")
-            ? "bg-blue-100 text-blue-800 border-2 border-blue-400"
-            : "bg-red-100 text-red-700 border-2 border-red-400"
-        }`}>
-          {error}
-        </div>
-      )}
- 
-      {ineligibilityStats.total > 0 && (
-        <div className="mb-4 p-4 bg-orange-50 border-l-4 border-orange-500 rounded">
-          <h3 className="font-semibold text-orange-800 mb-2">
-            ⚠️ Ineligibility Alert: {ineligibilityStats.total} student(s) will be excluded
-          </h3>
-          <div className="text-sm text-orange-700 space-y-1">
-            {Object.entries(ineligibilityStats.byCourse).map(([key, count]) => (
-              count > 0 && (
-                <div key={key}>
-                  • {key}: {count} ineligible student{count !== 1 ? 's' : ''}
-                </div>
-              )
-            ))}
-          </div>
-        </div>
-      )}
- 
-      <section className="border p-4 rounded-lg mb-6 shadow-sm">
-        <h3 className="font-semibold mb-3 text-lg">1. Exam Details</h3>
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          <div>
-            <label className="text-sm font-medium">Date *</label>
-            <input
-              type="date"
-              value={examDate}
-              min={today}
-              onChange={e => setExamDate(e.target.value)}
-              className="border p-2 rounded-md w-full disabled:bg-gray-100 disabled:cursor-not-allowed"
-              disabled={!hasWriteAccess}
-            />
-          </div>
-          <div>
-            <label className="text-sm font-medium">Session *</label>
-            <select
-              value={examSession}
-              onChange={e => setExamSession(e.target.value)}
-              className="border p-2 rounded-md w-full disabled:bg-gray-100 disabled:cursor-not-allowed"
-              disabled={!hasWriteAccess}
-            >
-              <option value="FN">FN</option>
-              <option value="AN">AN</option>
-            </select>
-          </div>
-          <div>
-            <label className="text-sm font-medium">Start Time *</label>
-            <input
-              type="time"
-              value={examStartTime}
-              onChange={e => setExamStartTime(e.target.value)}
-              className="border p-2 rounded-md w-full disabled:bg-gray-100 disabled:cursor-not-allowed"
-              disabled={!hasWriteAccess}
-            />
-          </div>
-          <div>
-            <label className="text-sm font-medium">End Time *</label>
-            <input
-              type="time"
-              value={examEndTime}
-              onChange={e => setExamEndTime(e.target.value)}
-              className="border p-2 rounded-md w-full disabled:bg-gray-100 disabled:cursor-not-allowed"
-              disabled={!hasWriteAccess}
-            />
-          </div>
-          <div>
-            <label className="text-sm font-medium">Type (Auto)</label>
-            <input
-              type="text"
-              value={examType || "Loading..."}
-              readOnly
-              className="border p-2 rounded-md w-full bg-gray-100 cursor-not-allowed"
-              title="Exam type is automatically filled from timetable"
-            />
-          </div>
+    <div className="min-h-screen bg-gray-50 text-gray-800">
+      <div className="w-full py-4 sm:py-5 md:py-6 space-y-4 sm:space-y-5 md:space-y-6">
+        {/* PAGE TITLE — plain text in main content, no box */}
+        <div>
+          <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-gray-900">
+            Exam Seating Allotment
+          </h1>
+          <p className="mt-1 text-sm font-medium text-gray-600">
+            Configure exam details, venues, and faculty before generating the final seating plan.
+          </p>
         </div>
  
-        {isFetchingCourses && (
-          <div className="mt-3 text-blue-600 text-sm flex items-center gap-2">
-            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
-            Fetching courses from timetable...
+        {/* ALERTS */}
+        {error && (
+          <div
+            className={`px-3 sm:px-4 py-3 rounded-xl sm:rounded-2xl text-sm font-medium border shadow-sm ${
+              error.includes("Access denied")
+                ? "bg-amber-50 text-amber-800 border-amber-200"
+                : error.includes("ℹ️")
+                ? "bg-blue-50 text-blue-800 border-blue-200"
+                : "bg-red-50 text-red-700 border-red-200"
+            }`}
+          >
+            {error}
           </div>
         )}
-      </section>
  
-      <section className="border p-4 rounded-lg mb-6 shadow-sm bg-gray-50">
-        <h3 className="font-semibold mb-3 text-lg">2. Configuration</h3>
-        <div className="grid md:grid-cols-2 gap-8">
-          <div>
-            <label className="block font-medium mb-2">Venue Selection</label>
-            <div className="flex gap-4 mb-3">
-              <label className={`flex items-center gap-2 ${hasWriteAccess ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
-                <input
-                  type="radio"
-                  checked={seatingMode === "auto"}
-                  onChange={() => setSeatingMode("auto")}
-                  disabled={!hasWriteAccess}
-                />
-                Auto (All)
-              </label>
-              <label className={`flex items-center gap-2 ${hasWriteAccess ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
-                <input
-                  type="radio"
-                  checked={seatingMode === "manual"}
-                  onChange={() => setSeatingMode("manual")}
-                  disabled={!hasWriteAccess}
-                />
-                Manual (Select)
-              </label>
+        {ineligibilityStats.total > 0 && (
+          <div className="px-3 sm:px-4 py-3 sm:py-4 bg-orange-50 border border-orange-200 rounded-xl sm:rounded-2xl shadow-sm">
+            <h3 className="font-semibold text-orange-800 mb-2">
+              ⚠️ Ineligibility Alert: {ineligibilityStats.total} student(s) will be excluded
+            </h3>
+            <div className="text-sm text-orange-700 space-y-1">
+              {Object.entries(ineligibilityStats.byCourse).map(([key, count]) =>
+                count > 0 ? (
+                  <div key={key}>
+                    • {key}: {count} ineligible student{count !== 1 ? "s" : ""}
+                  </div>
+                ) : null
+              )}
             </div>
+          </div>
+        )}
  
-            {seatingMode === "manual" && (
-              <div className="space-y-3">
-                <div className="flex gap-2">
-                  <select
-                    value={manualVenueId}
-                    onChange={e => setManualVenueId(e.target.value)}
-                    className="border p-2 rounded-md flex-1 disabled:bg-gray-100 disabled:cursor-not-allowed"
-                    disabled={!hasWriteAccess}
-                  >
-                    <option value="">-- Choose Venue --</option>
-                    {venues.map(v => (
-                      <option key={v._id} value={v._id}>
-                        {v.name} (Cap: {v.capacity})
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    onClick={handleAddVenueManual}
-                    className="bg-blue-600 text-white px-4 py-2 rounded shadow hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
-                    disabled={!hasWriteAccess}
-                  >
-                    Add
-                  </button>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                    {selectedVenues.map(v => (
-                        <span key={v._id} className="bg-indigo-100 text-indigo-800 text-xs font-semibold px-2.5 py-1 rounded-full flex items-center gap-2 border">
-                            {v.name}
-                            {hasWriteAccess && (
-                              <button
-                                onClick={() => removeManualVenue(v._id)}
-                                className="text-red-500 font-bold ml-1"
-                              >
-                                ×
-                              </button>
-                            )}
-                        </span>
-                    ))}
-                </div>
+        {/* MAIN GRID: LEFT = DETAILS + COURSES, RIGHT = CONFIGURATION */}
+        <div className="grid gap-4 sm:gap-6 lg:gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1.2fr)] items-start">
+          {/* LEFT COLUMN */}
+          <div className="space-y-4 sm:space-y-6 lg:space-y-6">
+            {/* 1. EXAM DETAILS */}
+            <section className="bg-white border border-gray-100 rounded-xl sm:rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-4 sm:px-5 md:px-6 py-3 border-b border-gray-100">
+                <h3 className="font-bold text-base sm:text-lg text-gray-900">1. Exam Details</h3>
               </div>
-            )}
-          </div>
-          <div>
-            <label className="block font-medium mb-2">Faculty Assignment</label>
-            <div className="flex gap-4">
-              <label className={`flex items-center gap-2 ${hasWriteAccess ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
-                <input
-                  type="radio"
-                  checked={facultyMode === "AUTO"}
-                  onChange={() => setFacultyMode("AUTO")}
-                  disabled={!hasWriteAccess}
-                /> Auto
-              </label>
-              <label className={`flex items-center gap-2 ${hasWriteAccess ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
-                <input
-                  type="radio"
-                  checked={facultyMode === "MANUAL"}
-                  onChange={() => setFacultyMode("MANUAL")}
-                  disabled={!hasWriteAccess}
-                /> Manual
-              </label>
-            </div>
-          </div>
-        </div>
-      </section>
- 
-      <section className="border p-4 rounded-lg mb-6 shadow-sm">
-        <h3 className="font-semibold mb-3">
-          3. Scheduled Courses (From Timetable)
-          <span className="text-xs text-gray-500 ml-2 font-normal">
-            ✅ Shows ALL course-department combinations for this date/time
-          </span>
-        </h3>
-       
-        {timetableCourses.length === 0 ? (
-          <div className="text-center text-gray-500 py-6 bg-gray-50 rounded-lg">
-            {examDate && examStartTime && examEndTime && examSession ? (
-              isFetchingCourses ? (
-                <div className="flex items-center justify-center gap-2">
-                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
-                  <span>Loading courses...</span>
-                </div>
-              ) : (
-                "No courses scheduled for selected date/time/session"
-              )
-            ) : (
-              "Select date, start time, end time, and session to view scheduled courses"
-            )}
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {timetableCourses.map(course => {
-              const uniqueKey = `${course.courseCode}-${course.department}`;
-              const totalStudents = studentsByCourse[uniqueKey]?.length || 0;
-              const ineligibleCount = ineligibilityStats.byCourse[uniqueKey] || 0;
-              const eligibleCount = totalStudents - ineligibleCount;
-             
-              return (
-                <div key={course.id} className="bg-gradient-to-br from-blue-50 to-indigo-50 p-4 rounded-lg border-2 border-blue-200 shadow-sm">
-                  <div className="flex justify-between items-start mb-2">
-                    <div>
-                      <div className="font-bold text-blue-900">{course.courseCode}</div>
-                      <div className="text-xs text-gray-600">{course.courseName}</div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-0">
+                {/* Left: Calendar — medium size */}
+                <div className="p-4 sm:p-5 border-b lg:border-b-0 lg:border-r border-gray-100 flex flex-col items-center">
+                  <div className="flex items-center justify-between w-full max-w-[200px] mb-2">
+                    <span className="text-xs font-semibold text-gray-700">Date</span>
+                    <div className="flex items-center gap-0.5">
+                      <button
+                        type="button"
+                        onClick={handleCalendarPrevMonth}
+                        className="p-1 rounded-md hover:bg-gray-100 text-gray-600"
+                        aria-label="Previous month"
+                      >
+                        <ChevronLeftIcon className="h-4 w-4" />
+                      </button>
+                      <span className="text-xs font-bold text-gray-900 min-w-[90px] text-center">
+                        {calendar.monthName} {calendar.year}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleCalendarNextMonth}
+                        className="p-1 rounded-md hover:bg-gray-100 text-gray-600"
+                        aria-label="Next month"
+                      >
+                        <ChevronRightIcon className="h-4 w-4" />
+                      </button>
                     </div>
-                    <span className="px-2 py-1 bg-purple-100 text-purple-800 rounded text-xs font-semibold">
-                      {course.department}
-                    </span>
                   </div>
-                 
-                  <div className="text-xs text-gray-600 mt-3 space-y-1">
-                    <div className="flex justify-between">
-                      <span>✅ Matched (Course+Dept):</span>
-                      <span className="font-semibold text-green-600">{totalStudents}</span>
-                    </div>
-                    {ineligibleCount > 0 && (
-                      <div className="flex justify-between text-orange-600">
-                        <span>⚠️ Ineligible:</span>
-                        <span className="font-semibold">{ineligibleCount}</span>
-                      </div>
+                  <div className="grid grid-cols-7 gap-0.5 text-center text-[10px] font-semibold text-gray-600 mb-1 w-full max-w-[200px]">
+                    {["S", "M", "T", "W", "T", "F", "S"].map((d) => (
+                      <div key={d}>{d}</div>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-7 gap-0.5 w-full max-w-[200px]">
+                    {calendar.grid.map((day, i) =>
+                      day === null ? (
+                        <div key={`e-${i}`} className="aspect-square max-h-6" />
+                      ) : (
+                        <button
+                          key={day}
+                          type="button"
+                          onClick={() => handleCalendarDay(day)}
+                          disabled={!hasWriteAccess}
+                          className={`aspect-square max-h-6 rounded-md text-[11px] font-semibold transition-colors flex items-center justify-center ${
+                            selectedDay === day
+                              ? "bg-blue-600 text-white"
+                              : "hover:bg-gray-100 text-gray-800"
+                          } ${!hasWriteAccess ? "cursor-not-allowed opacity-60" : ""}`}
+                        >
+                          {day}
+                        </button>
+                      )
                     )}
-                    <div className="flex justify-between text-blue-600 border-t pt-1">
-                      <span>🎓 Final Eligible:</span>
-                      <span className="font-bold">{eligibleCount}</span>
+                  </div>
+                </div>
+                {/* Right: Session & Time — compact, start/end on one line */}
+                <div className="p-4 sm:p-5 space-y-3">
+                  <div>
+                    <label className="text-xs font-semibold text-gray-700 mb-1 block">Session Type</label>
+                    <select
+                      value={examSession}
+                      onChange={e => setExamSession(e.target.value)}
+                      className="w-full h-9 px-3 rounded-lg border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none disabled:bg-gray-100 text-sm font-medium text-gray-800 bg-white"
+                      disabled={!hasWriteAccess}
+                    >
+                      <option value="FN">Morning Session (FN)</option>
+                      <option value="AN">Afternoon Session (AN)</option>
+                    </select>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-semibold text-gray-700 mb-1 block">Start Time</label>
+                      <input
+                        type="time"
+                        value={examStartTime}
+                        onChange={e => setExamStartTime(e.target.value)}
+                        className="w-full h-9 px-3 rounded-lg border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none disabled:bg-gray-100 text-sm font-medium text-gray-800"
+                        disabled={!hasWriteAccess}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-gray-700 mb-1 block">End Time</label>
+                      <input
+                        type="time"
+                        value={examEndTime}
+                        onChange={e => setExamEndTime(e.target.value)}
+                        className="w-full h-9 px-3 rounded-lg border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none disabled:bg-gray-100 text-sm font-medium text-gray-800"
+                        disabled={!hasWriteAccess}
+                      />
                     </div>
                   </div>
-                 
-                  {hasWriteAccess && (
+                  {sessionDuration != null && (
+                    <div className="flex items-center gap-2 py-2 px-3 bg-blue-50 border border-blue-100 rounded-lg">
+                      <InformationCircleIcon className="h-4 w-4 text-blue-600 shrink-0" />
+                      <p className="text-xs font-medium text-blue-800">
+                        Session duration: <span className="font-bold text-blue-900">{sessionDuration} Hours</span>
+                      </p>
+                    </div>
+                  )}
+                  <div>
+                    <label className="text-xs font-semibold text-gray-700 mb-1 block">Exam Type (Auto)</label>
                     <input
                       type="text"
-                      placeholder="Exclude prefix (e.g. 24BAD)"
-                      className="w-full text-xs p-2 border rounded mt-2 disabled:bg-gray-100 disabled:cursor-not-allowed"
-                      onChange={e => setExcludedBatches(prev => ({...prev, [uniqueKey]: e.target.value}))}
-                      disabled={!hasWriteAccess}
+                      value={examType || "Loading..."}
+                      readOnly
+                      className="w-full h-9 px-3 rounded-lg border border-gray-200 bg-gray-50 font-medium text-gray-700 cursor-not-allowed text-sm"
+                      title="Filled from timetable"
                     />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
- 
-      <div className="flex gap-4 mb-10">
-        <button
-          onClick={handleGenerate}
-          disabled={isGenerating || !hasWriteAccess || timetableCourses.length === 0}
-          className="bg-green-600 text-white px-8 py-3 rounded-lg font-bold shadow-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
-          title={!hasWriteAccess ? "Only Admin and Faculty Incharge can generate seating plans" : ""}
-        >
-          {isGenerating ? "Generating..." : "Generate Seating Plan"}
-        </button>
-        {generatedSeating && hasWriteAccess && (
-          <button
-            onClick={handleSave}
-            disabled={loading}
-            className="bg-indigo-600 text-white px-8 py-3 rounded-lg font-bold shadow-md hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
-          >
-            {loading ? "Saving..." : "Save & Finalize"}
-          </button>
-        )}
-      </div>
- 
-      {generatedSeating && (
-        <div className="space-y-10">
-          <h2 className="text-2xl font-bold border-b pb-2">Seating Layout Preview</h2>
-         
-          {facultyMode === "MANUAL" && (
-            <div className="bg-indigo-50 p-4 rounded-lg border border-indigo-200 grid md:grid-cols-2 gap-4">
-                {generatedSeating.map(item => (
-                  <div key={item.venue._id} className="flex items-center justify-between bg-white p-2 rounded border shadow-sm">
-                      <span className="text-sm font-medium">{item.venue.name}</span>
-                      <select
-                          className="text-sm border rounded p-1"
-                          onChange={e => setManualFacultyAssignments(prev => ({...prev, [item.venue._id]: e.target.value}))}
-                          value={manualFacultyAssignments[item.venue._id] || ""}
-                      >
-                        <option value="">Assign Faculty</option>
-                        {allFaculty.map(f => (
-                          <option
-                            key={f.id}
-                            value={f.id}
-                            disabled={!f.canAllocate || f.hasTimeConflict}
-                          >
-                            {f.name} {!f.canAllocate ? "(Full)" : ""} {f.hasTimeConflict ? "(Busy)" : ""}
-                          </option>
-                        ))}
-                      </select>
                   </div>
-                ))}
-            </div>
-          )}
- 
-          {generatedSeating.map((item, idx) => (
-            <div key={`${item.venue._id}-${idx}`} className="bg-gray-50 p-4 rounded-xl border">
-              <div className="flex justify-between items-center mb-4">
-                <div>
-                  <h3 className="text-xl font-bold text-indigo-900">{item.venue.name}</h3>
-                  <p className="text-xs text-gray-500">Capacity: {item.venue.capacity}</p>
-                  {item.venue.benchConfig && (
-                    <p className="text-xs text-gray-500">
-                      Bench Config: {item.venue.benchConfig.join(", ")} seats/column
-                    </p>
-                  )}
-                </div>
-                <div className="text-right">
-                  <p className="text-[10px] uppercase font-bold text-gray-400">Invigilator</p>
-                  <p className="font-bold text-indigo-700">
-                    {facultyMode === "AUTO" ? item.previewFacultyName : (allFaculty.find(f => String(f.id) === String(manualFacultyAssignments[item.venue._id]))?.name || "Unassigned")}
-                  </p>
                 </div>
               </div>
+              {isFetchingCourses && (
+                <div className="mx-4 mb-4 inline-flex items-center gap-2 text-sm text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-xl px-3 py-2">
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-indigo-600" />
+                  Fetching courses from timetable...
+                </div>
+              )}
+            </section>
  
-              <div className="overflow-x-auto">
-                <table className="w-full border-collapse bg-white shadow-sm">
-                  <thead>
-                    <tr>
-                      <th className="border p-2 bg-gray-100 text-[10px] w-12">Row</th>
-                      {Array.from({ length: item.venue.benchesCol }).map((_, c) => {
-                        const benchConfig = item.venue.benchConfig || [];
-                        const seatsInCol = benchConfig[c] || 2;
+            {/* 3. SCHEDULED COURSES */}
+            <section className="bg-white border border-gray-100 rounded-xl sm:rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-4 sm:px-5 md:px-6 py-3 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                <h3 className="font-bold text-base sm:text-lg text-gray-900">
+                  3. Scheduled Courses
+                </h3>
+                <button
+                  type="button"
+                  disabled
+                  title="Courses are loaded from timetable based on date and session"
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-gray-400 bg-gray-100 cursor-not-allowed"
+                >
+                  <PlusIcon className="h-4 w-4" />
+                  Add Course
+                </button>
+              </div>
+ 
+              {timetableCourses.length === 0 ? (
+                <div className="px-4 sm:px-5 md:px-6 py-8 text-center text-gray-500 bg-gray-50/50 text-sm">
+                  {examDate && examStartTime && examEndTime && examSession ? (
+                    isFetchingCourses ? (
+                      <div className="flex items-center justify-center gap-2">
+                        <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600" />
+                        <span>Loading courses...</span>
+                      </div>
+                    ) : (
+                      "No courses scheduled for selected date/time/session"
+                    )
+                  ) : (
+                    "Select date, start time, end time, and session to view scheduled courses"
+                  )}
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="bg-gray-50 border-b border-gray-200">
+                        <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">
+                          Course Code
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">
+                          Course Name
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">
+                          Students
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">
+                          Department
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider w-20">
+                          Actions
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {timetableCourses.map((course) => {
+                        const uniqueKey = `${course.courseCode}-${course.department}`;
+                        const totalStudents = studentsByCourse[uniqueKey]?.length || 0;
+                        const ineligibleCount = ineligibilityStats.byCourse[uniqueKey] || 0;
+                        const eligibleCount = totalStudents - ineligibleCount;
                         return (
-                          <th
-                            key={`col-header-${c}`}
-                            className="border bg-gray-100"
-                            colSpan={seatsInCol}
-                          >
-                            <div className="text-[10px] font-bold p-1">
-                              COL {String.fromCharCode(65 + c)} ({seatsInCol}-seat)
-                            </div>
-                            <div className="flex border-t border-gray-300">
-                              {Array.from({ length: seatsInCol }).map((_, s) => (
-                                <div
-                                  key={`subcol-${s}`}
-                                  className="flex-1 text-[8px] p-1 border-r last:border-r-0 border-gray-300 bg-gray-50"
+                          <tr key={course.id} className="hover:bg-gray-50/50">
+                            <td className="px-4 py-3 text-sm font-semibold text-blue-600">
+                              {course.courseCode}
+                            </td>
+                            <td className="px-4 py-3 text-sm font-medium text-gray-800">
+                              {course.courseName || "—"}
+                            </td>
+                            <td className="px-4 py-3 text-sm font-semibold text-gray-900">
+                              {eligibleCount}
+                            </td>
+                            <td className="px-4 py-3 text-sm font-medium text-gray-700 capitalize">
+                              {course.department}
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-2">
+                                {hasWriteAccess && (
+                                  <input
+                                    type="text"
+                                    placeholder="Exclude prefix"
+                                    className="max-w-[90px] h-8 px-2 rounded border border-gray-200 text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                                    onChange={(e) =>
+                                      setExcludedBatches((prev) => ({
+                                        ...prev,
+                                        [uniqueKey]: e.target.value,
+                                      }))
+                                    }
+                                  />
+                                )}
+                                <button
+                                  type="button"
+                                  disabled
+                                  title="Courses are loaded from timetable"
+                                  className="p-1.5 rounded text-gray-300 cursor-not-allowed"
+                                  aria-label="Remove course"
                                 >
-                                  {String.fromCharCode(65 + c)}{s + 1}
-                                </div>
-                              ))}
-                            </div>
-                          </th>
-                        );
-                      })}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {item.seats.map((row, rIdx) => (
-                      <tr key={`row-${rIdx}`}>
-                        <td className="border p-2 text-center font-bold text-xs bg-gray-50">{rIdx + 1}</td>
-                        {row.map((cell, cIdx) => {
-                          const benchConfig = item.venue.benchConfig || [];
-                          const seatsInCol = benchConfig[cIdx] || 2;
-                         
-                          let students = [];
-                          if (cell === "Empty" || !cell) {
-                            students = Array(seatsInCol).fill("");
-                          } else if (Array.isArray(cell)) {
-                            students = cell.map(s => s.regn_no);
-                            while (students.length < seatsInCol) {
-                              students.push("");
-                            }
-                          }
-                         
-                          return (
-                            <td
-                              key={`cell-${rIdx}-${cIdx}`}
-                              className="border p-0"
-                              colSpan={seatsInCol}
-                            >
-                              <div className="flex h-full">
-                                {students.map((student, sIdx) => (
-                                  <div
-                                    key={`seat-${sIdx}`}
-                                    className={`flex-1 p-2 text-[10px] text-center border-r last:border-r-0 border-gray-300 ${
-                                      student ? "font-bold" : "text-gray-200 italic"
-                                    }`}
-                                  >
-                                    {student || "Empty"}
-                                  </div>
-                                ))}
+                                  <TrashIcon className="h-5 w-5" />
+                                </button>
                               </div>
                             </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          </div>
+ 
+          {/* RIGHT COLUMN - CONFIGURATION PANEL */}
+          <section className="bg-white border border-gray-100 rounded-xl sm:rounded-2xl shadow-sm overflow-hidden">
+            <div className="px-4 sm:px-5 md:px-6 py-3 border-b border-gray-100">
+              <h3 className="font-bold text-base sm:text-lg text-gray-900">2. Configuration</h3>
+            </div>
+            <div className="p-4 sm:p-5 space-y-6">
+              {/* Venue Selection */}
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <BuildingOffice2Icon className="h-5 w-5 text-gray-700" />
+                  <label className="text-sm font-semibold text-gray-800">Venue Selection</label>
+                </div>
+                <div className="inline-flex w-full sm:w-auto rounded-full bg-gray-100 p-1 text-xs font-medium">
+                  <button
+                    type="button"
+                    onClick={() => hasWriteAccess && setSeatingMode("auto")}
+                    className={`flex-1 min-h-[40px] sm:min-h-0 sm:py-2 px-4 py-2.5 rounded-full transition-all ${
+                      seatingMode === "auto"
+                        ? "bg-white shadow-sm text-blue-600"
+                        : "text-gray-500"
+                    } ${!hasWriteAccess ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
+                    disabled={!hasWriteAccess}
+                  >
+                    Auto
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => hasWriteAccess && setSeatingMode("manual")}
+                    className={`flex-1 min-h-[40px] sm:min-h-0 sm:py-2 px-4 py-2.5 rounded-full transition-all ${
+                      seatingMode === "manual"
+                        ? "bg-white shadow-sm text-blue-600"
+                        : "text-gray-500"
+                    } ${!hasWriteAccess ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
+                    disabled={!hasWriteAccess}
+                  >
+                    Manual
+                  </button>
+                </div>
+                {seatingMode === "auto" ? (
+                  <p className="text-sm font-medium text-gray-600">
+                    All available venues will be used for seating.
+                  </p>
+                ) : (
+                  <div className="space-y-2 max-h-48 overflow-y-auto">
+                    {venues.map((v) => {
+                      const isChecked = selectedVenues.some((vx) => vx._id === v._id);
+                      return (
+                        <label
+                          key={v._id}
+                          className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${
+                            isChecked ? "border-blue-200 bg-blue-50/50" : "border-gray-200 hover:bg-gray-50"
+                          } ${!hasWriteAccess ? "cursor-not-allowed opacity-60" : ""}`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => toggleVenueSelection(v)}
+                            disabled={!hasWriteAccess}
+                            className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold text-gray-900">{v.name}</p>
+                            <p className="text-xs font-medium text-gray-600">Capacity: {v.capacity} students</p>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Faculty Assignment */}
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <UserGroupIcon className="h-5 w-5 text-gray-700" />
+                  <label className="text-sm font-semibold text-gray-800">Faculty Assignment</label>
+                </div>
+                <div className="inline-flex w-full sm:w-auto rounded-full bg-gray-100 p-1 text-xs font-medium">
+                  <button
+                    type="button"
+                    onClick={() => hasWriteAccess && setFacultyMode("AUTO")}
+                    className={`flex-1 min-h-[40px] sm:min-h-0 sm:py-2 px-4 py-2.5 rounded-full transition-all ${
+                      facultyMode === "AUTO"
+                        ? "bg-white shadow-sm text-blue-600"
+                        : "text-gray-500"
+                    } ${!hasWriteAccess ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
+                    disabled={!hasWriteAccess}
+                  >
+                    Auto
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => hasWriteAccess && setFacultyMode("MANUAL")}
+                    className={`flex-1 min-h-[40px] sm:min-h-0 sm:py-2 px-4 py-2.5 rounded-full transition-all ${
+                      facultyMode === "MANUAL"
+                        ? "bg-white shadow-sm text-blue-600"
+                        : "text-gray-500"
+                    } ${!hasWriteAccess ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
+                    disabled={!hasWriteAccess}
+                  >
+                    Manual
+                  </button>
+                </div>
+                {facultyMode === "AUTO" && (
+                  <p className="text-sm font-medium text-gray-600">Faculty are assigned automatically per venue after generation.</p>
+                )}
+                {facultyMode === "MANUAL" && generatedSeating && (
+                  <p className="text-xs font-medium text-gray-600">Assign faculty to each venue in the Seating Layout Preview below.</p>
+                )}
+              </div>
+
+              {/* Generate & Save — under Configuration */}
+              <div className="px-4 sm:px-5 md:px-6 py-4 border-t border-gray-100 flex flex-wrap items-center gap-2">
+                <button
+                  onClick={handleGenerate}
+                  disabled={isGenerating || !hasWriteAccess || timetableCourses.length === 0}
+                  className={`inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold shadow-sm transition-all duration-200 min-h-[40px] ${
+                    isGenerating || !hasWriteAccess || timetableCourses.length === 0
+                      ? "bg-gray-300 text-gray-600 cursor-not-allowed"
+                      : "bg-blue-600 text-white hover:bg-blue-700 hover:shadow-md active:scale-[0.99]"
+                  }`}
+                  title={!hasWriteAccess ? "Only Admin and Faculty Incharge can generate seating plans" : ""}
+                >
+                  <BoltIcon className="h-4 w-4" />
+                  {isGenerating ? "Generating..." : "Generate Seating Plan"}
+                </button>
+                {generatedSeating && hasWriteAccess && (
+                  <button
+                    onClick={handleSave}
+                    disabled={loading}
+                    className="inline-flex items-center justify-center px-4 py-2.5 rounded-xl text-sm font-semibold shadow-sm transition-all duration-200 min-h-[40px] bg-indigo-600 text-white hover:bg-indigo-700 hover:shadow-md active:scale-[0.99] disabled:bg-gray-300 disabled:text-gray-600 disabled:cursor-not-allowed"
+                  >
+                    {loading ? "Saving..." : "Save & Finalize"}
+                  </button>
+                )}
               </div>
             </div>
-          ))}
+          </section>
         </div>
-      )}
+ 
+        {/* SEATING LAYOUT PREVIEW */}
+        {generatedSeating && (
+          <section className="bg-white border border-gray-100 rounded-xl sm:rounded-2xl shadow-sm px-4 sm:px-5 md:px-6 py-4 sm:py-6 md:py-8 space-y-4 sm:space-y-6 mt-4">
+            <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center sm:justify-between gap-2">
+              <h2 className="text-lg sm:text-xl md:text-2xl font-bold text-gray-900">
+                Seating Layout Preview
+              </h2>
+              <p className="text-sm font-medium text-gray-600">
+                Review venues, invigilators, and seat distribution before finalizing.
+              </p>
+            </div>
+ 
+            {facultyMode === "MANUAL" && (
+              <div className="bg-indigo-50 p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-indigo-200 grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4">
+                {generatedSeating.map(item => (
+                  <div
+                    key={item.venue._id}
+                    className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 bg-white px-3 py-2 rounded-xl border border-gray-200 shadow-sm"
+                  >
+                    <span className="text-sm font-medium text-gray-800 truncate">
+                      {item.venue.name}
+                    </span>
+                    <select
+                      className="text-xs sm:text-sm min-h-[44px] sm:min-h-0 h-9 px-2 rounded-lg border border-gray-200 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none w-full sm:w-auto"
+                      onChange={e =>
+                        setManualFacultyAssignments(prev => ({
+                          ...prev,
+                          [item.venue._id]: e.target.value,
+                        }))
+                      }
+                      value={manualFacultyAssignments[item.venue._id] || ""}
+                    >
+                      <option value="">Assign Faculty</option>
+                      {allFaculty.map(f => (
+                        <option
+                          key={f.id}
+                          value={f.id}
+                          disabled={!f.canAllocate || f.hasTimeConflict}
+                        >
+                          {f.name} {!f.canAllocate ? "(Full)" : ""}{" "}
+                          {f.hasTimeConflict ? "(Busy)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            )}
+ 
+            <div className="space-y-6 sm:space-y-8">
+              {generatedSeating.map((item, idx) => (
+                <div
+                  key={`${item.venue._id}-${idx}`}
+                  className="bg-gray-50 rounded-xl sm:rounded-2xl border border-gray-200 p-3 sm:p-4 md:p-5 space-y-3 sm:space-y-4"
+                >
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+                    <div>
+                      <h3 className="text-lg font-semibold text-indigo-900">
+                        {item.venue.name}
+                      </h3>
+                      <p className="text-xs text-gray-500">
+                        Capacity: {item.venue.capacity}
+                      </p>
+                      {item.venue.benchConfig && (
+                        <p className="text-xs text-gray-500">
+                          Bench Config: {item.venue.benchConfig.join(", ")} seats/column
+                        </p>
+                      )}
+                    </div>
+                    <div className="text-right">
+                      <p className="text-[10px] uppercase font-semibold text-gray-400">
+                        Invigilator
+                      </p>
+                      <p className="text-sm font-semibold text-indigo-700">
+                        {facultyMode === "AUTO"
+                          ? item.previewFacultyName
+                          : allFaculty.find(
+                              f =>
+                                String(f.id) ===
+                                String(manualFacultyAssignments[item.venue._id])
+                            )?.name || "Unassigned"}
+                      </p>
+                    </div>
+                  </div>
+ 
+                  <div className="overflow-x-auto -mx-1 sm:mx-0 rounded-xl border border-gray-200 bg-white touch-pan-x">
+                    <table className="w-full border-collapse min-w-[280px]">
+                      <thead>
+                        <tr>
+                          <th className="border border-gray-200 bg-gray-50 px-2 py-2 text-[10px] font-semibold text-gray-600 w-12">
+                            Row
+                          </th>
+                          {Array.from({ length: item.venue.benchesCol }).map((_, c) => {
+                            const benchConfig = item.venue.benchConfig || [];
+                            const seatsInCol = benchConfig[c] || 2;
+                            return (
+                              <th
+                                key={`col-header-${c}`}
+                                className="border border-gray-200 bg-gray-50"
+                                colSpan={seatsInCol}
+                              >
+                                <div className="text-[10px] font-semibold text-gray-700 py-1">
+                                  COL {String.fromCharCode(65 + c)} ({seatsInCol}-seat)
+                                </div>
+                                <div className="flex border-t border-gray-200">
+                                  {Array.from({ length: seatsInCol }).map((_, s) => (
+                                    <div
+                                      key={`subcol-${s}`}
+                                      className="flex-1 text-[9px] px-1 py-1 border-r last:border-r-0 border-gray-200 bg-gray-50 text-gray-500"
+                                    >
+                                      {String.fromCharCode(65 + c)}
+                                      {s + 1}
+                                    </div>
+                                  ))}
+                                </div>
+                              </th>
+                            );
+                          })}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {item.seats.map((row, rIdx) => (
+                          <tr key={`row-${rIdx}`}>
+                            <td className="border border-gray-200 bg-gray-50 px-2 py-2 text-center text-[11px] font-semibold text-gray-700">
+                              {rIdx + 1}
+                            </td>
+                            {row.map((cell, cIdx) => {
+                              const benchConfig = item.venue.benchConfig || [];
+                              const seatsInCol = benchConfig[cIdx] || 2;
+ 
+                              let students = [];
+                              if (cell === "Empty" || !cell) {
+                                students = Array(seatsInCol).fill("");
+                              } else if (Array.isArray(cell)) {
+                                students = cell.map(s => s.regn_no);
+                                while (students.length < seatsInCol) {
+                                  students.push("");
+                                }
+                              }
+ 
+                              return (
+                                <td
+                                  key={`cell-${rIdx}-${cIdx}`}
+                                  className="border border-gray-200 p-0"
+                                  colSpan={seatsInCol}
+                                >
+                                  <div className="flex h-full">
+                                    {students.map((student, sIdx) => (
+                                      <div
+                                        key={`seat-${sIdx}`}
+                                        className={`flex-1 px-2 py-2 text-[10px] text-center border-r last:border-r-0 border-gray-200 ${
+                                          student
+                                            ? "font-semibold text-gray-900"
+                                            : "text-gray-300 italic"
+                                        }`}
+                                      >
+                                        {student || "Empty"}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+      </div>
     </div>
   );
 };

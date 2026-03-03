@@ -1,7 +1,6 @@
 // src/App.jsx - UPDATED WITH TIMETABLE ROUTE
 import React, { useEffect, useState } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import DashBoard from './pages/DashBoard';
 import Landing from './pages/Landing';
 import Layout from './Components/Layout';
 import Allotment from './pages/Allotment';
@@ -52,7 +51,7 @@ const AuthGuard = ({ children, allowedRoles = [] }) => {
             
             // Redirect based on role if they hit a restricted page
             if (user.role === 'coe') {
-              navigate('/dashboard', { replace: true });
+              navigate('/venue', { replace: true });
             } else {
               navigate('/allotment', { replace: true });
             }
@@ -97,15 +96,6 @@ function App() {
       <Route path="/api/auth/microsoft/callback" element={<Landing />} />
 
       {/* PROTECTED ROUTES - ACCESSIBLE BY ALL ROLES (Admin, Faculty, COE) */}
-      <Route
-        path="/dashboard"
-        element={
-          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'coe']}>
-            <Layout><DashBoard /></Layout>
-          </AuthGuard>
-        }
-      />
-
       <Route
         path="/attendance"
         element={
@@ -152,7 +142,7 @@ function App() {
       />
 
       <Route
-        path="/Student"
+        path="/student"
         element={
           <AuthGuard allowedRoles={['admin', 'faculty_incharge','coe']}>
             <Layout><StudentImport /></Layout>

@@ -148,9 +148,15 @@ router.post("/import-faculty", upload.single("file"), async (req, res) => {
     for (const f of formattedData) {
       try {
         const [result] = await Faculty.create(f);
-        lastFacultyImport.insertedIds.push(result.insertId);
+        const id = result?.insertId ?? result?.insertid;
+        if (id != null) lastFacultyImport.insertedIds.push(id);
       } catch (err) {
-        if (err.code === "ER_DUP_ENTRY") {
+        // MySQL: ER_DUP_ENTRY | PostgreSQL: 23505 (unique_violation)
+        const isDuplicate = err.code === "ER_DUP_ENTRY" ||
+          err.code === "23505" ||
+          err.original?.code === "23505" ||
+          err.parent?.code === "23505";
+        if (isDuplicate) {
           lastFacultyImport.skippedEmails.push(f.email);
         } else {
           throw err;

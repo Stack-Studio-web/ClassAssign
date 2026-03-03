@@ -1,6 +1,5 @@
 -- ============================================
 -- ClassAssign - PostgreSQL Schema
--- Auto-generated from existing MySQL models
 -- Run: docker compose exec db psql -U root -d venuedb -f /docker-entrypoint-initdb.d/init.sql
 -- ============================================
 
@@ -9,7 +8,7 @@ CREATE TABLE IF NOT EXISTS roles (
   id SERIAL PRIMARY KEY,
   name VARCHAR(50) UNIQUE NOT NULL,
   description TEXT,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Users
@@ -23,8 +22,8 @@ CREATE TABLE IF NOT EXISTS users (
   department VARCHAR(100),
   is_active BOOLEAN DEFAULT TRUE,
   created_by INT REFERENCES users(id),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Audit Logs
@@ -37,7 +36,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   changes TEXT,
   ip_address VARCHAR(50),
   user_agent TEXT,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Students
@@ -48,7 +47,7 @@ CREATE TABLE IF NOT EXISTS students (
   course_description VARCHAR(100),
   course_name VARCHAR(200),
   email VARCHAR(150),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Faculty
@@ -58,7 +57,7 @@ CREATE TABLE IF NOT EXISTS faculty (
   department VARCHAR(100),
   email VARCHAR(150) UNIQUE NOT NULL,
   max_classrooms INT DEFAULT 1,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Venues
@@ -70,7 +69,7 @@ CREATE TABLE IF NOT EXISTS venues (
   benches_row INT,
   benches_col INT,
   is_available BOOLEAN DEFAULT TRUE,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(name, type)
 );
 
@@ -99,7 +98,7 @@ CREATE TABLE IF NOT EXISTS exams (
   exam_time VARCHAR(50),
   exam_session VARCHAR(10),
   exam_date DATE,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Timetable
@@ -113,7 +112,7 @@ CREATE TABLE IF NOT EXISTS timetable (
   course_name VARCHAR(200),
   department VARCHAR(100),
   exam_type VARCHAR(20),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Ineligible Students
@@ -127,7 +126,7 @@ CREATE TABLE IF NOT EXISTS ineligible_students (
   exam_date DATE,
   reason TEXT DEFAULT 'Lack of attendance',
   marked_by INT REFERENCES users(id),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Seating Plans
@@ -140,8 +139,9 @@ CREATE TABLE IF NOT EXISTS seating_plans (
   exam_end_time TIME,
   selected_courses TEXT,
   faculty_mode VARCHAR(20) DEFAULT 'AUTO',
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
+
 
 -- Seating Plan Students
 CREATE TABLE IF NOT EXISTS seating_plan_students (

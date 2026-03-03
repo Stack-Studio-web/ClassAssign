@@ -4,6 +4,16 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Hide scrollbar while keeping scroll behavior */
+.scrollbar-hide {
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
 /* Custom print styles */
 @media print {
   @page {
@@ -26,5 +36,19 @@
   body {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
+  }
+
+  .print-layout table {
+    table-layout: fixed;
+    width: 100%;
+  }
+  .print-layout th,
+  .print-layout td {
+    page-break-inside: avoid;
+    border: 1px solid #000 !important;
+  }
+  .print-layout td {
+    padding: 4px 3px !important;
+    font-size: 11px !important;
   }
 }

@@ -46,9 +46,9 @@ export default function IneligibleStudentsView() {
   };
 
   const filteredStudents = ineligibleStudents.filter(s =>
-    s.regnNo.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    s.studentName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    s.courseCode.toLowerCase().includes(searchQuery.toLowerCase())
+    (s.regnNo ?? "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (s.studentName ?? "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (s.courseCode ?? "").toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   // Group by exam type and date
@@ -137,8 +137,8 @@ export default function IneligibleStudentsView() {
                   <tbody className="divide-y divide-gray-100">
                     {students.map((student) => (
                       <tr key={student.id} className="hover:bg-red-50 transition-colors">
-                        <td className="p-3 font-medium text-blue-700">{student.regnNo}</td>
-                        <td className="p-3 font-semibold text-gray-800">{student.studentName}</td>
+                        <td className="p-3 font-medium text-blue-700">{student.regnNo ?? "—"}</td>
+                        <td className="p-3 font-semibold text-gray-800">{student.studentName ?? "—"}</td>
                         <td className="p-3 text-gray-600 text-sm">{student.email || "N/A"}</td>
                         <td className="p-3 text-gray-700">{student.courseCode}</td>
                         <td className="p-3 text-gray-600 text-sm">{student.reason}</td>

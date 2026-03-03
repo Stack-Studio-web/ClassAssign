@@ -2,6 +2,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import axios from "axios";
 import { useReactToPrint } from "react-to-print";
+import { useAcademicSession } from "../context/AcademicSessionContext";
 import Logo from "../assets/logo KSI.png";
 
 // ✅ 1. Create authenticated API instance to fix 401 Unauthorized
@@ -111,6 +112,7 @@ const getStudentsFromCell = (cell) => {
 };
 
 const ExamHallAllotment = () => {
+  const { ay, setAy, semester, setSemester, category, setCategory } = useAcademicSession();
   const [seatingPlans, setSeatingPlans] = useState([]);
   const [filteredHalls, setFilteredHalls] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -315,6 +317,46 @@ const ExamHallAllotment = () => {
 
   return (
     <div className="p-6 max-w-6xl mx-auto font-poppins">
+      {/* AY / Semester / Category — only for this page */}
+      <div className="flex flex-wrap items-center gap-3 sm:gap-4 mb-4 p-3 sm:p-4 bg-white border border-gray-200 rounded-xl shadow-sm">
+        <span className="text-sm font-semibold text-gray-700">Session:</span>
+        <label className="flex items-center gap-2">
+          <span className="text-sm font-medium text-gray-600 whitespace-nowrap">AY</span>
+          <input
+            type="text"
+            value={ay}
+            onChange={(e) => setAy(e.target.value)}
+            placeholder="e.g. 2025-2026"
+            className="w-24 sm:w-28 h-9 px-3 rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+          />
+        </label>
+        <label className="flex items-center gap-2">
+          <span className="text-sm font-medium text-gray-600 whitespace-nowrap">Semester</span>
+          <select
+            value={semester}
+            onChange={(e) => setSemester(e.target.value)}
+            className="h-9 px-3 rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white min-w-[90px]"
+          >
+            <option value="EVEN">EVEN</option>
+            <option value="ODD">ODD</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-2">
+          <span className="text-sm font-medium text-gray-600 whitespace-nowrap">Exam</span>
+          <select
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            className="h-9 px-3 rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white min-w-[90px]"
+          >
+            <option value="CAT I">CAT I</option>
+            <option value="CAT II">CAT II</option>
+          </select>
+        </label>
+        <p className="text-xs text-gray-500 ml-0 sm:ml-2 w-full sm:w-auto">
+          AY {ay} – {semester} SEM ({category})
+        </p>
+      </div>
+
       {/* ✅ Enhanced Notification Status Display */}
       {notificationStatus.message && (
         <div className={`p-4 mb-4 rounded-lg border-l-4 ${
@@ -464,7 +506,7 @@ const ExamHallAllotment = () => {
           <p>DEPARTMENT OF CSE, IT, AIDS, MCA</p>
           <strong className="block font-bold">BE CSE - B.Tech IT - B.Tech AI&DS</strong>
           <strong className="block font-bold">M.Tech DS - M.E CSE (Cyber Security)</strong>
-          <p>AY 2025-2026 - EVEN SEM (CAT I / CAT II)</p>
+          <p>AY {ay} - {semester} SEM ({category})</p>
         </div>
 
         {Object.keys(hallsByTime).length === 0 ? (

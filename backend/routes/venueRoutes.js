@@ -71,7 +71,11 @@ router.post("/",
 
       res.status(201).json({ message: "Venue created successfully", venueId, id: venueId });
     } catch (err) {
-      res.status(err.code === "ER_DUP_ENTRY" ? 400 : 500).json({ error: err.message });
+      const isDuplicate = err.code === "ER_DUP_ENTRY" || err.code === "23505";
+      res.status(isDuplicate ? 400 : 500).json({ 
+        error: err.message,
+        details: isDuplicate ? "A venue with this name and type already exists." : undefined
+      });
     }
 });
 
@@ -147,12 +151,12 @@ router.delete("/:id",
         "SELECT COUNT(*) as count FROM seating_plan_venues WHERE venue_id = ?", 
         [id]
       );
-      
-      if (usage[0].count > 0) {
+      const usageCount = Number(usage?.[0]?.count ?? usage?.[0]?.COUNT ?? 0);
+      if (usageCount > 0) {
         await conn.rollback();
         return res.status(400).json({ 
           error: "Cannot delete venue", 
-          details: `This venue is linked to ${usage[0].count} seating plan(s).` 
+          details: `This venue is linked to ${usageCount} seating plan(s).` 
         });
       }
 

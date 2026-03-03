@@ -4,9 +4,9 @@ import { useNavigate } from "react-router-dom";
 import PrintLayout from "./PrintLayout";
 import FacultySchedule from '../Components/FacultySchedule.jsx';
 
-// ✅ 1. Create ONE axios instance with Authorization header to fix 401 errors
+// ✅ Create axios instance with auth (use relative /api for proxy compatibility)
 const api = axios.create({
-  baseURL: "http://localhost:5000/api",
+  baseURL: "/api",
 });
 
 api.interceptors.request.use((config) => {
@@ -16,6 +16,17 @@ api.interceptors.request.use((config) => {
   }
   return config;
 });
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      sessionStorage.clear();
+      window.location.href = "/login";
+    }
+    return Promise.reject(error);
+  }
+);
 
 const Report = () => {
   const [plans, setPlans] = useState([]);
@@ -52,8 +63,8 @@ const Report = () => {
         api.get("/seating"),
         api.get("/faculty")
       ]);
-      setPlans(plansRes.data);
-      setAllFaculty(facultyRes.data);
+      setPlans(Array.isArray(plansRes.data) ? plansRes.data : []);
+      setAllFaculty(Array.isArray(facultyRes.data) ? facultyRes.data : []);
       setError(null);
     } catch (err) {
       console.error("Failed to fetch data:", err);
@@ -92,7 +103,7 @@ const Report = () => {
   };
 
   const handlePrintSelected = () => {
-    const plansToPrint = plans.filter((p) => selectedPlans.includes(p._id));
+    const plansToPrint = plans.filter((p) => selectedPlans.includes(p._id ?? p.id));
     if (plansToPrint.length === 0) {
       alert("Please select at least one plan to print.");
       return;
@@ -102,20 +113,22 @@ const Report = () => {
     printWindow.document.write("<html><head><title>Seating Plans</title>");
     printWindow.document.write(`
       <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
+        body { font-family: "Times New Roman", serif; margin: 15px; }
         h2, h3 { text-align: center; }
-        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-        th, td { border: 1px solid black; padding: 8px; text-align: center; }
+        table { width: 100%; table-layout: fixed; border-collapse: collapse; margin-top: 15px; }
+        th, td { border: 1px solid black; padding: 5px 6px; text-align: center; }
         .plan-section { page-break-after: always; margin-bottom: 30px; }
         .plan-section:last-child { page-break-after: auto; }
+        @page { size: A4; margin: 12mm; }
       </style>
     `);
     printWindow.document.write("</head><body>");
     plansToPrint.forEach((plan, index) => {
+      const planId = plan._id ?? plan.id;
       printWindow.document.write(`
         <div class="plan-section">
           <h2>Seating Plan ${index + 1}</h2>
-          <div>${document.getElementById(`plan-content-${plan._id}`)?.innerHTML || ""}</div>
+          <div>${document.getElementById(`plan-content-${planId}`)?.innerHTML || ""}</div>
         </div>
       `);
     });
@@ -125,7 +138,7 @@ const Report = () => {
     printWindow.print();
   };
 
-  const handleDeletePlan = async (id) => {
+  const handleDeletePlan = async (planId) => {
     // ✅ 5. Additional UI Guard: Prevent CEO from triggering delete
     if (userRole === 'coe') {
       alert("Access Denied: CEOs have read-only access.");
@@ -134,8 +147,7 @@ const Report = () => {
 
     if (window.confirm("Are you sure you want to delete this seating plan?")) {
       try {
-        // ✅ 6. Use 'api' instance for delete so audit logs capture the user
-        await api.delete(`/seating/delete-plan/${id}`);
+        await api.delete(`/seating/delete-plan/${planId}`);
         alert("Seating plan deleted successfully!");
         fetchPlans();
       } catch (err) {
@@ -146,7 +158,9 @@ const Report = () => {
   };
 
   const formatDate = (dateString) => {
+    if (!dateString) return "—";
     const date = new Date(dateString);
+    if (isNaN(date.getTime())) return "—";
     const options = { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" };
     return date.toLocaleDateString(undefined, options);
   };
@@ -200,24 +214,25 @@ const Report = () => {
       </div>
 
       <ul style={{ listStyleType: "none", padding: 0 }}>
-        {plans.map((plan) => (
-          <li key={plan._id} style={{ border: "1px solid #ddd", padding: "15px", marginBottom: "10px", borderRadius: "5px", background: "#fff shadow-sm" }}>
+        {plans.map((plan) => {
+          const planId = plan._id ?? plan.id;
+          return (
+          <li key={planId} style={{ border: "1px solid #ddd", padding: "15px", marginBottom: "10px", borderRadius: "5px", background: "#fff shadow-sm" }}>
             <div style={{ display: "flex", alignItems: "center" }}>
-              <input type="checkbox" checked={selectedPlans.includes(plan._id)} onChange={() => handleCheckboxChange(plan._id)} style={{ marginRight: "10px" }} />
+              <input type="checkbox" checked={selectedPlans.includes(planId)} onChange={() => handleCheckboxChange(planId)} style={{ marginRight: "10px" }} />
               <div onClick={() => handleSelectPlan(plan)} style={{ cursor: "pointer", flexGrow: 1 }}>
-                <strong>Date:</strong> {new Date(plan.examDate).toLocaleDateString()} | <strong>Session:</strong> {plan.examSession} | <strong>Venues:</strong> {(plan.venuesUsed || []).map((v) => v.venueName).join(", ")} | <strong>Saved on:</strong> {formatDate(plan.createdAt)}
+                <strong>Date:</strong> {plan.examDate ? new Date(plan.examDate).toLocaleDateString() : "—"} | <strong>Session:</strong> {plan.examSession ?? "—"} | <strong>Venues:</strong> {(plan.venuesUsed || []).map((v) => v.venueName ?? v.venue_name ?? "—").join(", ") || "—"} | <strong>Saved on:</strong> {formatDate(plan.createdAt)}
               </div>
             </div>
 
-            <div id={`plan-content-${plan._id}`} style={{ display: "none" }}>
+            <div id={`plan-content-${planId}`} style={{ display: "none" }}>
               <PrintLayout selectedPlan={plan} />
             </div>
 
-            {/* ✅ 7. Conditionally render Delete button: Hide for CEO role */}
             {(userRole === 'admin' || userRole === 'faculty_incharge') && (
               <div style={{ marginTop: "10px" }}>
                 <button
-                  onClick={(e) => { e.stopPropagation(); handleDeletePlan(plan._id); }}
+                  onClick={(e) => { e.stopPropagation(); handleDeletePlan(planId); }}
                   style={{ padding: "5px 10px", background: "#dc3545", color: "white", border: "none", borderRadius: "3px", cursor: "pointer" }}
                 >
                   Delete
@@ -225,12 +240,13 @@ const Report = () => {
               </div>
             )}
           </li>
-        ))}
+          );
+        })}
       </ul>
 
       {showFacultySchedule && (
         <FacultySchedule 
-          plans={plans.filter((p) => selectedPlans.includes(p._id))}
+          plans={plans.filter((p) => selectedPlans.includes(p._id ?? p.id))}
           onClose={() => setShowFacultySchedule(false)}
         />
       )}

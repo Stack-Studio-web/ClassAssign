@@ -82,12 +82,12 @@ router.post(
         });
       }
 
-      if (facultyMode === "MANUAL") {
-        const facultyIds = venuesUsed
-          .map(v => v.facultyId)
-          .filter(id => id != null);
+      // Validate faculty allocation for BOTH AUTO and MANUAL modes
+      const facultyIds = venuesUsed
+        .map(v => v.facultyId)
+        .filter(id => id != null);
 
-        for (const fId of facultyIds) {
+      for (const fId of facultyIds) {
           const [allocCheck] = await connection.query(
             `SELECT 
               f.id,
@@ -108,14 +108,16 @@ router.post(
             });
           }
 
-          const { max_classrooms, current_allocation } = allocCheck[0];
-          const remaining = max_classrooms - current_allocation;
+          const r = allocCheck[0];
+          const maxClassrooms = Number(r.max_classrooms ?? r.maxclassrooms ?? 1) || 1;
+          const currentAlloc = Number(r.current_allocation ?? r.currentallocation ?? 0) || 0;
+          const remaining = maxClassrooms - currentAlloc;
 
           if (remaining <= 0) {
             await connection.rollback();
             return res.status(400).json({
               error: "Faculty unavailable",
-              details: `Faculty ID ${fId} has reached allocation limit (${current_allocation}/${max_classrooms})`
+              details: `Faculty ID ${fId} has reached allocation limit (${currentAlloc}/${maxClassrooms})`
             });
           }
 
@@ -138,7 +140,6 @@ router.post(
             });
           }
         }
-      }
 
       const seatingPlanId = await SeatingPlan.createPlan({
         examDate: dateOnly,
@@ -220,15 +221,16 @@ router.delete(
       );
 
       if (examDetails.length > 0) {
-        const { exam_date, exam_start_time, exam_end_time } = examDetails[0];
+        const r = examDetails[0];
+        const examDate = r.exam_date ?? r.examdate;
+        const examStartTime = r.exam_start_time ?? r.examstarttime;
+        const examEndTime = r.exam_end_time ?? r.examendtime;
 
-        for (const v of venues) {
-          await Venue.removeSession(
-            v.venue_id,
-            exam_date,
-            exam_start_time,
-            exam_end_time
-          );
+        for (const v of venues || []) {
+          const venueId = v.venue_id ?? v.venueid;
+          if (venueId != null) {
+            await Venue.removeSession(venueId, examDate, examStartTime, examEndTime);
+          }
         }
       }
 
@@ -348,10 +350,12 @@ router.get("/attendance",
         console.log(`🕐 Looking for time match: ${startTime} - ${endTime}`);
         
         const plan = plans.find(p => {
-          const planStart = p.exam_start_time.substring(0, 5);
-          const planEnd = p.exam_end_time.substring(0, 5);
-          const reqStart = startTime.substring(0, 5);
-          const reqEnd = endTime.substring(0, 5);
+          const planStartRaw = p.exam_start_time ?? p.examstarttime ?? "";
+          const planEndRaw = p.exam_end_time ?? p.examendtime ?? "";
+          const planStart = String(planStartRaw).substring(0, 5);
+          const planEnd = String(planEndRaw).substring(0, 5);
+          const reqStart = String(startTime || "").substring(0, 5);
+          const reqEnd = String(endTime || "").substring(0, 5);
           
           console.log(`  Comparing: Plan(${planStart}-${planEnd}) vs Request(${reqStart}-${reqEnd})`);
           
@@ -371,128 +375,124 @@ router.get("/attendance",
             });
         }
 
-        console.log(`✅ Matched plan ID: ${plan.id}`);
+        const planId = plan.id ?? plan._id;
+        console.log(`✅ Matched plan ID: ${planId}`);
 
         // ✅ Step 3: Get selected courses for this plan
         const [planDetails] = await db.query(
             `SELECT selected_courses FROM seating_plans WHERE id = ?`,
-            [plan.id]
+            [planId]
         );
 
         let selectedCourses = [];
-        if (planDetails.length > 0 && planDetails[0].selected_courses) {
+        const scRaw = planDetails?.[0]?.selected_courses ?? planDetails?.[0]?.selectedcourses;
+        if (scRaw) {
             try {
-                selectedCourses = typeof planDetails[0].selected_courses === 'string' 
-                    ? JSON.parse(planDetails[0].selected_courses) 
-                    : planDetails[0].selected_courses;
+                selectedCourses = typeof scRaw === 'string' ? JSON.parse(scRaw) : scRaw;
             } catch (e) {
                 console.error("Error parsing selected_courses:", e);
             }
         }
-
-        console.log(`📚 Selected courses for this plan:`, selectedCourses.map(c => c.courseDescription || c));
+        // Normalize: selectedCourses can be ["CS101"] or [{courseCode:"CS101"}] 
+        const selectedCourseCodes = new Set(
+            (selectedCourses || []).flatMap(c => 
+                typeof c === 'string' ? [c] : [c?.courseCode ?? c?.courseDescription ?? c].filter(Boolean)
+            )
+        );
+        console.log(`📚 Selected courses for this plan:`, [...selectedCourseCodes]);
 
         // ✅ Step 4: Find the specific venue
         const [venues] = await db.query(
             `SELECT id, venue_name FROM seating_plan_venues 
              WHERE seating_plan_id = ?`,
-            [plan.id]
+            [planId]
         );
 
-        console.log(`🏢 Found ${venues.length} venues for plan ${plan.id}:`);
-        venues.forEach(v => console.log(`  - ${v.venue_name}`));
+        console.log(`🏢 Found ${(venues || []).length} venues for plan ${planId}:`);
+        (venues || []).forEach(v => console.log(`  - ${v.venue_name ?? v.venuename}`));
 
-        const matchedVenue = venues.find(v => v.venue_name === venue);
+        const matchedVenue = (venues || []).find(v => (v.venue_name ?? v.venuename) === venue);
 
         if (!matchedVenue) {
             console.log(`❌ Venue "${venue}" not found in plan`);
             return res.status(404).json({ 
               error: "Venue not found in plan",
               requestedVenue: venue,
-              availableVenues: venues.map(v => v.venue_name)
+              availableVenues: (venues || []).map(v => v.venue_name ?? v.venuename ?? "")
             });
         }
 
-        console.log(`✅ Matched venue: ${matchedVenue.venue_name} (ID: ${matchedVenue.id})`);
+        console.log(`✅ Matched venue: ${matchedVenue.venue_name ?? matchedVenue.venuename} (ID: ${matchedVenue.id})`);
         
         const venueId = matchedVenue.id;
 
-        // ✅ Step 5: Get students with course info, JOIN with timetable to get course_name
-        // Using COLLATE to handle different collations between tables
-        // Using DISTINCT to prevent duplicates
-        const [studentList] = await db.query(
+        // ✅ Step 5+6: Single query - get students directly from seating_arrangements for this venue
+        // JOIN with seating_plan_students (same plan) - avoids dual-query regn_no matching issues
+        const [venueStudentsRaw] = await db.query(
             `SELECT DISTINCT
-               sps.regn_no as regNo, 
-               sps.student_name as name, 
-               sps.course_description as courseCode,
-               COALESCE(t.course_name, sps.course_description) as courseName
-             FROM seating_plan_students sps
-             LEFT JOIN timetable t ON t.course_code COLLATE utf8mb4_unicode_ci = sps.course_description COLLATE utf8mb4_unicode_ci
-             WHERE sps.seating_plan_id = ?
+               sps.regn_no, 
+               sps.student_name, 
+               sps.course_description,
+               COALESCE(t.course_name, sps.course_description) as course_name
+             FROM seating_arrangements sa
+             INNER JOIN seating_plan_students sps 
+               ON sps.seating_plan_id = ? AND sps.regn_no = sa.regn_no
+             LEFT JOIN timetable t ON t.course_code = sps.course_description
+             WHERE sa.seating_plan_venue_id = ?
              ORDER BY sps.course_description, sps.regn_no`,
-            [plan.id]
+            [planId, venueId]
         );
 
-        console.log(`👥 Found ${studentList.length} students for this plan`);
+        // Normalize to camelCase (PostgreSQL returns lowercase)
+        const venueStudents = (venueStudentsRaw || []).map(r => ({
+            regNo: r.regn_no ?? r.regnno ?? "",
+            name: r.student_name ?? r.studentname ?? "",
+            courseCode: r.course_description ?? r.coursedescription ?? "",
+            courseName: r.course_name ?? r.coursename ?? ""
+        }));
 
-        if (studentList.length === 0) {
-            console.log("⚠️  Warning: No students found for this plan!");
-        }
-
-        // ✅ Step 6: Filter students who are seated in this specific venue
-        const [seatedInVenue] = await db.query(
-            `SELECT DISTINCT regn_no FROM seating_arrangements WHERE seating_plan_venue_id = ?`,
-            [venueId]
-        );
-
-        const seatedRegNos = new Set(seatedInVenue.map(s => s.regn_no));
-        const venueStudents = studentList.filter(s => seatedRegNos.has(s.regNo));
-
-        console.log(`🪑 ${venueStudents.length} students are seated in venue ${venue}`);
+        console.log(`🪑 Found ${venueStudents.length} students seated in venue ${venue}`);
 
         // ✅ Step 7: Create a map of courseCode -> courseName from actual student data
         const courseNameMap = {};
         venueStudents.forEach(s => {
-            if (s.courseCode && s.courseName) {
-                courseNameMap[s.courseCode] = s.courseName;
-            }
+            const cc = s.courseCode ?? s.coursecode;
+            const cn = s.courseName ?? s.coursename;
+            if (cc && cn) courseNameMap[cc] = cn;
         });
 
         // Fallback to selectedCourses if courseName not in student records
-        selectedCourses.forEach(course => {
-            const courseCode = course.courseDescription || course;
-            if (!courseNameMap[courseCode]) {
-                courseNameMap[courseCode] = course.courseName || course.courseDescription || course;
-            }
+        selectedCourseCodes.forEach(cc => {
+            if (!courseNameMap[cc]) courseNameMap[cc] = cc;
         });
 
         console.log("📚 Course name mapping:", courseNameMap);
 
-        // ✅ Step 8: Group by SELECTED courses only and ensure no duplicate students
+        // ✅ Step 8: Group by courses (use selectedCourseCodes if non-empty, else ALL venue students)
         const courseMap = {};
         venueStudents.forEach(s => {
-            // Only include if this course is in selected courses
-            const isSelected = selectedCourses.some(c => 
-                (c.courseDescription || c) === s.courseCode
-            );
+            const courseCode = (s.courseCode ?? s.coursecode ?? "").trim();
+            const regNo = String(s.regNo ?? s.regnno ?? s.regn_no ?? "").trim();
+            const name = (s.name ?? s.student_name ?? "").trim();
+            if (!courseCode || !regNo) return;
+
+            // Include if: selectedCourseCodes is empty (show all) OR course is in selected
+            const isSelected = selectedCourseCodes.size === 0 || 
+                selectedCourseCodes.has(courseCode) ||
+                [...selectedCourseCodes].some(cc => String(cc || "").trim().toUpperCase() === courseCode.toUpperCase());
 
             if (isSelected) {
-                if (!courseMap[s.courseCode]) {
-                    courseMap[s.courseCode] = { 
-                        courseCode: s.courseCode, 
-                        courseName: courseNameMap[s.courseCode] || s.courseCode,
+                if (!courseMap[courseCode]) {
+                    courseMap[courseCode] = { 
+                        courseCode, 
+                        courseName: courseNameMap[courseCode] || courseCode,
                         students: [],
-                        studentRegNos: new Set() // Track unique reg numbers
+                        studentRegNos: new Set()
                     };
                 }
-                
-                // Only add if student not already added (prevent duplicates)
-                if (!courseMap[s.courseCode].studentRegNos.has(s.regNo)) {
-                    courseMap[s.courseCode].students.push({ 
-                      regNo: s.regNo, 
-                      name: s.name 
-                    });
-                    courseMap[s.courseCode].studentRegNos.add(s.regNo);
+                if (!courseMap[courseCode].studentRegNos.has(regNo)) {
+                    courseMap[courseCode].students.push({ regNo, name });
+                    courseMap[courseCode].studentRegNos.add(regNo);
                 }
             }
         });
@@ -573,7 +573,9 @@ router.post("/check-faculty-availability",
             [f.id, dateOnly, examStartTime, examEndTime]
           );
 
-          const remaining = f.max_classrooms - f.current_allocation;
+          const maxClassrooms = Number(f.max_classrooms ?? f.maxclassrooms ?? 1) || 1;
+          const currentAlloc = Number(f.current_allocation ?? f.currentallocation ?? 0) || 0;
+          const remaining = maxClassrooms - currentAlloc;
 
           return {
             id: f.id,
@@ -582,8 +584,8 @@ router.post("/check-faculty-availability",
             canAllocate: remaining > 0,
             hasTimeConflict: conflicts.length > 0,
             allocationsRemaining: remaining,
-            maxClassrooms: f.max_classrooms,
-            currentAllocation: f.current_allocation
+            maxClassrooms,
+            currentAllocation: currentAlloc
           };
         })
       );

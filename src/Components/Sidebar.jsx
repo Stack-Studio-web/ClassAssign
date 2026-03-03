@@ -1,31 +1,33 @@
-import React, { useState } from "react";
+import React from "react";
 import {
   ComputerDesktopIcon,
-  Cog6ToothIcon,
   NewspaperIcon,
   BuildingOfficeIcon,
   UserGroupIcon,
   ArrowRightOnRectangleIcon,
-  Bars3Icon,
   XMarkIcon,
   UserPlusIcon,
   UsersIcon,
   ExclamationTriangleIcon,
-  CalendarDaysIcon
+  CalendarDaysIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
 } from "@heroicons/react/24/outline";
 import { NavLink } from "react-router-dom";
-import Logo from "../assets/logo.png";
+import { useSidebar } from "../context/SidebarContext";
 
 const Sidebar = () => {
-  const [open, setOpen] = useState(false);
+  const ctx = useSidebar();
+  const collapsed = ctx?.collapsed ?? false;
+  const setCollapsed = ctx?.setCollapsed ?? (() => {});
+  const open = ctx?.mobileMenuOpen ?? false;
+  const setOpen = ctx?.setMobileMenuOpen ?? (() => {});
 
-  // 🔐 Read user role from session storage
   const user = JSON.parse(sessionStorage.getItem("user"));
   const userRole = user?.role;
 
   if (!userRole) return null;
 
-  /* ================= LOGOUT ================= */
   const handleLogout = async () => {
     try {
       await fetch("/api/auth/logout", {
@@ -40,35 +42,28 @@ const Sidebar = () => {
     }
   };
 
-  /* ================= NAVIGATION ITEMS ================= */
-  // Base items visible to everyone (Admin, Faculty, COE)
   const navItems = [
     { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
     { to: "/student", label: "Student", icon: UserGroupIcon },
     { to: "/faculty", label: "Faculty", icon: UserPlusIcon },
   ];
 
-  // ✅ NEW: Add Timetable for all roles
   navItems.push({ to: "/timetable", label: "Timetable", icon: CalendarDaysIcon });
 
-  // ✅ Add Allotment ONLY if user is NOT a COE (coe)
   if (userRole !== "coe") {
     navItems.push({ to: "/allotment", label: "Allotment", icon: ComputerDesktopIcon });
   }
 
-  // Add Report for everyone
   navItems.push({ to: "/report", label: "Report", icon: NewspaperIcon });
 
-  // ✅ Add Ineligibility for Admin & Faculty Incharge ONLY
   if (userRole === "admin" || userRole === "faculty_incharge") {
-    navItems.push({ 
-      to: "/ineligibility/view", 
-      label: "Ineligibility", 
-      icon: ExclamationTriangleIcon 
+    navItems.push({
+      to: "/ineligibility/view",
+      label: "Ineligibility",
+      icon: ExclamationTriangleIcon,
     });
   }
 
-  // ✅ Add Admin-only items
   if (userRole === "admin") {
     navItems.push(
       { to: "/users", label: "User Management", icon: UsersIcon },
@@ -76,88 +71,96 @@ const Sidebar = () => {
     );
   }
 
-  // Add Settings for everyone
-  navItems.push({ to: "/settings", label: "Settings", icon: Cog6ToothIcon });
-
   return (
     <>
-      {/* ================= HAMBURGER (Mobile) ================= */}
-      <button
-        onClick={() => setOpen(true)}
-        className="lg:hidden fixed top-4 left-4 z-50 p-2 rounded-md bg-white shadow-md"
-      >
-        <Bars3Icon className="h-6 w-6 text-gray-700" />
-      </button>
-
-      {/* ================= OVERLAY ================= */}
+      {/* Overlay (mobile) */}
       {open && (
         <div
-          className="fixed inset-0 bg-black/40 z-40 lg:hidden"
+          className="fixed inset-0 top-14 bg-black/40 z-30 lg:hidden backdrop-blur-sm transition-opacity duration-200"
           onClick={() => setOpen(false)}
+          aria-hidden
         />
       )}
 
-      {/* ================= SIDEBAR ================= */}
+      {/* Sidebar */}
       <aside
-        className={`fixed top-0 left-0 bottom-0 w-64 bg-gradient-to-b
-        from-[#f8fbff] via-[#e6f0fa] to-[#d6e4f5] text-gray-800 shadow-lg
-        flex flex-col z-50 transform transition-transform duration-300
-        ${open ? "translate-x-0" : "-translate-x-full"}
-        lg:translate-x-0`}
+        className={`fixed top-14 left-0 bottom-0 z-40 flex flex-col text-gray-800 transition-all duration-300 ease-in-out
+          bg-white border-r border-gray-200
+          ${collapsed ? "lg:w-20" : "lg:w-64"} w-64
+          ${open ? "translate-x-0" : "-translate-x-full"} lg:translate-x-0
+          rounded-none lg:top-14 lg:h-[calc(100vh-3.5rem)]`}
+        style={{ fontFamily: "'Inter', 'Poppins', system-ui, sans-serif" }}
       >
-        {/* Close Button (Mobile) */}
+        {/* Close (mobile only) */}
         <button
           onClick={() => setOpen(false)}
-          className="lg:hidden absolute top-4 right-4 p-1"
+          className="lg:hidden absolute top-3 right-3 p-2 rounded-lg text-gray-600 hover:bg-gray-100 transition-colors"
+          aria-label="Close menu"
         >
-          <XMarkIcon className="h-6 w-6 text-gray-700" />
+          <XMarkIcon className="h-6 w-6" />
         </button>
 
-        {/* Logo */}
-        <div className="flex items-center space-x-3 p-6 border-b border-gray-200">
-          <img src={Logo} alt="KCT Logo" className="w-12 h-12 object-contain" />
-          <span className="text-xl font-semibold text-[#1e3c72]">
-            KCT ClassAlign
-          </span>
-        </div>
-
-        {/* Navigation */}
-        <nav className="flex-1 mt-6 space-y-1 overflow-y-auto">
-          {navItems.map(({ to, label, icon: Icon }) => (
-            <NavLink
-              key={to}
-              to={to}
-              onClick={() => setOpen(false)}
-              className={({ isActive }) =>
-                `flex items-center space-x-3 px-5 py-3 rounded-lg text-sm font-medium transition-all duration-200
-                ${
-                  isActive
-                    ? "border-b-2 border-[#1e3c72] text-[#1e3c72] font-semibold bg-[#eaf1fb]"
-                    : "text-gray-700 hover:bg-[#eaf1fb]"
-                }`
-              }
-            >
-              <Icon className="h-5 w-5" />
-              <span>{label}</span>
-            </NavLink>
-          ))}
+        {/* Nav */}
+        <nav className="flex-1 overflow-y-auto scrollbar-hide pt-12 lg:pt-4 pb-4 px-3 min-h-0">
+          <ul className="space-y-0.5">
+            {navItems.map(({ to, label, icon: Icon }) => (
+              <li key={to}>
+                <NavLink
+                  to={to}
+                  onClick={() => setOpen(false)}
+                  className={({ isActive }) =>
+                    `flex items-center gap-3 rounded-lg text-[15px] font-medium transition-all duration-200
+                    ${collapsed && !open ? "lg:justify-center lg:px-0 lg:py-3 px-4 py-3" : "px-4 py-3"}
+                    ${isActive
+                      ? "bg-gray-100 text-gray-900 font-semibold"
+                      : "text-gray-600 hover:bg-gray-50 hover:text-gray-800"
+                    }`
+                  }
+                >
+                  <Icon className="h-5 w-5 shrink-0 text-inherit" />
+                  {(!collapsed || open) && <span className="truncate">{label}</span>}
+                </NavLink>
+              </li>
+            ))}
+          </ul>
         </nav>
 
+        {/* Collapse toggle (desktop) */}
+        <div className="shrink-0 p-3 border-t border-gray-100 hidden lg:block">
+          <button
+            onClick={() => setCollapsed((c) => !c)}
+            className="w-full flex items-center justify-center gap-3 rounded-lg py-3 px-4 text-gray-500 hover:bg-gray-50 hover:text-gray-700 transition-all duration-200"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            {collapsed ? (
+              <ChevronRightIcon className="h-5 w-5" />
+            ) : (
+              <>
+                <ChevronLeftIcon className="h-5 w-5" />
+                <span className="text-sm font-medium">Collapse</span>
+              </>
+            )}
+          </button>
+        </div>
+
         {/* Logout */}
-        <div className="p-4 border-t border-gray-200">
+        <div className="shrink-0 p-3 border-t border-gray-100">
           <button
             onClick={handleLogout}
-            className="w-full flex items-center space-x-3 px-5 py-3 rounded-lg text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 transition-colors"
+            className={`w-full flex items-center rounded-lg text-[15px] font-medium text-red-600 bg-red-50/80 hover:bg-red-100 transition-all duration-200
+              ${collapsed && !open ? "lg:justify-center lg:px-0 lg:py-3 px-4 py-3 gap-3" : "gap-3 px-4 py-3"}`}
           >
-            <ArrowRightOnRectangleIcon className="h-5 w-5" />
-            <span>Logout</span>
+            <ArrowRightOnRectangleIcon className="h-5 w-5 shrink-0" />
+            {(!collapsed || open) && <span>Logout</span>}
           </button>
         </div>
 
         {/* Footer */}
-        <div className="p-4 border-t border-gray-200 text-xs text-gray-500 text-center">
-          © 2025 KCT • All Rights Reserved
-        </div>
+        {(!collapsed || open) && (
+          <div className="shrink-0 px-4 py-3 border-t border-gray-100 text-center text-xs text-gray-500">
+            © 2025 KCT • All Rights Reserved
+          </div>
+        )}
       </aside>
     </>
   );

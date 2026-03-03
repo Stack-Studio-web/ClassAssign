@@ -3,6 +3,24 @@ import React, { useState, useEffect, useMemo } from "react";
 import axios from "axios";
 import { MagnifyingGlassIcon, XMarkIcon } from "@heroicons/react/24/outline";
 
+// API instance: attach auth token to every request (fixes notifications + delete)
+const api = axios.create({ baseURL: "/api" });
+api.interceptors.request.use((config) => {
+  const token = sessionStorage.getItem("authToken");
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    if (err.response?.status === 401) {
+      sessionStorage.clear();
+      window.location.href = "/";
+    }
+    return Promise.reject(err);
+  }
+);
+
 export default function Student() {
   const [totalStudents, setTotalStudents] = useState(0);
   const [students, setStudents] = useState([]);
@@ -14,6 +32,8 @@ export default function Student() {
   const [message, setMessage] = useState("");
   const [selectedFile, setSelectedFile] = useState(null);
   const [skippedRecords, setSkippedRecords] = useState([]);
+  const [deleteByCourseCode, setDeleteByCourseCode] = useState("");
+  const [deleteLoading, setDeleteLoading] = useState(false);
 
   // Filter States
   const [showFilters, setShowFilters] = useState(false);
@@ -74,7 +94,7 @@ export default function Student() {
   /* ================= FETCH DATA ================= */
   const fetchStudentStats = async () => {
     try {
-      const res = await axios.get("/api/students/stats");
+      const res = await api.get("/students/stats");
       setTotalStudents(res.data.totalStudents);
     } catch (err) {
       setTotalStudents(0);
@@ -83,8 +103,12 @@ export default function Student() {
 
   const fetchStudents = async () => {
     try {
-      const res = await axios.get("/api/students");
-      setStudents(res.data);
+      const res = await api.get("/students");
+      setStudents((res.data || []).map(s => ({
+        ...s,
+        studentName: s.studentName ?? "",
+        regnNo: s.regnNo ?? ""
+      })));
     } catch (err) {
       setStudents([]);
     }
@@ -92,7 +116,7 @@ export default function Student() {
 
   const fetchCourses = async () => {
     try {
-      const res = await axios.get("/api/students/courses");
+      const res = await api.get("/students/courses");
       setCourses(res.data);
     } catch (err) {
       setCourses([]);
@@ -112,6 +136,28 @@ export default function Student() {
       setUniqueCourseNames(courseNames.sort());
       setUniqueCourseDescriptions(courseDescriptions.sort());
     }
+  }, [students]);
+
+  // Dynamic year options from reg_no prefix (e.g. 23BCS001 -> "23")
+  const uniqueYears = useMemo(() => {
+    const years = new Set();
+    students.forEach((s) => {
+      const reg = (s.regnNo ?? "").trim();
+      const match = reg.match(/^(\d{2})/);
+      if (match) years.add(match[1]);
+    });
+    return Array.from(years).sort((a, b) => b.localeCompare(a));
+  }, [students]);
+
+  // Dynamic department options from reg_no (e.g. 23BCS001 -> BCS, 24BIT001 -> BIT)
+  const uniqueDepartments = useMemo(() => {
+    const depts = new Set();
+    students.forEach((s) => {
+      const reg = (s.regnNo ?? "").trim().toUpperCase();
+      const match = reg.match(/^\d{2}([A-Z]+)\d*$/);
+      if (match) depts.add(match[1]);
+    });
+    return Array.from(depts).sort();
   }, [students]);
 
   /* ================= IMPORT LOGIC ================= */
@@ -135,7 +181,7 @@ export default function Student() {
     formData.append("file", selectedFile);
 
     try {
-      const response = await axios.post("/api/import/import-students", formData, {
+      const response = await api.post("/import/import-students", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
       setMessage(`🎉 Success! Imported records: ${response.data.inserted}`);
@@ -157,7 +203,7 @@ export default function Student() {
   const handleUndo = async () => {
     if (!window.confirm("Undo last student import? This will remove records added in the last session.")) return;
     try {
-      const res = await axios.post("/api/import/undo-student-import");
+      const res = await api.post("/import/undo-student-import");
       setMessage(`✅ ${res.data.message}`);
       fetchStudents();
       fetchStudentStats();
@@ -170,12 +216,51 @@ export default function Student() {
   const handleDelete = async (id) => {
     if (!window.confirm("Are you sure you want to delete this student?")) return;
     try {
-      await axios.delete(`/api/students/${id}`);
+      await api.delete(`/students/${id}`);
       setMessage("✅ Student deleted successfully");
       fetchStudentStats();
       fetchStudents();
     } catch (err) {
       setMessage("❌ Failed to delete the student.");
+    }
+  };
+
+  const handleDeleteAll = async () => {
+    if (!window.confirm("Are you sure you want to delete ALL students? This cannot be undone.")) return;
+    setDeleteLoading(true);
+    try {
+      const res = await api.delete("/students/all");
+      const count = res.data?.deletedCount ?? 0;
+      setMessage(`✅ Deleted all students (${count}).`);
+      setDeleteByCourseCode("");
+      fetchStudents();
+      fetchStudentStats();
+    } catch (err) {
+      setMessage(err.response?.data?.message || "❌ Failed to delete all students.");
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
+  const handleDeleteByCourseCode = async () => {
+    const code = (deleteByCourseCode || "").trim();
+    if (!code) {
+      setMessage("⚠️ Please select a course code.");
+      return;
+    }
+    if (!window.confirm(`Delete all students for course "${code}"? This cannot be undone.`)) return;
+    setDeleteLoading(true);
+    try {
+      const res = await api.delete(`/students/by-course/${encodeURIComponent(code)}`);
+      const count = res.data?.deletedCount ?? 0;
+      setMessage(`✅ Deleted ${count} student(s) for course ${code}.`);
+      setDeleteByCourseCode("");
+      fetchStudents();
+      fetchStudentStats();
+    } catch (err) {
+      setMessage(err.response?.data?.message || "❌ Failed to delete students by course.");
+    } finally {
+      setDeleteLoading(false);
     }
   };
 
@@ -193,25 +278,21 @@ export default function Student() {
   const filteredStudents = useMemo(() => {
     return students
       .filter((student) => {
-        if (filters.department) {
-          if (filters.department === "IT" && !student.regnNo.includes("BIT")) return false;
-          if (filters.department === "CS" && !student.regnNo.includes("BCS")) return false;
-          if (filters.department === "AIDS" && !student.regnNo.includes("BAD")) return false;
-        }
-        if (filters.year) {
-          if (filters.year === "3" && !student.regnNo.startsWith("23")) return false;
-          if (filters.year === "2" && !student.regnNo.startsWith("24")) return false;
-        }
+        const regnNo = (student.regnNo ?? "").trim();
+        if (filters.department && !regnNo.toUpperCase().includes(filters.department.toUpperCase())) return false;
+        if (filters.year && !regnNo.startsWith(filters.year)) return false;
         if (filters.courseName && student.courseName !== filters.courseName) return false;
         if (filters.courseDescription && student.courseDescription !== filters.courseDescription) return false;
         const query = searchQuery.toLowerCase();
-        if (query && !(student.studentName.toLowerCase().includes(query) || student.regnNo.toLowerCase().includes(query))) return false;
+        const name = (student.studentName ?? "").toLowerCase();
+        const reg = regnNo.toLowerCase();
+        if (query && !(name.includes(query) || reg.includes(query))) return false;
 
         return true;
       })
       .sort((a, b) => {
-        const nameA = a.studentName.toLowerCase();
-        const nameB = b.studentName.toLowerCase();
+        const nameA = (a.studentName ?? "").toLowerCase();
+        const nameB = (b.studentName ?? "").toLowerCase();
         return sortOrder === "asc" ? nameA.localeCompare(nameB) : nameB.localeCompare(nameA);
       });
   }, [students, filters, searchQuery, sortOrder]);
@@ -240,13 +321,18 @@ export default function Student() {
   const loadStudentsForCourse = async (courseCode) => {
     setIneligibilityLoading(true);
     try {
-      const res = await axios.get(`/api/ineligibility/students/${encodeURIComponent(courseCode)}`);
+      const res = await api.get(`/ineligibility/students/${encodeURIComponent(courseCode)}`);
 
       const existingData = courseIneligibilityMap[courseCode];
       
       setIneligibilityData({
         examDate: existingData?.examDate || "",
-        courseStudents: res.data,
+        courseStudents: (res.data || []).map(s => ({
+          ...s,
+          regnNo: s.regnNo ?? "",
+          studentName: s.studentName ?? "",
+          email: s.email ?? ""
+        })),
         ineligibleSet: existingData?.ineligibleStudents 
           ? new Set(existingData.ineligibleStudents) 
           : new Set()
@@ -295,31 +381,22 @@ export default function Student() {
       });
       
       const ineligibleStudents = ineligibilityData.courseStudents
-        .filter(s => ineligibilityData.ineligibleSet.has(s.regnNo))
+        .filter(s => ineligibilityData.ineligibleSet.has(s.regnNo ?? ""))
         .map(s => ({
-          regnNo: s.regnNo,
-          studentName: s.studentName,
-          email: s.email,
+          regnNo: s.regnNo ?? "",
+          studentName: s.studentName ?? "",
+          email: s.email ?? "",
           reason: "Lack of attendance"
         }));
 
       console.log(`📝 Marking ${ineligibleStudents.length} students as ineligible`);
 
-      const response = await axios.post(
-        "/api/ineligibility/bulk-update",
-        {
-          examType: notificationForm.examType,
-          courseCode: currentCourseForIneligibility,
-          examDate: ineligibilityData.examDate,
-          ineligibleStudents
-        },
-        { 
-          headers: { 
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          } 
-        }
-      );
+      const response = await api.post("/ineligibility/bulk-update", {
+        examType: notificationForm.examType,
+        courseCode: currentCourseForIneligibility,
+        examDate: ineligibilityData.examDate,
+        ineligibleStudents
+      });
 
       console.log('✅ Save successful:', response.data);
 
@@ -453,21 +530,11 @@ export default function Student() {
         coursesCount: coursesWithDates.length
       });
 
-      // ✅ INCLUDE AUTH HEADER
-      const res = await axios.post(
-        "/api/notifications/exam-announcement-v2", 
-        {
-          examType,
-          coursesWithDates,
-          department: notificationForm.department
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          }
-        }
-      );
+      const res = await api.post("/notifications/exam-announcement-v2", {
+        examType,
+        coursesWithDates,
+        department: notificationForm.department
+      });
 
       console.log('✅ Notifications sent successfully:', res.data);
 
@@ -525,19 +592,33 @@ export default function Student() {
     if (!notificationForm.department) return courses;
     
     return courses.filter(course => {
-      const desc = course.courseDescription.toLowerCase();
-      const dept = notificationForm.department.toLowerCase();
+      const desc = (course.courseDescription ?? "").toLowerCase();
+      const dept = (notificationForm.department ?? "").toLowerCase();
       return desc.includes(dept);
     });
   }, [courses, notificationForm.department]);
+
+  // Count students per course (by course description/code)
+  const studentsPerCourse = useMemo(() => {
+    const map = {};
+    students.forEach((s) => {
+      const key = (s.courseDescription ?? s.course_description ?? s.courseCode ?? "").trim();
+      const name = (s.courseName ?? s.course_name ?? "").trim();
+      if (!key) return;
+      if (!map[key]) map[key] = { courseCode: key, courseName: name, count: 0 };
+      map[key].count += 1;
+      if (name && !map[key].courseName) map[key].courseName = name;
+    });
+    return Object.values(map).sort((a, b) => b.count - a.count);
+  }, [students]);
 
   const filteredIneligibilityStudents = useMemo(() => {
     if (!ineligibilitySearch) return ineligibilityData.courseStudents;
     
     const query = ineligibilitySearch.toLowerCase();
     return ineligibilityData.courseStudents.filter(s =>
-      s.regnNo.toLowerCase().includes(query) ||
-      s.studentName.toLowerCase().includes(query)
+      (s.regnNo ?? "").toLowerCase().includes(query) ||
+      (s.studentName ?? "").toLowerCase().includes(query)
     );
   }, [ineligibilityData.courseStudents, ineligibilitySearch]);
 
@@ -554,177 +635,265 @@ export default function Student() {
   const today = new Date().toISOString().split("T")[0];
 
   return (
-    <div className="min-h-screen bg-gray-50 px-6 py-8 font-sans">
-      <div className="flex items-center mb-6">
-        <button
-          className="mr-4 text-2xl text-gray-500 hover:text-gray-700 transition-colors"
-          onClick={() => window.history.back()}
-        >
-          &#8592;
-        </button>
-        <h1 className="text-3xl font-bold text-gray-800">Student Management</h1>
-      </div>
-
-      {/* Stats Card */}
-      <div className="mb-8">
-        <div className="w-64 rounded-xl text-white p-6 shadow-lg" style={{ background: "#034078" }}>
-          <p className="text-sm uppercase tracking-wider opacity-80 font-semibold">Total Students</p>
-          <p className="text-4xl font-bold mt-1">{totalStudents}</p>
+    <div className="min-h-screen bg-gray-50 text-gray-800">
+      <div className="w-full py-4 sm:py-5 md:py-6 space-y-4 sm:space-y-5 md:space-y-6">
+        {/* PAGE TITLE — plain text, no box (match Allotment) */}
+        <div>
+          <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-gray-900">
+            Student Management
+          </h1>
+          <p className="mt-1 text-sm font-medium text-gray-600">
+            Import, view, and manage students. Send exam notifications by course.
+          </p>
         </div>
-      </div>
 
-      {/* TABS */}
-      <div className="flex gap-8 border-b mb-8">
-        {availableTabs.map((tab) => (
-          <button
-            key={tab}
-            onClick={() => {
-              setActiveTab(tab);
-              setMessage("");
-              setNotificationStatus({ loading: false, message: "", error: false, details: null });
-            }}
-            className={`pb-3 capitalize transition-all ${
-              activeTab === tab
-                ? "border-b-4 border-blue-600 text-blue-600 font-bold"
-                : "text-gray-500 hover:text-gray-700"
+        {/* Message / Alert */}
+        {message && (
+          <div
+            className={`px-3 sm:px-4 py-3 rounded-xl sm:rounded-2xl text-sm font-medium border shadow-sm ${
+              message.startsWith("✅") || message.startsWith("🎉")
+                ? "bg-green-50 text-green-800 border-green-200"
+                : message.startsWith("⚠️") || message.startsWith("ℹ️")
+                ? "bg-amber-50 text-amber-800 border-amber-200"
+                : "bg-red-50 text-red-700 border-red-200"
             }`}
           >
-            {tab === "import" ? "Import Students" : tab === "all" ? "All Students" : "Notifications"}
-          </button>
-        ))}
-      </div>
+            {message}
+          </div>
+        )}
 
-      {/* Tab Content: Import */}
-      {activeTab === "import" && (userRole === 'admin' || userRole === 'faculty_incharge') && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 animate-fadeIn">
-          <div className="max-w-md bg-white p-8 rounded-xl shadow-md border border-gray-100">
-            <h2 className="text-xl font-semibold mb-6 text-gray-700">Excel Import</h2>
-            <label className="block text-sm font-medium text-gray-700 mb-4">Choose .xlsx File</label>
-            <input
-              id="file-input"
-              type="file"
-              accept=".xlsx"
-              onChange={handleFileChange}
-              className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"
-            />
+        {/* Stats: Total + Per-course count — white card like Allotment */}
+        <section className="bg-white border border-gray-100 rounded-xl sm:rounded-2xl shadow-sm overflow-hidden">
+          <div className="px-4 sm:px-5 md:px-6 py-4 sm:py-5 flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-6">
+            <div className="flex items-center gap-4">
+              <div className="rounded-xl bg-blue-600 text-white px-5 py-4 shrink-0">
+                <p className="text-xs font-semibold text-blue-100 uppercase tracking-wider">Total Students</p>
+                <p className="text-2xl sm:text-3xl font-bold mt-0.5">{totalStudents}</p>
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-gray-800 mb-2">Students per course</p>
+                <div className="flex flex-wrap gap-2">
+                  {studentsPerCourse.length === 0 ? (
+                    <span className="text-sm font-medium text-gray-500">No course data yet.</span>
+                  ) : (
+                    studentsPerCourse.map(({ courseCode, courseName, count }) => (
+                      <div
+                        key={courseCode}
+                        className="inline-flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5"
+                      >
+                        <span className="text-sm font-semibold text-gray-900">{courseCode}</span>
+                        {courseName && courseName !== courseCode && (
+                          <span className="text-gray-500 text-xs truncate max-w-[100px]" title={courseName}>
+                            ({courseName})
+                          </span>
+                        )}
+                        <span className="text-blue-600 font-bold">{count}</span>
+                        <span className="text-xs font-medium text-gray-500">students</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* TABS — match Allotment style */}
+        <div className="flex gap-6 sm:gap-8 border-b border-gray-200">
+          {availableTabs.map((tab) => (
             <button
-              onClick={handleFileUpload}
-              disabled={loading || !selectedFile}
-              className={`mt-6 w-full py-3 rounded-lg font-semibold transition-all ${
-                loading || !selectedFile
-                  ? "bg-gray-400 cursor-not-allowed text-gray-100"
-                  : "bg-blue-600 hover:bg-blue-700 text-white shadow-md active:scale-95"
+              key={tab}
+              onClick={() => {
+                setActiveTab(tab);
+                setMessage("");
+                setNotificationStatus({ loading: false, message: "", error: false, details: null });
+              }}
+              className={`pb-3 text-sm font-semibold capitalize transition-all border-b-2 -mb-px ${
+                activeTab === tab
+                  ? "border-blue-600 text-blue-600"
+                  : "border-transparent text-gray-500 hover:text-gray-700"
               }`}
             >
-              {loading ? "Importing..." : "Import Data"}
+              {tab === "import" ? "Import Students" : tab === "all" ? "All Students" : "Notifications"}
             </button>
+          ))}
+        </div>
 
-            <button
-              onClick={handleUndo}
-              className="w-full mt-4 py-2 text-sm text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition-colors font-medium"
-            >
-              Undo Last Student Import
-            </button>
-          </div>
+      {/* Tab Content: Import — card style like Allotment */}
+      {activeTab === "import" && (userRole === 'admin' || userRole === 'faculty_incharge') && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+          <section className="bg-white border border-gray-100 rounded-xl sm:rounded-2xl shadow-sm overflow-hidden">
+            <div className="px-4 sm:px-5 md:px-6 py-3 border-b border-gray-100">
+              <h2 className="font-bold text-base sm:text-lg text-gray-900">Excel Import</h2>
+            </div>
+            <div className="p-4 sm:p-5 md:px-6 space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-gray-700 mb-1.5 block">Choose .xlsx File</label>
+                <input
+                  id="file-input"
+                  type="file"
+                  accept=".xlsx"
+                  onChange={handleFileChange}
+                  className="block w-full text-sm text-gray-600 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer border border-gray-200 rounded-lg"
+                />
+              </div>
+              <button
+                onClick={handleFileUpload}
+                disabled={loading || !selectedFile}
+                className={`w-full h-10 px-4 rounded-xl text-sm font-semibold transition-all ${
+                  loading || !selectedFile
+                    ? "bg-gray-300 cursor-not-allowed text-gray-500"
+                    : "bg-blue-600 hover:bg-blue-700 text-white shadow-sm active:scale-[0.99]"
+                }`}
+              >
+                {loading ? "Importing..." : "Import Data"}
+              </button>
+              <button
+                onClick={handleUndo}
+                className="w-full py-2.5 text-sm font-medium text-red-600 border border-red-200 rounded-xl hover:bg-red-50 transition-colors"
+              >
+                Undo Last Student Import
+              </button>
+            </div>
+          </section>
 
           {skippedRecords.length > 0 && (
-            <div className="bg-yellow-50 border border-yellow-200 p-6 rounded-xl shadow-sm">
-              <h3 className="font-bold text-yellow-800 mb-3">⚠️ Skipped Records</h3>
-              <div className="max-h-60 overflow-y-auto space-y-2">
+            <section className="bg-amber-50 border border-amber-200 rounded-xl sm:rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-4 sm:px-5 py-3 border-b border-amber-200">
+                <h3 className="font-bold text-gray-900">⚠️ Skipped Records</h3>
+              </div>
+              <div className="p-4 max-h-60 overflow-y-auto space-y-2">
                 {skippedRecords.map((rec, idx) => (
-                  <div key={idx} className="text-xs text-yellow-700 bg-white/50 p-2 rounded">
+                  <div key={idx} className="text-xs font-medium text-amber-800 bg-white/60 p-2 rounded-lg">
                     {rec}
                   </div>
                 ))}
               </div>
-            </div>
+            </section>
           )}
         </div>
       )}
 
-      {/* Tab Content: All Students */}
+      {/* Tab Content: All Students — card + table like Allotment */}
       {activeTab === "all" && (
-        <div className="animate-fadeIn">
-          <div className="flex flex-col lg:flex-row justify-between mb-6 gap-4">
-            <div className="flex gap-2">
+        <section className="bg-white border border-gray-100 rounded-xl sm:rounded-2xl shadow-sm overflow-hidden">
+          <div className="px-4 sm:px-5 md:px-6 py-3 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <h2 className="font-bold text-base sm:text-lg text-gray-900">All Students</h2>
+            <div className="flex flex-wrap items-center gap-2">
               <input
-                placeholder="🔍 Search name or reg. no..."
+                placeholder="Search name or reg. no..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="border border-gray-300 p-3 rounded-lg w-full md:w-80 shadow-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                className="h-9 px-3 rounded-lg border border-gray-200 w-full sm:w-56 text-sm font-medium text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
               />
               <button
                 onClick={() => setShowFilters(!showFilters)}
-                className={`px-4 py-2 rounded-lg font-medium border transition-all ${
-                  showFilters ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                className={`h-9 px-4 rounded-lg text-sm font-semibold border transition-all ${
+                  showFilters ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-700 border-gray-200 hover:bg-gray-50"
                 }`}
               >
                 Filters {showFilters ? "▲" : "▼"}
               </button>
+              <button
+                onClick={() => setSortOrder(sortOrder === "asc" ? "desc" : "asc")}
+                className="h-9 px-4 rounded-lg text-sm font-semibold text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 transition-all"
+              >
+                Sort: {sortOrder === "asc" ? "A-Z ↑" : "Z-A ↓"}
+              </button>
+              <div className="flex flex-wrap items-center gap-2 border-l border-gray-200 pl-2">
+                <select
+                  value={deleteByCourseCode}
+                  onChange={(e) => setDeleteByCourseCode(e.target.value)}
+                  className="h-9 px-3 rounded-lg border border-gray-200 text-sm font-medium text-gray-800 bg-white focus:ring-2 focus:ring-blue-500 outline-none min-w-[100px]"
+                >
+                  <option value="">Course (delete)</option>
+                  {uniqueCourseDescriptions.map((d) => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={handleDeleteByCourseCode}
+                  disabled={deleteLoading || !deleteByCourseCode.trim()}
+                  className="h-9 px-3 rounded-lg text-sm font-semibold text-red-700 bg-red-50 border border-red-200 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                >
+                  {deleteLoading ? "..." : "Delete by course"}
+                </button>
+                <button
+                  onClick={handleDeleteAll}
+                  disabled={deleteLoading}
+                  className="h-9 px-3 rounded-lg text-sm font-semibold text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                >
+                  {deleteLoading ? "..." : "Delete all"}
+                </button>
+              </div>
             </div>
-            <button
-              onClick={() => setSortOrder(sortOrder === "asc" ? "desc" : "asc")}
-              className="bg-white border border-gray-300 px-6 py-2 rounded-lg font-medium hover:bg-gray-50 shadow-sm transition-all"
-            >
-              Sort: {sortOrder === "asc" ? "A-Z ↑" : "Z-A ↓"}
-            </button>
           </div>
 
           {showFilters && (
-            <div className="bg-white p-6 rounded-xl border shadow-sm mb-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 animate-fadeIn">
-              <select name="year" value={filters.year} onChange={handleFilterChange} className="p-2 border rounded-lg outline-none focus:ring-2 focus:ring-blue-500">
-                <option value="">All Years</option>
-                <option value="3">Third Year (23...)</option>
-                <option value="2">Second Year (24...)</option>
-              </select>
-
-              <select name="department" value={filters.department} onChange={handleFilterChange} className="p-2 border rounded-lg outline-none focus:ring-2 focus:ring-blue-500">
-                <option value="">All Departments</option>
-                <option value="IT">IT (BIT)</option>
-                <option value="CS">CSE (BCS)</option>
-                <option value="AIDS">AIDS (BAD)</option>
-              </select>
-
-              <select name="courseName" value={filters.courseName} onChange={handleFilterChange} className="p-2 border rounded-lg outline-none focus:ring-2 focus:ring-blue-500">
-                <option value="">All Courses</option>
-                {uniqueCourseNames.map((n) => <option key={n} value={n}>{n}</option>)}
-              </select>
-
-              <div className="flex gap-2">
-                <select name="courseDescription" value={filters.courseDescription} onChange={handleFilterChange} className="flex-1 p-2 border rounded-lg outline-none focus:ring-2 focus:ring-blue-500">
-                  <option value="">All Descriptions</option>
-                  {uniqueCourseDescriptions.map((d) => <option key={d} value={d}>{d}</option>)}
+            <div className="px-4 sm:px-5 md:px-6 py-4 bg-gray-50/80 border-b border-gray-100 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+              <div>
+                <label className="text-xs font-semibold text-gray-700 mb-1 block">Year</label>
+                <select name="year" value={filters.year} onChange={handleFilterChange} className="w-full h-9 px-3 rounded-lg border border-gray-200 text-sm font-medium text-gray-800 focus:ring-2 focus:ring-blue-500 outline-none bg-white">
+                  <option value="">All Years</option>
+                  {uniqueYears.map((y) => (
+                    <option key={y} value={y}>{y}-</option>
+                  ))}
                 </select>
-                <button onClick={clearFilters} className="bg-red-50 text-red-600 px-3 py-1 rounded-lg hover:bg-red-100 font-semibold transition-colors">
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-gray-700 mb-1 block">Department</label>
+                <select name="department" value={filters.department} onChange={handleFilterChange} className="w-full h-9 px-3 rounded-lg border border-gray-200 text-sm font-medium text-gray-800 focus:ring-2 focus:ring-blue-500 outline-none bg-white">
+                  <option value="">All Departments</option>
+                  {uniqueDepartments.map((d) => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-gray-700 mb-1 block">Course</label>
+                <select name="courseName" value={filters.courseName} onChange={handleFilterChange} className="w-full h-9 px-3 rounded-lg border border-gray-200 text-sm font-medium text-gray-800 focus:ring-2 focus:ring-blue-500 outline-none bg-white">
+                  <option value="">All Courses</option>
+                  {uniqueCourseNames.map((n) => <option key={n} value={n}>{n}</option>)}
+                </select>
+              </div>
+              <div className="flex gap-2 items-end">
+                <div className="flex-1">
+                  <label className="text-xs font-semibold text-gray-700 mb-1 block">Description</label>
+                  <select name="courseDescription" value={filters.courseDescription} onChange={handleFilterChange} className="w-full h-9 px-3 rounded-lg border border-gray-200 text-sm font-medium text-gray-800 focus:ring-2 focus:ring-blue-500 outline-none bg-white">
+                    <option value="">All Descriptions</option>
+                    {uniqueCourseDescriptions.map((d) => <option key={d} value={d}>{d}</option>)}
+                  </select>
+                </div>
+                <button onClick={clearFilters} className="h-9 px-3 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 font-semibold text-sm transition-colors">
                   Reset
                 </button>
               </div>
             </div>
           )}
 
-          <div className="overflow-x-auto bg-white rounded-xl shadow-lg border border-gray-200">
-            <table className="w-full text-left">
+            <div className="overflow-x-auto">
+              <table className="min-w-[900px] md:min-w-full text-left">
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
-                  <th className="p-4 font-bold text-gray-700">Reg. No.</th>
-                  <th className="p-4 font-bold text-gray-700">Student Name</th>
-                  <th className="p-4 font-bold text-gray-700">Course</th>
-                  <th className="p-4 font-bold text-gray-700">Description</th>
-                  <th className="p-4 font-bold text-gray-700 text-center">Action</th>
+                  <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">Reg. No.</th>
+                  <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">Student Name</th>
+                  <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">Course</th>
+                  <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">Description</th>
+                  <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {filteredStudents.length > 0 ? (
                   filteredStudents.map((s) => (
-                    <tr key={s.id} className="hover:bg-blue-50 transition-colors">
-                      <td className="p-4 font-medium text-blue-700">{s.regnNo}</td>
-                      <td className="p-4 font-semibold text-gray-800">{s.studentName}</td>
-                      <td className="p-4 text-gray-600 text-sm">{s.courseName}</td>
-                      <td className="p-4 text-gray-500 text-xs">{s.courseDescription}</td>
-                      <td className="p-4 text-center">
+                    <tr key={s.id} className="hover:bg-gray-50/50 transition-colors">
+                      <td className="px-4 py-3 text-sm font-semibold text-blue-600">{s.regnNo}</td>
+                      <td className="px-4 py-3 text-sm font-medium text-gray-800">{s.studentName ?? "—"}</td>
+                      <td className="px-4 py-3 text-sm font-medium text-gray-700">{s.courseName}</td>
+                      <td className="px-4 py-3 text-sm font-medium text-gray-600">{s.courseDescription}</td>
+                      <td className="px-4 py-3">
                         <button
                           onClick={() => handleDelete(s.id)}
-                          className="text-red-600 hover:bg-red-50 px-3 py-1 rounded-lg font-semibold transition-colors"
+                          className="text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors"
                         >
                           Delete
                         </button>
@@ -733,7 +902,7 @@ export default function Student() {
                   ))
                 ) : (
                   <tr>
-                    <td colSpan="5" className="p-8 text-center text-gray-500 italic">
+                    <td colSpan="5" className="px-4 py-8 text-center text-sm font-medium text-gray-500">
                       No students found matching the criteria.
                     </td>
                   </tr>
@@ -741,135 +910,131 @@ export default function Student() {
               </tbody>
             </table>
           </div>
-        </div>
+        </section>
       )}
 
-      {/* Tab Content: Notifications */}
+      {/* Tab Content: Notifications — card style like Allotment */}
       {activeTab === "notifications" && (
-        <div className="animate-fadeIn max-w-4xl">
-          <div className="bg-white p-8 rounded-xl shadow-md border border-gray-100">
-            <h2 className="text-2xl font-bold mb-6 text-gray-800">📢 Send Exam Notifications</h2>
-            
+        <section className="bg-white border border-gray-100 rounded-xl sm:rounded-2xl shadow-sm overflow-hidden max-w-4xl">
+          <div className="px-4 sm:px-5 md:px-6 py-3 border-b border-gray-100">
+            <h2 className="font-bold text-base sm:text-lg text-gray-900">Send Exam Notifications</h2>
+          </div>
+          <div className="p-4 sm:p-5 md:px-6 space-y-4 sm:space-y-5">
             {notificationStatus.message && (
-              <div className={`p-4 mb-6 rounded-lg border-l-4 ${
-                notificationStatus.error 
-                  ? "bg-red-50 border-red-500 text-red-700" 
-                  : "bg-green-50 border-green-500 text-green-700"
-              }`}>
+              <div
+                className={`px-3 py-3 rounded-xl text-sm font-medium border shadow-sm ${
+                  notificationStatus.error
+                    ? "bg-red-50 text-red-700 border-red-200"
+                    : "bg-green-50 text-green-800 border-green-200"
+                }`}
+              >
                 <p className="font-semibold">{notificationStatus.message}</p>
                 {notificationStatus.details?.stats && (
-                  <div className="mt-2 text-sm">
-                    <p>Queued: {notificationStatus.details.stats.queued} | Skipped: {notificationStatus.details.stats.skipped}</p>
-                  </div>
+                  <p className="mt-1 text-xs opacity-90">
+                    Queued: {notificationStatus.details.stats.queued} | Skipped: {notificationStatus.details.stats.skipped}
+                  </p>
                 )}
               </div>
             )}
 
-            <div className="space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Exam Type *</label>
-                  <select
-                    value={notificationForm.examType}
-                    onChange={(e) => setNotificationForm({...notificationForm, examType: e.target.value})}
-                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-                  >
-                    <option value="">-- Select Exam Type --</option>
-                    <option value="CAT 1">CAT 1</option>
-                    <option value="CAT 2">CAT 2</option>
-                    <option value="Semester">Semester</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Department (Optional Filter)</label>
-                  <select
-                    value={notificationForm.department}
-                    onChange={(e) => setNotificationForm({...notificationForm, department: e.target.value})}
-                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-                  >
-                    <option value="">All Departments</option>
-                    <option value="CSE">CSE</option>
-                    <option value="IT">IT</option>
-                    <option value="AIDS">AIDS</option>
-                  </select>
-                </div>
-              </div>
-
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  Select Courses * 
-                  <span className="text-xs text-gray-500 ml-2">(Click to set date & mark ineligible students)</span>
-                </label>
-                <div className="border border-gray-300 rounded-lg p-4 max-h-64 overflow-y-auto bg-gray-50">
-                  {!notificationForm.examType ? (
-                    <p className="text-center text-gray-500 py-4">Please select exam type first</p>
-                  ) : filteredCourses.length > 0 ? (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      {filteredCourses.map((course) => {
-                        const isSelected = notificationForm.selectedCourses.includes(course.courseDescription);
-                        const hasDate = courseIneligibilityMap[course.courseDescription]?.examDate;
-                        const ineligibleCount = courseIneligibilityMap[course.courseDescription]?.ineligibleStudents?.length || 0;
-                        
-                        return (
-                          <div
-                            key={course.courseDescription}
-                            onClick={() => handleCourseToggle(course.courseDescription)}
-                            className={`p-3 rounded-lg border-2 cursor-pointer transition-all ${
-                              isSelected
-                                ? "bg-blue-50 border-blue-500"
-                                : "bg-white border-gray-200 hover:bg-gray-50"
-                            }`}
-                          >
-                            <div className="flex items-start gap-3">
-                              <input
-                                type="checkbox"
-                                checked={isSelected}
-                                onChange={() => {}}
-                                className="mt-1 w-4 h-4 text-blue-600 pointer-events-none"
-                              />
-                              <div className="flex-1">
-                                <p className="font-semibold text-sm text-gray-800">{course.courseDescription}</p>
-                                <p className="text-xs text-gray-500">{course.courseName}</p>
-                                {isSelected && hasDate && (
-                                  <div className="mt-1 text-xs">
-                                    <p className="text-blue-600">📅 {hasDate}</p>
-                                    {ineligibleCount > 0 && (
-                                      <p className="text-red-600">⚠️ {ineligibleCount} ineligible</p>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
+                <label className="text-xs font-semibold text-gray-700 mb-1.5 block">Exam Type *</label>
+                <select
+                  value={notificationForm.examType}
+                  onChange={(e) => setNotificationForm({ ...notificationForm, examType: e.target.value })}
+                  className="w-full h-9 px-3 rounded-lg border border-gray-200 text-sm font-medium text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white"
+                >
+                  <option value="">-- Select Exam Type --</option>
+                  <option value="CAT 1">CAT 1</option>
+                  <option value="CAT 2">CAT 2</option>
+                  <option value="Semester">Semester</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-gray-700 mb-1.5 block">Department (Optional)</label>
+                <select
+                  value={notificationForm.department}
+                  onChange={(e) => setNotificationForm({ ...notificationForm, department: e.target.value })}
+                  className="w-full h-9 px-3 rounded-lg border border-gray-200 text-sm font-medium text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white"
+                >
+                  <option value="">All Departments</option>
+                  <option value="CSE">CSE</option>
+                  <option value="IT">IT</option>
+                  <option value="AIDS">AIDS</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-gray-700 mb-1.5 block">
+                Select Courses * <span className="text-gray-500 font-normal">(Click to set date & mark ineligible)</span>
+              </label>
+              <div className="border border-gray-200 rounded-xl p-4 max-h-64 overflow-y-auto bg-gray-50/50">
+                {!notificationForm.examType ? (
+                  <p className="text-center text-sm font-medium text-gray-500 py-4">Please select exam type first</p>
+                ) : filteredCourses.length > 0 ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {filteredCourses.map((course) => {
+                      const isSelected = notificationForm.selectedCourses.includes(course.courseDescription);
+                      const hasDate = courseIneligibilityMap[course.courseDescription]?.examDate;
+                      const ineligibleCount = courseIneligibilityMap[course.courseDescription]?.ineligibleStudents?.length || 0;
+                      return (
+                        <div
+                          key={course.courseDescription}
+                          onClick={() => handleCourseToggle(course.courseDescription)}
+                          className={`p-3 rounded-xl border-2 cursor-pointer transition-all ${
+                            isSelected ? "bg-blue-50 border-blue-500" : "bg-white border-gray-200 hover:bg-gray-50"
+                          }`}
+                        >
+                          <div className="flex items-start gap-3">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => {}}
+                              className="mt-1 w-4 h-4 text-blue-600 pointer-events-none rounded"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-semibold text-gray-900">{course.courseDescription}</p>
+                              <p className="text-xs font-medium text-gray-500">{course.courseName}</p>
+                              {isSelected && hasDate && (
+                                <div className="mt-1 text-xs font-medium">
+                                  <p className="text-blue-600">📅 {hasDate}</p>
+                                  {ineligibleCount > 0 && (
+                                    <p className="text-red-600">⚠️ {ineligibleCount} ineligible</p>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           </div>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <p className="text-center text-gray-500 py-4">No courses available</p>
-                  )}
-                </div>
-                {notificationForm.selectedCourses.length > 0 && (
-                  <p className="text-sm text-blue-600 mt-2">
-                    {notificationForm.selectedCourses.length} course(s) configured
-                  </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-center text-sm font-medium text-gray-500 py-4">No courses available</p>
                 )}
               </div>
-
-              <button
-                onClick={handleSendNotifications}
-                disabled={notificationStatus.loading || !notificationForm.examType || notificationForm.selectedCourses.length === 0}
-                className={`w-full py-4 rounded-lg font-bold text-white transition-all shadow-lg ${
-                  notificationStatus.loading || !notificationForm.examType || notificationForm.selectedCourses.length === 0
-                    ? "bg-gray-400 cursor-not-allowed"
-                    : "bg-blue-600 hover:bg-blue-700 active:scale-95"
-                }`}
-              >
-                {notificationStatus.loading ? "📤 Sending Notifications..." : "📨 Send Notifications"}
-              </button>
+              {notificationForm.selectedCourses.length > 0 && (
+                <p className="text-xs font-semibold text-blue-600 mt-2">
+                  {notificationForm.selectedCourses.length} course(s) configured
+                </p>
+              )}
             </div>
+
+            <button
+              onClick={handleSendNotifications}
+              disabled={notificationStatus.loading || !notificationForm.examType || notificationForm.selectedCourses.length === 0}
+              className={`w-full h-10 rounded-xl text-sm font-semibold transition-all ${
+                notificationStatus.loading || !notificationForm.examType || notificationForm.selectedCourses.length === 0
+                  ? "bg-gray-300 cursor-not-allowed text-gray-500"
+                  : "bg-blue-600 hover:bg-blue-700 text-white shadow-sm active:scale-[0.99]"
+              }`}
+            >
+              {notificationStatus.loading ? "Sending Notifications..." : "Send Notifications"}
+            </button>
           </div>
-        </div>
+        </section>
       )}
 
       {/* ✅ INELIGIBILITY MODAL */}
@@ -947,8 +1112,8 @@ export default function Student() {
                                   isIneligible ? "bg-red-50" : "bg-white"
                                 }`}
                               >
-                                <td className="p-3 font-medium text-blue-700">{student.regnNo}</td>
-                                <td className="p-3 font-semibold text-gray-800">{student.studentName}</td>
+                                <td className="p-3 font-medium text-blue-700">{student.regnNo ?? "—"}</td>
+                                <td className="p-3 font-semibold text-gray-800">{student.studentName ?? "—"}</td>
                                 <td className="p-3 text-gray-600 text-sm">{student.email || "N/A"}</td>
                                 <td className="p-3 text-center">
                                   <label className="relative inline-flex items-center cursor-pointer">
@@ -998,14 +1163,7 @@ export default function Student() {
           </div>
         </div>
       )}
-
-      {message && (
-        <div className={`fixed bottom-10 right-10 p-4 rounded-xl shadow-2xl border text-white transition-all transform animate-bounce z-50 ${
-          message.includes("Success") || message.includes("✅") ? "bg-green-600" : "bg-blue-700"
-        }`}>
-          {message}
-        </div>
-      )}
+    </div>
     </div>
   );
 }     

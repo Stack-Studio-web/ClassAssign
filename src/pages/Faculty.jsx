@@ -1,11 +1,29 @@
-//Faculty.jsx
+// Faculty.jsx - UI aligned with Venue page + mobile view
 import React, { useState, useEffect, useMemo } from "react";
 import axios from "axios";
+import { UserGroupIcon } from "@heroicons/react/24/outline";
+
+const api = axios.create({ baseURL: "/api" });
+api.interceptors.request.use((config) => {
+  const token = sessionStorage.getItem("authToken");
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+api.interceptors.response.use(
+  (r) => r,
+  (e) => {
+    if (e.response?.status === 401) {
+      sessionStorage.clear();
+      window.location.href = "/";
+    }
+    return Promise.reject(e);
+  }
+);
 
 export default function Faculty() {
   const [totalFaculty, setTotalFaculty] = useState(0);
   const [faculty, setFaculty] = useState([]);
-  const [activeTab, setActiveTab] = useState("import");
+  const [activeTab, setActiveTab] = useState("add");
 
   // Edit States
   const [editingId, setEditingId] = useState(null);
@@ -32,8 +50,8 @@ export default function Faculty() {
   /* ================= FETCH DATA ================= */
   const fetchFacultyStats = async () => {
     try {
-      const res = await axios.get("/api/faculty/stats");
-      setTotalFaculty(res.data.totalFaculty);
+      const res = await api.get("/faculty/stats");
+      setTotalFaculty(res.data?.totalFaculty ?? res.data?.totalfaculty ?? 0);
     } catch {
       setTotalFaculty(0);
     }
@@ -41,7 +59,7 @@ export default function Faculty() {
 
   const fetchFaculty = async () => {
     try {
-      const res = await axios.get("/api/faculty");
+      const res = await api.get("/faculty");
       setFaculty(res.data);
     } catch {
       setFaculty([]);
@@ -50,7 +68,7 @@ export default function Faculty() {
 
   const fetchLastImport = async () => {
     try {
-      const res = await axios.get("/api/import/last-faculty-import");
+      const res = await api.get("/import/last-faculty-import");
       setSkippedEmails(res.data.skippedEmails || []);
     } catch {
       // silent fail
@@ -66,12 +84,12 @@ export default function Faculty() {
   /* ================= EDIT LOGIC ================= */
   const handleEditClick = (f) => {
     setEditingId(f.id);
-    setEditValue(f.max_classrooms || 0);
+    setEditValue(f.maxClassrooms ?? f.max_classrooms ?? 0);
   };
 
   const handleUpdateMaxClassrooms = async (id) => {
     try {
-      await axios.put(`/api/faculty/${id}/max-classrooms`, {
+      await api.put(`/faculty/${id}/max-classrooms`, {
         max_classrooms: editValue,
       });
       setMessage("✅ Max classrooms updated");
@@ -104,23 +122,28 @@ export default function Faculty() {
     formData.append("file", selectedFile);
 
     try {
-      const res = await axios.post("/api/import/import-faculty", formData, {
+      const res = await api.post("/import/import-faculty", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
-      setInsertedCount(res.data.inserted);
-      setSkippedEmails(res.data.skippedEmails || []);
-      setMessage(`🎉 Added: ${res.data.inserted}, Skipped: ${res.data.skipped || 0}`);
+      const inserted = res.data?.inserted ?? 0;
+      const skipped = res.data?.skipped ?? res.data?.skippedEmails?.length ?? 0;
+      setInsertedCount(inserted);
+      setSkippedEmails(res.data?.skippedEmails || []);
+      setMessage(`🎉 Added: ${inserted}, Skipped: ${skipped}`);
 
       setSelectedFile(null);
       if (document.getElementById("fileInput")) {
         document.getElementById("fileInput").value = "";
       }
 
-      fetchFaculty();
-      fetchFacultyStats();
+      await fetchFaculty();
+      await fetchFacultyStats();
     } catch (err) {
       setMessage("❌ Import failed. Check file format.");
+      // Refresh list anyway - data may have been partially inserted
+      await fetchFaculty();
+      await fetchFacultyStats();
     } finally {
       setLoading(false);
     }
@@ -130,7 +153,7 @@ export default function Faculty() {
     if (!window.confirm("Undo last faculty import? This will remove the faculty members added in the last session.")) return;
 
     try {
-      const res = await axios.post("/api/import/undo-faculty-import");
+      const res = await api.post("/import/undo-faculty-import");
       setMessage(`⏪ ${res.data.message}`);
       setInsertedCount(0);
       setSkippedEmails([]);
@@ -154,7 +177,7 @@ export default function Faculty() {
 
     setLoading(true);
     try {
-      await axios.post("/api/faculty", manualData);
+      await api.post("/faculty", manualData);
       setMessage("✅ Faculty added successfully");
       setManualData({ name: "", department: "", email: "" });
       fetchFaculty();
@@ -170,7 +193,7 @@ export default function Faculty() {
   const handleDelete = async (id) => {
     if (!window.confirm("Delete this faculty?")) return;
     try {
-      await axios.delete(`/api/faculty/${id}`);
+      await api.delete(`/faculty/${id}`);
       fetchFaculty();
       fetchFacultyStats();
     } catch {
@@ -194,253 +217,226 @@ export default function Faculty() {
   }, [faculty, searchQuery, sortOrder]);
 
   return (
-    <div className="min-h-screen bg-gray-50 px-6 py-8 font-sans">
-      <h1 className="text-3xl font-bold mb-6 text-gray-800">Faculty Management</h1>
-
-      {/* Stats Card */}
-      <div className="mb-8">
-        <div className="w-64 rounded-xl text-white p-6 shadow-lg" style={{ background: "#034078" }}>
-          <p className="text-sm uppercase tracking-wider opacity-80 font-semibold">Total Faculty</p>
-          <p className="text-4xl font-bold mt-1">{totalFaculty}</p>
-        </div>
+    <div className="min-h-screen bg-gray-50 font-[Inter,sans-serif]">
+      {/* Header — Venue style */}
+      <div className="px-4 md:px-8 py-4 md:py-6">
+        <h1 className="text-2xl md:text-3xl font-bold text-gray-800">Faculty Management</h1>
+        <p className="text-sm text-gray-500 mt-0.5">Add faculty manually or bulk import from Excel. View and edit allocations.</p>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-8 border-b mb-8">
-        {["import", "manual", "all"].map((tab) => (
-          <button
-            key={tab}
-            onClick={() => {
-              setActiveTab(tab);
-              setMessage("");
-            }}
-            className={`pb-3 capitalize transition-all ${
-              activeTab === tab
-                ? "border-b-4 border-blue-600 text-blue-600 font-bold"
-                : "text-gray-500 hover:text-gray-700"
+      {/* Message — inline alert */}
+      {message && (
+        <div className="px-4 md:px-8 mb-4">
+          <div
+            className={`px-4 py-3 rounded-xl text-sm font-medium border shadow-sm ${
+              message.includes("✅") || message.includes("🎉") ? "bg-green-50 text-green-800 border-green-200" :
+              message.includes("⚠️") || message.includes("⏪") ? "bg-amber-50 text-amber-800 border-amber-200" :
+              "bg-red-50 text-red-700 border-red-200"
             }`}
           >
-            {tab === "manual" ? "Manual Entry" : `${tab} Faculty`}
-          </button>
-        ))}
+            {message}
+          </div>
+        </div>
+      )}
+
+      {/* Stats — Venue style cards */}
+      <div className="px-4 md:px-8 mb-6 grid grid-cols-1 sm:grid-cols-2 gap-4 md:gap-6">
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 md:p-6 hover:shadow-md transition-all duration-200">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Total Faculty</p>
+              <p className="text-2xl md:text-3xl font-bold text-gray-800 mt-1">{totalFaculty}</p>
+            </div>
+            <div className="w-12 h-12 rounded-2xl bg-blue-100 flex items-center justify-center shrink-0">
+              <UserGroupIcon className="h-6 w-6 text-blue-600" />
+            </div>
+          </div>
+        </div>
       </div>
 
-      {/* Tab Content: Import */}
-      {activeTab === "import" && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 animate-fadeIn">
-          <div className="max-w-md bg-white p-8 rounded-xl shadow-md border border-gray-100">
-            <label className="block text-sm font-medium text-gray-700 mb-4">Upload Excel File</label>
-            <input
-              id="fileInput"
-              type="file"
-              accept=".xlsx, .xls"
-              onChange={handleFileChange}
-              className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"
-            />
+      {/* Tabs — Venue style, scroll on mobile */}
+      <div className="px-4 md:px-8 border-b border-gray-200 bg-white rounded-t-2xl">
+        <div className="flex overflow-x-auto scrollbar-hide -mb-px">
+          {["add", "all"].map((tab) => (
             <button
-              onClick={handleImport}
-              disabled={loading || !selectedFile}
-              className={`mt-6 w-full py-3 rounded-lg font-semibold transition-all ${
-                loading || !selectedFile
-                  ? "bg-gray-300 cursor-not-allowed text-gray-500"
-                  : "bg-blue-600 hover:bg-blue-700 text-white shadow-md active:scale-95"
+              key={tab}
+              type="button"
+              onClick={() => { setActiveTab(tab); setMessage(""); }}
+              className={`py-4 px-4 md:px-6 text-sm font-medium whitespace-nowrap border-b-2 transition-all duration-200 ${
+                activeTab === tab ? "border-blue-600 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"
               }`}
             >
-              {loading ? "Processing..." : "Import Faculty"}
+              {tab === "add" ? "Add Faculty" : "All Faculty"}
             </button>
+          ))}
+        </div>
+      </div>
 
-            <button
-              onClick={handleUndo}
-              className="w-full mt-4 py-2 text-sm text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition-colors"
-            >
-              Undo Last Import
-            </button>
-          </div>
-
-          {/* Skipped Emails Section */}
-          {skippedEmails.length > 0 && (
-            <div className="bg-yellow-50 border border-yellow-200 p-6 rounded-xl shadow-sm">
-              <h3 className="font-bold text-yellow-800 mb-3 flex items-center gap-2">
-                ⚠️ Skipped Emails (Duplicate or Invalid)
-              </h3>
-              <div className="max-h-48 overflow-y-auto">
-                <ul className="space-y-1">
-                  {skippedEmails.map((email, index) => (
-                    <li key={index} className="text-sm text-yellow-700 bg-white/50 px-2 py-1 rounded">
-                      {email}
-                    </li>
-                  ))}
-                </ul>
+      {/* Tab: Add Faculty — Manual + Bulk on one page */}
+      {activeTab === "add" && (
+        <div className="px-4 md:px-8 py-6 md:py-8">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 md:gap-8">
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 md:p-6 lg:p-8">
+              <h2 className="text-lg font-semibold text-gray-800 mb-4">Manual Entry</h2>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-600 mb-2">Faculty Full Name *</label>
+                  <input
+                    value={manualData.name}
+                    onChange={(e) => setManualData({ ...manualData, name: e.target.value })}
+                    placeholder="e.g. Dr. John Doe"
+                    className="w-full h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-600 mb-2">Department</label>
+                  <input
+                    value={manualData.department}
+                    onChange={(e) => setManualData({ ...manualData, department: e.target.value })}
+                    placeholder="e.g. CSE, IT"
+                    className="w-full h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-600 mb-2">Email (@kct.ac.in) *</label>
+                  <input
+                    type="email"
+                    value={manualData.email}
+                    onChange={(e) => setManualData({ ...manualData, email: e.target.value })}
+                    placeholder="name@kct.ac.in"
+                    className="w-full h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                  />
+                </div>
+                <button
+                  onClick={handleManualSubmit}
+                  disabled={loading}
+                  className="w-full h-12 rounded-xl bg-green-600 hover:bg-green-700 text-white font-semibold shadow-sm hover:shadow-md transition-all duration-200 disabled:bg-gray-300 disabled:cursor-not-allowed"
+                >
+                  Add Faculty Member
+                </button>
               </div>
-              <p className="mt-4 text-xs text-yellow-600 italic">
-                These emails were already present in the database and were not re-added.
-              </p>
             </div>
-          )}
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 md:p-6 lg:p-8">
+              <h2 className="text-lg font-semibold text-gray-800 mb-4">Bulk Import</h2>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-600 mb-2">Upload Excel (.xlsx / .xls)</label>
+                  <input
+                    id="fileInput"
+                    type="file"
+                    accept=".xlsx,.xls"
+                    onChange={handleFileChange}
+                    className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer border border-gray-200 rounded-xl"
+                  />
+                </div>
+                <button
+                  onClick={handleImport}
+                  disabled={loading || !selectedFile}
+                  className={`w-full h-12 rounded-xl font-semibold transition-all duration-200 ${
+                    loading || !selectedFile
+                      ? "bg-gray-300 cursor-not-allowed text-gray-500"
+                      : "bg-blue-600 hover:bg-blue-700 text-white shadow-sm hover:shadow-md"
+                  }`}
+                >
+                  {loading ? "Processing..." : "Import Faculty"}
+                </button>
+                <button
+                  onClick={handleUndo}
+                  className="w-full h-11 rounded-xl border border-red-200 text-red-600 hover:bg-red-50 font-medium text-sm transition-all duration-200"
+                >
+                  Undo Last Import
+                </button>
+                {skippedEmails.length > 0 && (
+                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl">
+                    <h4 className="font-semibold text-amber-800 mb-2 text-sm">Skipped (duplicate/invalid)</h4>
+                    <div className="max-h-32 overflow-y-auto space-y-1">
+                      {skippedEmails.map((email, index) => (
+                        <div key={index} className="text-xs text-amber-700 bg-white/60 px-2 py-1 rounded">{email}</div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Tab Content: Manual Entry */}
-      {activeTab === "manual" && (
-        <div className="max-w-md bg-white p-8 rounded-xl shadow-md border border-gray-100 space-y-4">
-          <input
-            name="name"
-            value={manualData.name}
-            onChange={(e) => setManualData({ ...manualData, name: e.target.value })}
-            placeholder="Faculty Full Name *"
-            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-          />
-          <input
-            name="department"
-            value={manualData.department}
-            onChange={(e) => setManualData({ ...manualData, department: e.target.value })}
-            placeholder="Department (e.g. CSE)"
-            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-          />
-          <input
-            name="email"
-            value={manualData.email}
-            onChange={(e) => setManualData({ ...manualData, email: e.target.value })}
-            placeholder="Email ID (@kct.ac.in) *"
-            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-          />
-          <button
-            onClick={handleManualSubmit}
-            disabled={loading}
-            className="w-full bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg font-bold shadow-md transition-all active:scale-95 disabled:bg-gray-400"
-          >
-            Add Faculty Member
-          </button>
-        </div>
-      )}
-
-      {/* Tab Content: All Faculty */}
+      {/* Tab: All Faculty */}
       {activeTab === "all" && (
-        <div className="animate-fadeIn">
-          <div className="flex flex-col md:flex-row justify-between mb-6 gap-4">
-            <input
-              placeholder="🔍 Search by name or email..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="border border-gray-300 p-3 rounded-lg w-full md:w-80 shadow-sm focus:ring-2 focus:ring-blue-500 outline-none"
-            />
-            <button
-              onClick={() => setSortOrder(sortOrder === "asc" ? "desc" : "asc")}
-              className="bg-white border border-gray-300 px-6 py-2 rounded-lg font-medium hover:bg-gray-50 shadow-sm transition-all"
-            >
-              Sort: {sortOrder === "asc" ? "A-Z ↑" : "Z-A ↓"}
-            </button>
+        <div className="px-4 md:px-8 py-6 md:py-8">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+            <h2 className="text-lg font-semibold text-gray-800">All Faculty</h2>
+            <div className="flex flex-wrap items-center gap-3">
+              <input
+                placeholder="Search by name or email..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full sm:w-56 md:w-64 h-11 md:h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm"
+              />
+              <button
+                type="button"
+                onClick={() => setSortOrder(sortOrder === "asc" ? "desc" : "asc")}
+                className="h-11 md:h-12 px-4 rounded-xl bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-medium text-sm shadow-sm transition-all duration-200"
+              >
+                Sort: {sortOrder === "asc" ? "A–Z ↑" : "Z–A ↓"}
+              </button>
+            </div>
           </div>
-
-          <div className="overflow-x-auto bg-white rounded-xl shadow-lg border border-gray-200">
-            <table className="w-full text-left">
-              <thead className="bg-gray-50 border-b border-gray-200">
-                <tr>
-                  <th className="p-4 font-bold text-gray-700">Name</th>
-                  <th className="p-4 font-bold text-gray-700">Department</th>
-                  <th className="p-4 font-bold text-gray-700">Email</th>
-                  <th className="p-4 font-bold text-gray-700 text-center">Max</th>
-                  <th className="p-4 font-bold text-gray-700 text-center">Allocated</th>
-                  <th className="p-4 font-bold text-gray-700 text-center">Remaining</th>
-                  <th className="p-4 font-bold text-gray-700 text-center">Actions</th>
-                </tr>
-              </thead>
-
-<tbody className="divide-y divide-gray-100">
-  {filteredFaculty.map((f) => (
-    <tr key={f.id} className="hover:bg-blue-50 transition-colors">
-      <td className="p-4 font-medium">{f.name}</td>
-      <td className="p-4 text-gray-600">{f.department || "-"}</td>
-      <td className="p-4 text-gray-500 italic">{f.email}</td>
-
-      {/* MAX */}
-      <td className="p-4 text-center">
-        <span className="font-bold text-blue-800 bg-blue-100 px-3 py-1 rounded-full text-xs">
-          {f.max_classrooms || 0}
-        </span>
-      </td>
-
-      {/* ALLOCATED */}
-      <td className="p-4 text-center">
-        <span className="font-bold text-orange-700 bg-orange-100 px-3 py-1 rounded-full text-xs">
-          {f.allocation || 0}
-        </span>
-      </td>
-
-      {/* REMAINING */}
-      <td className="p-4 text-center">
-        <span
-          className={`font-bold px-3 py-1 rounded-full text-xs ${
-            f.remaining > 0
-              ? "text-green-700 bg-green-100"
-              : "text-red-700 bg-red-100"
-          }`}
-        >
-          {f.remaining}
-        </span>
-      </td>
-
-      {/* ACTIONS */}
-      <td className="p-4 text-center">
-        {editingId === f.id ? (
-          <div className="flex items-center justify-center gap-2">
-            <input
-              type="number"
-              value={editValue}
-              onChange={(e) => setEditValue(Number(e.target.value))}
-              className="w-16 p-1 border rounded text-center"
-            />
-            <button
-              onClick={() => handleUpdateMaxClassrooms(f.id)}
-              className="bg-green-600 text-white px-3 py-1 rounded text-sm"
-            >
-              Save
-            </button>
-            <button
-              onClick={() => setEditingId(null)}
-              className="bg-gray-400 text-white px-3 py-1 rounded text-sm"
-            >
-              X
-            </button>
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="min-w-[900px] md:min-w-full">
+                <thead>
+                  <tr className="bg-gray-50 border-b border-gray-100">
+                    <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Name</th>
+                    <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Department</th>
+                    <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide hidden sm:table-cell">Email</th>
+                    <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide">Max</th>
+                    <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide">Alloc</th>
+                    <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide">Rem</th>
+                    <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {filteredFaculty.map((f) => (
+                    <tr key={f.id} className="hover:bg-gray-50/50 transition-colors">
+                      <td className="px-4 md:px-6 py-3 md:py-4 font-medium text-gray-800">{f.name}</td>
+                      <td className="px-4 md:px-6 py-3 md:py-4 text-gray-600">{f.department || "—"}</td>
+                      <td className="px-4 md:px-6 py-3 md:py-4 text-gray-500 text-sm hidden sm:table-cell">{f.email}</td>
+                      <td className="px-4 md:px-6 py-3 md:py-4 text-center">
+                        <span className="font-bold text-blue-800 bg-blue-100 px-2 py-1 rounded-lg text-xs">{f.maxClassrooms ?? f.max_classrooms ?? 0}</span>
+                      </td>
+                      <td className="px-4 md:px-6 py-3 md:py-4 text-center">
+                        <span className="font-bold text-orange-700 bg-orange-100 px-2 py-1 rounded-lg text-xs">{f.allocation ?? 0}</span>
+                      </td>
+                      <td className="px-4 md:px-6 py-3 md:py-4 text-center">
+                        <span className={`font-bold px-2 py-1 rounded-lg text-xs ${f.remaining > 0 ? "text-green-700 bg-green-100" : "text-red-700 bg-red-100"}`}>{f.remaining}</span>
+                      </td>
+                      <td className="px-4 md:px-6 py-3 md:py-4">
+                        {editingId === f.id ? (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <input
+                              type="number"
+                              value={editValue}
+                              onChange={(e) => setEditValue(Number(e.target.value))}
+                              className="w-14 h-9 px-2 rounded-lg border border-gray-200 text-center text-sm"
+                            />
+                            <button type="button" onClick={() => handleUpdateMaxClassrooms(f.id)} className="px-3 py-1.5 rounded-xl bg-green-600 text-white text-sm font-medium">Save</button>
+                            <button type="button" onClick={() => setEditingId(null)} className="px-3 py-1.5 rounded-xl bg-gray-400 text-white text-sm font-medium">Cancel</button>
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap gap-2">
+                            <button type="button" onClick={() => handleEditClick(f)} className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium">Edit</button>
+                            <button type="button" onClick={() => handleDelete(f.id)} className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-medium">Delete</button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
-        ) : (
-          <div className="flex items-center justify-center gap-4">
-            <button
-              onClick={() => handleEditClick(f)}
-              className="text-blue-600 hover:underline font-semibold"
-            >
-              Edit
-            </button>
-            <button
-              onClick={() => handleDelete(f.id)}
-              className="text-red-600 hover:underline font-semibold"
-            >
-              Delete
-            </button>
-          </div>
-        )}
-      </td>
-    </tr>
-  ))}
-</tbody>
-
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Message Toast */}
-      {message && (
-        <div
-          className={`fixed bottom-10 right-10 p-4 rounded-lg shadow-2xl border text-white transition-all transform animate-bounce z-50 ${
-            message.includes("✅") || message.includes("🎉")
-              ? "bg-green-600 border-green-400"
-              : message.includes("❌") || message.includes("⚠️")
-              ? "bg-red-600 border-red-400"
-              : "bg-blue-700 border-blue-500"
-          }`}
-        >
-          {message}
         </div>
       )}
     </div>
