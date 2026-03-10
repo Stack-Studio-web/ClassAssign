@@ -1,5 +1,6 @@
 // Class/backend/models/IneligibleStudent.js
 const db = require("../config/db");
+const { andClause, whereClause, insertField } = require("../utils/ownerFilter");
 
 // PostgreSQL returns unquoted column names in lowercase; map to camelCase for API
 function toStudentRow(row) {
@@ -80,7 +81,8 @@ const IneligibleStudent = {
   /* ===============================
       GET INELIGIBLE STUDENTS BY EXAM/COURSE/DATE
   =============================== */
-  getIneligibleStudents: async (examType, courseCode, examDate) => {
+  getIneligibleStudents: async (examType, courseCode, examDate, opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
     const [rows] = await db.query(`
       SELECT
         id,
@@ -93,9 +95,9 @@ const IneligibleStudent = {
         reason,
         created_at AS createdAt
       FROM ineligible_students
-      WHERE exam_type = ? AND course_code = ? AND exam_date = ?
+      WHERE exam_type = ? AND course_code = ? AND exam_date = ?${ownerSql}
       ORDER BY regn_no
-    `, [examType, courseCode, examDate]);
+    `, [examType, courseCode, examDate, ...ownerParams]);
     
     console.log(`📋 Ineligible check for ${courseCode} on ${examDate}: ${rows.length} students`);
     
@@ -105,7 +107,8 @@ const IneligibleStudent = {
   /* ===============================
       GET ALL INELIGIBLE STUDENTS
   =============================== */
-  getAllIneligible: async () => {
+  getAllIneligible: async (opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId, "i.");
     const [rows] = await db.query(`
       SELECT
         i.id,
@@ -120,28 +123,33 @@ const IneligibleStudent = {
         u.username AS markedBy
       FROM ineligible_students i
       LEFT JOIN users u ON i.marked_by = u.id
+      ${ownerSql || "WHERE 1=1"}
       ORDER BY i.exam_date DESC, i.regn_no
-    `);
+    `, ownerParams);
     return (rows || []).map(toIneligibleRow);
   },
 
   /* ===============================
       BULK UPDATE INELIGIBILITY
   =============================== */
-  bulkUpdateIneligibility: async (examType, courseCode, examDate, ineligibleStudents, markedBy) => {
+  bulkUpdateIneligibility: async (examType, courseCode, examDate, ineligibleStudents, markedBy, opts = {}) => {
     const conn = await db.getConnection();
     try {
       await conn.beginTransaction();
 
-      // Remove existing entries for this exam/course/date
+      const ownerId = opts.ownerUserId ?? markedBy;
+      const { sql: ownerDelSql, params: ownerDelParams } = andClause(opts.role, opts.ownerUserId);
+
+      // Remove existing entries for this exam/course/date (scoped by owner)
       await conn.query(
         `DELETE FROM ineligible_students
-         WHERE exam_type = ? AND course_code = ? AND exam_date = ?`,
-        [examType, courseCode, examDate]
+         WHERE exam_type = ? AND course_code = ? AND exam_date = ?${ownerDelSql}`,
+        [examType, courseCode, examDate, ...ownerDelParams]
       );
 
-      // Insert new ineligible students
+      // Insert new ineligible students (with owner_user_id)
       if (ineligibleStudents.length > 0) {
+        const { col, val } = insertField(opts.role, ownerId);
         const values = ineligibleStudents.map(s => [
           s.regnNo,
           s.studentName,
@@ -150,12 +158,13 @@ const IneligibleStudent = {
           examType,
           examDate,
           s.reason || 'Lack of attendance',
-          markedBy
+          markedBy,
+          ...(val != null ? [val] : [])
         ]);
 
         await conn.query(
           `INSERT INTO ineligible_students
-           (regn_no, student_name, email, course_code, exam_type, exam_date, reason, marked_by)
+           (regn_no, student_name, email, course_code, exam_type, exam_date, reason, marked_by${col})
            VALUES ?`,
           [values]
         );
@@ -189,10 +198,11 @@ const IneligibleStudent = {
   /* ===============================
       DELETE BY ID
   =============================== */
-  deleteById: async (id) => {
+  deleteById: async (id, opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
     const [result] = await db.query(
-      "DELETE FROM ineligible_students WHERE id = ?",
-      [id]
+      `DELETE FROM ineligible_students WHERE id = ?${ownerSql}`,
+      [id, ...ownerParams]
     );
     return result.affectedRows > 0;
   }

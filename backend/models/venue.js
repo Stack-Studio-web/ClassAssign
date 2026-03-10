@@ -1,5 +1,6 @@
 // Class/backend/models/venue.js - WITH DELETE BY IDS
 const db = require("../config/db");
+const { andClause, whereClause, insertField } = require("../utils/ownerFilter");
 
 // PostgreSQL returns unquoted column names in lowercase; map to camelCase for API
 function toVenueRow(row) {
@@ -28,7 +29,7 @@ function toSessionRow(row) {
 }
 
 const Venue = {
-  create: async (venue) => {
+  create: async (venue, opts = {}) => {
     const {
       name,
       type,
@@ -39,7 +40,10 @@ const Venue = {
       sessions = [],
     } = venue;
 
+    const { col, val } = insertField(opts.role, opts.ownerUserId);
     const capacity = benchesRow * benchConfig.reduce((sum, seats) => sum + (Number(seats) || 0), 0);
+    const vals = [name, type, capacity, benchesRow, benchesCol, isAvailable];
+    if (val != null) vals.push(val);
 
     const conn = await db.getConnection();
     try {
@@ -47,9 +51,9 @@ const Venue = {
 
       const [venueRes] = await conn.query(
         `INSERT INTO venues
-         (name, type, capacity, benches_row, benches_col, is_available)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [name, type, capacity, benchesRow, benchesCol, isAvailable]
+         (name, type, capacity, benches_row, benches_col, is_available${col})
+         VALUES (?, ?, ?, ?, ?, ?${val != null ? ", ?" : ""})`,
+        vals
       );
 
       const venueId = venueRes.insertId ?? venueRes.insertid;
@@ -86,7 +90,8 @@ const Venue = {
     }
   },
 
-  getAll: async () => {
+  getAll: async (opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId);
     const [rawVenues] = await db.query(`
       SELECT
         id,
@@ -96,8 +101,8 @@ const Venue = {
         benches_row AS benchesRow,
         benches_col AS benchesCol,
         is_available AS isAvailable
-      FROM venues
-    `);
+      FROM venues${ownerSql || " WHERE 1=1"}
+    `, ownerParams);
     const venues = (rawVenues || []).map(toVenueRow);
 
     for (const v of venues) {
@@ -172,8 +177,9 @@ const Venue = {
   },
 
   // ✅ NEW: DELETE BY IDS (For Undo Import)
-  deleteByIds: async (ids) => {
+  deleteByIds: async (ids, opts = {}) => {
     if (!Array.isArray(ids) || ids.length === 0) return;
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
     
     const conn = await db.getConnection();
     try {
@@ -185,8 +191,8 @@ const Venue = {
       }
 
       await conn.query(
-        `DELETE FROM venues WHERE id IN (${ids.map(() => "?").join(",")})`,
-        ids
+        `DELETE FROM venues WHERE id IN (${ids.map(() => "?").join(",")})${ownerSql}`,
+        [...ids, ...ownerParams]
       );
 
       await conn.commit();

@@ -3,10 +3,18 @@ require("./instrument.js");
 
 const Sentry = require("@sentry/node");
 const express = require("express");
+const path = require("path");
 const cors = require("cors");
 require("dotenv").config();
 
 const db = require("./config/db");
+const fs = require("fs");
+
+// Format folder: serve templates as static files (no auth required)
+// Docker: ./format mounted at /app/format; local: format at project root
+const formatDir = fs.existsSync(path.join(__dirname, "format"))
+  ? path.join(__dirname, "format")
+  : path.join(__dirname, "..", "format");
 
 // --- Route Imports ---
 const venueRoutes = require("./routes/venueRoutes");
@@ -30,6 +38,9 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
+// --- Static: format folder (Excel templates) - no auth required ---
+app.use("/format", express.static(formatDir));
 
 // --- Health Check ---
 app.get('/health', (req, res) => {

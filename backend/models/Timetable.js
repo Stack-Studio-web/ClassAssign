@@ -1,5 +1,6 @@
 // backend/models/Timetable.js - UPDATED WITH EXAM DETAILS QUERY
 const db = require("../config/db");
+const { andClause, whereClause, insertField } = require("../utils/ownerFilter");
 
 // PostgreSQL returns unquoted column names in lowercase; map to camelCase for API
 function toTimetableRow(row) {
@@ -23,7 +24,8 @@ const Timetable = {
   /* ===============================
       GET ALL SCHEDULES
   =============================== */
-  getAll: async () => {
+  getAll: async (opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId);
     const [rows] = await db.query(
       `SELECT 
         id,
@@ -36,8 +38,9 @@ const Timetable = {
         department,
         exam_type as examType,
         created_at as createdAt
-       FROM timetable
-       ORDER BY date DESC, start_time ASC`
+       FROM timetable${ownerSql || " WHERE 1=1"}
+       ORDER BY date DESC, start_time ASC`,
+      ownerParams
     );
     return (rows || []).map(toTimetableRow);
   },
@@ -46,7 +49,8 @@ const Timetable = {
       ✅ NEW: GET COURSES BY EXAM DETAILS
       Returns courses matching date, time, and session
   =============================== */
-  getByExamDetails: async ({ date, startTime, endTime, session }) => {
+  getByExamDetails: async ({ date, startTime, endTime, session }, opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
     const [rows] = await db.query(
       `SELECT 
         id,
@@ -62,9 +66,9 @@ const Timetable = {
        WHERE date = ?
          AND start_time = ?
          AND end_time = ?
-         AND session = ?
+         AND session = ?${ownerSql}
        ORDER BY department, course_code`,
-      [date, startTime, endTime, session]
+      [date, startTime, endTime, session, ...ownerParams]
     );
     return (rows || []).map(toTimetableRow);
   },
@@ -72,7 +76,7 @@ const Timetable = {
   /* ===============================
       CREATE SCHEDULE
   =============================== */
-  create: async (data) => {
+  create: async (data, opts = {}) => {
     const {
       date,
       startTime,
@@ -84,11 +88,15 @@ const Timetable = {
       examType
     } = data;
 
+    const { col, val } = insertField(opts.role, opts.ownerUserId);
+    const vals = [date, startTime, endTime, session, courseCode, courseName, department, examType];
+    if (val != null) vals.push(val);
+
     const [result] = await db.query(
       `INSERT INTO timetable 
-       (date, start_time, end_time, session, course_code, course_name, department, exam_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [date, startTime, endTime, session, courseCode, courseName, department, examType]
+       (date, start_time, end_time, session, course_code, course_name, department, exam_type${col})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?${val != null ? ", ?" : ""})`,
+      vals
     );
 
     return result.insertId;
@@ -97,15 +105,16 @@ const Timetable = {
   /* ===============================
       CHECK FOR DUPLICATE
   =============================== */
-  checkDuplicate: async ({ date, session, courseCode, department }) => {
+  checkDuplicate: async ({ date, session, courseCode, department }, opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
     const [rows] = await db.query(
       `SELECT id FROM timetable 
        WHERE date = ? 
        AND session = ? 
        AND course_code = ?
-       AND department = ?
+       AND department = ?${ownerSql}
        LIMIT 1`,
-      [date, session, courseCode, department]
+      [date, session, courseCode, department, ...ownerParams]
     );
 
     return rows.length > 0;
@@ -114,10 +123,11 @@ const Timetable = {
   /* ===============================
       DELETE BY ID
   =============================== */
-  deleteById: async (id) => {
+  deleteById: async (id, opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
     const [result] = await db.query(
-      `DELETE FROM timetable WHERE id = ?`,
-      [id]
+      `DELETE FROM timetable WHERE id = ?${ownerSql}`,
+      [id, ...ownerParams]
     );
 
     return result.affectedRows > 0;
@@ -126,12 +136,13 @@ const Timetable = {
   /* ===============================
       DELETE BY IDs (BULK)
   =============================== */
-  deleteByIds: async (ids) => {
+  deleteByIds: async (ids, opts = {}) => {
     if (ids.length === 0) return 0;
 
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
     const [result] = await db.query(
-      `DELETE FROM timetable WHERE id IN (?)`,
-      [ids]
+      `DELETE FROM timetable WHERE id IN (?)${ownerSql}`,
+      [ids, ...ownerParams]
     );
 
     return result.affectedRows;
@@ -140,7 +151,8 @@ const Timetable = {
   /* ===============================
       GET BY DATE RANGE
   =============================== */
-  getByDateRange: async (startDate, endDate) => {
+  getByDateRange: async (startDate, endDate, opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
     const [rows] = await db.query(
       `SELECT 
         id,
@@ -153,9 +165,9 @@ const Timetable = {
         department,
         exam_type as examType
        FROM timetable
-       WHERE date BETWEEN ? AND ?
+       WHERE date BETWEEN ? AND ?${ownerSql}
        ORDER BY date, start_time`,
-      [startDate, endDate]
+      [startDate, endDate, ...ownerParams]
     );
 
     return (rows || []).map(toTimetableRow);
@@ -164,7 +176,8 @@ const Timetable = {
   /* ===============================
       GET BY FILTERS
   =============================== */
-  getByFilters: async (filters) => {
+  getByFilters: async (filters, opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
     let query = `
       SELECT 
         id,
@@ -177,10 +190,10 @@ const Timetable = {
         department,
         exam_type as examType
       FROM timetable
-      WHERE 1=1
+      WHERE 1=1${ownerSql}
     `;
 
-    const params = [];
+    const params = [...ownerParams];
 
     if (filters.dateFrom) {
       query += ` AND date >= ?`;

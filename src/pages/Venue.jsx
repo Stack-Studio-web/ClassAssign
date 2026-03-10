@@ -308,25 +308,10 @@ export default function AddVenue() {
   };
 
   const downloadTemplate = () => {
-    const template = [
-      { "Venue Name": "AD101", Type: "classroom", Rows: 10, Columns: 5, "Bench Config": "2,2,3,3,2" },
-      { "Venue Name": "AD102", Type: "classroom", Rows: 10, Columns: 5, "Bench Config": "2,2,2,2,2" },
-      { "Venue Name": "B201", Type: "lab", Rows: 8, Columns: 4, "Bench Config": "2,2,2,2" },
-      { "Venue Name": "Hall-A", Type: "hall", Rows: 15, Columns: 6, "Bench Config": "3,3,3,3,3,3" },
-    ];
-    const csvContent = [
-      ["Venue Name", "Type", "Rows", "Columns", "Bench Config"].join(","),
-      ...template.map((row) =>
-        [row["Venue Name"], row.Type, row.Rows, row.Columns, row["Bench Config"]].join(",")
-      ),
-    ].join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv" });
-    const url = window.URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url;
-    a.download = "venue_import_template.csv";
+    a.href = "/format/venue_import.xlsx";
+    a.download = "venue_import.xlsx";
     a.click();
-    window.URL.revokeObjectURL(url);
   };
 
   const handleSearch = (e) => setSearchQuery(e.target.value);

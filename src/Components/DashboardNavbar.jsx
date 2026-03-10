@@ -52,13 +52,11 @@ export default function DashboardNavbar() {
           <Bars3Icon className="h-6 w-6" />
         </button>
         <div className="flex items-center gap-3 min-w-0">
-          <img
-            src={Logo}
-            alt="Logo"
-            className="h-9 w-9 shrink-0 object-contain rounded-lg bg-white/10"
-          />
+          <div className="h-9 w-9 shrink-0 rounded-lg bg-white p-1 flex items-center justify-center">
+            <img src={Logo} alt="Logo" className="h-full w-full object-contain" />
+          </div>
           <span className="text-white font-semibold text-lg truncate hidden sm:inline">
-            KCT ClassAlign
+            HALLORA
           </span>
         </div>
       </div>

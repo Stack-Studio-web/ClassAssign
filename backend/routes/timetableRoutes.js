@@ -10,6 +10,7 @@ const checkRole = require("../middleware/checkRole");
 const auditLogger = require("../middleware/auditLogger");
 
 const upload = multer({ dest: "uploads/" });
+const ownerOpts = (req) => ({ ownerUserId: req.user?.id, role: req.user?.role });
 
 /* =====================================================
     GET: ALL TIMETABLE SCHEDULES
@@ -20,7 +21,7 @@ router.get("/",
   checkRole(['admin', 'faculty_incharge', 'coe']),
   async (req, res) => {
     try {
-      const schedules = await Timetable.getAll();
+      const schedules = await Timetable.getAll(ownerOpts(req));
       res.json(schedules);
     } catch (err) {
       console.error("FETCH SCHEDULES ERROR:", err);
@@ -58,7 +59,7 @@ router.get("/by-exam-details",
         startTime,
         endTime,
         session
-      });
+      }, ownerOpts(req));
 
       console.log(`✅ Found ${courses.length} course(s) matching exam details`);
 
@@ -108,7 +109,7 @@ router.post("/",
         session,
         courseCode,
         department
-      });
+      }, ownerOpts(req));
 
       if (exists) {
         return res.status(409).json({
@@ -126,7 +127,7 @@ router.post("/",
         courseName,
         department: department.toUpperCase(),
         examType
-      });
+      }, ownerOpts(req));
 
       res.status(201).json({
         message: "Schedule created successfully",
@@ -280,7 +281,7 @@ router.post("/bulk-import",
             session: schedule.session,
             courseCode: schedule.courseCode,
             department: schedule.department
-          });
+          }, ownerOpts(req));
 
           if (exists) {
             skipped++;
@@ -288,7 +289,7 @@ router.post("/bulk-import",
             continue;
           }
 
-          await Timetable.create(schedule);
+          await Timetable.create(schedule, ownerOpts(req));
           inserted++;
 
         } catch (err) {
@@ -332,7 +333,7 @@ router.delete("/:id",
     try {
       const { id } = req.params;
 
-      const deleted = await Timetable.deleteById(id);
+      const deleted = await Timetable.deleteById(id, ownerOpts(req));
 
       if (!deleted) {
         return res.status(404).json({
@@ -373,7 +374,7 @@ router.post("/bulk-delete",
         });
       }
 
-      const deleted = await Timetable.deleteByIds(ids);
+      const deleted = await Timetable.deleteByIds(ids, ownerOpts(req));
 
       res.json({
         message: `Deleted ${deleted} schedule(s)`,

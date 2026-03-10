@@ -6,17 +6,20 @@ const db = require("../config/db");
 const sessionAuth = require("../middleware/sessionAuth");
 const checkRole = require("../middleware/checkRole"); // New flexible middleware
 const auditLogger = require("../middleware/auditLogger");
+const { andClause } = require("../utils/ownerFilter");
 
 /* ================================
    GET ALL VENUES
    Roles: admin, faculty_incharge, coe (CEO)
 ================================ */
+const ownerOpts = (req) => ({ ownerUserId: req.user?.id, role: req.user?.role });
+
 router.get("/", 
   sessionAuth, 
   checkRole(['admin', 'faculty_incharge', 'coe']), 
   async (req, res) => {
     try {
-      const venues = await Venue.getAll();
+      const venues = await Venue.getAll(ownerOpts(req));
       res.json(venues);
     } catch (err) {
       res.status(500).json({ error: "Server error", details: err.message });
@@ -32,7 +35,7 @@ router.get("/stats",
   checkRole(['admin', 'faculty_incharge', 'coe']), 
   async (req, res) => {
     try {
-      const venues = await Venue.getAll();
+      const venues = await Venue.getAll(ownerOpts(req));
       const totalVenues = venues.length;
       const totalCapacity = venues.reduce((sum, v) => sum + (v.capacity || 0), 0);
       res.json({ totalVenues, totalCapacity });
@@ -67,7 +70,7 @@ router.post("/",
         benchesRow,
         benchesCol,
         benchConfig,
-      });
+      }, ownerOpts(req));
 
       res.status(201).json({ message: "Venue created successfully", venueId, id: venueId });
     } catch (err) {
@@ -100,13 +103,14 @@ router.put("/:id",
       if (exists) return res.status(400).json({ error: "Duplicate venue" });
 
       const capacity = benchesRow * benchConfig.reduce((sum, seats) => sum + seats, 0);
+      const { sql: ownerSql, params: ownerParams } = andClause(req.user?.role, req.user?.id);
       const conn = await db.getConnection();
 
       try {
         await conn.beginTransaction();
         const [result] = await conn.query(
-          "UPDATE venues SET name=?, type=?, benches_row=?, benches_col=?, capacity=? WHERE id=?",
-          [name.trim(), type.trim(), benchesRow, benchesCol, capacity, id]
+          `UPDATE venues SET name=?, type=?, benches_row=?, benches_col=?, capacity=? WHERE id=?${ownerSql}`,
+          [name.trim(), type.trim(), benchesRow, benchesCol, capacity, id, ...ownerParams]
         );
 
         if (result.affectedRows === 0) throw new Error("Venue not found");
@@ -164,8 +168,9 @@ router.delete("/:id",
       await conn.query("DELETE FROM venue_bench_config WHERE venue_id = ?", [id]);
       await conn.query("DELETE FROM venue_sessions WHERE venue_id = ?", [id]);
       
-      // Delete parent record
-      const [result] = await conn.query("DELETE FROM venues WHERE id = ?", [id]);
+      // Delete parent record (with owner check for non-admin)
+      const { sql: ownerSql, params: ownerParams } = andClause(req.user?.role, req.user?.id);
+      const [result] = await conn.query(`DELETE FROM venues WHERE id = ?${ownerSql}`, [id, ...ownerParams]);
 
       await conn.commit();
       res.json({ message: "Venue deleted successfully", id });

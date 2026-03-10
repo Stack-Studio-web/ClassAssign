@@ -144,8 +144,22 @@ async function getConnection() {
   };
 }
 
-sequelize.authenticate()
-  .then(() => console.log('✅ PostgreSQL connected'))
-  .catch(err => console.error('❌ PostgreSQL connection failed:', err));
+const MAX_RETRIES = 15;
+const RETRY_DELAY_MS = 2000;
 
-module.exports = { query, execute: query, getConnection };
+async function connectWithRetry() {
+  for (let i = 0; i < MAX_RETRIES; i++) {
+    try {
+      await sequelize.authenticate();
+      console.log('✅ PostgreSQL connected');
+      return;
+    } catch (err) {
+      const isLast = i === MAX_RETRIES - 1;
+      console.error(`❌ PostgreSQL connection failed (attempt ${i + 1}/${MAX_RETRIES}):`, err.message);
+      if (isLast) throw err;
+      await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+    }
+  }
+}
+
+module.exports = { query, execute: query, getConnection, connectWithRetry };

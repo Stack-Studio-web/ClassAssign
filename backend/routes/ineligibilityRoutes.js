@@ -6,6 +6,8 @@ const sessionAuth = require("../middleware/sessionAuth");
 const checkRole = require("../middleware/checkRole");
 const auditLogger = require("../middleware/auditLogger");
 
+const ownerOpts = (req) => ({ ownerUserId: req.user?.id, role: req.user?.role });
+
 /* ===============================
     GET /api/ineligibility/students/:courseCode
     ✅ NO AUTH - Public endpoint for listing students
@@ -76,7 +78,8 @@ router.get(
       const ineligible = await IneligibleStudent.getIneligibleStudents(
         examType,
         decodeURIComponent(courseCode),
-        dateOnly
+        dateOnly,
+        ownerOpts(req)
       );
       
       console.log(`✅ Found ${ineligible.length} ineligible students for ${courseCode} on ${dateOnly}`);
@@ -141,7 +144,8 @@ router.post(
         courseCode,
         dateOnly,
         ineligibleStudents,
-        req.user.id
+        req.user.id,
+        ownerOpts(req)
       );
 
       console.log(`✅ Successfully updated ${result.count} students`);
@@ -174,7 +178,7 @@ router.delete(
   async (req, res) => {
     try {
       const { id } = req.params;
-      const deleted = await IneligibleStudent.deleteById(id);
+      const deleted = await IneligibleStudent.deleteById(id, ownerOpts(req));
       
       if (!deleted) {
         return res.status(404).json({ error: "Record not found" });

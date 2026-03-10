@@ -7,8 +7,11 @@ const fs = require("fs");
 const Student = require("../models/Student");
 const Faculty = require("../models/Faculty");
 const Venue = require("../models/venue");
+const sessionAuth = require("../middleware/sessionAuth");
+const checkRole = require("../middleware/checkRole");
 
 const router = express.Router();
+const ownerOpts = (req) => ({ ownerUserId: req.user?.id, role: req.user?.role });
 const upload = multer({ dest: "uploads/" });
 
 let lastFacultyImport = {
@@ -28,9 +31,9 @@ let lastVenueImport = {
 /* =====================================================
    DELETE ALL STUDENTS
 ===================================================== */
-router.delete("/delete-all-students", async (req, res) => {
+router.delete("/delete-all-students", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
   try {
-    await Student.deleteAll();
+    await Student.deleteAll(ownerOpts(req));
     res.json({ message: "Successfully deleted all student records." });
   } catch (error) {
     res.status(500).json({
@@ -43,7 +46,7 @@ router.delete("/delete-all-students", async (req, res) => {
 /* =====================================================
    IMPORT STUDENTS FROM EXCEL
 ===================================================== */
-router.post("/import-students", upload.single("file"), async (req, res) => {
+router.post("/import-students", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ message: "No file uploaded." });
@@ -81,7 +84,7 @@ router.post("/import-students", upload.single("file"), async (req, res) => {
     lastStudentImport = { insertedIds: [] };
 
     for (const s of formattedData) {
-      const insertId = await Student.insertOne(s);
+      const insertId = await Student.insertOne(s, ownerOpts(req));
       lastStudentImport.insertedIds.push(insertId);
     }
 
@@ -104,9 +107,9 @@ router.post("/import-students", upload.single("file"), async (req, res) => {
 /* =====================================================
    DELETE ALL FACULTY
 ===================================================== */
-router.delete("/delete-all-faculty", async (req, res) => {
+router.delete("/delete-all-faculty", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
   try {
-    await Faculty.deleteAll();
+    await Faculty.deleteAll(ownerOpts(req));
     res.json({ message: "Successfully deleted all faculty records." });
   } catch (error) {
     res.status(500).json({
@@ -119,7 +122,7 @@ router.delete("/delete-all-faculty", async (req, res) => {
 /* =====================================================
    IMPORT FACULTY FROM EXCEL (DUPLICATE SAFE)
 ===================================================== */
-router.post("/import-faculty", upload.single("file"), async (req, res) => {
+router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), upload.single("file"), async (req, res) => {
   try {
     lastFacultyImport = { insertedIds: [], skippedEmails: [] };
 
@@ -147,7 +150,7 @@ router.post("/import-faculty", upload.single("file"), async (req, res) => {
 
     for (const f of formattedData) {
       try {
-        const [result] = await Faculty.create(f);
+        const [result] = await Faculty.create(f, ownerOpts(req));
         const id = result?.insertId ?? result?.insertid;
         if (id != null) lastFacultyImport.insertedIds.push(id);
       } catch (err) {
@@ -198,7 +201,7 @@ router.post("/import-faculty", upload.single("file"), async (req, res) => {
    - NO PREFIX (like "5 2,2,3")
    - Only numbers 2 or 3
 ===================================================== */
-router.post("/import-venues", upload.single("file"), async (req, res) => {
+router.post("/import-venues", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), upload.single("file"), async (req, res) => {
   try {
     lastVenueImport = { insertedIds: [] };
 
@@ -314,13 +317,13 @@ router.post("/import-venues", upload.single("file"), async (req, res) => {
 
     for (const venue of formattedData) {
       try {
-        const venueId = await Venue.create(venue);
+        const venueId = await Venue.create(venue, ownerOpts(req));
         lastVenueImport.insertedIds.push(venueId);
         insertedCount++;
         
         console.log(`✅ Inserted: ${venue.name} (${venue.type}) - ID: ${venueId}`);
       } catch (err) {
-        if (err.code === "ER_DUP_ENTRY") {
+        if (err.code === "ER_DUP_ENTRY" || err.code === "23505") {
           duplicates.push(`${venue.name} (${venue.type})`);
         } else {
           skippedRecords.push(`${venue.name} - Database error: ${err.message}`);
@@ -354,7 +357,7 @@ router.get("/last-faculty-import", (req, res) => {
   res.json(lastFacultyImport);
 });
 
-router.post("/undo-faculty-import", async (req, res) => {
+router.post("/undo-faculty-import", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
   try {
     if (lastFacultyImport.insertedIds.length === 0) {
       return res.status(400).json({
@@ -362,7 +365,7 @@ router.post("/undo-faculty-import", async (req, res) => {
       });
     }
 
-    await Faculty.deleteByIds(lastFacultyImport.insertedIds);
+    await Faculty.deleteByIds(lastFacultyImport.insertedIds, ownerOpts(req));
 
     const deletedCount = lastFacultyImport.insertedIds.length;
     lastFacultyImport = { insertedIds: [], skippedEmails: [] };
@@ -382,7 +385,7 @@ router.get("/last-student-import", (req, res) => {
   res.json(lastStudentImport);
 });
 
-router.post("/undo-student-import", async (req, res) => {
+router.post("/undo-student-import", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
   try {
     if (!lastStudentImport.insertedIds.length) {
       return res.status(400).json({
@@ -390,7 +393,7 @@ router.post("/undo-student-import", async (req, res) => {
       });
     }
 
-    await Student.deleteByIds(lastStudentImport.insertedIds);
+    await Student.deleteByIds(lastStudentImport.insertedIds, ownerOpts(req));
 
     const count = lastStudentImport.insertedIds.length;
     lastStudentImport = { insertedIds: [] };
@@ -411,7 +414,7 @@ router.get("/last-venue-import", (req, res) => {
   res.json(lastVenueImport);
 });
 
-router.post("/undo-venue-import", async (req, res) => {
+router.post("/undo-venue-import", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
   try {
     if (!lastVenueImport.insertedIds.length) {
       return res.status(400).json({
@@ -419,7 +422,7 @@ router.post("/undo-venue-import", async (req, res) => {
       });
     }
 
-    await Venue.deleteByIds(lastVenueImport.insertedIds);
+    await Venue.deleteByIds(lastVenueImport.insertedIds, ownerOpts(req));
 
     const count = lastVenueImport.insertedIds.length;
     lastVenueImport = { insertedIds: [] };

@@ -5,9 +5,12 @@ const SeatingPlan = require("../models/SeatingPlan");
 const Venue = require("../models/venue");
 const Faculty = require("../models/Faculty");
 const db = require("../config/db");
+const { andClause, whereClause } = require("../utils/ownerFilter");
 const sessionAuth = require("../middleware/sessionAuth");
 const checkRole = require("../middleware/checkRole");
 const auditLogger = require("../middleware/auditLogger");
+
+const ownerOpts = (req) => ({ ownerUserId: req.user?.id, role: req.user?.role });
 
 /* =====================================================
     POST: SAVE SEATING PLAN
@@ -151,7 +154,7 @@ router.post(
         students,
         venuesUsed,
         facultyMode
-      });
+      }, ownerOpts(req));
 
       for (const v of venuesUsed) {
         await Venue.addSession(v.venueId, dateOnly, examStartTime, examEndTime);
@@ -198,7 +201,7 @@ router.delete(
     try {
       await connection.beginTransaction();
 
-      const plan = await SeatingPlan.getPlanById(planId);
+      const plan = await SeatingPlan.getPlanById(planId, ownerOpts(req));
       if (!plan) {
         await connection.rollback();
         return res.status(404).json({ 
@@ -234,7 +237,7 @@ router.delete(
         }
       }
 
-      await SeatingPlan.deletePlan(planId);
+      await SeatingPlan.deletePlan(planId, ownerOpts(req));
 
       await connection.commit();
 
@@ -307,12 +310,13 @@ router.get("/attendance",
         const dateOnly = date.includes("T") ? date.split("T")[0] : date;
         console.log("🗓️  Normalized date:", dateOnly);
 
-        // ✅ Step 1: Find ALL plans for this date and session
+        // ✅ Step 1: Find ALL plans for this date and session (with owner filter for COE/faculty)
+        const { sql: ownerSql, params: ownerParams } = andClause(req.user?.role, req.user?.id);
         const [plans] = await db.query(
             `SELECT id, exam_type, exam_date, exam_session, exam_start_time, exam_end_time 
              FROM seating_plans 
-             WHERE exam_date = ? AND exam_session = ?`,
-            [dateOnly, session]
+             WHERE exam_date = ? AND exam_session = ?${ownerSql}`,
+            [dateOnly, session, ...ownerParams]
         );
 
         console.log(`🔍 Found ${plans.length} plans for date=${dateOnly}, session=${session}`);
@@ -325,10 +329,12 @@ router.get("/attendance",
         }
 
         if (plans.length === 0) {
+            const { sql: fallbackWhere, params: fallbackParams } = whereClause(req.user?.role, req.user?.id);
             const [allPlans] = await db.query(
                 `SELECT DISTINCT exam_date, exam_session 
-                 FROM seating_plans 
-                 ORDER BY exam_date DESC, exam_session`
+                 FROM seating_plans${fallbackWhere || " WHERE 1=1"}
+                 ORDER BY exam_date DESC, exam_session`,
+                fallbackParams
             );
             
             console.log("❌ No plans found. Available dates/sessions in database:");
@@ -622,7 +628,7 @@ router.get("/:id",
   checkRole(['admin', 'faculty_incharge', 'coe']),
   async (req, res) => {
     try {
-      const plan = await SeatingPlan.getPlanById(req.params.id);
+      const plan = await SeatingPlan.getPlanById(req.params.id, ownerOpts(req));
       if (!plan) {
         return res.status(404).json({ error: "Seating plan not found" });
       }

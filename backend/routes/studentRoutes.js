@@ -2,17 +2,20 @@
 const express = require("express");
 const router = express.Router();
 const Student = require("../models/Student");
+const sessionAuth = require("../middleware/sessionAuth");
+const checkRole = require("../middleware/checkRole");
+
+const ownerOpts = (req) => ({ ownerUserId: req.user?.id, role: req.user?.role });
 
 /* ================================
-   📁 STUDENT ROUTES
-   ⚠️ GET routes have NO auth for public access
+   📁 STUDENT ROUTES - Role-based: Admin sees all, Faculty sees own
 ================================ */
 
-// ✅ GET all students (NO AUTH)
-router.get("/", async (req, res) => {
+// ✅ GET all students
+router.get("/", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
   try {
     console.log('📋 GET /api/students - Fetching all students...');
-    const students = await Student.getAll();
+    const students = await Student.getAll(ownerOpts(req));
     console.log(`✅ Found ${students.length} students`);
     res.status(200).json(students);
   } catch (error) {
@@ -24,11 +27,11 @@ router.get("/", async (req, res) => {
   }
 });
 
-// ✅ GET student stats (NO AUTH)
-router.get("/stats", async (req, res) => {
+// ✅ GET student stats
+router.get("/stats", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
   try {
     console.log('📊 GET /api/students/stats - Fetching stats...');
-    const totalStudents = await Student.count();
+    const totalStudents = await Student.count(ownerOpts(req));
     console.log(`✅ Total students: ${totalStudents}`);
     res.status(200).json({ totalStudents });
   } catch (error) {
@@ -40,11 +43,11 @@ router.get("/stats", async (req, res) => {
   }
 });
 
-// ✅ GET all unique courses (NO AUTH)
-router.get("/courses", async (req, res) => {
+// ✅ GET all unique courses
+router.get("/courses", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
   try {
     console.log('📚 GET /api/students/courses - Fetching courses...');
-    const courses = await Student.getCourses();
+    const courses = await Student.getCourses(ownerOpts(req));
     console.log(`✅ Found ${courses.length} unique courses`);
     res.status(200).json(courses);
   } catch (err) {
@@ -56,13 +59,13 @@ router.get("/courses", async (req, res) => {
   }
 });
 
-// ✅ GET students by course (NO AUTH)
-router.get("/course/:courseCode", async (req, res) => {
+// ✅ GET students by course
+router.get("/course/:courseCode", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
   try {
     const courseCode = decodeURIComponent(req.params.courseCode);
     console.log(`📚 GET /api/students/course/${courseCode}`);
     
-    const students = await Student.getByCourse(courseCode);
+    const students = await Student.getByCourse(courseCode, ownerOpts(req));
     console.log(`✅ Found ${students.length} students for course ${courseCode}`);
     
     res.status(200).json(students);
@@ -75,13 +78,13 @@ router.get("/course/:courseCode", async (req, res) => {
   }
 });
 
-// ✅ GET students by department (NO AUTH)
-router.get("/department/:dept", async (req, res) => {
+// ✅ GET students by department
+router.get("/department/:dept", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
   try {
     const department = req.params.dept.toUpperCase();
     console.log(`🏢 GET /api/students/department/${department}`);
     
-    const students = await Student.getByDepartment(department);
+    const students = await Student.getByDepartment(department, ownerOpts(req));
     console.log(`✅ Found ${students.length} students for department ${department}`);
     
     res.status(200).json(students);
@@ -94,15 +97,15 @@ router.get("/department/:dept", async (req, res) => {
   }
 });
 
-// ✅ GET students by course code AND department (NO AUTH)
-router.get("/course-dept/:courseCode/:dept", async (req, res) => {
+// ✅ GET students by course code AND department
+router.get("/course-dept/:courseCode/:dept", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
   try {
     const courseCode = decodeURIComponent(req.params.courseCode);
     const department = req.params.dept.toUpperCase();
     
     console.log(`📋 GET /api/students/course-dept/${courseCode}/${department}`);
     
-    const students = await Student.getByCourseAndDepartment(courseCode, department);
+    const students = await Student.getByCourseAndDepartment(courseCode, department, ownerOpts(req));
     console.log(`✅ Found ${students.length} students`);
     
     res.status(200).json(students);
@@ -115,11 +118,11 @@ router.get("/course-dept/:courseCode/:dept", async (req, res) => {
   }
 });
 
-// ✅ DELETE all students (AUTH REQUIRED)
-router.delete("/all", async (req, res) => {
+// ✅ DELETE all students
+router.delete("/all", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
   try {
     console.log("🗑️ DELETE /api/students/all");
-    const deletedCount = await Student.deleteAll();
+    const deletedCount = await Student.deleteAll(ownerOpts(req));
     console.log(`✅ Deleted ${deletedCount} students`);
     res.json({ message: "All students deleted.", deletedCount });
   } catch (error) {
@@ -131,12 +134,12 @@ router.delete("/all", async (req, res) => {
   }
 });
 
-// ✅ DELETE students by course code (AUTH REQUIRED)
-router.delete("/by-course/:courseCode", async (req, res) => {
+// ✅ DELETE students by course code
+router.delete("/by-course/:courseCode", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
   try {
     const courseCode = decodeURIComponent(req.params.courseCode);
     console.log("🗑️ DELETE /api/students/by-course/" + courseCode);
-    const deletedCount = await Student.deleteByCourseCode(courseCode);
+    const deletedCount = await Student.deleteByCourseCode(courseCode, ownerOpts(req));
     console.log(`✅ Deleted ${deletedCount} students for course ${courseCode}`);
     res.json({ message: `Deleted ${deletedCount} student(s) for course ${courseCode}.`, deletedCount });
   } catch (error) {
@@ -148,12 +151,12 @@ router.delete("/by-course/:courseCode", async (req, res) => {
   }
 });
 
-// ✅ DELETE student by ID (AUTH REQUIRED - write operation)
-router.delete("/:id", async (req, res) => {
+// ✅ DELETE student by ID
+router.delete("/:id", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
   try {
     console.log("🗑️ DELETE /api/students/:id - ID:", req.params.id);
 
-    const deleted = await Student.deleteById(req.params.id);
+    const deleted = await Student.deleteById(req.params.id, ownerOpts(req));
 
     if (!deleted) {
       console.log(`❌ Student ${req.params.id} not found`);

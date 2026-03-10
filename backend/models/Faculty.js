@@ -1,5 +1,6 @@
 // Class/backend/models/Faculty.js
 const db = require("../config/db");
+const { andClause, whereClause, insertField } = require("../utils/ownerFilter");
 
 // PostgreSQL returns unquoted column names in lowercase; map to camelCase for API
 function toFacultyRow(row) {
@@ -16,22 +17,28 @@ function toFacultyRow(row) {
 }
 
 const Faculty = {
-  create: async ({ name, department, email }) => {
-    const sql =
-      "INSERT INTO faculty (name, department, email) VALUES (?, ?, ?)";
-    return db.query(sql, [name, department, email]);
+  create: async ({ name, department, email }, opts = {}) => {
+    const { col, val } = insertField(opts.role, opts.ownerUserId);
+    const vals = [name, department, email];
+    if (val != null) vals.push(val);
+    const sql = `INSERT INTO faculty (name, department, email${col}) VALUES (?, ?, ?${val != null ? ", ?" : ""})`;
+    return db.query(sql, vals);
   },
 
-  getAll: async () => {
+  getAll: async (opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId);
     const [rows] = await db.query(
-      "SELECT * FROM faculty ORDER BY name ASC"
+      `SELECT * FROM faculty${ownerSql || " WHERE 1=1"} ORDER BY name ASC`,
+      ownerParams
     );
     return (rows || []).map(toFacultyRow);
   },
 
-  count: async () => {
+  count: async (opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId);
     const [rows] = await db.query(
-      "SELECT COUNT(*) AS totalFaculty FROM faculty"
+      `SELECT COUNT(*) AS totalFaculty FROM faculty${ownerSql || " WHERE 1=1"}`,
+      ownerParams
     );
     const r = rows?.[0];
     return {
@@ -46,21 +53,20 @@ const Faculty = {
     );
   },
 
-  deleteById: async (id) => {
-    return db.query(
-      "DELETE FROM faculty WHERE id = ?",
-      [id]
-    );
+  deleteById: async (id, opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    return db.query(`DELETE FROM faculty WHERE id = ?${ownerSql}`, [id, ...ownerParams]);
   },
 
-  deleteByIds: async (ids) => {
+  deleteByIds: async (ids, opts = {}) => {
     if (ids.length === 0) return;
-    const sql = `DELETE FROM faculty WHERE id IN (?)`;
-    return db.query(sql, [ids]);
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    return db.query(`DELETE FROM faculty WHERE id IN (?)${ownerSql}`, [ids, ...ownerParams]);
   },
 
-  deleteAll: async () => {
-    return db.query("DELETE FROM faculty");
+  deleteAll: async (opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId);
+    return db.query(`DELETE FROM faculty${ownerSql || " WHERE 1=1"}`, ownerParams);
   },
 
   /* =====================================
@@ -98,7 +104,8 @@ const Faculty = {
      GET ALL FACULTY WITH ALLOCATION INFO
      (Dynamically calculated from seating_plan_venues)
   ===================================== */
-  getAllWithAllocation: async () => {
+  getAllWithAllocation: async (opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId, "f.");
     const [rows] = await db.query(`
       SELECT 
         f.id,
@@ -111,9 +118,10 @@ const Faculty = {
       FROM faculty f
       LEFT JOIN seating_plan_venues spv 
         ON spv.faculty_id = f.id
+      ${ownerSql || "WHERE 1=1"}
       GROUP BY f.id
       ORDER BY f.name ASC
-    `);
+    `, ownerParams);
     return (rows || []).map(toFacultyRow);
   },
 };

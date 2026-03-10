@@ -1,12 +1,13 @@
 // Class/backend/models/SeatingPlan.js
 const db = require("../config/db");
+const { andClause, whereClause, insertField } = require("../utils/ownerFilter");
 
 const SeatingPlan = {
 
   /* ===============================
       CREATE SEATING PLAN
   =============================== */
-  createPlan: async (planData) => {
+  createPlan: async (planData, opts = {}) => {
     const {
       examDate,
       examSession,
@@ -19,6 +20,18 @@ const SeatingPlan = {
       facultyMode = "AUTO",
     } = planData;
 
+    const { col, val } = insertField(opts.role, opts.ownerUserId);
+    const vals = [
+      examDate,
+      examSession,
+      examType,
+      examStartTime,
+      examEndTime,
+      JSON.stringify(selectedCourses),
+      facultyMode
+    ];
+    if (val != null) vals.push(val);
+
     const conn = await db.getConnection();
     try {
       await conn.beginTransaction();
@@ -26,17 +39,9 @@ const SeatingPlan = {
       // 1️⃣ Insert into seating_plans
       const [planResult] = await conn.query(
         `INSERT INTO seating_plans 
-         (exam_date, exam_session, exam_type, exam_start_time, exam_end_time, selected_courses, faculty_mode) 
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          examDate,
-          examSession,
-          examType,
-          examStartTime,
-          examEndTime,
-          JSON.stringify(selectedCourses),
-          facultyMode
-        ]
+         (exam_date, exam_session, exam_type, exam_start_time, exam_end_time, selected_courses, faculty_mode${col}) 
+         VALUES (?, ?, ?, ?, ?, ?, ?${val != null ? ", ?" : ""})`,
+        vals
       );
 
       const seatingPlanId = planResult.insertId;
@@ -153,7 +158,8 @@ const SeatingPlan = {
   /* ===============================
       GET ALL SEATING PLANS
   =============================== */
-  getAllPlans: async () => {
+  getAllPlans: async (opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId);
     const [rows] = await db.query(`
       SELECT 
         id AS _id,
@@ -165,9 +171,9 @@ const SeatingPlan = {
         selected_courses,
         faculty_mode,
         created_at
-      FROM seating_plans
+      FROM seating_plans${ownerSql || " WHERE 1=1"}
       ORDER BY exam_date DESC
-    `);
+    `, ownerParams);
 
     const plans = [];
 
@@ -277,7 +283,8 @@ const SeatingPlan = {
   /* ===============================
       GET SINGLE PLAN BY ID
   =============================== */
-  getPlanById: async (planId) => {
+  getPlanById: async (planId, opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
     const [plans] = await db.query(
       `SELECT 
         id AS _id,
@@ -290,8 +297,8 @@ const SeatingPlan = {
         faculty_mode,
         created_at
        FROM seating_plans
-       WHERE id = ?`,
-      [planId]
+       WHERE id = ?${ownerSql}`,
+      [planId, ...ownerParams]
     );
 
     if (!plans || plans.length === 0) return null;
@@ -390,7 +397,8 @@ const SeatingPlan = {
   /* ===============================
       DELETE SEATING PLAN
   =============================== */
-  deletePlan: async (planId) => {
+  deletePlan: async (planId, opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
     const conn = await db.getConnection();
     try {
       await conn.beginTransaction();
@@ -416,10 +424,10 @@ const SeatingPlan = {
         [planId]
       );
 
-      // 4️⃣ Delete main seating plan
+      // 4️⃣ Delete main seating plan (with owner check)
       await conn.query(
-        `DELETE FROM seating_plans WHERE id = ?`,
-        [planId]
+        `DELETE FROM seating_plans WHERE id = ?${ownerSql}`,
+        [planId, ...ownerParams]
       );
 
       await conn.commit();

@@ -246,10 +246,10 @@ const AuditLog = {
     `);
 
     const [recentActivity] = await db.query(`
-      SELECT DATE(created_at) as date, COUNT(*) as count
+      SELECT (created_at AT TIME ZONE 'UTC')::date as date, COUNT(*) as count
       FROM audit_logs
-      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-      GROUP BY DATE(created_at)
+      WHERE created_at >= NOW() - INTERVAL '30 days'
+      GROUP BY (created_at AT TIME ZONE 'UTC')::date
       ORDER BY date DESC
     `);
 
@@ -267,10 +267,10 @@ const AuditLog = {
   =============================== */
   deleteOlderThan: async (days) => {
     const [result] = await db.query(
-      'DELETE FROM audit_logs WHERE created_at < DATE_SUB(NOW(), INTERVAL ? DAY)',
+      "DELETE FROM audit_logs WHERE created_at < NOW() - (? || ' days')::interval",
       [days]
     );
-    return result.affectedRows;
+    return result.affectedRows ?? 0;
   }
 };
 

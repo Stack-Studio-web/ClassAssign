@@ -1,6 +1,7 @@
 //PrintLayout.jsx
 import React from 'react';
-import Logo from "../assets/logo KSI.png";
+import LogoKSI from "../assets/logo KSI.png";
+import LogoKCT from "../assets/logo.png";
 
 const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
   if (!selectedPlan) {
@@ -53,6 +54,14 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
     return { counts, total };
   };
 
+  const getLogoType = () => {
+    if (typeof window === "undefined") return "KSI";
+    return window.localStorage.getItem("kctLogoType") || "KSI";
+  };
+
+  const logoType = getLogoType();
+  const currentLogo = logoType === "KCT" ? LogoKCT : LogoKSI;
+
   return (
     <div
       ref={ref}
@@ -98,7 +107,7 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
                 justifyContent: "center",
               }}
             >
-              <img src={Logo} alt="KCT Logo" style={{ height: "70px", margin: "0" }} />
+              <img src={currentLogo} alt="KCT Logo" style={{ height: "70px", margin: "0" }} />
             </div>
 
             {/* TITLE */}

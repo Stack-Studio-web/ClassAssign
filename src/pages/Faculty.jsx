@@ -20,6 +20,13 @@ api.interceptors.response.use(
   }
 );
 
+const downloadFacultyTemplate = () => {
+  const a = document.createElement("a");
+  a.href = "/format/faculty_import_template_CORRECT.xlsx";
+  a.download = "faculty_import_template_CORRECT.xlsx";
+  a.click();
+};
+
 export default function Faculty() {
   const [totalFaculty, setTotalFaculty] = useState(0);
   const [faculty, setFaculty] = useState([]);
@@ -319,6 +326,19 @@ export default function Faculty() {
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 md:p-6 lg:p-8">
               <h2 className="text-lg font-semibold text-gray-800 mb-4">Bulk Import</h2>
               <div className="space-y-4">
+                <div className="p-3 rounded-lg bg-blue-50 border border-blue-100 text-xs sm:text-sm text-blue-900">
+                  <p className="font-semibold mb-1">Download Template First</p>
+                  <p className="mb-2">
+                    Use the official Excel template to avoid header mismatches and skipped rows.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={downloadFacultyTemplate}
+                    className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-sm transition-colors"
+                  >
+                    Download Faculty Template
+                  </button>
+                </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-600 mb-2">Upload Excel (.xlsx / .xls)</label>
                   <input

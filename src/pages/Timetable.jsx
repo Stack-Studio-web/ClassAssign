@@ -29,6 +29,13 @@ api.interceptors.response.use(
   }
 );
 
+const downloadTimetableTemplate = () => {
+  const a = document.createElement("a");
+  a.href = "/format/Timetable_Bulk_Import_Template.xlsx";
+  a.download = "Timetable_Bulk_Import_Template.xlsx";
+  a.click();
+};
+
 const Timetable = () => {
   const [activeTab, setActiveTab] = useState("add");
   const [schedules, setSchedules] = useState([]);
@@ -493,14 +500,21 @@ const Timetable = () => {
               </button>
             </div>
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 md:p-6 lg:p-8">
-              <h2 className="text-lg font-semibold text-gray-800 mb-4">Bulk Import</h2>
-              <div className="mb-4 p-4 bg-blue-50 border border-blue-100 rounded-xl text-sm text-blue-800">
-                <p className="font-semibold mb-2">Excel format</p>
-                <ul className="list-disc ml-5 space-y-1">
-                  <li>Date, Start/End Time, Session (FN/AN)</li>
-                  <li>Course Code, Course Name, Department, Exam Type</li>
-                </ul>
-              </div>
+            <h2 className="text-lg font-semibold text-gray-800 mb-4">Bulk Import</h2>
+            <div className="mb-4 p-4 bg-blue-50 border border-blue-100 rounded-xl text-sm text-blue-800">
+              <p className="font-semibold mb-1">Excel format</p>
+              <ul className="list-disc ml-5 space-y-1 mb-3">
+                <li>Date, Start/End Time, Session (FN/AN)</li>
+                <li>Course Code, Course Name, Department, Exam Type</li>
+              </ul>
+              <button
+                type="button"
+                onClick={downloadTimetableTemplate}
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-sm transition-colors"
+              >
+                Download Timetable Template
+              </button>
+            </div>
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-600 mb-2">Upload Excel</label>

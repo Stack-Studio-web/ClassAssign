@@ -9,6 +9,8 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data/
       - ./backend/databasemigration/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./backend/databasemigration/001_add_owner_user_id.sql:/docker-entrypoint-initdb.d/z_add_owner_user_id.sql
+      - ./backend/databasemigration:/migrations
     env_file:
       - ./backend/.env
     ports:
@@ -22,6 +24,7 @@ services:
     command: node server.js
     volumes:
       - ./backend:/app
+      - ./format:/app/format
       - /app/node_modules
       - app_uploads:/app/uploads
     ports:

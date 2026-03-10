@@ -3,7 +3,8 @@ import React, { useEffect, useState, useRef } from "react";
 import axios from "axios";
 import { useReactToPrint } from "react-to-print";
 import { useAcademicSession } from "../context/AcademicSessionContext";
-import Logo from "../assets/logo KSI.png";
+import LogoKCT from "../assets/logo.png";
+import LogoKSI from "../assets/logo KSI.png";
 
 // ✅ 1. Create authenticated API instance to fix 401 Unauthorized
 const api = axios.create({
@@ -126,6 +127,25 @@ const ExamHallAllotment = () => {
     error: false,
     details: null,
   });
+
+  const [departmentLine, setDepartmentLine] = useState("DEPARTMENT OF CSE, IT, AIDS, MCA");
+  const [programmeLine1, setProgrammeLine1] = useState("BE CSE - B.Tech IT - B.Tech AI&DS");
+  const [programmeLine2, setProgrammeLine2] = useState("M.Tech DS - M.E CSE (Cyber Security)");
+
+  const getInitialLogoType = () => {
+    if (typeof window === "undefined") return "KCT";
+    return window.localStorage.getItem("kctLogoType") || "KCT";
+  };
+  const [logoType, setLogoType] = useState(getInitialLogoType);
+
+  const handleLogoChange = (value) => {
+    setLogoType(value);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("kctLogoType", value);
+    }
+  };
+
+  const currentLogo = logoType === "KSI" ? LogoKSI : LogoKCT;
 
   const printRef = useRef();
 
@@ -489,6 +509,47 @@ const ExamHallAllotment = () => {
             </div>
           )}
           
+          <div className="flex flex-wrap gap-2 items-center justify-end text-xs">
+            <label className="flex items-center gap-1">
+              <span className="font-medium">Logo:</span>
+              <select
+                value={logoType}
+                onChange={(e) => handleLogoChange(e.target.value)}
+                className="border px-2 py-1 rounded"
+              >
+                <option value="KCT">KCT</option>
+                <option value="KSI">KSI</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-1 min-w-[220px]">
+              <span className="font-medium">Department:</span>
+              <input
+                type="text"
+                value={departmentLine}
+                onChange={(e) => setDepartmentLine(e.target.value)}
+                className="border px-2 py-1 rounded flex-1"
+              />
+            </label>
+            <label className="flex items-center gap-1 min-w-[220px]">
+              <span className="font-medium">Program 1:</span>
+              <input
+                type="text"
+                value={programmeLine1}
+                onChange={(e) => setProgrammeLine1(e.target.value)}
+                className="border px-2 py-1 rounded flex-1"
+              />
+            </label>
+            <label className="flex items-center gap-1 min-w-[220px]">
+              <span className="font-medium">Program 2:</span>
+              <input
+                type="text"
+                value={programmeLine2}
+                onChange={(e) => setProgrammeLine2(e.target.value)}
+                className="border px-2 py-1 rounded flex-1"
+              />
+            </label>
+          </div>
+
           <button 
             onClick={handlePrint} 
             disabled={filteredHalls.length === 0} 
@@ -501,11 +562,11 @@ const ExamHallAllotment = () => {
 
         <div ref={printRef}>
         <div className="text-center mb-4">
-          <img src={Logo} alt="Logo" width={240} className="mx-auto" />
+          <img src={currentLogo} alt="Logo" width={240} className="mx-auto" />
           <h2 className="font-bold text-lg">Kumaraguru College of Technology</h2>
-          <p>DEPARTMENT OF CSE, IT, AIDS, MCA</p>
-          <strong className="block font-bold">BE CSE - B.Tech IT - B.Tech AI&DS</strong>
-          <strong className="block font-bold">M.Tech DS - M.E CSE (Cyber Security)</strong>
+          <p>{departmentLine}</p>
+          <strong className="block font-bold">{programmeLine1}</strong>
+          <strong className="block font-bold">{programmeLine2}</strong>
           <p>AY {ay} - {semester} SEM ({category})</p>
         </div>
 

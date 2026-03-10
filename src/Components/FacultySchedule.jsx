@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { useReactToPrint } from 'react-to-print';
-import Logo from "../assets/logo KSI.png";
+import LogoKSI from "../assets/logo KSI.png";
+import LogoKCT from "../assets/logo.png";
 
 // Academic year options: start year so display is "YYYY-(YYYY+1)"
 const currentYear = new Date().getFullYear();
@@ -8,9 +9,31 @@ const AY_OPTIONS = Array.from({ length: 6 }, (_, i) => currentYear - 2 + i);
 
 const FacultySchedule = ({ plans, onClose }) => {
   const printRef = useRef();
+
+  // Header controls
   const [semester, setSemester] = useState('EVEN');
   const [category, setCategory] = useState('CAT 1');
   const [ayStartYear, setAyStartYear] = useState(currentYear);
+  const [departmentLine, setDepartmentLine] = useState('DEPARTMENT OF CSE, IT, AIDS, MCA');
+  const [programmeLine1, setProgrammeLine1] = useState('BE CSE - B.Tech IT - B.Tech AI&DS');
+  const [programmeLine2, setProgrammeLine2] = useState('M.Tech DS - M.E CSE (Cyber Security)');
+
+  // Logo selection (shared with /Hall via localStorage)
+  const getInitialLogoType = () => {
+    if (typeof window === 'undefined') return 'KSI';
+    return window.localStorage.getItem('kctLogoType') || 'KSI';
+  };
+  const [logoType, setLogoType] = useState(getInitialLogoType);
+
+  const handleLogoChange = (e) => {
+    const value = e.target.value;
+    setLogoType(value);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('kctLogoType', value);
+    }
+  };
+
+  const currentLogo = logoType === 'KCT' ? LogoKCT : LogoKSI;
 
   const handlePrint = useReactToPrint({
     contentRef: printRef,
@@ -29,14 +52,26 @@ const FacultySchedule = ({ plans, onClose }) => {
     
     const venuesUsed = plan.venuesUsed || [];
     venuesUsed.forEach((venue) => {
+      const venueName = venue.venueName || venue.venue_name || venue.venuename || '';
+      const facultyName =
+        venue.facultyName ||
+        venue.facultyname ||
+        venue.faculty_name ||
+        "Not Assigned";
+      const facultyDesignation =
+        venue.facultyDesignation ||
+        venue.facultydesignation ||
+        venue.faculty_department ||
+        venue.facultydepartment ||
+        "";
       groupedByDate[dateKey].push({
         date: plan.examDate,
         session: plan.examSession,
         startTime: plan.examStartTime,
         endTime: plan.examEndTime,
-        roomNo: venue.venueName,
-        facultyName: venue.facultyName || "Not Assigned",
-        facultyDesignation: venue.facultyDesignation || "",
+        roomNo: venueName,
+        facultyName,
+        facultyDesignation,
         examType: plan.examType,
         courses: plan.selectedCourses
       });
@@ -83,6 +118,44 @@ const FacultySchedule = ({ plans, onClose }) => {
               <option value="ODD">Odd Sem</option>
               <option value="EVEN">Even Sem</option>
             </select>
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ fontWeight: 500 }}>Logo:</span>
+            <select
+              value={logoType}
+              onChange={handleLogoChange}
+              style={{ padding: '6px 10px', borderRadius: '4px', border: '1px solid #ccc', minWidth: '120px' }}
+            >
+              <option value="KSI">KSI</option>
+              <option value="KCT">KCT</option>
+            </select>
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', flexGrow: 1, minWidth: '220px' }}>
+            <span style={{ fontWeight: 500 }}>Department:</span>
+            <input
+              type="text"
+              value={departmentLine}
+              onChange={(e) => setDepartmentLine(e.target.value)}
+              style={{ flex: 1, padding: '6px 10px', borderRadius: '4px', border: '1px solid #ccc' }}
+            />
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', flexGrow: 1, minWidth: '220px' }}>
+            <span style={{ fontWeight: 500 }}>Program 1:</span>
+            <input
+              type="text"
+              value={programmeLine1}
+              onChange={(e) => setProgrammeLine1(e.target.value)}
+              style={{ flex: 1, padding: '6px 10px', borderRadius: '4px', border: '1px solid #ccc' }}
+            />
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', flexGrow: 1, minWidth: '220px' }}>
+            <span style={{ fontWeight: 500 }}>Program 2:</span>
+            <input
+              type="text"
+              value={programmeLine2}
+              onChange={(e) => setProgrammeLine2(e.target.value)}
+              style={{ flex: 1, padding: '6px 10px', borderRadius: '4px', border: '1px solid #ccc' }}
+            />
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <span style={{ fontWeight: 500 }}>Category:</span>
@@ -160,7 +233,7 @@ const FacultySchedule = ({ plans, onClose }) => {
                 marginBottom: '20px' 
               }}>
                 <img 
-                  src={Logo} 
+                  src={currentLogo} 
                   alt="KSI Logo" 
                   style={{ 
                     width: '200px', 
@@ -190,9 +263,23 @@ const FacultySchedule = ({ plans, onClose }) => {
                 fontSize: '14pt', 
                 fontWeight: 'bold' 
               }}>
-                DEPARTMENT OF CSE, IT, AIDS, MCA
+                {departmentLine}
               </h2>
   
+              <h4 style={{ 
+                margin: '10px 0', 
+                fontSize: '12pt', 
+                fontWeight: 'normal' 
+              }}>
+                {programmeLine1}
+              </h4>
+              <h4 style={{ 
+                margin: '6px 0', 
+                fontSize: '12pt', 
+                fontWeight: 'normal' 
+              }}>
+                {programmeLine2}
+              </h4>
               <h4 style={{ 
                 margin: '10px 0', 
                 fontSize: '12pt', 
@@ -205,7 +292,7 @@ const FacultySchedule = ({ plans, onClose }) => {
                 fontSize: '12pt', 
                 fontWeight: 'normal' 
               }}>
-                 Invigilation Schedule
+                Invigilation Schedule
               </h4>
             </div>
 

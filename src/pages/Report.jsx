@@ -1,6 +1,16 @@
 import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
+import {
+  BuildingOffice2Icon,
+  ClipboardDocumentListIcon,
+  PrinterIcon,
+  DocumentTextIcon,
+  CalendarIcon,
+  UserIcon,
+  MapPinIcon,
+  TrashIcon,
+} from "@heroicons/react/24/outline";
 import PrintLayout from "./PrintLayout";
 import FacultySchedule from '../Components/FacultySchedule.jsx';
 
@@ -176,76 +186,165 @@ const Report = () => {
     }
   };
 
-  if (loading) return <div style={{ textAlign: "center", marginTop: "50px" }}>Loading saved plans...</div>;
-  if (error) return <div style={{ textAlign: "center", marginTop: "50px", color: "red" }}>{error}</div>;
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 p-6 flex items-center justify-center">
+        <p className="text-gray-500">Loading saved plans...</p>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="min-h-screen bg-gray-50 p-6 flex items-center justify-center">
+        <p className="text-red-600">{error}</p>
+      </div>
+    );
+  }
 
   if (selectedPlan) {
     return (
-      <div style={{ fontFamily: "Arial, sans-serif", margin: "20px" }}>
-        <button onClick={handleGoBack} style={{ padding: "8px 15px", background: "#007bff", color: "white", border: "none", cursor: "pointer", borderRadius: "5px" }}>&larr; Go Back</button>
-        <button onClick={handlePrintSingle} style={{ marginLeft: "10px", padding: "8px 15px", background: "green", color: "white", border: "none", cursor: "pointer", borderRadius: "5px" }}>Print This Plan</button>
-        <h2 style={{ textAlign: "center", marginTop: "20px" }}>Seating Plan Details</h2>
-        <div ref={componentRef}><PrintLayout selectedPlan={selectedPlan} /></div>
+      <div className="min-h-screen bg-gray-50 px-4 md:px-8 py-6">
+        <div className="flex flex-wrap gap-3 mb-6">
+          <button
+            onClick={handleGoBack}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-800 font-medium transition-colors"
+          >
+            ← Go Back
+          </button>
+          <button
+            onClick={handlePrintSingle}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-green-600 hover:bg-green-700 text-white font-medium transition-colors shadow-sm"
+          >
+            <PrinterIcon className="h-5 w-5" />
+            Print This Plan
+          </button>
+        </div>
+        <h2 className="text-xl md:text-2xl font-bold text-gray-800 mb-4">Seating Plan Details</h2>
+        <div ref={componentRef} className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+          <PrintLayout selectedPlan={selectedPlan} />
+        </div>
       </div>
     );
   }
 
   return (
-    <div style={{ fontFamily: "Arial, sans-serif", margin: "20px" }}>
+    <div className="min-h-screen bg-gray-50 font-[Inter,sans-serif]">
+      {/* Header */}
+      <div className="px-4 md:px-8 py-4 md:py-6">
+        <h1 className="text-2xl md:text-3xl font-bold text-gray-800">Saved Seating Plans</h1>
+        <p className="text-sm text-gray-500 mt-0.5">Select plans to print or generate faculty schedule.</p>
+      </div>
+
       {/* Role Notice for CEO */}
       {userRole === 'coe' && (
-        <div style={{ background: '#e1f5fe', color: '#01579b', padding: '10px', borderRadius: '5px', marginBottom: '20px', border: '1px solid #b3e5fc', fontStyle: 'italic', fontSize: '14px' }}>
-          <strong>Read-Only Mode:</strong> You are logged in as CEO. You can view and print plans but deletion is restricted.
+        <div className="mx-4 md:mx-8 mb-4 p-4 rounded-xl bg-blue-50 border border-blue-100 text-blue-800 text-sm">
+          <strong>Read-Only Mode:</strong> You are logged in as COE. You can view and print plans but deletion is restricted.
         </div>
       )}
 
-      <h2 style={{ textAlign: "center" }}>Saved Seating Plans</h2>
-
-      <div style={{ marginBottom: "15px" }}>
-        <button onClick={() => navigate("/hall")} style={{ padding: "8px 15px", background: "green", color: "white", border: "none", borderRadius: "5px", cursor: "pointer", marginRight: "10px" }}>Hall View</button>
-        <button onClick={() => navigate("/attendance")} style={{ padding: "8px 15px", background: "#bdaa02", color: "white", border: "none", borderRadius: "5px", cursor: "pointer", marginRight: "10px" }}>Attendance</button>
-        
+      {/* Action Buttons */}
+      <div className="px-4 md:px-8 mb-6 flex flex-wrap gap-3">
+        <button
+          onClick={() => navigate("/hall")}
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-green-600 hover:bg-green-700 text-white font-medium shadow-sm transition-all duration-200"
+        >
+          <BuildingOffice2Icon className="h-5 w-5" />
+          Hall View
+        </button>
+        <button
+          onClick={() => navigate("/attendance")}
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-medium shadow-sm transition-all duration-200"
+        >
+          <ClipboardDocumentListIcon className="h-5 w-5" />
+          Attendance
+        </button>
         {selectedPlans.length > 0 && (
           <>
-            <button onClick={handlePrintSelected} style={{ padding: "8px 15px", background: "#007bff", color: "white", border: "none", cursor: "pointer", borderRadius: "5px", marginRight: "10px" }}>Print Selected Plans ({selectedPlans.length})</button>
-            <button onClick={handlePrintFacultySchedule} style={{ padding: "8px 15px", background: "#dc3545", color: "white", border: "none", cursor: "pointer", borderRadius: "5px" }}>📋 Faculty Schedule PDF</button>
+            <button
+              onClick={handlePrintSelected}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-sm transition-all duration-200"
+            >
+              <PrinterIcon className="h-5 w-5" />
+              Print Selected ({selectedPlans.length})
+            </button>
+            <button
+              onClick={handlePrintFacultySchedule}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-medium shadow-sm transition-all duration-200"
+            >
+              <DocumentTextIcon className="h-5 w-5" />
+              Faculty Schedule PDF
+            </button>
           </>
         )}
       </div>
 
-      <ul style={{ listStyleType: "none", padding: 0 }}>
+      {/* Plan Cards */}
+      <div className="px-4 md:px-8 pb-8 space-y-4">
+        {plans.length === 0 && (
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 text-center text-gray-500">
+            No saved seating plans yet.
+          </div>
+        )}
         {plans.map((plan) => {
           const planId = plan._id ?? plan.id;
+          const venuesText = (plan.venuesUsed || []).map((v) => v.venueName ?? v.venue_name ?? "—").join(", ") || "—";
           return (
-          <li key={planId} style={{ border: "1px solid #ddd", padding: "15px", marginBottom: "10px", borderRadius: "5px", background: "#fff shadow-sm" }}>
-            <div style={{ display: "flex", alignItems: "center" }}>
-              <input type="checkbox" checked={selectedPlans.includes(planId)} onChange={() => handleCheckboxChange(planId)} style={{ marginRight: "10px" }} />
-              <div onClick={() => handleSelectPlan(plan)} style={{ cursor: "pointer", flexGrow: 1 }}>
-                <strong>Date:</strong> {plan.examDate ? new Date(plan.examDate).toLocaleDateString() : "—"} | <strong>Session:</strong> {plan.examSession ?? "—"} | <strong>Venues:</strong> {(plan.venuesUsed || []).map((v) => v.venueName ?? v.venue_name ?? "—").join(", ") || "—"} | <strong>Saved on:</strong> {formatDate(plan.createdAt)}
+            <div
+              key={planId}
+              className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 flex flex-col sm:flex-row sm:items-center gap-4 hover:shadow-md transition-shadow"
+            >
+              <div className="flex items-start sm:items-center gap-4 flex-1 min-w-0">
+                <input
+                  type="checkbox"
+                  checked={selectedPlans.includes(planId)}
+                  onChange={() => handleCheckboxChange(planId)}
+                  className="mt-1 sm:mt-0 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 shrink-0"
+                />
+                <div
+                  onClick={() => handleSelectPlan(plan)}
+                  className="flex-1 cursor-pointer space-y-2 sm:space-y-1"
+                >
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
+                    <span className="inline-flex items-center gap-1.5 text-gray-700">
+                      <CalendarIcon className="h-4 w-4 text-gray-400 shrink-0" />
+                      <strong>Date:</strong> {plan.examDate ? new Date(plan.examDate).toLocaleDateString() : "—"}
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 text-gray-700">
+                      <UserIcon className="h-4 w-4 text-gray-400 shrink-0" />
+                      <strong>Session:</strong> {plan.examSession ?? "—"}
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 text-gray-700">
+                      <MapPinIcon className="h-4 w-4 text-gray-400 shrink-0" />
+                      <strong>Venues:</strong> {venuesText}
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 text-gray-700">
+                      <CalendarIcon className="h-4 w-4 text-gray-400 shrink-0" />
+                      <strong>Saved on:</strong> {formatDate(plan.createdAt)}
+                    </span>
+                  </div>
+                </div>
               </div>
-            </div>
 
-            <div id={`plan-content-${planId}`} style={{ display: "none" }}>
-              <PrintLayout selectedPlan={plan} />
-            </div>
+              <div id={`plan-content-${planId}`} className="hidden">
+                <PrintLayout selectedPlan={plan} />
+              </div>
 
-            {(userRole === 'admin' || userRole === 'faculty_incharge') && (
-              <div style={{ marginTop: "10px" }}>
+              {(userRole === 'admin' || userRole === 'faculty_incharge') && (
                 <button
                   onClick={(e) => { e.stopPropagation(); handleDeletePlan(planId); }}
-                  style={{ padding: "5px 10px", background: "#dc3545", color: "white", border: "none", borderRadius: "3px", cursor: "pointer" }}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-medium shrink-0 transition-colors"
                 >
+                  <TrashIcon className="h-5 w-5" />
                   Delete
                 </button>
-              </div>
-            )}
-          </li>
+              )}
+            </div>
           );
         })}
-      </ul>
+      </div>
 
       {showFacultySchedule && (
-        <FacultySchedule 
+        <FacultySchedule
           plans={plans.filter((p) => selectedPlans.includes(p._id ?? p.id))}
           onClose={() => setShowFacultySchedule(false)}
         />

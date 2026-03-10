@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import axios from "axios";
 import { useReactToPrint } from "react-to-print";
+import { PrinterIcon } from "@heroicons/react/24/outline";
 import KCT from "../assets/logo.png";
 import KSI from '../assets/KSI logo.png';
 
@@ -179,94 +180,100 @@ export const StudentAttendance = () => {
   return (
     <div className="p-6 max-w-7xl mx-auto font-sans">
       {/* FILTER PANEL - Hidden when printing */}
-      <div className="mb-8 bg-gray-50 p-6 rounded-lg border print:hidden">
-        <h2 className="text-xl font-bold mb-4 text-gray-800">📋 Generate Attendance Sheet</h2>
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
-            <select
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-              className="w-full border border-gray-300 p-2 rounded focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="CAT 1">CAT 1</option>
-              <option value="CAT 2">CAT 2</option>
-            </select>
+      <div className="mb-8 bg-white border border-gray-200 rounded-2xl shadow-sm print:hidden">
+        <div className="px-4 md:px-6 pt-4 pb-3">
+          <h2 className="flex items-center gap-2 text-lg md:text-xl font-semibold text-gray-800">
+            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-blue-600 text-lg">📋</span>
+            Generate Attendance Sheet
+          </h2>
+        </div>
+        <div className="px-4 md:px-6 pb-4 space-y-3">
+          <div className="flex flex-col lg:flex-row lg:items-center gap-3">
+            <div className="flex-1 min-w-[140px]">
+              <label className="block text-xs font-medium text-gray-600 mb-1">Category</label>
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                className="w-full border border-gray-300 px-3 py-2 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              >
+                <option value="CAT 1">CAT 1</option>
+                <option value="CAT 2">CAT 2</option>
+              </select>
+            </div>
+            <div className="flex-1 min-w-[140px]">
+              <label className="block text-xs font-medium text-gray-600 mb-1">Date</label>
+              <select 
+                value={filters.date} 
+                onChange={(e) => setFilters({ ...filters, date: e.target.value })} 
+                className="w-full border border-gray-300 px-3 py-2 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              >
+                <option value="">-- Select Date --</option>
+                {availableDates.map(d => <option key={d} value={d}>{d}</option>)}
+              </select>
+            </div>
+            <div className="flex-1 min-w-[120px]">
+              <label className="block text-xs font-medium text-gray-600 mb-1">Session</label>
+              <select 
+                disabled={!filters.date} 
+                value={filters.session} 
+                onChange={(e) => setFilters({ ...filters, session: e.target.value })} 
+                className="w-full border border-gray-300 px-3 py-2 rounded-lg text-sm disabled:bg-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              >
+                <option value="">-- Select Session --</option>
+                {availableSessions.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div className="flex-1 min-w-[160px]">
+              <label className="block text-xs font-medium text-gray-600 mb-1">Exam Time</label>
+              <select 
+                disabled={!filters.session} 
+                value={filters.examTime} 
+                onChange={(e) => setFilters({ ...filters, examTime: e.target.value })} 
+                className="w-full border border-gray-300 px-3 py-2 rounded-lg text-sm disabled:bg-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              >
+                <option value="">-- Select Time --</option>
+                {availableExamTimes.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div className="flex-1 min-w-[160px]">
+              <label className="block text-xs font-medium text-gray-600 mb-1">Venue</label>
+              <select 
+                disabled={!filters.examTime} 
+                value={filters.venue} 
+                onChange={(e) => setFilters({ ...filters, venue: e.target.value })} 
+                className="w-full border border-gray-300 px-3 py-2 rounded-lg text-sm disabled:bg-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              >
+                <option value="">-- Select Venue --</option>
+                {availableVenues.map(v => <option key={v} value={v}>{v}</option>)}
+              </select>
+            </div>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
-            <select 
-              value={filters.date} 
-              onChange={(e) => setFilters({ ...filters, date: e.target.value })} 
-              className="w-full border border-gray-300 p-2 rounded focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="">-- Select Date --</option>
-              {availableDates.map(d => <option key={d} value={d}>{d}</option>)}
-            </select>
-          </div>
-          
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Session</label>
-            <select 
-              disabled={!filters.date} 
-              value={filters.session} 
-              onChange={(e) => setFilters({ ...filters, session: e.target.value })} 
-              className="w-full border border-gray-300 p-2 rounded disabled:bg-gray-100 focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="">-- Select Session --</option>
-              {availableSessions.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-          
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Exam Time</label>
-            <select 
-              disabled={!filters.session} 
-              value={filters.examTime} 
-              onChange={(e) => setFilters({ ...filters, examTime: e.target.value })} 
-              className="w-full border border-gray-300 p-2 rounded disabled:bg-gray-100 focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="">-- Select Time --</option>
-              {availableExamTimes.map(t => <option key={t} value={t}>{t}</option>)}
-            </select>
-          </div>
-          
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Venue</label>
-            <select 
-              disabled={!filters.examTime} 
-              value={filters.venue} 
-              onChange={(e) => setFilters({ ...filters, venue: e.target.value })} 
-              className="w-full border border-gray-300 p-2 rounded disabled:bg-gray-100 focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="">-- Select Venue --</option>
-              {availableVenues.map(v => <option key={v} value={v}>{v}</option>)}
-            </select>
-          </div>
+          <button 
+            onClick={handlePrint} 
+            disabled={!attendanceData} 
+            className="w-full inline-flex items-center justify-center gap-2 rounded-b-2xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm md:text-base py-2.5 mt-1 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+          >
+            <PrinterIcon className="h-5 w-5" />
+            Print Attendance Sheet
+          </button>
         </div>
 
         {error && (
-          <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded">
-            <p className="text-red-700 font-medium">⚠️ {error}</p>
+          <div className="px-4 md:px-6 pb-3">
+            <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
+              ⚠️ {error}
+            </div>
           </div>
         )}
 
         {attendanceData && (
-          <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded">
-            <p className="text-green-700 font-medium">
-              ✅ Attendance sheet ready: {(attendanceData.courses ?? []).length} course(s), {' '}
+          <div className="px-4 md:px-6 pb-3">
+            <div className="mt-2 p-3 bg-green-50 border border-green-200 rounded-xl text-sm text-green-700">
+              ✅ Attendance sheet ready: {(attendanceData.courses ?? []).length} course(s),{" "}
               {(attendanceData.courses ?? []).reduce((sum, c) => sum + (c.students ?? []).length, 0)} student(s)
-            </p>
+            </div>
           </div>
         )}
-
-        <button 
-          onClick={handlePrint} 
-          disabled={!attendanceData} 
-          className="mt-4 bg-blue-600 text-white px-6 py-3 rounded-lg font-bold disabled:bg-gray-400 hover:bg-blue-700 transition-colors shadow-md"
-        >
-          🖨️ Print Attendance Sheet
-        </button>
       </div>
 
       {/* PRINTABLE AREA */}

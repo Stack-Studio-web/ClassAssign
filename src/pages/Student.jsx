@@ -21,6 +21,13 @@ api.interceptors.response.use(
   }
 );
 
+const downloadStudentTemplate = () => {
+  const a = document.createElement("a");
+  a.href = "/format/student_import_template_CORRECT.xlsx";
+  a.download = "student_import_template_CORRECT.xlsx";
+  a.click();
+};
+
 export default function Student() {
   const [totalStudents, setTotalStudents] = useState(0);
   const [students, setStudents] = useState([]);
@@ -727,6 +734,19 @@ export default function Student() {
               <h2 className="font-bold text-base sm:text-lg text-gray-900">Excel Import</h2>
             </div>
             <div className="p-4 sm:p-5 md:px-6 space-y-4">
+              <div className="p-3 rounded-lg bg-blue-50 border border-blue-100 text-xs sm:text-sm text-blue-900">
+                <p className="font-semibold mb-1">Download Template First</p>
+                <p className="mb-2">
+                  Use the official Excel template to ensure columns match exactly before importing.
+                </p>
+                <button
+                  type="button"
+                  onClick={downloadStudentTemplate}
+                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-sm transition-colors"
+                >
+                  Download Student Template
+                </button>
+              </div>
               <div>
                 <label className="text-xs font-semibold text-gray-700 mb-1.5 block">Choose .xlsx File</label>
                 <input
