@@ -336,7 +336,7 @@ const ExamHallAllotment = () => {
   if (error) return <div className="text-center p-6 text-red-500">{error}</div>;
 
   return (
-    <div className="p-6 max-w-6xl mx-auto font-poppins">
+    <div className="px-4 py-5 sm:p-6 max-w-6xl mx-auto font-poppins">
       {/* AY / Semester / Category — only for this page */}
       <div className="flex flex-wrap items-center gap-3 sm:gap-4 mb-4 p-3 sm:p-4 bg-white border border-gray-200 rounded-xl shadow-sm">
         <span className="text-sm font-semibold text-gray-700">Session:</span>
@@ -448,41 +448,44 @@ const ExamHallAllotment = () => {
         </div>
       )}
 
-      <div className="flex justify-between items-center mb-6">
-        <div>
-          <h1 className="text-2xl font-bold mb-2 text-indigo-900">Filter Exam Hall Allotment</h1>
-          <div className="flex gap-4 items-center">
-            <label className="text-sm font-medium">Date:
-              <input 
-                type="date" 
-                value={filters.date} 
-                onChange={(e) => setFilters({ ...filters, date: e.target.value })} 
-                className="border px-2 py-1 ml-2 rounded" 
-              />
-            </label>
-            <label className="text-sm font-medium">Session:
-              <select 
-                value={filters.session} 
-                onChange={(e) => setFilters({ ...filters, session: e.target.value })} 
-                className="border px-2 py-1 ml-2 rounded"
-              >
-                <option value="">All</option>
-                <option value="FN">FN</option>
-                <option value="AN">AN</option>
-              </select>
-            </label>
-          </div>
+      {/* Filter Exam Hall Allotment — same left padding for title, filters, buttons, fields */}
+      <div className="mb-6 w-full">
+        <h1 className="text-xl sm:text-2xl font-bold mb-3 text-indigo-900">Filter Exam Hall Allotment</h1>
+
+        {/* Date / Session filters — left aligned */}
+        <div className="flex flex-wrap gap-3 sm:gap-4 items-center mb-4">
+          <label className="text-sm font-medium flex items-center gap-2">
+            <span>Date:</span>
+            <input
+              type="date"
+              value={filters.date}
+              onChange={(e) => setFilters({ ...filters, date: e.target.value })}
+              className="border border-gray-300 px-2 py-1.5 rounded text-sm min-w-0 sm:min-w-[140px]"
+            />
+          </label>
+          <label className="text-sm font-medium flex items-center gap-2">
+            <span>Session:</span>
+            <select
+              value={filters.session}
+              onChange={(e) => setFilters({ ...filters, session: e.target.value })}
+              className="border border-gray-300 px-2 py-1.5 rounded text-sm min-w-0 sm:min-w-[80px]"
+            >
+              <option value="">All</option>
+              <option value="FN">FN</option>
+              <option value="AN">AN</option>
+            </select>
+          </label>
         </div>
 
-        <div className="flex flex-col space-y-2">
-          {/*  Show Send Notification only for admin and faculty_incharge */}
+        {/* Buttons — left aligned, same container, small gap, margin-top/bottom */}
+        <div className="flex flex-wrap gap-2 items-center mt-4 mb-4">
           {hasNotificationAccess && (
             <button
               onClick={handleSendNotifications}
               disabled={!filters.date || !["FN", "AN"].includes(filters.session) || filteredHalls.length === 0 || notificationStatus.loading}
-              className={`text-white px-4 py-2 rounded-md shadow transition flex items-center gap-2 ${
-                notificationStatus.loading 
-                  ? "bg-yellow-500 cursor-wait" 
+              className={`text-white px-4 py-2 rounded-md shadow transition flex items-center gap-2 min-h-[40px] ${
+                notificationStatus.loading
+                  ? "bg-yellow-500 cursor-wait"
                   : "bg-orange-500 hover:bg-orange-600 disabled:bg-gray-400 disabled:cursor-not-allowed"
               }`}
               title={!hasNotificationAccess ? "Only Admin and Faculty Incharge can send notifications" : ""}
@@ -496,67 +499,60 @@ const ExamHallAllotment = () => {
                   Sending...
                 </>
               ) : (
-                <>
-                  📨 Send Teams Notification
-                </>
+                <>📨 Send Teams Notification</>
               )}
             </button>
           )}
-          
-          {!hasNotificationAccess && userRole === 'coe' && (
-            <div className="text-xs text-gray-500 italic text-center">
-              COE role: View only access
-            </div>
-          )}
-          
-          <div className="flex flex-wrap gap-2 items-center justify-end text-xs">
-            <label className="flex items-center gap-1">
-              <span className="font-medium">Logo:</span>
-              <select
-                value={logoType}
-                onChange={(e) => handleLogoChange(e.target.value)}
-                className="border px-2 py-1 rounded"
-              >
-                <option value="KCT">KCT</option>
-                <option value="KSI">KSI</option>
-              </select>
-            </label>
-            <label className="flex items-center gap-1 min-w-[220px]">
-              <span className="font-medium">Department:</span>
-              <input
-                type="text"
-                value={departmentLine}
-                onChange={(e) => setDepartmentLine(e.target.value)}
-                className="border px-2 py-1 rounded flex-1"
-              />
-            </label>
-            <label className="flex items-center gap-1 min-w-[220px]">
-              <span className="font-medium">Program 1:</span>
-              <input
-                type="text"
-                value={programmeLine1}
-                onChange={(e) => setProgrammeLine1(e.target.value)}
-                className="border px-2 py-1 rounded flex-1"
-              />
-            </label>
-            <label className="flex items-center gap-1 min-w-[220px]">
-              <span className="font-medium">Program 2:</span>
-              <input
-                type="text"
-                value={programmeLine2}
-                onChange={(e) => setProgrammeLine2(e.target.value)}
-                className="border px-2 py-1 rounded flex-1"
-              />
-            </label>
-          </div>
-
-          <button 
-            onClick={handlePrint} 
-            disabled={filteredHalls.length === 0} 
-            className="bg-blue-600 text-white px-4 py-2 rounded-md shadow hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
+          <button
+            onClick={handlePrint}
+            disabled={filteredHalls.length === 0}
+            className="bg-blue-600 text-white px-4 py-2 rounded-md shadow hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2 min-h-[40px]"
           >
             📄 Export as PDF
           </button>
+        </div>
+
+
+        {/* Logo / Department / Program — same left padding */}
+        <div className="flex flex-wrap gap-2 sm:gap-3 items-center text-xs">
+          <label className="flex items-center gap-1 flex-shrink-0">
+            <span className="font-medium whitespace-nowrap">Logo:</span>
+            <select
+              value={logoType}
+              onChange={(e) => handleLogoChange(e.target.value)}
+              className="border border-gray-300 px-2 py-1.5 rounded min-w-0"
+            >
+              <option value="KCT">KCT</option>
+              <option value="KSI">KSI</option>
+            </select>
+          </label>
+          <label className="flex items-center gap-1 min-w-0 w-full sm:w-auto sm:min-w-[180px]">
+            <span className="font-medium whitespace-nowrap">Department:</span>
+            <input
+              type="text"
+              value={departmentLine}
+              onChange={(e) => setDepartmentLine(e.target.value)}
+              className="border border-gray-300 px-2 py-1.5 rounded flex-1 min-w-0"
+            />
+          </label>
+          <label className="flex items-center gap-1 min-w-0 w-full sm:w-auto sm:min-w-[180px]">
+            <span className="font-medium whitespace-nowrap">Program 1:</span>
+            <input
+              type="text"
+              value={programmeLine1}
+              onChange={(e) => setProgrammeLine1(e.target.value)}
+              className="border border-gray-300 px-2 py-1.5 rounded flex-1 min-w-0"
+            />
+          </label>
+          <label className="flex items-center gap-1 min-w-0 w-full sm:w-auto sm:min-w-[180px]">
+            <span className="font-medium whitespace-nowrap">Program 2:</span>
+            <input
+              type="text"
+              value={programmeLine2}
+              onChange={(e) => setProgrammeLine2(e.target.value)}
+              className="border border-gray-300 px-2 py-1.5 rounded flex-1 min-w-0"
+            />
+          </label>
         </div>
       </div>
 
@@ -575,11 +571,12 @@ const ExamHallAllotment = () => {
         ) : (
           Object.entries(hallsByTime).map(([time, halls]) => (
             <div key={time} className="mb-8 page-break-inside-avoid">
-              <h3 className="font-bold text-md mb-1 text-center bg-gray-100 py-1">
+              <h3 className="font-bold text-sm sm:text-md mb-1 text-center bg-gray-100 py-1">
                 Exam Time: {formatTime(halls[0].examStartTime, halls[0].examEndTime)} | {new Date(halls[0].examDate).toLocaleDateString()}
               </h3>
 
-              <table className="w-full border-collapse border border-gray-400 text-xs">
+              <div className="overflow-x-auto -mx-4 sm:mx-0">
+                <table className="w-full border-collapse border border-gray-400 text-xs min-w-[500px]">
                 <thead>
                   <tr className="bg-gray-800 text-white">
                     <th className="border border-gray-400 p-2">Hall No</th>
@@ -609,6 +606,7 @@ const ExamHallAllotment = () => {
                   ))}
                 </tbody>
               </table>
+              </div>
             </div>
           ))
         )}

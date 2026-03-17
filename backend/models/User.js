@@ -6,16 +6,17 @@ const User = {
   /* ===============================
       CREATE LOCAL USER
   =============================== */
-  createLocal: async ({ username, email, password, role_id = 2, department = null, created_by = null }) => {
-    // Validate role exists and is valid for user creation
-    const isValidRole = await Role.isValidForUserCreation(role_id);
+  createLocal: async ({ username, email, password, role_id = 2, department = null, created_by = null, created_by_hod_id = null, createdByRole = 'admin' }) => {
+    const isValidRole = await Role.isValidForUserCreation(role_id, createdByRole);
     if (!isValidRole) {
-      throw new Error('Invalid role for user creation. Only COE and Faculty Incharge can be created.');
+      throw new Error(createdByRole === 'hod'
+        ? 'HoD can only create Faculty Incharge in their department.'
+        : 'Invalid role. Admin can create HoD or Faculty Incharge.');
     }
 
     const sql = `
-      INSERT INTO users (username, email, password, role_id, department, created_by)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO users (username, email, password, role_id, department, created_by, created_by_hod_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `;
 
     const [result] = await db.query(sql, [
@@ -24,7 +25,8 @@ const User = {
       password,
       role_id,
       department,
-      created_by
+      created_by || null,
+      created_by_hod_id || null
     ]);
 
     return result.insertId;
@@ -90,6 +92,18 @@ const User = {
     return rows[0];
   },
 
+  /** Same as getUserWithRole but does not filter by is_active (for permission checks on update/delete/activate). */
+  getUserWithRoleById: async (userId) => {
+    const [rows] = await db.query(
+      `SELECT u.*, r.name as role_name, r.description as role_description
+       FROM users u
+       LEFT JOIN roles r ON u.role_id = r.id
+       WHERE u.id = ?`,
+      [userId]
+    );
+    return rows[0];
+  },
+
   /* ===============================
       FINDERS
   =============================== */
@@ -127,10 +141,11 @@ const User = {
   },
 
   /* ===============================
-      GET ALL USERS (ADMIN ONLY)
+      GET ALL USERS
+      For admin: all users. For hod: self + faculty_incharge where created_by_hod_id = hodId
   =============================== */
-  getAllUsers: async () => {
-    const [rows] = await db.query(`
+  getAllUsers: async (requesterRole = 'admin', requesterUserId = null) => {
+    const baseSelect = `
       SELECT 
         u.id,
         u.username,
@@ -141,12 +156,47 @@ const User = {
         u.role_id,
         u.created_at,
         u.updated_at,
+        u.created_by_hod_id,
         r.name as role_name,
-        creator.username as created_by_username
+        creator.username as created_by_username,
+        hod_user.username as created_by_hod_username
       FROM users u
       LEFT JOIN roles r ON u.role_id = r.id
       LEFT JOIN users creator ON u.created_by = creator.id
-      ORDER BY u.created_at DESC
+      LEFT JOIN users hod_user ON u.created_by_hod_id = hod_user.id
+    `;
+    if (requesterRole === 'admin') {
+      const [rows] = await db.query(`${baseSelect} ORDER BY u.created_at DESC`);
+      return rows;
+    }
+    if (requesterRole === 'hod' && requesterUserId) {
+      const [rows] = await db.query(
+        `${baseSelect}
+         WHERE u.id = ? OR (u.role_id = (SELECT id FROM roles WHERE name = 'faculty_incharge') AND u.created_by_hod_id = ?)
+         ORDER BY u.created_at DESC`,
+        [requesterUserId, requesterUserId]
+      );
+      return rows;
+    }
+    return [];
+  },
+
+  /** For HoD: return [hodUserId, ...user ids of faculty incharge created by this HoD] for scoping seating/report */
+  getOwnerIdsForHod: async (hodUserId) => {
+    const [rows] = await db.query(
+      `SELECT id FROM users WHERE id = ? OR created_by_hod_id = ?`,
+      [hodUserId, hodUserId]
+    );
+    return (rows || []).map((r) => r.id);
+  },
+
+  /* Get all HoDs (admin only) - users with role hod */
+  getHods: async () => {
+    const [rows] = await db.query(`
+      SELECT u.id, u.username, u.email, u.department, u.is_active, u.created_at
+      FROM users u
+      JOIN roles r ON u.role_id = r.id AND r.name = 'hod'
+      ORDER BY u.department, u.username
     `);
     return rows;
   },

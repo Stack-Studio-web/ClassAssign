@@ -79,7 +79,7 @@ function Landing() {
                 setFlashMessage('Successfully logged in! Redirecting...');
                 
                 setTimeout(() => {
-                    navigate('/allotment');
+                    navigate(data.redirectTo || '/allotment');
                 }, 1500);
                 
             } else {

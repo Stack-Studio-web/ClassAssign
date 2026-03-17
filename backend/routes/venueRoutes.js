@@ -10,13 +10,13 @@ const { andClause } = require("../utils/ownerFilter");
 
 /* ================================
    GET ALL VENUES
-   Roles: admin, faculty_incharge, coe (CEO)
+   Roles: admin, faculty_incharge
 ================================ */
 const ownerOpts = (req) => ({ ownerUserId: req.user?.id, role: req.user?.role });
 
 router.get("/", 
   sessionAuth, 
-  checkRole(['admin', 'faculty_incharge', 'coe']), 
+  checkRole(['admin', 'faculty_incharge']), 
   async (req, res) => {
     try {
       const venues = await Venue.getAll(ownerOpts(req));
@@ -28,11 +28,11 @@ router.get("/",
 
 /* ================================
    GET VENUE STATS
-   Roles: admin, faculty_incharge, coe (CEO)
+   Roles: admin, faculty_incharge
 ================================ */
 router.get("/stats", 
   sessionAuth, 
-  checkRole(['admin', 'faculty_incharge', 'coe']), 
+  checkRole(['admin', 'faculty_incharge']), 
   async (req, res) => {
     try {
       const venues = await Venue.getAll(ownerOpts(req));

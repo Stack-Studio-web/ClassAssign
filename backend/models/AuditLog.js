@@ -35,8 +35,12 @@ const AuditLog = {
 
   /* ===============================
       GET ALL LOGS (WITH PAGINATION)
+      If department is provided (HoD), only logs from users in that department.
   =============================== */
-  getAll: async (limit = 100, offset = 0) => {
+  getAll: async (limit = 100, offset = 0, opts = {}) => {
+    const { department } = opts;
+    const deptClause = department ? " AND u.department = ?" : "";
+    const params = department ? [department, limit, offset] : [limit, offset];
     const [rows] = await db.query(`
       SELECT 
         al.id,
@@ -54,9 +58,10 @@ const AuditLog = {
       FROM audit_logs al
       LEFT JOIN users u ON al.user_id = u.id
       LEFT JOIN roles r ON u.role_id = r.id
+      WHERE 1=1${deptClause}
       ORDER BY al.created_at DESC
       LIMIT ? OFFSET ?
-    `, [limit, offset]);
+    `, params);
 
     return rows.map(row => ({
       ...row,
@@ -213,52 +218,51 @@ const AuditLog = {
 
   /* ===============================
       GET STATISTICS
+      If department is set (HoD), only count logs from users in that department.
   =============================== */
-  getStats: async () => {
+  getStats: async (opts = {}) => {
+    const { department } = opts;
+    const joinDept = department ? " JOIN users _u ON al.user_id = _u.id AND _u.department = ?" : "";
+    const params = department ? [department] : [];
+
     const [totalLogs] = await db.query(
-      'SELECT COUNT(*) as count FROM audit_logs'
+      `SELECT COUNT(*) as count FROM audit_logs al${joinDept}`,
+      params
     );
 
-    const [actionStats] = await db.query(`
-      SELECT action, COUNT(*) as count
-      FROM audit_logs
-      GROUP BY action
-      ORDER BY count DESC
-    `);
+    const [actionStats] = await db.query(
+      `SELECT al.action, COUNT(*) as count FROM audit_logs al${joinDept} GROUP BY al.action ORDER BY count DESC`,
+      params
+    );
 
-    const [entityStats] = await db.query(`
-      SELECT entity_type, COUNT(*) as count
-      FROM audit_logs
-      GROUP BY entity_type
-      ORDER BY count DESC
-    `);
+    const [entityStats] = await db.query(
+      `SELECT al.entity_type as entity_type, COUNT(*) as count FROM audit_logs al${joinDept} GROUP BY al.entity_type ORDER BY count DESC`,
+      params
+    );
 
-    const [userStats] = await db.query(`
-      SELECT 
-        u.username,
-        u.email,
-        COUNT(al.id) as action_count
-      FROM audit_logs al
-      JOIN users u ON al.user_id = u.id
-      GROUP BY u.id
-      ORDER BY action_count DESC
-      LIMIT 10
-    `);
+    const [userStats] = await db.query(
+      `SELECT u.username, u.email, COUNT(al.id) as action_count
+       FROM audit_logs al
+       JOIN users u ON al.user_id = u.id${department ? " AND u.department = ?" : ""}
+       GROUP BY u.id, u.username, u.email
+       ORDER BY action_count DESC LIMIT 10`,
+      department ? [department] : []
+    );
 
-    const [recentActivity] = await db.query(`
-      SELECT (created_at AT TIME ZONE 'UTC')::date as date, COUNT(*) as count
-      FROM audit_logs
-      WHERE created_at >= NOW() - INTERVAL '30 days'
-      GROUP BY (created_at AT TIME ZONE 'UTC')::date
-      ORDER BY date DESC
-    `);
+    const [recentActivity] = await db.query(
+      `SELECT (al.created_at AT TIME ZONE 'UTC')::date as date, COUNT(*) as count
+       FROM audit_logs al${joinDept}
+       WHERE al.created_at >= NOW() - INTERVAL '30 days'
+       GROUP BY (al.created_at AT TIME ZONE 'UTC')::date ORDER BY date DESC`,
+      params
+    );
 
     return {
-      totalLogs: totalLogs[0].count,
-      actionStats,
-      entityStats,
-      topUsers: userStats,
-      recentActivity
+      totalLogs: totalLogs[0]?.count ?? 0,
+      actionStats: actionStats || [],
+      entityStats: entityStats || [],
+      topUsers: userStats || [],
+      recentActivity: recentActivity || []
     };
   },
 

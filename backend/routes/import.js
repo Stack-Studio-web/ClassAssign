@@ -31,7 +31,7 @@ let lastVenueImport = {
 /* =====================================================
    DELETE ALL STUDENTS
 ===================================================== */
-router.delete("/delete-all-students", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
+router.delete("/delete-all-students", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
   try {
     await Student.deleteAll(ownerOpts(req));
     res.json({ message: "Successfully deleted all student records." });
@@ -46,7 +46,7 @@ router.delete("/delete-all-students", sessionAuth, checkRole(["admin", "faculty_
 /* =====================================================
    IMPORT STUDENTS FROM EXCEL
 ===================================================== */
-router.post("/import-students", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), upload.single("file"), async (req, res) => {
+router.post("/import-students", sessionAuth, checkRole(["admin", "faculty_incharge"]), upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ message: "No file uploaded." });
@@ -107,7 +107,7 @@ router.post("/import-students", sessionAuth, checkRole(["admin", "faculty_inchar
 /* =====================================================
    DELETE ALL FACULTY
 ===================================================== */
-router.delete("/delete-all-faculty", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
+router.delete("/delete-all-faculty", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
   try {
     await Faculty.deleteAll(ownerOpts(req));
     res.json({ message: "Successfully deleted all faculty records." });
@@ -122,7 +122,7 @@ router.delete("/delete-all-faculty", sessionAuth, checkRole(["admin", "faculty_i
 /* =====================================================
    IMPORT FACULTY FROM EXCEL (DUPLICATE SAFE)
 ===================================================== */
-router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), upload.single("file"), async (req, res) => {
+router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharge"]), upload.single("file"), async (req, res) => {
   try {
     lastFacultyImport = { insertedIds: [], skippedEmails: [] };
 
@@ -201,7 +201,7 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
    - NO PREFIX (like "5 2,2,3")
    - Only numbers 2 or 3
 ===================================================== */
-router.post("/import-venues", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), upload.single("file"), async (req, res) => {
+router.post("/import-venues", sessionAuth, checkRole(["admin", "faculty_incharge"]), upload.single("file"), async (req, res) => {
   try {
     lastVenueImport = { insertedIds: [] };
 
@@ -357,7 +357,7 @@ router.get("/last-faculty-import", (req, res) => {
   res.json(lastFacultyImport);
 });
 
-router.post("/undo-faculty-import", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
+router.post("/undo-faculty-import", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
   try {
     if (lastFacultyImport.insertedIds.length === 0) {
       return res.status(400).json({
@@ -385,7 +385,7 @@ router.get("/last-student-import", (req, res) => {
   res.json(lastStudentImport);
 });
 
-router.post("/undo-student-import", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
+router.post("/undo-student-import", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
   try {
     if (!lastStudentImport.insertedIds.length) {
       return res.status(400).json({
@@ -414,7 +414,7 @@ router.get("/last-venue-import", (req, res) => {
   res.json(lastVenueImport);
 });
 
-router.post("/undo-venue-import", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
+router.post("/undo-venue-import", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
   try {
     if (!lastVenueImport.insertedIds.length) {
       return res.status(400).json({

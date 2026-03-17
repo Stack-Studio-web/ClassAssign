@@ -56,7 +56,7 @@ router.get("/progress", sessionAuth, async (req, res) => {
 router.post(
   "/exam-announcement-v2",
   sessionAuth,
-  checkRole(['admin', 'faculty_incharge', 'coe']),
+  checkRole(['admin', 'faculty_incharge']),
   auditLogger("SEND_EXAM_ANNOUNCEMENT_V2", "Notification"),
   async (req, res) => {
     const { examType, coursesWithDates, department } = req.body;
@@ -420,7 +420,7 @@ router.post(
 );
 
 // Other routes unchanged
-router.post("/exam-announcement", sessionAuth, checkRole(['admin', 'faculty_incharge', 'coe']), auditLogger("SEND_EXAM_ANNOUNCEMENT", "Notification"), async (req, res) => {
+router.post("/exam-announcement", sessionAuth, checkRole(['admin', 'faculty_incharge']), auditLogger("SEND_EXAM_ANNOUNCEMENT", "Notification"), async (req, res) => {
   const { examType, courses } = req.body;
   if (!examType || !courses || courses.length === 0) return res.status(400).json({ error: "Required fields missing" });
   try {

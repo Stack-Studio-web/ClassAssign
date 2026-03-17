@@ -49,12 +49,7 @@ const AuthGuard = ({ children, allowedRoles = [] }) => {
           if (!allowedRoles.includes(user.role)) {
             alert(`Access denied: ${user.role} role does not have permission to view this page.`);
             
-            // Redirect based on role if they hit a restricted page
-            if (user.role === 'coe') {
-              navigate('/venue', { replace: true });
-            } else {
-              navigate('/allotment', { replace: true });
-            }
+            navigate('/allotment', { replace: true });
             return;
           }
         } catch (err) {
@@ -95,11 +90,11 @@ function App() {
       <Route path="/login" element={<Landing />} />
       <Route path="/api/auth/microsoft/callback" element={<Landing />} />
 
-      {/* PROTECTED ROUTES - ACCESSIBLE BY ALL ROLES (Admin, Faculty, COE) */}
+      {/* PROTECTED ROUTES - ACCESSIBLE BY Admin, Faculty Incharge, HoD */}
       <Route
         path="/attendance"
         element={
-          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'coe']}>
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod']}>
             <Layout><StudentAttendance /></Layout>
           </AuthGuard>
         }
@@ -108,7 +103,7 @@ function App() {
       <Route
         path="/venue"
         element={
-          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'coe']}>
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge']}>
             <Layout><Venue /></Layout>
           </AuthGuard>
         }
@@ -117,7 +112,7 @@ function App() {
       <Route
         path="/faculty"
         element={
-          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'coe']}>
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge']}>
             <Layout><Faculty /></Layout>
           </AuthGuard>
         }
@@ -126,7 +121,7 @@ function App() {
       <Route
         path="/report"
         element={
-          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'coe']}>
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod']}>
             <Layout><Report /></Layout>
           </AuthGuard>
         }
@@ -135,7 +130,7 @@ function App() {
       <Route
         path="/Hall"
         element={
-          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'coe']}>
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod']}>
             <Layout><Hall /></Layout>
           </AuthGuard>
         }
@@ -144,7 +139,7 @@ function App() {
       <Route
         path="/student"
         element={
-          <AuthGuard allowedRoles={['admin', 'faculty_incharge','coe']}>
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge']}>
             <Layout><StudentImport /></Layout>
           </AuthGuard>
         }
@@ -154,7 +149,7 @@ function App() {
       <Route
         path="/timetable"
         element={
-          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'coe']}>
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod']}>
             <Layout><Timetable /></Layout>
           </AuthGuard>
         }
@@ -171,7 +166,6 @@ function App() {
 
       {/* ======================================================
           RESTRICTED ROUTES - ALLOTMENT (Admin & Faculty Only)
-          COE is NOT allowed here
       ====================================================== */}
       <Route
         path="/allotment"
@@ -183,12 +177,12 @@ function App() {
       />
 
       {/* ======================================================
-          ADMIN-ONLY ROUTES (User Management & Audit Logs)
+          ADMIN & HoD: User Management. ADMIN-ONLY: Audit Logs
       ====================================================== */}
       <Route
         path="/users"
         element={
-          <AuthGuard allowedRoles={['admin']}>
+          <AuthGuard allowedRoles={['admin', 'hod']}>
             <Layout><UserManagement /></Layout>
           </AuthGuard>
         }

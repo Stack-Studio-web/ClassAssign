@@ -40,6 +40,18 @@ const Role = {
     return rows[0];
   },
 
+  getByNameIn: async (roleNames) => {
+    if (!Array.isArray(roleNames) || roleNames.length === 0) return [];
+    const placeholders = roleNames.map(() => '?').join(',');
+    const [rows] = await db.query(
+      `SELECT id, name, description, created_at
+       FROM roles
+       WHERE name IN (${placeholders})`,
+      roleNames
+    );
+    return rows;
+  },
+
   /* ===============================
       CHECK IF ROLE EXISTS
   =============================== */
@@ -85,14 +97,14 @@ const Role = {
         canViewReports: true,
         canExportData: true,
       },
-      coe: {
-        canManageUsers: false,
-        canManageVenues: true,
-        canManageStudents: true,
-        canManageFaculty: true,
-        canManageAllotments: true,
-        canViewReports: true,
-        canExportData: true,
+      hod: {
+        canManageUsers: true, // only Faculty Incharge in own department
+        canManageVenues: false,
+        canManageStudents: false,
+        canManageFaculty: false,
+        canManageAllotments: false,
+        canViewReports: false,
+        canExportData: false,
       },
       faculty_incharge: {
         canManageUsers: false,
@@ -110,13 +122,18 @@ const Role = {
 
   /* ===============================
       VALIDATE ROLE FOR USER CREATION
+      createdByRole: 'admin' | 'hod'
   =============================== */
-  isValidForUserCreation: async (roleId) => {
+  isValidForUserCreation: async (roleId, createdByRole = 'admin') => {
     const role = await Role.getById(roleId);
     if (!role) return false;
-    
-    // Only COE and Faculty Incharge can be created via UI
-    return role.name === 'coe' || role.name === 'faculty_incharge';
+    if (createdByRole === 'admin') {
+      return role.name === 'hod' || role.name === 'faculty_incharge';
+    }
+    if (createdByRole === 'hod') {
+      return role.name === 'faculty_incharge';
+    }
+    return false;
   },
 };
 

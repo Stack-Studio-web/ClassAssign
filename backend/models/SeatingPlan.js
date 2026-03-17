@@ -159,7 +159,17 @@ const SeatingPlan = {
       GET ALL SEATING PLANS
   =============================== */
   getAllPlans: async (opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId);
+    let ownerSql = "";
+    let ownerParams = [];
+    if (opts.hodAllowedOwnerIds && opts.hodAllowedOwnerIds.length > 0) {
+      const placeholders = opts.hodAllowedOwnerIds.map(() => "?").join(",");
+      ownerSql = ` WHERE owner_user_id IN (${placeholders})`;
+      ownerParams = opts.hodAllowedOwnerIds;
+    } else {
+      const clause = whereClause(opts.role, opts.ownerUserId);
+      ownerSql = clause.sql;
+      ownerParams = clause.params;
+    }
     const [rows] = await db.query(`
       SELECT 
         id AS _id,
@@ -284,7 +294,17 @@ const SeatingPlan = {
       GET SINGLE PLAN BY ID
   =============================== */
   getPlanById: async (planId, opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    let ownerSql = "";
+    let ownerParams = [];
+    if (opts.hodAllowedOwnerIds && opts.hodAllowedOwnerIds.length > 0) {
+      const placeholders = opts.hodAllowedOwnerIds.map(() => "?").join(",");
+      ownerSql = ` AND owner_user_id IN (${placeholders})`;
+      ownerParams = opts.hodAllowedOwnerIds;
+    } else {
+      const clause = andClause(opts.role, opts.ownerUserId);
+      ownerSql = clause.sql;
+      ownerParams = clause.params;
+    }
     const [plans] = await db.query(
       `SELECT 
         id AS _id,
@@ -398,7 +418,17 @@ const SeatingPlan = {
       DELETE SEATING PLAN
   =============================== */
   deletePlan: async (planId, opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    let ownerSql = "";
+    let ownerParams = [];
+    if (opts.hodAllowedOwnerIds && opts.hodAllowedOwnerIds.length > 0) {
+      const placeholders = opts.hodAllowedOwnerIds.map(() => "?").join(",");
+      ownerSql = ` AND owner_user_id IN (${placeholders})`;
+      ownerParams = opts.hodAllowedOwnerIds;
+    } else {
+      const clause = andClause(opts.role, opts.ownerUserId);
+      ownerSql = clause.sql;
+      ownerParams = clause.params;
+    }
     const conn = await db.getConnection();
     try {
       await conn.beginTransaction();

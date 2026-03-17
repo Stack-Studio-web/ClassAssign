@@ -4,6 +4,7 @@ const router = express.Router();
 const SeatingPlan = require("../models/SeatingPlan");
 const Venue = require("../models/venue");
 const Faculty = require("../models/Faculty");
+const User = require("../models/User");
 const db = require("../config/db");
 const { andClause, whereClause } = require("../utils/ownerFilter");
 const sessionAuth = require("../middleware/sessionAuth");
@@ -187,12 +188,12 @@ router.post(
 
 /* =====================================================
     DELETE: SEATING PLAN
-    Roles: admin, faculty_incharge
+    Roles: admin, faculty_incharge, hod (hod: only plans owned by self or their faculty incharge)
 ===================================================== */
 router.delete(
   "/delete-plan/:id",
   sessionAuth,
-  checkRole(['admin', 'faculty_incharge']),
+  checkRole(['admin', 'faculty_incharge', 'hod']),
   auditLogger("DELETE_SEATING_PLAN", "SeatingPlan"),
   async (req, res) => {
     const planId = req.params.id;
@@ -201,7 +202,12 @@ router.delete(
     try {
       await connection.beginTransaction();
 
-      const plan = await SeatingPlan.getPlanById(planId, ownerOpts(req));
+      let opts = ownerOpts(req);
+      if (req.user?.role === "hod") {
+        const hodAllowedOwnerIds = await User.getOwnerIdsForHod(req.user.id);
+        opts = { ...opts, hodAllowedOwnerIds };
+      }
+      const plan = await SeatingPlan.getPlanById(planId, opts);
       if (!plan) {
         await connection.rollback();
         return res.status(404).json({ 
@@ -237,7 +243,7 @@ router.delete(
         }
       }
 
-      await SeatingPlan.deletePlan(planId, ownerOpts(req));
+      await SeatingPlan.deletePlan(planId, opts);
 
       await connection.commit();
 
@@ -267,14 +273,19 @@ router.delete(
 
 /* =====================================================
     GET: ALL SEATING PLANS
-    Roles: admin, faculty_incharge, coe
+    Roles: admin, faculty_incharge, hod (hod sees plans owned by self or their faculty incharge)
 ===================================================== */
 router.get("/",
   sessionAuth,
-  checkRole(['admin', 'faculty_incharge', 'coe']),
+  checkRole(['admin', 'faculty_incharge', 'hod']),
   async (req, res) => {
     try {
-      const plans = await SeatingPlan.getAllPlans();
+      let opts = ownerOpts(req);
+      if (req.user?.role === "hod") {
+        const hodAllowedOwnerIds = await User.getOwnerIdsForHod(req.user.id);
+        opts = { ...opts, hodAllowedOwnerIds };
+      }
+      const plans = await SeatingPlan.getAllPlans(opts);
       res.status(200).json(plans);
     } catch (err) {
       console.error("FETCH PLANS ERROR:", err);
@@ -288,11 +299,11 @@ router.get("/",
 
 /* =====================================================
     ✅ GET ATTENDANCE SHEET DATA V4 - FIXED WITH TIMETABLE JOIN
-    Roles: admin, faculty_incharge, coe
+    Roles: admin, faculty_incharge, hod (hod sees own department plans only)
 ===================================================== */
 router.get("/attendance", 
   sessionAuth, 
-  checkRole(['admin', 'faculty_incharge', 'coe']),
+  checkRole(['admin', 'faculty_incharge', 'hod']),
   async (req, res) => {
     try {
         const { date, session, startTime, endTime, venue } = req.query;
@@ -310,8 +321,21 @@ router.get("/attendance",
         const dateOnly = date.includes("T") ? date.split("T")[0] : date;
         console.log("🗓️  Normalized date:", dateOnly);
 
-        // ✅ Step 1: Find ALL plans for this date and session (with owner filter for COE/faculty)
-        const { sql: ownerSql, params: ownerParams } = andClause(req.user?.role, req.user?.id);
+        // ✅ Step 1: Find ALL plans for this date and session (with owner filter for faculty/hod)
+        let ownerSql = "";
+        let ownerParams = [];
+        if (req.user?.role === "hod") {
+          const hodAllowedOwnerIds = await User.getOwnerIdsForHod(req.user.id);
+          if (hodAllowedOwnerIds.length > 0) {
+            const placeholders = hodAllowedOwnerIds.map(() => "?").join(",");
+            ownerSql = ` AND owner_user_id IN (${placeholders})`;
+            ownerParams = hodAllowedOwnerIds;
+          }
+        } else {
+          const clause = andClause(req.user?.role, req.user?.id);
+          ownerSql = clause.sql;
+          ownerParams = clause.params;
+        }
         const [plans] = await db.query(
             `SELECT id, exam_type, exam_date, exam_session, exam_start_time, exam_end_time 
              FROM seating_plans 
@@ -329,7 +353,20 @@ router.get("/attendance",
         }
 
         if (plans.length === 0) {
-            const { sql: fallbackWhere, params: fallbackParams } = whereClause(req.user?.role, req.user?.id);
+            let fallbackWhere = "";
+            let fallbackParams = [];
+            if (req.user?.role === "hod") {
+              const hodAllowedOwnerIds = await User.getOwnerIdsForHod(req.user.id);
+              if (hodAllowedOwnerIds.length > 0) {
+                const placeholders = hodAllowedOwnerIds.map(() => "?").join(",");
+                fallbackWhere = ` WHERE owner_user_id IN (${placeholders})`;
+                fallbackParams = hodAllowedOwnerIds;
+              }
+            } else {
+              const clause = whereClause(req.user?.role, req.user?.id);
+              fallbackWhere = clause.sql;
+              fallbackParams = clause.params;
+            }
             const [allPlans] = await db.query(
                 `SELECT DISTINCT exam_date, exam_session 
                  FROM seating_plans${fallbackWhere || " WHERE 1=1"}
@@ -620,12 +657,12 @@ router.post("/check-faculty-availability",
 
 /* =====================================================
     GET: SINGLE SEATING PLAN - NOW AFTER /attendance
-    Roles: admin, faculty_incharge, coe
+    Roles: admin, faculty_incharge
     ⚠️ IMPORTANT: This MUST come AFTER /attendance route!
 ===================================================== */
 router.get("/:id",
   sessionAuth,
-  checkRole(['admin', 'faculty_incharge', 'coe']),
+  checkRole(['admin', 'faculty_incharge']),
   async (req, res) => {
     try {
       const plan = await SeatingPlan.getPlanById(req.params.id, ownerOpts(req));

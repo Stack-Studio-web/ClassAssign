@@ -9,8 +9,8 @@ const formatRole = (role) => {
   if (!role) return "";
   const map = {
     admin: "Admin",
+    hod: "HoD",
     faculty_incharge: "Faculty Incharge",
-    coe: "COE",
   };
   return map[role] || role;
 };

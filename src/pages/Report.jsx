@@ -149,12 +149,6 @@ const Report = () => {
   };
 
   const handleDeletePlan = async (planId) => {
-    // ✅ 5. Additional UI Guard: Prevent CEO from triggering delete
-    if (userRole === 'coe') {
-      alert("Access Denied: CEOs have read-only access.");
-      return;
-    }
-
     if (window.confirm("Are you sure you want to delete this seating plan?")) {
       try {
         await api.delete(`/seating/delete-plan/${planId}`);
@@ -234,13 +228,6 @@ const Report = () => {
         <h1 className="text-2xl md:text-3xl font-bold text-gray-800">Saved Seating Plans</h1>
         <p className="text-sm text-gray-500 mt-0.5">Select plans to print or generate faculty schedule.</p>
       </div>
-
-      {/* Role Notice for CEO */}
-      {userRole === 'coe' && (
-        <div className="mx-4 md:mx-8 mb-4 p-4 rounded-xl bg-blue-50 border border-blue-100 text-blue-800 text-sm">
-          <strong>Read-Only Mode:</strong> You are logged in as COE. You can view and print plans but deletion is restricted.
-        </div>
-      )}
 
       {/* Action Buttons */}
       <div className="px-4 md:px-8 mb-6 flex flex-wrap gap-3">

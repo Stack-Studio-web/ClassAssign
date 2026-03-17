@@ -1,6 +1,6 @@
 // Class/backend/models/Faculty.js
 const db = require("../config/db");
-const { andClause, whereClause, insertField } = require("../utils/ownerFilter");
+const { andClause, whereClause, whereClauseForHod, andClauseForHod, insertField } = require("../utils/ownerFilter");
 
 // PostgreSQL returns unquoted column names in lowercase; map to camelCase for API
 function toFacultyRow(row) {
@@ -26,7 +26,9 @@ const Faculty = {
   },
 
   getAll: async (opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
+      ? whereClauseForHod(opts.department)
+      : whereClause(opts.role, opts.ownerUserId);
     const [rows] = await db.query(
       `SELECT * FROM faculty${ownerSql || " WHERE 1=1"} ORDER BY name ASC`,
       ownerParams
@@ -35,7 +37,9 @@ const Faculty = {
   },
 
   count: async (opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
+      ? whereClauseForHod(opts.department)
+      : whereClause(opts.role, opts.ownerUserId);
     const [rows] = await db.query(
       `SELECT COUNT(*) AS totalFaculty FROM faculty${ownerSql || " WHERE 1=1"}`,
       ownerParams
@@ -54,18 +58,24 @@ const Faculty = {
   },
 
   deleteById: async (id, opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
+      ? andClauseForHod(opts.department)
+      : andClause(opts.role, opts.ownerUserId);
     return db.query(`DELETE FROM faculty WHERE id = ?${ownerSql}`, [id, ...ownerParams]);
   },
 
   deleteByIds: async (ids, opts = {}) => {
     if (ids.length === 0) return;
-    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
+      ? andClauseForHod(opts.department)
+      : andClause(opts.role, opts.ownerUserId);
     return db.query(`DELETE FROM faculty WHERE id IN (?)${ownerSql}`, [ids, ...ownerParams]);
   },
 
   deleteAll: async (opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
+      ? whereClauseForHod(opts.department)
+      : whereClause(opts.role, opts.ownerUserId);
     return db.query(`DELETE FROM faculty${ownerSql || " WHERE 1=1"}`, ownerParams);
   },
 
@@ -105,7 +115,9 @@ const Faculty = {
      (Dynamically calculated from seating_plan_venues)
   ===================================== */
   getAllWithAllocation: async (opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId, "f.");
+    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
+      ? whereClauseForHod(opts.department, "f.")
+      : whereClause(opts.role, opts.ownerUserId, "f.");
     const [rows] = await db.query(`
       SELECT 
         f.id,

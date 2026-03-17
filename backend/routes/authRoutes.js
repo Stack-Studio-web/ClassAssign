@@ -68,6 +68,7 @@ router.post('/login', async (req, res) => {
 
     console.log(`✅ User ${email} (${user.role_name}) logged in successfully`);
 
+    const redirectTo = user.role_name === 'hod' ? '/users' : '/allotment';
     return res.status(200).json({ 
       success: true, 
       message: 'Login successful',
@@ -79,7 +80,7 @@ router.post('/login', async (req, res) => {
         role: user.role_name,
         department: user.department
       },
-      redirectTo: '/allotment'
+      redirectTo
     });
 
   } catch (error) {

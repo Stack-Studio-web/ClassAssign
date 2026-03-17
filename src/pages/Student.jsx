@@ -633,8 +633,6 @@ export default function Student() {
   const availableTabs = useMemo(() => {
     if (userRole === 'admin' || userRole === 'faculty_incharge') {
       return ['import', 'all', 'notifications'];
-    } else if (userRole === 'coe') {
-      return ['all', 'notifications'];
     }
     return ['all'];
   }, [userRole]);

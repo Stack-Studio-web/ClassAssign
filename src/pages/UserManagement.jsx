@@ -18,17 +18,24 @@ const UserManagement = () => {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
-  
+
+  const userStr = typeof window !== 'undefined' ? sessionStorage.getItem('user') : null;
+  const currentUser = userStr ? (() => { try { return JSON.parse(userStr); } catch { return null; } })() : null;
+  const isAdmin = currentUser?.role === 'admin';
+  const isHod = currentUser?.role === 'hod';
+  const hodDepartment = currentUser?.department || '';
+
   // Form state
   const [formData, setFormData] = useState({
     username: '',
     email: '',
     password: '',
-    role_id: 2, // Default to COE
+    role_id: 2,
     department: ''
   });
 
-  const API_BASE = 'http://localhost:5000/api';
+  // Use relative path so Vite proxy forwards to backend (avoids CORS and empty role dropdown)
+  const API_BASE = '/api';
 
   // Fetch data on mount
   useEffect(() => {
@@ -39,7 +46,14 @@ const UserManagement = () => {
 
   const getAuthHeaders = () => {
     const token = sessionStorage.getItem('authToken');
+    if (!token) return {};
     return { Authorization: `Bearer ${token}` };
+  };
+
+  const handleAuthFailure = () => {
+    setError('Session expired. Please log in again.');
+    sessionStorage.clear();
+    window.location.href = '/login';
   };
 
   const fetchUsers = async () => {
@@ -50,7 +64,8 @@ const UserManagement = () => {
       });
       setUsers(response.data);
     } catch (err) {
-      setError('Failed to fetch users');
+      if (err.response?.status === 401) handleAuthFailure();
+      else setError('Failed to fetch users');
       console.error(err);
     } finally {
       setLoading(false);
@@ -58,11 +73,28 @@ const UserManagement = () => {
   };
 
   const fetchRoles = async () => {
+    const headers = getAuthHeaders();
+    if (!headers.Authorization) {
+      setError('Not logged in. Please log in again.');
+      return [];
+    }
     try {
-      const response = await axios.get(`${API_BASE}/users/roles`);
-      setRoles(response.data);
+      const response = await axios.get(`${API_BASE}/users/roles`, {
+        headers
+      });
+      const list = Array.isArray(response.data) ? response.data : [];
+      setRoles(list);
+      setError(''); // clear any previous error
+      return list;
     } catch (err) {
+      if (err.response?.status === 401) {
+        setError('Session expired. Please log in again.');
+        handleAuthFailure();
+        return [];
+      }
       console.error('Failed to fetch roles:', err);
+      setError('Could not load roles. Check your connection and try again.');
+      return [];
     }
   };
 
@@ -80,15 +112,22 @@ const UserManagement = () => {
   const handleAddUser = async (e) => {
     e.preventDefault();
     try {
+      const payload = {
+        username: formData.username,
+        email: formData.email,
+        password: formData.password,
+        role_id: formData.role_id,
+        department: isHod ? hodDepartment : formData.department
+      };
       await axios.post(
         `${API_BASE}/users`,
-        formData,
+        payload,
         { headers: getAuthHeaders() }
       );
-      
       alert('User created successfully!');
       setShowAddModal(false);
-      setFormData({ username: '', email: '', password: '', role_id: 2, department: '' });
+      const defaultRoleId = roles.length ? roles[0].id : 2;
+      setFormData({ username: '', email: '', password: '', role_id: defaultRoleId, department: '' });
       fetchUsers();
       fetchStats();
     } catch (err) {
@@ -194,8 +233,8 @@ const UserManagement = () => {
     switch (roleName) {
       case 'admin':
         return 'bg-purple-100 text-purple-800';
-      case 'coe':
-        return 'bg-blue-100 text-blue-800';
+      case 'hod':
+        return 'bg-amber-100 text-amber-800';
       case 'faculty_incharge':
         return 'bg-green-100 text-green-800';
       default:
@@ -205,7 +244,8 @@ const UserManagement = () => {
 
   const formatRoleName = (roleName) => {
     if (roleName === 'faculty_incharge') return 'Faculty Incharge';
-    return roleName.toUpperCase();
+    if (roleName === 'hod') return 'HoD';
+    return (roleName || '').toUpperCase();
   };
 
   if (loading) return (
@@ -223,19 +263,30 @@ const UserManagement = () => {
       <div className="flex justify-between items-center mb-6">
         <div>
           <h1 className="text-3xl font-bold text-gray-800">User Management</h1>
-          <p className="text-gray-600 mt-1">Manage COE and Faculty Incharge users</p>
+          <p className="text-gray-600 mt-1">
+            {isHod ? `Manage Faculty Incharge in ${hodDepartment}` : 'Manage HoD and Faculty Incharge users'}
+          </p>
         </div>
         <button
-          onClick={() => setShowAddModal(true)}
+          onClick={async () => {
+            const list = await fetchRoles();
+            if (isHod) {
+              const fiRole = list.find((r) => r.name === 'faculty_incharge');
+              setFormData((prev) => ({ ...prev, department: hodDepartment, role_id: fiRole?.id ?? prev.role_id }));
+            } else if (list.length > 0 && !list.some((r) => r.id === formData.role_id)) {
+              setFormData((prev) => ({ ...prev, role_id: list[0].id }));
+            }
+            setShowAddModal(true);
+          }}
           className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 font-semibold shadow-md transition"
         >
-          + Add New User
+          {isHod ? '+ Add Faculty Incharge' : '+ Add New User'}
         </button>
       </div>
 
       {/* Stats Cards */}
       {stats && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+        <div className={`grid grid-cols-1 gap-4 mb-6 ${isAdmin ? 'md:grid-cols-4' : 'md:grid-cols-3'}`}>
           <div className="bg-white p-4 rounded-lg shadow">
             <p className="text-gray-600 text-sm">Total Users</p>
             <p className="text-3xl font-bold text-gray-800">{stats.total}</p>
@@ -244,13 +295,15 @@ const UserManagement = () => {
             <p className="text-gray-600 text-sm">Active</p>
             <p className="text-3xl font-bold text-green-600">{stats.active}</p>
           </div>
-          <div className="bg-white p-4 rounded-lg shadow">
-            <p className="text-gray-600 text-sm">COE Users</p>
-            <p className="text-3xl font-bold text-blue-600">{stats.byRole.coe}</p>
-          </div>
+          {isAdmin && (
+            <div className="bg-white p-4 rounded-lg shadow">
+              <p className="text-gray-600 text-sm">HoD</p>
+              <p className="text-3xl font-bold text-amber-600">{stats.byRole?.hod ?? 0}</p>
+            </div>
+          )}
           <div className="bg-white p-4 rounded-lg shadow">
             <p className="text-gray-600 text-sm">Faculty Incharge</p>
-            <p className="text-3xl font-bold text-green-600">{stats.byRole.faculty_incharge}</p>
+            <p className="text-3xl font-bold text-green-600">{stats.byRole?.faculty_incharge ?? 0}</p>
           </div>
         </div>
       )}
@@ -284,7 +337,8 @@ const UserManagement = () => {
                   <td className="px-4 py-3">
                     <div className="font-semibold text-gray-800">{user.username}</div>
                     <div className="text-xs text-gray-500">
-                      {user.created_by_username && `Created by: ${user.created_by_username}`}
+                      {user.created_by_hod_username && `Created by HoD: ${user.created_by_hod_username}`}
+                      {!user.created_by_hod_username && user.created_by_username && `Created by: ${user.created_by_username}`}
                     </div>
                   </td>
                   <td className="px-4 py-3 text-sm">{user.email}</td>
@@ -412,26 +466,32 @@ const UserManagement = () => {
                 <label className="block text-sm font-medium mb-1 text-gray-700">Department</label>
                 <input
                   type="text"
-                  value={formData.department}
-                  onChange={(e) => setFormData({ ...formData, department: e.target.value })}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  value={isHod ? hodDepartment : formData.department}
+                  onChange={(e) => !isHod && setFormData({ ...formData, department: e.target.value })}
+                  readOnly={isHod}
+                  className={`w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent ${isHod ? 'bg-gray-100' : ''}`}
                   placeholder="e.g., CSE, ECE, MECH"
                 />
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1 text-gray-700">Role *</label>
                 <select
-                  value={formData.role_id}
-                  onChange={(e) => setFormData({ ...formData, role_id: parseInt(e.target.value) })}
+                  value={roles.length ? formData.role_id : ''}
+                  onChange={(e) => setFormData({ ...formData, role_id: parseInt(e.target.value, 10) })}
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  required
                 >
-                  {roles.map((role) => (
-                    <option key={role.id} value={role.id}>
-                      {formatRoleName(role.name)}
-                    </option>
-                  ))}
+                  {roles.length === 0 ? (
+                    <option value="">— Loading roles... —</option>
+                  ) : (
+                    roles.map((role) => (
+                      <option key={role.id} value={role.id}>
+                        {formatRoleName(role.name)}
+                      </option>
+                    ))
+                  )}
                 </select>
-                <p className="text-xs text-gray-500 mt-1">Admin users cannot be created via UI</p>
+                {isAdmin && <p className="text-xs text-gray-500 mt-1">Admin users cannot be created via UI</p>}
               </div>
               <div className="flex gap-3 pt-4">
                 <button

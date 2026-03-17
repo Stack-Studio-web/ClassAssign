@@ -10,6 +10,7 @@ services:
       - postgres_data:/var/lib/postgresql/data/
       - ./backend/databasemigration/init.sql:/docker-entrypoint-initdb.d/init.sql
       - ./backend/databasemigration/001_add_owner_user_id.sql:/docker-entrypoint-initdb.d/z_add_owner_user_id.sql
+      - ./backend/databasemigration/002_add_hod_role.sql:/docker-entrypoint-initdb.d/zz_002_add_hod_role.sql
       - ./backend/databasemigration:/migrations
     env_file:
       - ./backend/.env

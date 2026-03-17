@@ -5,9 +5,13 @@ const Faculty = require("../models/Faculty");
 const sessionAuth = require("../middleware/sessionAuth");
 const checkRole = require("../middleware/checkRole");
 
-const ownerOpts = (req) => ({ ownerUserId: req.user?.id, role: req.user?.role });
+const ownerOpts = (req) => ({
+  ownerUserId: req.user?.id,
+  role: req.user?.role,
+  department: req.user?.department,
+});
 
-router.get("/", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
+router.get("/", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), async (req, res) => {
   try {
     const data = await Faculty.getAllWithAllocation(ownerOpts(req));
     res.json(data);
@@ -16,7 +20,7 @@ router.get("/", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), as
   }
 });
 
-router.get("/stats", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
+router.get("/stats", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), async (req, res) => {
   try {
     const stats = await Faculty.count(ownerOpts(req));
     res.json(stats);
@@ -59,7 +63,7 @@ router.delete("/:id", sessionAuth, checkRole(["admin", "faculty_incharge"]), asy
 });
 
 // ✅ FIXED: Changed from 403 to 200 with allowed boolean
-router.get("/:id/can-allocate", sessionAuth, checkRole(["admin", "faculty_incharge", "coe"]), async (req, res) => {
+router.get("/:id/can-allocate", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), async (req, res) => {
   try {
     const facultyId = req.params.id;
     const canAllocate = await Faculty.canAllocate(facultyId);

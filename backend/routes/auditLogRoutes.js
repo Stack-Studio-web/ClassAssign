@@ -6,16 +6,25 @@ const AuditLog = require("../models/AuditLog");
 const sessionAuth = require("../middleware/sessionAuth");
 const requireAdmin = require("../middleware/requireAdmin");
 
+const requireAdminOrHod = (req, res, next) => {
+  if (req.user?.role !== "admin" && req.user?.role !== "hod") {
+    return res.status(403).json({ error: "Admin or HoD access required" });
+  }
+  next();
+};
+
 /* ===============================
     GET /api/audit-logs
-    Get all audit logs with pagination
+    Admin: all logs. HoD: logs from users in their department only.
 =============================== */
-router.get("/", sessionAuth, requireAdmin, async (req, res) => {
+router.get("/", sessionAuth, requireAdminOrHod, async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 100;
     const offset = parseInt(req.query.offset) || 0;
-
-    const logs = await AuditLog.getAll(limit, offset);
+    const opts = req.user?.role === "hod" && req.user?.department
+      ? { department: req.user.department }
+      : {};
+    const logs = await AuditLog.getAll(limit, offset, opts);
 
     res.json({
       logs,
@@ -33,10 +42,14 @@ router.get("/", sessionAuth, requireAdmin, async (req, res) => {
 
 /* ===============================
     GET /api/audit-logs/stats
+    Admin: all. HoD: stats for their department only.
 =============================== */
-router.get("/stats", sessionAuth, requireAdmin, async (req, res) => {
+router.get("/stats", sessionAuth, requireAdminOrHod, async (req, res) => {
   try {
-    const stats = await AuditLog.getStats();
+    const opts = req.user?.role === "hod" && req.user?.department
+      ? { department: req.user.department }
+      : {};
+    const stats = await AuditLog.getStats(opts);
     res.json(stats);
   } catch (error) {
     console.error("Error fetching audit log stats:", error);

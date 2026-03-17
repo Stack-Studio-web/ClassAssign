@@ -10,15 +10,19 @@ const checkRole = require("../middleware/checkRole");
 const auditLogger = require("../middleware/auditLogger");
 
 const upload = multer({ dest: "uploads/" });
-const ownerOpts = (req) => ({ ownerUserId: req.user?.id, role: req.user?.role });
+const ownerOpts = (req) => ({
+  ownerUserId: req.user?.id,
+  role: req.user?.role,
+  department: req.user?.department,
+});
 
 /* =====================================================
     GET: ALL TIMETABLE SCHEDULES
-    Roles: admin, faculty_incharge, coe
+    Roles: admin, faculty_incharge, hod (hod sees own department only)
 ===================================================== */
 router.get("/",
   sessionAuth,
-  checkRole(['admin', 'faculty_incharge', 'coe']),
+  checkRole(['admin', 'faculty_incharge', 'hod']),
   async (req, res) => {
     try {
       const schedules = await Timetable.getAll(ownerOpts(req));
@@ -40,7 +44,7 @@ router.get("/",
 ===================================================== */
 router.get("/by-exam-details",
   sessionAuth,
-  checkRole(['admin', 'faculty_incharge']),
+  checkRole(['admin', 'faculty_incharge', 'hod']),
   async (req, res) => {
     try {
       const { date, startTime, endTime, session } = req.query;
@@ -76,11 +80,11 @@ router.get("/by-exam-details",
 
 /* =====================================================
     POST: CREATE SINGLE SCHEDULE (MANUAL ENTRY)
-    Roles: admin, faculty_incharge
+    Roles: admin, faculty_incharge, hod (hod: department must match own)
 ===================================================== */
 router.post("/",
   sessionAuth,
-  checkRole(['admin', 'faculty_incharge']),
+  checkRole(['admin', 'faculty_incharge', 'hod']),
   auditLogger("CREATE_TIMETABLE_SCHEDULE", "Timetable"),
   async (req, res) => {
     try {
@@ -101,6 +105,10 @@ router.post("/",
           error: "Missing required fields",
           details: "All fields are required"
         });
+      }
+
+      if (req.user?.role === "hod" && req.user?.department && department?.toUpperCase() !== req.user.department?.toUpperCase()) {
+        return res.status(403).json({ error: "You can only create timetable for your own department." });
       }
 
       // Check for duplicate
@@ -147,11 +155,11 @@ router.post("/",
 /* =====================================================
     POST: BULK IMPORT FROM EXCEL
     ✅ FIXED: Date parsing now uses UTC to prevent timezone shifts
-    Roles: admin, faculty_incharge
+    Roles: admin, faculty_incharge, hod
 ===================================================== */
 router.post("/bulk-import",
   sessionAuth,
-  checkRole(['admin', 'faculty_incharge']),
+  checkRole(['admin', 'faculty_incharge', 'hod']),
   upload.single("file"),
   auditLogger("BULK_IMPORT_TIMETABLE", "Timetable"),
   async (req, res) => {
@@ -261,9 +269,17 @@ router.post("/bulk-import",
         }
       }
 
-      if (schedules.length === 0) {
+      let schedulesToInsert = schedules;
+      if (req.user?.role === "hod" && req.user?.department) {
+        const hodDept = req.user.department.toUpperCase().trim();
+        schedulesToInsert = schedules.filter((s) => (s.department || "").toUpperCase().trim() === hodDept);
+        const removed = schedules.length - schedulesToInsert.length;
+        if (removed > 0) errors.push(`${removed} row(s) skipped: HoD can only import for department ${req.user.department}.`);
+      }
+
+      if (schedulesToInsert.length === 0) {
         return res.status(400).json({
-          error: "No valid schedules found in file",
+          error: "No valid schedules found in file (or none for your department)",
           details: errors
         });
       }
@@ -273,7 +289,7 @@ router.post("/bulk-import",
       let skipped = 0;
       const skippedDetails = [];
 
-      for (const schedule of schedules) {
+      for (const schedule of schedulesToInsert) {
         try {
           // Check for duplicates
           const exists = await Timetable.checkDuplicate({
@@ -323,11 +339,11 @@ router.post("/bulk-import",
 
 /* =====================================================
     DELETE: SINGLE SCHEDULE
-    Roles: admin, faculty_incharge
+    Roles: admin, faculty_incharge, hod (hod: own department only)
 ===================================================== */
 router.delete("/:id",
   sessionAuth,
-  checkRole(['admin', 'faculty_incharge']),
+  checkRole(['admin', 'faculty_incharge', 'hod']),
   auditLogger("DELETE_TIMETABLE_SCHEDULE", "Timetable"),
   async (req, res) => {
     try {
@@ -358,11 +374,11 @@ router.delete("/:id",
 
 /* =====================================================
     POST: BULK DELETE
-    Roles: admin, faculty_incharge
+    Roles: admin, faculty_incharge, hod (hod: own department only)
 ===================================================== */
 router.post("/bulk-delete",
   sessionAuth,
-  checkRole(['admin', 'faculty_incharge']),
+  checkRole(['admin', 'faculty_incharge', 'hod']),
   auditLogger("BULK_DELETE_TIMETABLE", "Timetable"),
   async (req, res) => {
     try {

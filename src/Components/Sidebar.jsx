@@ -42,33 +42,37 @@ const Sidebar = () => {
     }
   };
 
-  const navItems = [
-    { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
-    { to: "/student", label: "Student", icon: UserGroupIcon },
-    { to: "/faculty", label: "Faculty", icon: UserPlusIcon },
-  ];
-
-  navItems.push({ to: "/timetable", label: "Timetable", icon: CalendarDaysIcon });
-
-  if (userRole !== "coe") {
-    navItems.push({ to: "/allotment", label: "Allotment", icon: ComputerDesktopIcon });
-  }
-
-  navItems.push({ to: "/report", label: "Report", icon: NewspaperIcon });
-
-  if (userRole === "admin" || userRole === "faculty_incharge") {
-    navItems.push({
-      to: "/ineligibility/view",
-      label: "Ineligibility",
-      icon: ExclamationTriangleIcon,
-    });
-  }
-
-  if (userRole === "admin") {
-    navItems.push(
+  let navItems;
+  if (userRole === "hod") {
+    navItems = [
+      { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
+      { to: "/report", label: "Report", icon: NewspaperIcon },
+      { to: "/attendance", label: "Attendance", icon: UserGroupIcon },
+      { to: "/Hall", label: "Hall", icon: BuildingOfficeIcon },
       { to: "/users", label: "User Management", icon: UsersIcon },
-      { to: "/logs", label: "Logs", icon: NewspaperIcon }
-    );
+    ];
+  } else {
+    navItems = [
+      { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
+      { to: "/student", label: "Student", icon: UserGroupIcon },
+      { to: "/faculty", label: "Faculty", icon: UserPlusIcon },
+    ];
+    navItems.push({ to: "/timetable", label: "Timetable", icon: CalendarDaysIcon });
+    if (userRole === "admin" || userRole === "faculty_incharge") {
+      navItems.push({ to: "/allotment", label: "Allotment", icon: ComputerDesktopIcon });
+    }
+    navItems.push({ to: "/report", label: "Report", icon: NewspaperIcon });
+    if (userRole === "admin" || userRole === "faculty_incharge") {
+      navItems.push({
+        to: "/ineligibility/view",
+        label: "Ineligibility",
+        icon: ExclamationTriangleIcon,
+      });
+    }
+    if (userRole === "admin") {
+      navItems.push({ to: "/users", label: "User Management", icon: UsersIcon });
+      navItems.push({ to: "/logs", label: "Logs", icon: NewspaperIcon });
+    }
   }
 
   return (
