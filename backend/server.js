@@ -7,7 +7,7 @@ const path = require("path");
 const cors = require("cors");
 require("dotenv").config();
 
-const db = require("./config/db");
+const ensureHodSchema = require("./utils/ensureHodSchema");
 const fs = require("fs");
 
 // Format folder: serve templates as static files (no auth required)
@@ -104,9 +104,17 @@ app.use((req, res) => {
   });
 });
 
-// --- Start Server ---
-app.listen(PORT, () => {
-  console.log(`
+// --- Start Server (ensure DB has HoD migration applied) ---
+async function start() {
+  try {
+    await ensureHodSchema();
+  } catch (e) {
+    console.error("Fatal: database schema check failed. Fix DB connection or run migration 002.");
+    process.exit(1);
+  }
+
+  app.listen(PORT, () => {
+    console.log(`
 ╔════════════════════════════════════════════════╗
 ║                                                ║
 ║   🚀 KCT Exam Seating System Server           ║
@@ -126,7 +134,10 @@ app.listen(PORT, () => {
 ║                                                ║
 ╚════════════════════════════════════════════════╝
   `);
-});
+  });
+}
+
+start();
 
 // --- Graceful Shutdown ---
 process.on('SIGTERM', () => {
