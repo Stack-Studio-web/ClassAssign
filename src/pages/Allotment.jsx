@@ -118,6 +118,8 @@ const Allotment = () => {
   const [facultyMode, setFacultyMode] = useState("AUTO");
   const [allFaculty, setAllFaculty] = useState([]);
   const [manualFacultyAssignments, setManualFacultyAssignments] = useState({});
+  const [allowAdjacentSeating, setAllowAdjacentSeating] = useState(false);
+  const [adjacencyOverrideUsed, setAdjacencyOverrideUsed] = useState(false);
  
   const [ineligibleStudentsByCourse, setIneligibleStudentsByCourse] = useState({});
   const [ineligibilityStats, setIneligibilityStats] = useState({
@@ -451,6 +453,7 @@ const Allotment = () => {
   // ✅ UPDATED: Sequential Multi-Pass Seating Algorithm with AUTO faculty assignment
   const handleGenerate = async () => {
     setError("");
+    setAdjacencyOverrideUsed(false);
  
     if (!hasWriteAccess) {
       return setError("Access denied: Only Admin and Faculty Incharge can generate seating plans.");
@@ -672,15 +675,49 @@ const Allotment = () => {
       console.log(`   📊 Placed ${studentIndex}/${students.length} students for ${key}`);
       
       if (studentIndex < students.length) {
-        const unplaced = students.length - studentIndex;
+        let unplaced = students.length - studentIndex;
         console.log(`   ⚠️  WARNING: ${unplaced} students from ${key} could not be seated`);
-        
-        // ✅ CRITICAL: Alert user if students couldn't be placed
-        setIsGenerating(false);
-        return setError(
-          `❌ SEATING INCOMPLETE: ${unplaced} students from ${key} could not be seated!\n` +
-          `This is due to anti-cheating rules preventing same-course students from sitting adjacent.\n` +
-          `Please add more venues to accommodate all students.`
+
+        if (!allowAdjacentSeating) {
+          setIsGenerating(false);
+          return setError(
+            `❌ SEATING INCOMPLETE: ${unplaced} students from ${key} could not be seated.\n` +
+            `This is due to anti-cheating adjacency rules.\n` +
+            `Enable "Allow adjacent seating when required" to continue with a warning.`
+          );
+        }
+
+        // Fallback pass: place remaining students in any empty slots, ignoring adjacency checks.
+        for (const venueData of venueGrids) {
+          const { venue, grid, benchConfig } = venueData;
+          for (let c = 0; c < venue.benchesCol; c++) {
+            const seatsInCol = benchConfig[c] || 2;
+            for (let s = 0; s < seatsInCol; s++) {
+              for (let r = 0; r < venue.benchesRow; r++) {
+                if (studentIndex >= students.length) break;
+                if (!grid[r][c]) grid[r][c] = [];
+                const cellStudents = grid[r][c];
+                if (cellStudents[s]) continue;
+                cellStudents[s] = students[studentIndex];
+                allSeatedStudents.push(students[studentIndex]);
+                studentIndex++;
+              }
+            }
+          }
+        }
+
+        unplaced = students.length - studentIndex;
+        if (unplaced > 0) {
+          setIsGenerating(false);
+          return setError(
+            `❌ SEATING INCOMPLETE: ${unplaced} students from ${key} could not be seated even after allowing adjacency.\n` +
+            `Please add more venues/capacity and generate again.`
+          );
+        }
+
+        setAdjacencyOverrideUsed(true);
+        setError(
+          `⚠️ Adjacency override used: some students were placed in adjacent seats to complete seating for ${key}.`
         );
       }
     }
@@ -1226,6 +1263,25 @@ const Allotment = () => {
                 )}
               </div>
 
+              {/* Adjacency Override */}
+              <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3">
+                <label className="flex items-start gap-3 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={allowAdjacentSeating}
+                    onChange={(e) => setAllowAdjacentSeating(e.target.checked)}
+                    disabled={!hasWriteAccess}
+                    className="mt-0.5 h-4 w-4 rounded border-amber-300 text-amber-600 focus:ring-amber-500"
+                  />
+                  <span className="font-medium text-amber-900">
+                    Allow adjacent seating when required
+                  </span>
+                </label>
+                <p className="text-xs text-amber-800">
+                  When enabled, generation will continue by placing remaining students even if adjacency rules are violated.
+                </p>
+              </div>
+
               {/* Generate & Save — under Configuration */}
               <div className="px-4 sm:px-5 md:px-6 py-4 border-t border-gray-100 flex flex-wrap items-center gap-2">
                 <button
@@ -1266,6 +1322,11 @@ const Allotment = () => {
                 Review venues, invigilators, and seat distribution before finalizing.
               </p>
             </div>
+            {adjacencyOverrideUsed && (
+              <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900">
+                ⚠️ Adjacency override was used while generating this layout.
+              </div>
+            )}
  
             {facultyMode === "MANUAL" && (
               <div className="bg-indigo-50 p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-indigo-200 grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4">
