@@ -97,8 +97,8 @@ router.put("/:id/availability",
       if (typeof isAvailable !== "boolean") {
         return res.status(400).json({ error: "isAvailable (boolean) is required" });
       }
-      const [result] = await Venue.setAvailability(id, isAvailable, ownerOpts(req));
-      if (!result?.affectedRows) {
+      const updated = await Venue.setAvailability(id, isAvailable, ownerOpts(req));
+      if (!updated) {
         return res.status(404).json({ error: "Venue not found or not allowed" });
       }
       res.json({ message: "Availability updated", id, isAvailable });

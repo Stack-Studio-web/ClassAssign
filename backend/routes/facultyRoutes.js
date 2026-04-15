@@ -59,8 +59,8 @@ router.put("/:id/availability", sessionAuth, checkRole(["admin", "faculty_inchar
     if (typeof isAvailable !== "boolean") {
       return res.status(400).json({ message: "isAvailable (boolean) is required" });
     }
-    const [result] = await Faculty.updateAvailability(req.params.id, isAvailable, ownerOpts(req));
-    if (!result?.affectedRows) {
+    const updated = await Faculty.updateAvailability(req.params.id, isAvailable, ownerOpts(req));
+    if (!updated) {
       return res.status(404).json({ message: "Faculty not found or not allowed" });
     }
     res.json({ message: "Availability updated", isAvailable });

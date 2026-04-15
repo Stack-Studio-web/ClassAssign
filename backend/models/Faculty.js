@@ -64,10 +64,16 @@ const Faculty = {
     const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
       ? andClauseForHod(opts.department)
       : andClause(opts.role, opts.ownerUserId);
-    return db.query(
+    const [match] = await db.query(
+      `SELECT id FROM faculty WHERE id = ?${ownerSql}`,
+      [id, ...ownerParams]
+    );
+    if (!Array.isArray(match) || match.length === 0) return false;
+    await db.query(
       `UPDATE faculty SET is_available = ? WHERE id = ?${ownerSql}`,
       [isAvailable, id, ...ownerParams]
     );
+    return true;
   },
 
   deleteById: async (id, opts = {}) => {

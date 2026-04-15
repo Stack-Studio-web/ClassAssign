@@ -179,10 +179,16 @@ const Venue = {
   // ✅ NEW: DELETE BY IDS (For Undo Import)
   setAvailability: async (id, isAvailable, opts = {}) => {
     const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
-    return db.query(
+    const [match] = await db.query(
+      `SELECT id FROM venues WHERE id = ?${ownerSql}`,
+      [id, ...ownerParams]
+    );
+    if (!Array.isArray(match) || match.length === 0) return false;
+    await db.query(
       `UPDATE venues SET is_available = ? WHERE id = ?${ownerSql}`,
       [isAvailable, id, ...ownerParams]
     );
+    return true;
   },
 
   deleteByIds: async (ids, opts = {}) => {
