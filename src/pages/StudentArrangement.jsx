@@ -96,9 +96,12 @@ const getStudentsFromCell = (cell) => {
   if (!cell || cell === "Empty") return [];
   if (Array.isArray(cell)) {
     return cell
-      .filter((item) => item && item.regn_no)
+      .filter((item) => {
+        const regn = (item?.regn_no ?? item?.regnNo ?? "").toString().trim();
+        return !!regn;
+      })
       .map((item) => ({
-        regn_no: item.regn_no.trim(),
+        regn_no: (item?.regn_no ?? item?.regnNo ?? "").toString().trim(),
         course: item.course || null,
       }));
   }

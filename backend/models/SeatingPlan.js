@@ -7,6 +7,19 @@ const {
   hydrateArrangementFromRows,
 } = require("../utils/seatingLayout");
 
+// Keep seat array shape but avoid null objects that crash older frontend bundles.
+function toClientSafeLayout(layout) {
+  if (!Array.isArray(layout)) return [];
+  return layout.map((row) => {
+    if (!Array.isArray(row)) return [];
+    return row.map((cell) => {
+      if (cell === "Empty" || !cell) return "Empty";
+      if (!Array.isArray(cell)) return cell;
+      return cell.map((seat) => (seat == null ? { regn_no: "", course: null } : seat));
+    });
+  });
+}
+
 const SeatingPlan = {
 
   /* ===============================
@@ -238,7 +251,7 @@ const SeatingPlan = {
               ? JSON.parse(seatingLayoutRaw)
               : seatingLayoutRaw;
             if (Array.isArray(parsedLayout)) {
-              v.seatingArrangement = parsedLayout;
+              v.seatingArrangement = toClientSafeLayout(parsedLayout);
               continue;
             }
           } catch (e) {
@@ -255,7 +268,9 @@ const SeatingPlan = {
         `, [internalId]);
 
         const benchConfig = normalizeBenchConfig(v.benchConfig, 0);
-        v.seatingArrangement = hydrateArrangementFromRows(seats || [], benchConfig, studentCourseMap);
+        v.seatingArrangement = toClientSafeLayout(
+          hydrateArrangementFromRows(seats || [], benchConfig, studentCourseMap)
+        );
       }
 
       plan.venuesUsed = venues || [];
@@ -367,7 +382,7 @@ const SeatingPlan = {
             ? JSON.parse(seatingLayoutRaw)
             : seatingLayoutRaw;
           if (Array.isArray(parsedLayout)) {
-            v.seatingArrangement = parsedLayout;
+            v.seatingArrangement = toClientSafeLayout(parsedLayout);
             continue;
           }
         } catch (e) {
@@ -383,7 +398,9 @@ const SeatingPlan = {
       `, [internalId]);
 
       const benchConfig = normalizeBenchConfig(v.benchConfig, 0);
-      v.seatingArrangement = hydrateArrangementFromRows(seats || [], benchConfig, studentCourseMap);
+      v.seatingArrangement = toClientSafeLayout(
+        hydrateArrangementFromRows(seats || [], benchConfig, studentCourseMap)
+      );
     }
 
     plan.venuesUsed = venues || [];
