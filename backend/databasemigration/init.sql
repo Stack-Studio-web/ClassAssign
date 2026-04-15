@@ -161,6 +161,7 @@ CREATE TABLE IF NOT EXISTS seating_plan_venues (
   venue_id INT REFERENCES venues(id),
   venue_name VARCHAR(200),
   bench_config TEXT,
+  seating_layout_json TEXT,
   faculty_id INT REFERENCES faculty(id)
 );
 

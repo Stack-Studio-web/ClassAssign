@@ -19,6 +19,9 @@ async function ensureHodSchema() {
     await db.query(
       `ALTER TABLE seating_arrangements ADD COLUMN IF NOT EXISTS seat_index INT DEFAULT 0`
     );
+    await db.query(
+      `ALTER TABLE seating_plan_venues ADD COLUMN IF NOT EXISTS seating_layout_json TEXT`
+    );
     await db.query(`
       WITH ranked AS (
         SELECT
@@ -35,7 +38,7 @@ async function ensureHodSchema() {
       WHERE sa.id = ranked.id
         AND (sa.seat_index IS NULL OR sa.seat_index = 0)
     `);
-    console.log("✅ HoD schema OK (role + users.created_by_hod_id + faculty.is_available + seating_arrangements.seat_index)");
+    console.log("✅ HoD schema OK (role + users.created_by_hod_id + faculty.is_available + seating_arrangements.seat_index + seating_plan_venues.seating_layout_json)");
   } catch (err) {
     console.error("❌ ensureHodSchema failed:", err.message);
     throw err;

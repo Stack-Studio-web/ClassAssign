@@ -76,13 +76,14 @@ const SeatingPlan = {
         
         const [venueRes] = await conn.query(
           `INSERT INTO seating_plan_venues 
-           (seating_plan_id, venue_id, venue_name, bench_config, faculty_id) 
-           VALUES (?, ?, ?, ?, ?)`,
+           (seating_plan_id, venue_id, venue_name, bench_config, seating_layout_json, faculty_id) 
+           VALUES (?, ?, ?, ?, ?, ?)`,
           [
             seatingPlanId,
             venue.venueId,
             venue.venueName,
             benchConfigJson,  // ✅ NEW: Save benchConfig
+            JSON.stringify(venue.seatingArrangement || []),
             venue.facultyId || null
           ]
         );
@@ -189,6 +190,7 @@ const SeatingPlan = {
           spv.venue_id as venueId,
           spv.venue_name as venueName,
           spv.bench_config as benchConfig,
+          spv.seating_layout_json as seatingLayoutJson,
           f.name as facultyName,
           f.department as facultyDepartment
         FROM seating_plan_venues spv
@@ -213,6 +215,7 @@ const SeatingPlan = {
       for (let v of venues || []) {
         const internalId = v.internalId ?? v.internalid ?? v.id;
         const benchConfigRaw = v.benchConfig ?? v.benchconfig;
+        const seatingLayoutRaw = v.seatingLayoutJson ?? v.seatinglayoutjson;
         if (benchConfigRaw) {
           try {
             v.benchConfig = typeof benchConfigRaw === 'string' 
@@ -225,6 +228,19 @@ const SeatingPlan = {
         }
         v.venueName = v.venueName ?? v.venuename ?? v.venue_name;
         v.venueId = v.venueId ?? v.venueid ?? v.venue_id;
+        if (seatingLayoutRaw) {
+          try {
+            const parsedLayout = typeof seatingLayoutRaw === "string"
+              ? JSON.parse(seatingLayoutRaw)
+              : seatingLayoutRaw;
+            if (Array.isArray(parsedLayout)) {
+              v.seatingArrangement = parsedLayout;
+              continue;
+            }
+          } catch (e) {
+            // fall through to reconstruct from seat rows
+          }
+        }
 
         // Fetch every individual seat
         const [seats] = await db.query(`
@@ -303,6 +319,7 @@ const SeatingPlan = {
         spv.venue_id as venueId,
         spv.venue_name as venueName,
         spv.bench_config as benchConfig,
+        spv.seating_layout_json as seatingLayoutJson,
         f.name as facultyName,
         f.department as facultyDepartment
       FROM seating_plan_venues spv
@@ -326,6 +343,7 @@ const SeatingPlan = {
     for (let v of venues || []) {
       const internalId = v.internalId ?? v.internalid ?? v.id;
       const benchConfigRaw = v.benchConfig ?? v.benchconfig;
+      const seatingLayoutRaw = v.seatingLayoutJson ?? v.seatinglayoutjson;
       if (benchConfigRaw) {
         try {
           v.benchConfig = typeof benchConfigRaw === 'string' 
@@ -337,6 +355,19 @@ const SeatingPlan = {
       }
       v.venueName = v.venueName ?? v.venuename ?? v.venue_name;
       v.venueId = v.venueId ?? v.venueid ?? v.venue_id;
+      if (seatingLayoutRaw) {
+        try {
+          const parsedLayout = typeof seatingLayoutRaw === "string"
+            ? JSON.parse(seatingLayoutRaw)
+            : seatingLayoutRaw;
+          if (Array.isArray(parsedLayout)) {
+            v.seatingArrangement = parsedLayout;
+            continue;
+          }
+        } catch (e) {
+          // fall through to reconstruct from seat rows
+        }
+      }
 
       const [seats] = await db.query(`
         SELECT seat_row, seat_col, seat_index, regn_no
