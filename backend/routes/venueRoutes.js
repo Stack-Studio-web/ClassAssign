@@ -134,12 +134,17 @@ router.put("/:id",
 
       try {
         await conn.beginTransaction();
+        const [existing] = await conn.query(
+          `SELECT id FROM venues WHERE id = ?${ownerSql}`,
+          [id, ...ownerParams]
+        );
+        if (!Array.isArray(existing) || existing.length === 0) {
+          throw new Error("Venue not found");
+        }
         const [result] = await conn.query(
           `UPDATE venues SET name=?, type=?, benches_row=?, benches_col=?, capacity=? WHERE id=?${ownerSql}`,
           [name.trim(), type.trim(), benchesRow, benchesCol, capacity, id, ...ownerParams]
         );
-
-        if (result.affectedRows === 0) throw new Error("Venue not found");
 
         await conn.query("DELETE FROM venue_bench_config WHERE venue_id = ?", [id]);
         for (let i = 0; i < benchConfig.length; i++) {
