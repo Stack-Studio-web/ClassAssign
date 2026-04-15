@@ -261,8 +261,10 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
                       if (cell === "Empty" || !cell) {
                         students = Array(seatsInCol).fill("");
                       } else if (Array.isArray(cell)) {
-                        students = cell.map(s => s?.regn_no ?? s?.regnNo ?? "");
-                        while (students.length < seatsInCol) students.push("");
+                        students = Array.from(
+                          { length: seatsInCol },
+                          (_, slotIdx) => cell[slotIdx]?.regn_no ?? cell[slotIdx]?.regnNo ?? ""
+                        );
                       } else if (typeof cell === "string") {
                         students = cell.split("\n").filter(s => s && s !== "Empty");
                         while (students.length < seatsInCol) students.push("");

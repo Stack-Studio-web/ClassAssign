@@ -715,16 +715,18 @@ const Allotment = () => {
           if (!cell || cell.length === 0) return "Empty";
          
           const seatsNeeded = benchConfig[colIdx] || 2;
-         
-          while (cell.length < seatsNeeded) {
-            cell.push(null);
-          }
- 
-          return cell.map(student =>
-            student ? {
-              regn_no: student.regnNo,
-              course: student.courseDescription
-            } : null
+          // Normalize to fixed-length explicit slots; avoids sparse-array holes.
+          const normalizedCell = Array.from({ length: seatsNeeded }, (_, slotIdx) => (
+            cell[slotIdx] ?? null
+          ));
+
+          return normalizedCell.map((student) =>
+            student
+              ? {
+                  regn_no: student.regnNo,
+                  course: student.courseDescription,
+                }
+              : null
           );
         })
       );
@@ -1387,10 +1389,10 @@ const Allotment = () => {
                               if (cell === "Empty" || !cell) {
                                 students = Array(seatsInCol).fill("");
                               } else if (Array.isArray(cell)) {
-                                students = cell.map(s => s?.regn_no ?? s?.regnNo ?? "");
-                                while (students.length < seatsInCol) {
-                                  students.push("");
-                                }
+                                students = Array.from(
+                                  { length: seatsInCol },
+                                  (_, slotIdx) => cell[slotIdx]?.regn_no ?? cell[slotIdx]?.regnNo ?? ""
+                                );
                               }
  
                               return (
