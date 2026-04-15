@@ -261,7 +261,7 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
                       if (cell === "Empty" || !cell) {
                         students = Array(seatsInCol).fill("");
                       } else if (Array.isArray(cell)) {
-                        students = cell.map(s => s.regn_no ?? s.regnNo ?? "");
+                        students = cell.map(s => s?.regn_no ?? s?.regnNo ?? "");
                         while (students.length < seatsInCol) students.push("");
                       } else if (typeof cell === "string") {
                         students = cell.split("\n").filter(s => s && s !== "Empty");

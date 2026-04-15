@@ -170,6 +170,7 @@ CREATE TABLE IF NOT EXISTS seating_arrangements (
   seating_plan_venue_id INT REFERENCES seating_plan_venues(id) ON DELETE CASCADE,
   seat_row INT NOT NULL,
   seat_col INT NOT NULL,
+  seat_index INT DEFAULT 0,
   regn_no VARCHAR(50)
 );
 

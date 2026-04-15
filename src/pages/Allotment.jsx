@@ -725,7 +725,7 @@ const Allotment = () => {
               regn_no: student.regnNo,
               course: student.courseDescription
             } : null
-          ).filter(s => s !== null);
+          );
         })
       );
  
@@ -1387,7 +1387,7 @@ const Allotment = () => {
                               if (cell === "Empty" || !cell) {
                                 students = Array(seatsInCol).fill("");
                               } else if (Array.isArray(cell)) {
-                                students = cell.map(s => s.regn_no);
+                                students = cell.map(s => s?.regn_no ?? s?.regnNo ?? "");
                                 while (students.length < seatsInCol) {
                                   students.push("");
                                 }

@@ -1,6 +1,11 @@
 // Class/backend/models/SeatingPlan.js
 const db = require("../config/db");
 const { andClause, whereClause, insertField } = require("../utils/ownerFilter");
+const {
+  normalizeBenchConfig,
+  flattenArrangementForStorage,
+  hydrateArrangementFromRows,
+} = require("../utils/seatingLayout");
 
 const SeatingPlan = {
 
@@ -89,54 +94,25 @@ const SeatingPlan = {
 
         // Insert seating grid (2D arrangement)
         if (Array.isArray(venue.seatingArrangement)) {
-          const arrangementEntries = [];
-
-          for (let r = 0; r < venue.seatingArrangement.length; r++) {
-            const row = venue.seatingArrangement[r];
-            if (!Array.isArray(row)) continue;
-
-            for (let c = 0; c < row.length; c++) {
-              const cellContent = row[c];
-
-              if (!cellContent || cellContent === "Empty") continue;
-
-              // ✅ NEW FORMAT: cell is an array of { regn_no, course } objects
-              if (Array.isArray(cellContent)) {
-                cellContent.forEach(item => {
-                  if (item && item.regn_no) {
-                    const regNo = (item.regn_no ?? "").toString().trim();
-                    if (regNo) {
-                      arrangementEntries.push([
-                        seatingPlanVenueId,
-                        r,
-                        c,
-                        regNo
-                      ]);
-                    }
-                  }
-                });
-              }
-              // ⬇️ OLD FORMAT FALLBACK: cell is a plain string like "23BCS090\n23BIT087"
-              else if (typeof cellContent === "string") {
-                const studentsInCell = cellContent.split("\n");
-                studentsInCell.forEach(regNo => {
-                  if (regNo.trim()) {
-                    arrangementEntries.push([
-                      seatingPlanVenueId,
-                      r,
-                      c,
-                      regNo.trim()
-                    ]);
-                  }
-                });
-              }
-            }
-          }
+          const benchConfig = normalizeBenchConfig(
+            venue.benchConfig,
+            venue.seatingArrangement?.[0]?.length || 0
+          );
+          const arrangementEntries = flattenArrangementForStorage(
+            venue.seatingArrangement,
+            benchConfig
+          ).map(([r, c, seatIndex, regNo]) => [
+            seatingPlanVenueId,
+            r,
+            c,
+            seatIndex,
+            regNo,
+          ]);
 
           if (arrangementEntries.length > 0) {
             await conn.query(
               `INSERT INTO seating_arrangements 
-               (seating_plan_venue_id, seat_row, seat_col, regn_no) 
+               (seating_plan_venue_id, seat_row, seat_col, seat_index, regn_no) 
                VALUES ?`,
               [arrangementEntries]
             );
@@ -252,34 +228,14 @@ const SeatingPlan = {
 
         // Fetch every individual seat
         const [seats] = await db.query(`
-          SELECT seat_row, seat_col, regn_no
+          SELECT seat_row, seat_col, seat_index, regn_no
           FROM seating_arrangements
           WHERE seating_plan_venue_id = ?
-          ORDER BY seat_row, seat_col
+          ORDER BY seat_row, seat_col, seat_index, id
         `, [internalId]);
 
-        if (seats && seats.length > 0) {
-          const maxR = Math.max(...seats.map(s => (s.seat_row ?? s.seatrow) ?? 0)) + 1;
-          const maxC = Math.max(...seats.map(s => (s.seat_col ?? s.seatcol) ?? 0)) + 1;
-
-          const grid = Array.from({ length: maxR }, () =>
-            Array.from({ length: maxC }, () => [])
-          );
-
-          seats.forEach(s => {
-            const regn = s.regn_no ?? s.regnno;
-            const course = studentCourseMap.get(regn) || null;
-            const r = s.seat_row ?? s.seatrow ?? 0;
-            const c = s.seat_col ?? s.seatcol ?? 0;
-            grid[r][c].push({ regn_no: regn, course });
-          });
-
-          v.seatingArrangement = grid.map(row =>
-            row.map(cell => (cell.length === 0 ? "Empty" : cell))
-          );
-        } else {
-          v.seatingArrangement = [];
-        }
+        const benchConfig = normalizeBenchConfig(v.benchConfig, 0);
+        v.seatingArrangement = hydrateArrangementFromRows(seats || [], benchConfig, studentCourseMap);
       }
 
       plan.venuesUsed = venues || [];
@@ -383,31 +339,14 @@ const SeatingPlan = {
       v.venueId = v.venueId ?? v.venueid ?? v.venue_id;
 
       const [seats] = await db.query(`
-        SELECT seat_row, seat_col, regn_no
+        SELECT seat_row, seat_col, seat_index, regn_no
         FROM seating_arrangements
         WHERE seating_plan_venue_id = ?
-        ORDER BY seat_row, seat_col
+        ORDER BY seat_row, seat_col, seat_index, id
       `, [internalId]);
 
-      if (seats && seats.length > 0) {
-        const maxR = Math.max(...seats.map(s => (s.seat_row ?? s.seatrow) ?? 0)) + 1;
-        const maxC = Math.max(...seats.map(s => (s.seat_col ?? s.seatcol) ?? 0)) + 1;
-        const grid = Array.from({ length: maxR }, () =>
-          Array.from({ length: maxC }, () => [])
-        );
-        seats.forEach(s => {
-          const regn = s.regn_no ?? s.regnno;
-          const course = studentCourseMap.get(regn) || null;
-          const r = s.seat_row ?? s.seatrow ?? 0;
-          const c = s.seat_col ?? s.seatcol ?? 0;
-          grid[r][c].push({ regn_no: regn, course });
-        });
-        v.seatingArrangement = grid.map(row =>
-          row.map(cell => (cell.length === 0 ? "Empty" : cell))
-        );
-      } else {
-        v.seatingArrangement = [];
-      }
+      const benchConfig = normalizeBenchConfig(v.benchConfig, 0);
+      v.seatingArrangement = hydrateArrangementFromRows(seats || [], benchConfig, studentCourseMap);
     }
 
     plan.venuesUsed = venues || [];
