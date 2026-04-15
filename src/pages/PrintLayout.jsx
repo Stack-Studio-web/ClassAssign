@@ -79,15 +79,9 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
         const benchConfig = venuePlan.benchConfig || 
           (venuePlan.seatingArrangement?.[0]?.map(() => 2) || [2, 2]);
         const numCols = benchConfig.length;
-        const MIN_ROWS = 10; // Pad with empty rows when fewer students
 
-        // Build display grid: pad with empty rows if seating has fewer rows
+        // Build display grid with exact saved/generated row count (no forced padding)
         let displayRows = venuePlan.seatingArrangement || [];
-        if (displayRows.length < MIN_ROWS) {
-          const emptyRow = Array(numCols).fill("Empty");
-          const padCount = MIN_ROWS - displayRows.length;
-          displayRows = [...displayRows, ...Array(padCount).fill(null).map(() => [...emptyRow])];
-        }
         // Ensure each row has correct column count
         displayRows = displayRows.map(row => {
           const r = Array.isArray(row) ? [...row] : [];
