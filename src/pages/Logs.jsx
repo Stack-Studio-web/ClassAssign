@@ -37,7 +37,7 @@ const Logs = () => {
   // Expanded log details
   const [expandedLog, setExpandedLog] = useState(null);
 
-  const API_BASE = 'http://localhost:5000/api';
+  const API_BASE = 'http://10.1.150.51:5000/api';
 
   const getAuthHeaders = () => {
     const token = sessionStorage.getItem('authToken');

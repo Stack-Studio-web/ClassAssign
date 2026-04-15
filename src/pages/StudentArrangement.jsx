@@ -8,7 +8,7 @@ import LogoKSI from "../assets/logo KSI.png";
 
 // ✅ 1. Create authenticated API instance to fix 401 Unauthorized
 const api = axios.create({
-  baseURL: "http://localhost:5000/api",
+  baseURL: "http://10.1.150.51:5000/api",
 });
 
 api.interceptors.request.use((config) => {

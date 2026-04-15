@@ -13,7 +13,7 @@ function Landing() {
     const [flashMessage, setFlashMessage] = useState(''); 
     const [loading, setLoading] = useState(false);
 
-    const API_BASE = 'http://localhost:5000/api';
+    const API_BASE = 'http://10.1.150.51:5000/api';
 
     // Check for SSO callback or errors
     useEffect(() => {
