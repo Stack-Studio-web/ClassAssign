@@ -70,18 +70,20 @@ const SeatingPlan = {
       }
 
       // 3️⃣ Insert venues and detailed seating grid
-      for (const venue of venuesUsed) {
+      for (let orderIdx = 0; orderIdx < venuesUsed.length; orderIdx++) {
+        const venue = venuesUsed[orderIdx];
         // ✅ CRITICAL FIX: Save benchConfig to database
         const benchConfigJson = venue.benchConfig ? JSON.stringify(venue.benchConfig) : null;
         
         const [venueRes] = await conn.query(
           `INSERT INTO seating_plan_venues 
-           (seating_plan_id, venue_id, venue_name, bench_config, seating_layout_json, faculty_id) 
-           VALUES (?, ?, ?, ?, ?, ?)`,
+           (seating_plan_id, venue_id, venue_name, display_order, bench_config, seating_layout_json, faculty_id) 
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
           [
             seatingPlanId,
             venue.venueId,
             venue.venueName,
+            orderIdx,
             benchConfigJson,  // ✅ NEW: Save benchConfig
             JSON.stringify(venue.seatingArrangement || []),
             venue.facultyId || null
@@ -189,6 +191,7 @@ const SeatingPlan = {
           spv.id as internalId,
           spv.venue_id as venueId,
           spv.venue_name as venueName,
+          spv.display_order as displayOrder,
           spv.bench_config as benchConfig,
           spv.seating_layout_json as seatingLayoutJson,
           f.name as facultyName,
@@ -196,6 +199,7 @@ const SeatingPlan = {
         FROM seating_plan_venues spv
         LEFT JOIN faculty f ON spv.faculty_id = f.id
         WHERE spv.seating_plan_id = ?
+        ORDER BY COALESCE(spv.display_order, 0), spv.id
       `, [planId]);
 
       // ✅ Build a course lookup map from seating_plan_students for this plan
@@ -318,6 +322,7 @@ const SeatingPlan = {
         spv.id as internalId,
         spv.venue_id as venueId,
         spv.venue_name as venueName,
+        spv.display_order as displayOrder,
         spv.bench_config as benchConfig,
         spv.seating_layout_json as seatingLayoutJson,
         f.name as facultyName,
@@ -325,6 +330,7 @@ const SeatingPlan = {
       FROM seating_plan_venues spv
       LEFT JOIN faculty f ON spv.faculty_id = f.id
       WHERE spv.seating_plan_id = ?
+      ORDER BY COALESCE(spv.display_order, 0), spv.id
     `, [planId]);
 
     const [planStudents] = await db.query(`

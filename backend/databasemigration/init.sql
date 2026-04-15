@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS seating_plan_venues (
   seating_plan_id INT REFERENCES seating_plans(id) ON DELETE CASCADE,
   venue_id INT REFERENCES venues(id),
   venue_name VARCHAR(200),
+  display_order INT DEFAULT 0,
   bench_config TEXT,
   seating_layout_json TEXT,
   faculty_id INT REFERENCES faculty(id)
