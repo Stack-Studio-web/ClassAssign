@@ -83,6 +83,32 @@ router.post("/",
 });
 
 /* ================================
+   UPDATE VENUE AVAILABILITY (toggle)
+   Roles: admin, faculty_incharge
+================================ */
+router.put("/:id/availability",
+  sessionAuth,
+  checkRole(['admin', 'faculty_incharge']),
+  auditLogger("UPDATE_VENUE_AVAILABILITY", "Venue"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { isAvailable } = req.body || {};
+      if (typeof isAvailable !== "boolean") {
+        return res.status(400).json({ error: "isAvailable (boolean) is required" });
+      }
+      const [result] = await Venue.setAvailability(id, isAvailable, ownerOpts(req));
+      if (!result?.affectedRows) {
+        return res.status(404).json({ error: "Venue not found or not allowed" });
+      }
+      res.json({ message: "Availability updated", id, isAvailable });
+    } catch (err) {
+      res.status(500).json({ error: "Server error", details: err.message });
+    }
+  }
+);
+
+/* ================================
    UPDATE VENUE
    Roles: admin, faculty_incharge
 ================================ */

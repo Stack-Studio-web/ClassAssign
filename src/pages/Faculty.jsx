@@ -35,6 +35,7 @@ export default function Faculty() {
   // Edit States
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState(0);
+  const [togglingAvailabilityId, setTogglingAvailabilityId] = useState(null);
 
   // Import/Status States
   const [skippedEmails, setSkippedEmails] = useState([]);
@@ -104,6 +105,20 @@ export default function Faculty() {
       fetchFaculty();
     } catch {
       setMessage("❌ Update failed");
+    }
+  };
+
+  const handleToggleAvailability = async (f) => {
+    const on = f.isAvailable !== false;
+    setTogglingAvailabilityId(f.id);
+    try {
+      await api.put(`/faculty/${f.id}/availability`, { isAvailable: !on });
+      setMessage("✅ Availability updated");
+      await fetchFaculty();
+    } catch {
+      setMessage("❌ Could not update availability");
+    } finally {
+      setTogglingAvailabilityId(null);
     }
   };
 
@@ -414,6 +429,7 @@ export default function Faculty() {
                     <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide">Max</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide">Alloc</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide">Rem</th>
+                    <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide">Available</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Actions</th>
                   </tr>
                 </thead>
@@ -431,6 +447,25 @@ export default function Faculty() {
                       </td>
                       <td className="px-4 md:px-6 py-3 md:py-4 text-center">
                         <span className={`font-bold px-2 py-1 rounded-lg text-xs ${f.remaining > 0 ? "text-green-700 bg-green-100" : "text-red-700 bg-red-100"}`}>{f.remaining}</span>
+                      </td>
+                      <td className="px-4 md:px-6 py-3 md:py-4 text-center">
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={f.isAvailable !== false}
+                          aria-label={f.isAvailable !== false ? "Mark unavailable" : "Mark available"}
+                          disabled={togglingAvailabilityId === f.id}
+                          onClick={() => handleToggleAvailability(f)}
+                          className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 ${
+                            f.isAvailable !== false ? "bg-emerald-500" : "bg-gray-300"
+                          }`}
+                        >
+                          <span
+                            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
+                              f.isAvailable !== false ? "translate-x-6" : "translate-x-1"
+                            }`}
+                          />
+                        </button>
                       </td>
                       <td className="px-4 md:px-6 py-3 md:py-4">
                         {editingId === f.id ? (

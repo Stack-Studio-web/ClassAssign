@@ -13,7 +13,10 @@ async function ensureHodSchema() {
     await db.query(
       `ALTER TABLE users ADD COLUMN IF NOT EXISTS created_by_hod_id INT REFERENCES users(id)`
     );
-    console.log("✅ HoD schema OK (role + users.created_by_hod_id)");
+    await db.query(
+      `ALTER TABLE faculty ADD COLUMN IF NOT EXISTS is_available BOOLEAN DEFAULT TRUE`
+    );
+    console.log("✅ HoD schema OK (role + users.created_by_hod_id + faculty.is_available)");
   } catch (err) {
     console.error("❌ ensureHodSchema failed:", err.message);
     throw err;

@@ -5,6 +5,8 @@ const { andClause, whereClause, whereClauseForHod, andClauseForHod, insertField 
 // PostgreSQL returns unquoted column names in lowercase; map to camelCase for API
 function toFacultyRow(row) {
   if (!row || typeof row !== "object") return row;
+  const isAvailable =
+    row.is_available === false || row.isavailable === false ? false : true;
   return {
     id: row.id,
     name: row.name ?? "",
@@ -12,7 +14,8 @@ function toFacultyRow(row) {
     email: row.email ?? "",
     maxClassrooms: Number(row.max_classrooms ?? row.maxclassrooms ?? row.maxClassrooms ?? 1) || 1,
     allocation: Number(row.allocation ?? 0) || 0,
-    remaining: Number(row.remaining ?? 0) || 0
+    remaining: Number(row.remaining ?? 0) || 0,
+    isAvailable
   };
 }
 
@@ -57,6 +60,16 @@ const Faculty = {
     );
   },
 
+  updateAvailability: async (id, isAvailable, opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
+      ? andClauseForHod(opts.department)
+      : andClause(opts.role, opts.ownerUserId);
+    return db.query(
+      `UPDATE faculty SET is_available = ? WHERE id = ?${ownerSql}`,
+      [isAvailable, id, ...ownerParams]
+    );
+  },
+
   deleteById: async (id, opts = {}) => {
     const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
       ? andClauseForHod(opts.department)
@@ -86,27 +99,25 @@ const Faculty = {
   canAllocate: async (facultyId) => {
     const [rows] = await db.query(
       `
-      SELECT 
+      SELECT
         f.id,
-        f.max_classrooms,
-        COUNT(spv.id) AS allocationCount
+        COALESCE(f.max_classrooms, 1) AS max_classrooms,
+        COALESCE(f.is_available, true) AS is_available,
+        (SELECT COUNT(*) FROM seating_plan_venues spv WHERE spv.faculty_id = f.id) AS allocation_count
       FROM faculty f
-      LEFT JOIN seating_plan_venues spv 
-        ON spv.faculty_id = f.id
       WHERE f.id = ?
-      GROUP BY f.id
       `,
       [facultyId]
     );
-    
-    // If faculty doesn't exist, return false
+
     if (rows.length === 0) return false;
-    
+
     const r = rows[0];
-    // PostgreSQL returns lowercase (allocationcount); handle both
+    if (r.is_available === false || r.isavailable === false) return false;
+
     const maxAllowed = Number(r.max_classrooms ?? r.maxclassrooms ?? 1) || 1;
-    const allocationCount = Number(r.allocationcount ?? r.allocationCount ?? 0) || 0;
-    
+    const allocationCount = Number(r.allocation_count ?? r.allocationcount ?? 0) || 0;
+
     return allocationCount < maxAllowed;
   },
 
@@ -125,13 +136,14 @@ const Faculty = {
         f.department,
         f.email,
         COALESCE(f.max_classrooms, 1) AS max_classrooms,
+        COALESCE(f.is_available, true) AS is_available,
         COUNT(spv.id) AS allocation,
         (COALESCE(f.max_classrooms, 1) - COUNT(spv.id)) AS remaining
       FROM faculty f
       LEFT JOIN seating_plan_venues spv 
         ON spv.faculty_id = f.id
       ${ownerSql || "WHERE 1=1"}
-      GROUP BY f.id
+      GROUP BY f.id, f.name, f.department, f.email, f.max_classrooms, f.is_available
       ORDER BY f.name ASC
     `, ownerParams);
     return (rows || []).map(toFacultyRow);

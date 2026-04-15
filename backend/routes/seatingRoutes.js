@@ -597,10 +597,9 @@ router.post("/check-faculty-availability",
           f.name,
           f.department,
           COALESCE(f.max_classrooms, 1) AS max_classrooms,
-          COUNT(spv.id) AS current_allocation
-         FROM faculty f
-         LEFT JOIN seating_plan_venues spv ON spv.faculty_id = f.id
-         GROUP BY f.id, f.name, f.department, f.max_classrooms`
+          COALESCE(f.is_available, true) AS is_available,
+          (SELECT COUNT(*) FROM seating_plan_venues spv WHERE spv.faculty_id = f.id) AS current_allocation
+         FROM faculty f`
       );
 
       const facultyStatus = await Promise.all(
@@ -619,12 +618,14 @@ router.post("/check-faculty-availability",
           const maxClassrooms = Number(f.max_classrooms ?? f.maxclassrooms ?? 1) || 1;
           const currentAlloc = Number(f.current_allocation ?? f.currentallocation ?? 0) || 0;
           const remaining = maxClassrooms - currentAlloc;
+          const facultyMarkedAvailable =
+            f.is_available !== false && f.isavailable !== false;
 
           return {
             id: f.id,
             name: f.name,
             department: f.department,
-            canAllocate: remaining > 0,
+            canAllocate: remaining > 0 && facultyMarkedAvailable,
             hasTimeConflict: conflicts.length > 0,
             allocationsRemaining: remaining,
             maxClassrooms,

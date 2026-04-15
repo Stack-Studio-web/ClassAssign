@@ -53,6 +53,22 @@ router.put("/:id/max-classrooms", sessionAuth, checkRole(["admin", "faculty_inch
   }
 });
 
+router.put("/:id/availability", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
+  try {
+    const { isAvailable } = req.body || {};
+    if (typeof isAvailable !== "boolean") {
+      return res.status(400).json({ message: "isAvailable (boolean) is required" });
+    }
+    const [result] = await Faculty.updateAvailability(req.params.id, isAvailable, ownerOpts(req));
+    if (!result?.affectedRows) {
+      return res.status(404).json({ message: "Faculty not found or not allowed" });
+    }
+    res.json({ message: "Availability updated", isAvailable });
+  } catch (err) {
+    res.status(500).json(err);
+  }
+});
+
 router.delete("/:id", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
   try {
     await Faculty.deleteById(req.params.id, ownerOpts(req));

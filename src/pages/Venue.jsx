@@ -67,6 +67,7 @@ export default function AddVenue() {
   const [importError, setImportError] = useState("");
   const [lastImportInfo, setLastImportInfo] = useState(null);
   const [isImporting, setIsImporting] = useState(false);
+  const [togglingVenueId, setTogglingVenueId] = useState(null);
 
   const venueTypes = [
     { value: "", label: "Select Type" },
@@ -190,6 +191,23 @@ export default function AddVenue() {
       } else {
         setError(err.response?.data?.details || "Failed to save venue.");
       }
+    }
+  };
+
+  const handleToggleVenueAvailability = async (venue) => {
+    const id = venue._id || venue.id;
+    const on = venue.isAvailable !== false;
+    setTogglingVenueId(id);
+    try {
+      await api.put(`/venues/${id}/availability`, { isAvailable: !on });
+      fetchStats();
+      fetchVenues();
+    } catch (err) {
+      if (err.response?.status !== 401) {
+        alert(err.response?.data?.error || err.response?.data?.details || "Could not update availability.");
+      }
+    } finally {
+      setTogglingVenueId(null);
     }
   };
 
@@ -770,6 +788,7 @@ export default function AddVenue() {
                       <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Capacity</th>
                       <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Rows × Cols</th>
                       <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Bench Config</th>
+                      <th className="px-6 py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide">Available</th>
                       <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Actions</th>
                     </tr>
                   </thead>
@@ -784,6 +803,25 @@ export default function AddVenue() {
                         </td>
                         <td className="px-6 py-4 text-sm font-mono text-gray-500">
                           [{venue.benchConfig?.join(", ") || "N/A"}]
+                        </td>
+                        <td className="px-6 py-4 text-center">
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={venue.isAvailable !== false}
+                            aria-label={venue.isAvailable !== false ? "Mark unavailable" : "Mark available"}
+                            disabled={togglingVenueId === (venue._id || venue.id)}
+                            onClick={() => handleToggleVenueAvailability(venue)}
+                            className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 ${
+                              venue.isAvailable !== false ? "bg-emerald-500" : "bg-gray-300"
+                            }`}
+                          >
+                            <span
+                              className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
+                                venue.isAvailable !== false ? "translate-x-6" : "translate-x-1"
+                              }`}
+                            />
+                          </button>
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex flex-wrap gap-2">

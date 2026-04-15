@@ -17,24 +17,17 @@ function toStudentRow(row) {
 
 const Student = {
   /* ============================================================
-      INSERT OR UPDATE (Final Duplicate Protection)
+      INSERT (one row per import row; regn_no may repeat across courses/rows)
   ============================================================ */
   insertOne: async (s, opts = {}) => {
     const { col, val } = insertField(opts.role, opts.ownerUserId);
     const vals = [s.regnNo, s.studentName, s.courseDescription, s.courseName, s.email?.trim().toLowerCase() || null];
     if (val != null) vals.push(val);
     const placeholders = vals.map(() => "?").join(", ");
-    const updateSet = val != null ? ", owner_user_id = EXCLUDED.owner_user_id" : "";
     const sql = `
       INSERT INTO students 
         (regn_no, student_name, course_description, course_name, email${col})
       VALUES (${placeholders})
-      ON CONFLICT (regn_no)
-      DO UPDATE SET
-        student_name = EXCLUDED.student_name,
-        course_description = EXCLUDED.course_description,
-        course_name = EXCLUDED.course_name,
-        email = EXCLUDED.email${updateSet}
       RETURNING id;
     `;
     const [result] = await db.query(sql, vals);
@@ -54,7 +47,7 @@ const Student = {
         course_description AS courseDescription,
         email
       FROM students${ownerSql || " WHERE 1=1"}
-      ORDER BY regn_no
+      ORDER BY regn_no, id
     `, ownerParams);
     return (rows || []).map(toStudentRow);
   },
@@ -117,7 +110,7 @@ const Student = {
         email
       FROM students
       WHERE course_description = ?${ownerSql}
-      ORDER BY regn_no
+      ORDER BY regn_no, id
     `, [courseDescription, ...ownerParams]);
 
     return (rows || []).map(toStudentRow);
@@ -140,7 +133,7 @@ const Student = {
         email
       FROM students
       WHERE regn_no LIKE ?${ownerSql}
-      ORDER BY regn_no
+      ORDER BY regn_no, id
     `, [`%${department}%`, ...ownerParams]);
 
     return (rows || []).map(toStudentRow);
@@ -163,7 +156,7 @@ const Student = {
       FROM students
       WHERE course_description = ?
         AND regn_no LIKE ?${ownerSql}
-      ORDER BY regn_no
+      ORDER BY regn_no, id
     `, [courseCode, `%${department}%`, ...ownerParams]);
 
     return (rows || []).map(toStudentRow);

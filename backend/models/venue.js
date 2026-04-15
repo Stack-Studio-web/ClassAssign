@@ -15,7 +15,7 @@ function toVenueRow(row) {
     capacity: Number(row.capacity ?? 0) || benchesRow * benchesCol * 2,
     benchesRow,
     benchesCol,
-    isAvailable: row.isavailable ?? row.isAvailable
+    isAvailable: row.isavailable ?? row.isAvailable ?? true
   };
 }
 
@@ -177,6 +177,14 @@ const Venue = {
   },
 
   // ✅ NEW: DELETE BY IDS (For Undo Import)
+  setAvailability: async (id, isAvailable, opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    return db.query(
+      `UPDATE venues SET is_available = ? WHERE id = ?${ownerSql}`,
+      [isAvailable, id, ...ownerParams]
+    );
+  },
+
   deleteByIds: async (ids, opts = {}) => {
     if (!Array.isArray(ids) || ids.length === 0) return;
     const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);

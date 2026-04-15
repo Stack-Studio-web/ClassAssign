@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 -- Students
 CREATE TABLE IF NOT EXISTS students (
   id SERIAL PRIMARY KEY,
-  regn_no VARCHAR(50) UNIQUE NOT NULL,
+  regn_no VARCHAR(50) NOT NULL,
   student_name VARCHAR(200) NOT NULL,
   course_description VARCHAR(100),
   course_name VARCHAR(200),
@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS faculty (
   department VARCHAR(100),
   email VARCHAR(150) UNIQUE NOT NULL,
   max_classrooms INT DEFAULT 1,
+  is_available BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
