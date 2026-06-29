@@ -1,6 +1,6 @@
 // src/pages/Logs.jsx
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import api from '../lib/api';
 import { 
   ClockIcon, 
   UserIcon, 
@@ -36,28 +36,21 @@ const Logs = () => {
 
   // Expanded log details
   const [expandedLog, setExpandedLog] = useState(null);
+  const [searchMode, setSearchMode] = useState(false);
 
-  const API_BASE = 'http://10.1.150.51:5000/api';
-
-  const getAuthHeaders = () => {
-    const token = sessionStorage.getItem('authToken');
-    return { Authorization: `Bearer ${token}` };
-  };
-
-  // Fetch logs
   const fetchLogs = async (page = 0) => {
     try {
       setLoading(true);
       const offset = page * logsPerPage;
       
-      const response = await axios.get(
-        `${API_BASE}/audit-logs?limit=${logsPerPage}&offset=${offset}`,
-        { headers: getAuthHeaders() }
+      const response = await api.get(
+        `/audit-logs?limit=${logsPerPage}&offset=${offset}`
       );
 
       setLogs(response.data.logs);
       setHasMore(response.data.pagination.hasMore);
       setCurrentPage(page);
+      setSearchMode(false);
       
       // Extract unique actions from the logs
       const actions = [...new Set(response.data.logs.map(log => log.action))].sort();
@@ -73,10 +66,7 @@ const Logs = () => {
   // Fetch statistics
   const fetchStats = async () => {
     try {
-      const response = await axios.get(
-        `${API_BASE}/audit-logs/stats`,
-        { headers: getAuthHeaders() }
-      );
+      const response = await api.get('/audit-logs/stats');
       setStats(response.data);
     } catch (err) {
       console.error('Error fetching stats:', err);
@@ -102,15 +92,12 @@ const Logs = () => {
         formattedFilters.endDate = filters.endDate;
       }
 
-      const response = await axios.post(
-        `${API_BASE}/audit-logs/search`,
-        formattedFilters,
-        { headers: getAuthHeaders() }
-      );
+      const response = await api.post('/audit-logs/search', formattedFilters);
 
       setLogs(response.data);
-      setHasMore(false); // Search results don't support pagination
+      setHasMore(false);
       setCurrentPage(0);
+      setSearchMode(true);
       
       // Update unique actions from search results
       const actions = [...new Set(response.data.map(log => log.action))].sort();
@@ -132,6 +119,7 @@ const Logs = () => {
       startDate: '',
       endDate: ''
     });
+    setSearchMode(false);
     fetchLogs(0);
   };
 
@@ -448,10 +436,11 @@ const Logs = () => {
       </div>
 
       {/* Pagination */}
+      {!searchMode && (
       <div className="flex justify-between items-center mt-6">
         <button
           onClick={() => fetchLogs(currentPage - 1)}
-          disabled={currentPage === 0}
+          disabled={currentPage === 0 || loading}
           className="bg-white border border-gray-300 px-4 py-2 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed font-semibold"
         >
           Previous
@@ -461,12 +450,18 @@ const Logs = () => {
         </span>
         <button
           onClick={() => fetchLogs(currentPage + 1)}
-          disabled={!hasMore}
+          disabled={!hasMore || loading}
           className="bg-white border border-gray-300 px-4 py-2 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed font-semibold"
         >
           Next
         </button>
       </div>
+      )}
+      {searchMode && (
+        <p className="mt-4 text-sm text-gray-500 text-center">
+          Showing filtered results. Reset filters to browse all pages.
+        </p>
+      )}
     </div>
   );
 };

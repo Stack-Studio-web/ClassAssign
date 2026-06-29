@@ -8,7 +8,7 @@ function toFacultyRow(row) {
   const isAvailable =
     row.is_available === false || row.isavailable === false ? false : true;
   return {
-    id: row.id,
+    uuid: row.public_uuid ?? row.publicuuid ?? row.uuid,
     name: row.name ?? "",
     department: row.department ?? "",
     email: row.email ?? "",
@@ -20,6 +20,14 @@ function toFacultyRow(row) {
 }
 
 const Faculty = {
+  findByEmail: async (email) => {
+    const [rows] = await db.query(
+      `SELECT id, email FROM faculty WHERE LOWER(email) = ?`,
+      [email.trim().toLowerCase()]
+    );
+    return rows[0];
+  },
+
   create: async ({ name, department, email }, opts = {}) => {
     const { col, val } = insertField(opts.role, opts.ownerUserId);
     const vals = [name, department, email];
@@ -53,11 +61,15 @@ const Faculty = {
     };
   },
 
-  updateMaxClassrooms: async (id, max) => {
-    return db.query(
-      "UPDATE faculty SET max_classrooms = ? WHERE id = ?",
-      [max, id]
+  updateMaxClassrooms: async (id, max, opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
+      ? andClauseForHod(opts.department)
+      : andClause(opts.role, opts.ownerUserId);
+    const [result] = await db.query(
+      `UPDATE faculty SET max_classrooms = ? WHERE id = ?${ownerSql}`,
+      [max, id, ...ownerParams]
     );
+    return (result.affectedRows ?? 0) > 0;
   },
 
   updateAvailability: async (id, isAvailable, opts = {}) => {
@@ -80,7 +92,8 @@ const Faculty = {
     const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
       ? andClauseForHod(opts.department)
       : andClause(opts.role, opts.ownerUserId);
-    return db.query(`DELETE FROM faculty WHERE id = ?${ownerSql}`, [id, ...ownerParams]);
+    const [result] = await db.query(`DELETE FROM faculty WHERE id = ?${ownerSql}`, [id, ...ownerParams]);
+    return (result.affectedRows ?? 0) > 0;
   },
 
   deleteByIds: async (ids, opts = {}) => {
@@ -102,18 +115,36 @@ const Faculty = {
      CHECK IF FACULTY CAN BE ALLOCATED
      ✅ FIXED: Handle case when faculty doesn't exist
   ===================================== */
-  canAllocate: async (facultyId) => {
+  canAllocate: async (facultyId, { examDate, examStartTime, examEndTime } = {}) => {
     const [rows] = await db.query(
       `
       SELECT
         f.id,
         COALESCE(f.max_classrooms, 1) AS max_classrooms,
         COALESCE(f.is_available, true) AS is_available,
-        (SELECT COUNT(*) FROM seating_plan_venues spv WHERE spv.faculty_id = f.id) AS allocation_count
+        COALESCE((
+          SELECT COUNT(spv.id)
+          FROM seating_plan_venues spv
+          JOIN seating_plans sp ON sp.id = spv.seating_plan_id
+          WHERE spv.faculty_id = f.id
+            AND (?::date IS NULL OR sp.exam_date = ?::date)
+            AND (
+              ?::time IS NULL OR ?::time IS NULL
+              OR NOT (sp.exam_end_time <= ?::time OR sp.exam_start_time >= ?::time)
+            )
+        ), 0) AS allocation_count
       FROM faculty f
       WHERE f.id = ?
       `,
-      [facultyId]
+      [
+        examDate || null,
+        examDate || null,
+        examStartTime || null,
+        examEndTime || null,
+        examStartTime || null,
+        examEndTime || null,
+        facultyId,
+      ]
     );
 
     if (rows.length === 0) return false;
@@ -138,6 +169,7 @@ const Faculty = {
     const [rows] = await db.query(`
       SELECT 
         f.id,
+        f.public_uuid,
         f.name,
         f.department,
         f.email,
@@ -149,7 +181,7 @@ const Faculty = {
       LEFT JOIN seating_plan_venues spv 
         ON spv.faculty_id = f.id
       ${ownerSql || "WHERE 1=1"}
-      GROUP BY f.id, f.name, f.department, f.email, f.max_classrooms, f.is_available
+      GROUP BY f.id, f.public_uuid, f.name, f.department, f.email, f.max_classrooms, f.is_available
       ORDER BY f.name ASC
     `, ownerParams);
     return (rows || []).map(toFacultyRow);

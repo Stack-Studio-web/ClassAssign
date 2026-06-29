@@ -1,80 +1,69 @@
-// routes/microsoftAuthRoutes.js
 const express = require("express");
 const router = express.Router();
 const axios = require("axios");
-const crypto = require("crypto"); // ✅ ADD THIS IMPORT
+const crypto = require("crypto");
 const User = require("../models/User");
-const { sessions, generateToken } = require('./authRoutes');
+const SessionStore = require("../utils/sessionStore");
+const { createSession } = require("../utils/authHelpers");
 const { URLSearchParams } = require("url");
+const { loginLimiter } = require("../middleware/rateLimiters");
 
-// ================================
-// CONFIG
-// ================================
-const MICROSOFT_CLIENT_ID = process.env.MICROSOFT_CLIENT_ID || "YOUR_CLIENT_ID";
-const MICROSOFT_CLIENT_SECRET = process.env.MICROSOFT_CLIENT_SECRET || "YOUR_CLIENT_SECRET";
-const MICROSOFT_TENANT_ID = process.env.MICROSOFT_TENANT_ID || "YOUR_TENANT_ID";
-
+const MICROSOFT_CLIENT_ID = process.env.MICROSOFT_CLIENT_ID;
+const MICROSOFT_CLIENT_SECRET = process.env.MICROSOFT_CLIENT_SECRET;
+const MICROSOFT_TENANT_ID = process.env.MICROSOFT_TENANT_ID;
 const MICROSOFT_SCOPES = ["openid", "profile", "email", "User.Read"];
-const FRONTEND_URL = process.env.FRONTEND_URL || "http://10.1.150.51:5173";
-
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
 const AUTH_BASE_URL = `https://login.microsoftonline.com/${MICROSOFT_TENANT_ID}/oauth2/v2.0`;
 const REDIRECT_URI = `${FRONTEND_URL}/api/auth/microsoft/callback`;
 
-/* ===============================
-    1️⃣ INITIATE MICROSOFT LOGIN
-    GET /api/auth/microsoft/login
-=============================== */
-router.get("/login", (req, res) => {
+router.get("/login", loginLimiter, async (req, res) => {
   try {
+    if (!MICROSOFT_CLIENT_ID || !MICROSOFT_TENANT_ID) {
+      return res.status(503).json({ message: "Microsoft SSO is not configured" });
+    }
+
+    const state = crypto.randomBytes(32).toString("hex");
+    await SessionStore.setOAuthState(state);
+
     const params = new URLSearchParams({
       client_id: MICROSOFT_CLIENT_ID,
       response_type: "code",
       redirect_uri: REDIRECT_URI,
       scope: MICROSOFT_SCOPES.join(" "),
       response_mode: "query",
-      state: crypto.randomBytes(16).toString('hex'), // CSRF protection
+      state,
     });
 
-    const authUrl = `${AUTH_BASE_URL}/authorize?${params.toString()}`;
-    
-    console.log('✅ Microsoft login URL generated');
-    return res.json({ authUrl });
-    
+    return res.json({ authUrl: `${AUTH_BASE_URL}/authorize?${params.toString()}` });
   } catch (error) {
-    console.error("❌ Error generating auth URL:", error);
-    res.status(500).json({ 
-      message: "Internal Server Error",
-      error: error.message 
-    });
+    console.error("Microsoft login URL error:", error.message);
+    res.status(500).json({ message: "Internal Server Error" });
   }
 });
 
-/* ===============================
-    2️⃣ MICROSOFT CALLBACK
-    GET /api/auth/microsoft/callback
-=============================== */
-router.get("/callback", async (req, res) => {
-  const { code, error, error_description } = req.query;
+router.get("/callback", loginLimiter, async (req, res) => {
+  const { code, error, error_description, state } = req.query;
 
   if (error) {
-    console.error("❌ Microsoft OAuth error:", error_description);
     return res.redirect(
-      `${FRONTEND_URL}/?error=${encodeURIComponent('Microsoft Login Failed: ' + error_description)}`
+      `${FRONTEND_URL}/?error=${encodeURIComponent(`Microsoft Login Failed: ${error_description || error}`)}`
     );
   }
 
-  if (!code) {
+  if (!code || !state) {
     return res.redirect(
-      `${FRONTEND_URL}/?error=${encodeURIComponent('Missing authorization code')}`
+      `${FRONTEND_URL}/?error=${encodeURIComponent("Missing authorization code or state")}`
+    );
+  }
+
+  const stateValid = await SessionStore.consumeOAuthState(state);
+  if (!stateValid) {
+    return res.redirect(
+      `${FRONTEND_URL}/?error=${encodeURIComponent("Invalid or expired OAuth state")}`
     );
   }
 
   try {
-    /* --------------------------------
-       Exchange CODE → ACCESS TOKEN
-    -------------------------------- */
-    console.log('🔄 Exchanging code for access token...');
-    
     const tokenResponse = await axios.post(
       `${AUTH_BASE_URL}/token`,
       new URLSearchParams({
@@ -84,39 +73,26 @@ router.get("/callback", async (req, res) => {
         redirect_uri: REDIRECT_URI,
         grant_type: "authorization_code",
       }).toString(),
-      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" }, timeout: 15000 }
     );
 
     const accessToken = tokenResponse.data.access_token;
-    console.log('✅ Access token received');
-
-    /* --------------------------------
-       FETCH USER INFO
-    -------------------------------- */
-    console.log('🔄 Fetching user info from Microsoft Graph...');
-    
-    const userResponse = await axios.get(
-      "https://graph.microsoft.com/v1.0/me",
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
+    const userResponse = await axios.get("https://graph.microsoft.com/v1.0/me", {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      timeout: 15000,
+    });
 
     const userInfo = userResponse.data;
     const email = userInfo.mail || userInfo.userPrincipalName;
     const microsoftId = userInfo.id;
     const username = userInfo.displayName || email.split("@")[0];
 
-    console.log(`📧 Microsoft user: ${email}`);
-
     if (!email) {
       return res.redirect(
-        `${FRONTEND_URL}/?error=${encodeURIComponent('Microsoft did not provide email')}`
+        `${FRONTEND_URL}/?error=${encodeURIComponent("Microsoft did not provide email")}`
       );
     }
 
-    /* --------------------------------
-       ✅ CRITICAL: Check if email exists in users table
-       Only registered users can login via Microsoft
-    -------------------------------- */
     const user = await User.createOrFindMicrosoft({
       microsoft_id: microsoftId,
       email,
@@ -124,41 +100,25 @@ router.get("/callback", async (req, res) => {
     });
 
     if (!user) {
-      // ❌ User email not registered in system
-      console.log(`❌ Unauthorized Microsoft login attempt: ${email}`);
       return res.redirect(
-        `${FRONTEND_URL}/?error=${encodeURIComponent('Your email is not registered in the system. Please contact the administrator.')}`
+        `${FRONTEND_URL}/?error=${encodeURIComponent("Your email is not registered in the system. Please contact the administrator.")}`
       );
     }
 
-    /* --------------------------------
-       ✅ SUCCESS: Create session
-    -------------------------------- */
-    const token = generateToken();
-    
-    sessions.set(token, {
+    await createSession(res, req, {
       userId: user.id,
       email: user.email,
       role: user.role_name,
       username: user.username,
       department: user.department,
-      createdAt: Date.now()
+      mustChangePassword: !!(user.must_change_password ?? user.mustchangepassword),
     });
 
-    console.log(`✅ Microsoft SSO: ${email} (${user.role_name}) logged in successfully`);
-
-    // ✅ Redirect with token in URL
-    return res.redirect(
-      `${FRONTEND_URL}/?sso_success=true&token=${token}`
-    );
-
+    return res.redirect(`${FRONTEND_URL}/?sso_success=true`);
   } catch (err) {
-    console.error("❌ Microsoft SSO error:", err.message);
-    if (err.response) {
-      console.error("Error response:", err.response.data);
-    }
+    console.error("Microsoft SSO error:", err.message);
     return res.redirect(
-      `${FRONTEND_URL}/?error=${encodeURIComponent('Authentication failed. Please try again.')}`
+      `${FRONTEND_URL}/?error=${encodeURIComponent("Authentication failed. Please try again.")}`
     );
   }
 });

@@ -1,7 +1,10 @@
 // src/App.jsx - UPDATED WITH TIMETABLE ROUTE
 import React, { useEffect, useState } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
+import { fetchCurrentUser } from './lib/api';
+import { useToast } from './context/ToastContext';
 import Landing from './pages/Landing';
+import ChangePassword from './pages/ChangePassword';
 import Layout from './Components/Layout';
 import Allotment from './pages/Allotment';
 import Venue from './pages/Venue';
@@ -14,6 +17,10 @@ import Logs from './pages/Logs';
 import Timetable from './pages/Timetable'; // ✅ NEW
 import { StudentAttendance } from './Components/StudentAttendance';
 import IneligibleStudentsView from './pages/IneligibleStudentsView';
+import FacultyLogin from './pages/FacultyLogin';
+import FacultyDashboard from './pages/FacultyDashboard';
+import FacultyAttendance from './pages/FacultyAttendance';
+import AttendanceReports from './pages/AttendanceReports';
 
 /* ===============================
     AUTH GUARD COMPONENT
@@ -22,41 +29,31 @@ import IneligibleStudentsView from './pages/IneligibleStudentsView';
 const AuthGuard = ({ children, allowedRoles = [] }) => {
   const navigate = useNavigate();
   const location = useLocation();
+  const toast = useToast();
   const [isChecking, setIsChecking] = useState(true);
 
   useEffect(() => {
-    const checkAuth = () => {
-      const token = sessionStorage.getItem('authToken');
-      const userStr = sessionStorage.getItem('user');
+    const checkAuth = async () => {
+      const user = await fetchCurrentUser();
 
-      // 1. Check if token exists
-      if (!token) {
+      if (!user) {
         navigate('/login', { replace: true });
         return;
       }
 
-      // 2. Check Role permissions if allowedRoles are specified
-      if (allowedRoles.length > 0) {
-        if (!userStr) {
-          navigate('/login', { replace: true });
-          return;
-        }
+      if (user.mustChangePassword && location.pathname !== '/change-password') {
+        navigate('/change-password', { replace: true });
+        return;
+      }
 
-        try {
-          const user = JSON.parse(userStr);
-          
-          // Check if current user's role is in the allowed list
-          if (!allowedRoles.includes(user.role)) {
-            alert(`Access denied: ${user.role} role does not have permission to view this page.`);
-            
-            navigate('/allotment', { replace: true });
-            return;
-          }
-        } catch (err) {
-          console.error('Failed to parse user data:', err);
-          navigate('/login', { replace: true });
-          return;
-        }
+      if (allowedRoles.length > 0 && !allowedRoles.includes(user.role)) {
+        toast.error(
+          `${user.role} does not have permission to view this page.`,
+          'Access denied'
+        );
+        const fallback = user.role === 'faculty' ? '/faculty/dashboard' : '/allotment';
+        navigate(fallback, { replace: true });
+        return;
       }
 
       setIsChecking(false);
@@ -88,7 +85,45 @@ function App() {
       {/* PUBLIC ROUTES */}
       <Route path="/" element={<Landing />} />      
       <Route path="/login" element={<Landing />} />
+      <Route path="/attendance/login" element={<FacultyLogin />} />
       <Route path="/api/auth/microsoft/callback" element={<Landing />} />
+
+      <Route
+        path="/change-password"
+        element={
+          <AuthGuard>
+            <ChangePassword />
+          </AuthGuard>
+        }
+      />
+
+      {/* FACULTY ATTENDANCE PORTAL */}
+      <Route
+        path="/faculty/dashboard"
+        element={
+          <AuthGuard allowedRoles={['faculty']}>
+            <FacultyDashboard />
+          </AuthGuard>
+        }
+      />
+
+      <Route
+        path="/faculty/attendance/:assignmentUuid"
+        element={
+          <AuthGuard allowedRoles={['faculty']}>
+            <FacultyAttendance />
+          </AuthGuard>
+        }
+      />
+
+      <Route
+        path="/admin/attendance"
+        element={
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge']}>
+            <Layout><AttendanceReports /></Layout>
+          </AuthGuard>
+        }
+      />
 
       {/* PROTECTED ROUTES - ACCESSIBLE BY Admin, Faculty Incharge, HoD */}
       <Route
@@ -127,6 +162,7 @@ function App() {
         }
       />
 
+      <Route path="/hall" element={<AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod']}><Layout><Hall /></Layout></AuthGuard>} />
       <Route
         path="/Hall"
         element={

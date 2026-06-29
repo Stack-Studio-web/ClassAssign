@@ -6,7 +6,7 @@ const { andClause, whereClause, insertField } = require("../utils/ownerFilter");
 function toStudentRow(row) {
   if (!row || typeof row !== "object") return row;
   return {
-    id: row.id,
+    uuid: row.public_uuid ?? row.publicuuid ?? row.uuid,
     regnNo: row.regnno ?? row.regnNo,
     studentName: row.studentname ?? row.studentName,
     courseName: row.coursename ?? row.courseName,
@@ -41,6 +41,7 @@ const Student = {
     const [rows] = await db.query(`
       SELECT
         id,
+        public_uuid,
         regn_no AS regnNo,
         student_name AS studentName,
         course_name AS courseName,
@@ -103,6 +104,7 @@ const Student = {
     const [rows] = await db.query(`
       SELECT
         id,
+        public_uuid,
         regn_no AS regnNo,
         student_name AS studentName,
         course_name AS courseName,
@@ -126,6 +128,7 @@ const Student = {
     const [rows] = await db.query(`
       SELECT
         id,
+        public_uuid,
         regn_no AS regnNo,
         student_name AS studentName,
         course_name AS courseName,
@@ -148,6 +151,7 @@ const Student = {
     const [rows] = await db.query(`
       SELECT
         id,
+        public_uuid,
         regn_no AS regnNo,
         student_name AS studentName,
         course_name AS courseName,

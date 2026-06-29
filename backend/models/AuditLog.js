@@ -1,6 +1,24 @@
 // Class/backend/models/AuditLog.js
 const db = require("../config/db");
 
+function toAuditLogRow(row) {
+  if (!row || typeof row !== "object") return row;
+  const changes =
+    typeof row.changes === "string" ? JSON.parse(row.changes) : row.changes;
+  return {
+    action: row.action,
+    entity_type: row.entity_type ?? row.entityType,
+    entity_id: row.entity_id ?? row.entityId,
+    changes,
+    ip_address: row.ip_address ?? row.ipAddress,
+    user_agent: row.user_agent ?? row.userAgent,
+    created_at: row.created_at ?? row.createdAt,
+    username: row.username,
+    email: row.email,
+    role_name: row.role_name ?? row.rolename,
+  };
+}
+
 const AuditLog = {
   /* ===============================
       CREATE AUDIT LOG ENTRY
@@ -63,10 +81,7 @@ const AuditLog = {
       LIMIT ? OFFSET ?
     `, params);
 
-    return rows.map(row => ({
-      ...row,
-      changes: typeof row.changes === 'string' ? JSON.parse(row.changes) : row.changes
-    }));
+    return rows.map(toAuditLogRow);
   },
 
   /* ===============================
@@ -85,10 +100,7 @@ const AuditLog = {
       LIMIT ?
     `, [userId, limit]);
 
-    return rows.map(row => ({
-      ...row,
-      changes: typeof row.changes === 'string' ? JSON.parse(row.changes) : row.changes
-    }));
+    return rows.map(toAuditLogRow);
   },
 
   /* ===============================
@@ -108,10 +120,7 @@ const AuditLog = {
       ORDER BY al.created_at DESC
     `, [entityType, entityId]);
 
-    return rows.map(row => ({
-      ...row,
-      changes: typeof row.changes === 'string' ? JSON.parse(row.changes) : row.changes
-    }));
+    return rows.map(toAuditLogRow);
   },
 
   /* ===============================
@@ -132,10 +141,7 @@ const AuditLog = {
       LIMIT ?
     `, [startDate, endDate, limit]);
 
-    return rows.map(row => ({
-      ...row,
-      changes: typeof row.changes === 'string' ? JSON.parse(row.changes) : row.changes
-    }));
+    return rows.map(toAuditLogRow);
   },
 
   /* ===============================
@@ -156,10 +162,7 @@ const AuditLog = {
       LIMIT ?
     `, [action, limit]);
 
-    return rows.map(row => ({
-      ...row,
-      changes: typeof row.changes === 'string' ? JSON.parse(row.changes) : row.changes
-    }));
+    return rows.map(toAuditLogRow);
   },
 
   /* ===============================
@@ -210,10 +213,7 @@ const AuditLog = {
 
     const [rows] = await db.query(sql, params);
 
-    return rows.map(row => ({
-      ...row,
-      changes: typeof row.changes === 'string' ? JSON.parse(row.changes) : row.changes
-    }));
+    return rows.map(toAuditLogRow);
   },
 
   /* ===============================

@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef } from "react";
-import axios from "axios";
+import api from "../lib/api";
 import { useNavigate } from "react-router-dom";
+import { useToast } from "../context/ToastContext";
+import { useConfirm } from "../context/ConfirmContext";
+import { getApiError, getApiErrorTitle } from "../lib/errors";
 import {
   BuildingOffice2Icon,
   ClipboardDocumentListIcon,
@@ -14,31 +17,17 @@ import {
 import PrintLayout from "./PrintLayout";
 import FacultySchedule from '../Components/FacultySchedule.jsx';
 
-// ✅ Create axios instance with auth (use relative /api for proxy compatibility)
-const api = axios.create({
-  baseURL: "/api",
-});
-
-api.interceptors.request.use((config) => {
-  const token = sessionStorage.getItem("authToken");
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-});
-
-api.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      sessionStorage.clear();
-      window.location.href = "/login";
-    }
-    return Promise.reject(error);
-  }
-);
+const appendClonedContent = (targetDoc, elementId) => {
+  const source = document.getElementById(elementId);
+  if (!source) return;
+  const wrapper = targetDoc.createElement("div");
+  wrapper.appendChild(source.cloneNode(true));
+  targetDoc.body.appendChild(wrapper);
+};
 
 const Report = () => {
+  const toast = useToast();
+  const showConfirm = useConfirm();
   const [plans, setPlans] = useState([]);
   const [selectedPlan, setSelectedPlan] = useState(null);
   const [selectedPlans, setSelectedPlans] = useState([]);
@@ -46,7 +35,8 @@ const Report = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [allFaculty, setAllFaculty] = useState([]);
-  const [userRole, setUserRole] = useState(""); // ✅ 2. State for RBAC
+  const [userRole, setUserRole] = useState("");
+  const [deletingPlanId, setDeletingPlanId] = useState(null);
   const componentRef = useRef();
   const navigate = useNavigate();
 
@@ -106,16 +96,16 @@ const Report = () => {
 
   const handlePrintFacultySchedule = () => {
     if (selectedPlans.length === 0) {
-      alert("Please select at least one plan to generate the faculty schedule.");
+      toast.warning("Please select at least one plan to generate the faculty schedule.");
       return;
     }
     setShowFacultySchedule(true);
   };
 
   const handlePrintSelected = () => {
-    const plansToPrint = plans.filter((p) => selectedPlans.includes(p._id ?? p.id));
+    const plansToPrint = plans.filter((p) => selectedPlans.includes(p.uuid));
     if (plansToPrint.length === 0) {
-      alert("Please select at least one plan to print.");
+      toast.warning("Please select at least one plan to print.");
       return;
     }
 
@@ -134,13 +124,9 @@ const Report = () => {
     `);
     printWindow.document.write("</head><body>");
     plansToPrint.forEach((plan, index) => {
-      const planId = plan._id ?? plan.id;
-      printWindow.document.write(`
-        <div class="plan-section">
-          <h2>Seating Plan ${index + 1}</h2>
-          <div>${document.getElementById(`plan-content-${planId}`)?.innerHTML || ""}</div>
-        </div>
-      `);
+      const planId = plan.uuid;
+      printWindow.document.write(`<div class="plan-section"><h2>Seating Plan ${index + 1}</h2><div id="slot-${planId}"></div></div>`);
+      appendClonedContent(printWindow.document, `plan-content-${planId}`);
     });
     printWindow.document.write("</body></html>");
     printWindow.document.close();
@@ -149,15 +135,17 @@ const Report = () => {
   };
 
   const handleDeletePlan = async (planId) => {
-    if (window.confirm("Are you sure you want to delete this seating plan?")) {
-      try {
-        await api.delete(`/seating/delete-plan/${planId}`);
-        alert("Seating plan deleted successfully!");
-        fetchPlans();
-      } catch (err) {
-        console.error("Delete error:", err);
-        alert(err.response?.data?.details || "Failed to delete seating plan.");
-      }
+    const ok = await showConfirm("Are you sure you want to delete this seating plan?");
+    if (!ok) return;
+    setDeletingPlanId(planId);
+    try {
+      await api.delete(`/seating/delete-plan/${planId}`);
+      toast.success("Seating plan deleted successfully.");
+      fetchPlans();
+    } catch (err) {
+      toast.error(getApiError(err), getApiErrorTitle(err, "Cannot delete seating plan"));
+    } finally {
+      setDeletingPlanId(null);
     }
   };
 
@@ -172,10 +160,9 @@ const Report = () => {
   const handlePrintSingle = () => {
     if (componentRef.current) {
       const printWindow = window.open("", "", "height=600,width=800");
-      printWindow.document.write("<html><head><title>Seating Plan</title><style>body { font-family: Arial; } table { width: 100%; border-collapse: collapse; } th, td { border: 1px solid black; padding: 10px; }</style></head><body>");
-      printWindow.document.write(componentRef.current.innerHTML);
-      printWindow.document.write("</body></html>");
+      printWindow.document.write("<html><head><title>Seating Plan</title><style>body { font-family: Arial; } table { width: 100%; border-collapse: collapse; } th, td { border: 1px solid black; padding: 10px; }</style></head><body></body></html>");
       printWindow.document.close();
+      printWindow.document.body.appendChild(componentRef.current.cloneNode(true));
       printWindow.print();
     }
   };
@@ -232,7 +219,7 @@ const Report = () => {
       {/* Action Buttons */}
       <div className="px-4 md:px-8 mb-6 flex flex-wrap gap-3">
         <button
-          onClick={() => navigate("/hall")}
+          onClick={() => navigate("/Hall")}
           className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-green-600 hover:bg-green-700 text-white font-medium shadow-sm transition-all duration-200"
         >
           <BuildingOffice2Icon className="h-5 w-5" />
@@ -273,7 +260,7 @@ const Report = () => {
           </div>
         )}
         {plans.map((plan) => {
-          const planId = plan._id ?? plan.id;
+          const planId = plan.uuid;
           const venuesText = (plan.venuesUsed || []).map((v) => v.venueName ?? v.venue_name ?? "—").join(", ") || "—";
           return (
             <div
@@ -319,10 +306,11 @@ const Report = () => {
               {(userRole === 'admin' || userRole === 'faculty_incharge') && (
                 <button
                   onClick={(e) => { e.stopPropagation(); handleDeletePlan(planId); }}
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-medium shrink-0 transition-colors"
+                  disabled={deletingPlanId === planId}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-medium shrink-0 transition-colors"
                 >
                   <TrashIcon className="h-5 w-5" />
-                  Delete
+                  {deletingPlanId === planId ? "Deleting..." : "Delete"}
                 </button>
               )}
             </div>
@@ -332,7 +320,7 @@ const Report = () => {
 
       {showFacultySchedule && (
         <FacultySchedule
-          plans={plans.filter((p) => selectedPlans.includes(p._id ?? p.id))}
+          plans={plans.filter((p) => selectedPlans.includes(p.uuid))}
           onClose={() => setShowFacultySchedule(false)}
         />
       )}

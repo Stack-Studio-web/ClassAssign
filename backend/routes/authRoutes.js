@@ -1,187 +1,202 @@
 // routes/authRoutes.js
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const User = require('../models/User');
-const crypto = require('crypto');
+const User = require("../models/User");
+const {
+  verifyPassword,
+  hashPassword,
+  isBcryptHash,
+  validatePasswordStrength,
+} = require("../utils/password");
+const { loginLimiter } = require("../middleware/rateLimiters");
+const sessionAuth = require("../middleware/sessionAuth");
+const {
+  createSession,
+  destroySession,
+  getSessionFromRequest,
+  attachAuthResponse,
+  getTokenFromRequest,
+} = require("../utils/authHelpers");
+const { clearSessionCookie } = require("../utils/cookieAuth");
 
-// ✅ In-memory session storage (use Redis in production)
-const sessions = new Map();
-
-// Generate session token
-const generateToken = () => {
-  return crypto.randomBytes(32).toString('hex');
-};
-
-/* ===============================
-    POST /api/auth/login
-    Manual login with email/password
-=============================== */
-router.post('/login', async (req, res) => {
+router.post("/login", loginLimiter, async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email: rawEmail, password } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Email and password are required' 
+    if (!rawEmail || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and password are required",
       });
     }
 
-    // Find user by email
+    const email = String(rawEmail).trim().toLowerCase();
     const user = await User.findByEmail(email);
 
     if (!user) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Invalid credentials' 
-      });
+      return res.status(401).json({ success: false, message: "Invalid credentials" });
     }
 
-    // Check if user is active
     if (!user.is_active) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Account is inactive. Please contact administrator.' 
+      return res.status(401).json({
+        success: false,
+        message: "Account is inactive. Please contact administrator.",
       });
     }
 
-    // Check password (in production, use bcrypt)
-    if (user.password !== password) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Invalid credentials' 
-      });
+    let passwordValid = false;
+    let mustChangePassword = !!(user.must_change_password ?? user.mustchangepassword);
+
+    if (isBcryptHash(user.password)) {
+      passwordValid = await verifyPassword(password, user.password);
+    } else {
+      const legacyPlain = String(user.password || "");
+      if (legacyPlain && legacyPlain === String(password)) {
+        passwordValid = true;
+        mustChangePassword = true;
+        await User.updatePassword(user.id, password, { clearMustChange: false });
+      }
     }
 
-    // Generate session token
-    const token = generateToken();
-    
-    // Store session
-    sessions.set(token, {
+    if (!passwordValid) {
+      return res.status(401).json({ success: false, message: "Invalid credentials" });
+    }
+
+    if (mustChangePassword) {
+      await User.setMustChangePassword(user.id, true);
+    }
+
+    const redirectTo = mustChangePassword
+      ? "/change-password"
+      : user.role_name === "faculty"
+        ? "/faculty/dashboard"
+        : user.role_name === "hod"
+          ? "/users"
+          : "/allotment";
+
+    const body = {
+      success: true,
+      message: "Login successful",
+      mustChangePassword,
+      user: {
+        uuid: user.public_uuid ?? user.publicuuid,
+        username: user.username,
+        email: user.email,
+        role: user.role_name,
+        department: user.department,
+        mustChangePassword,
+      },
+      redirectTo,
+    };
+
+    const token = await createSession(res, req, {
       userId: user.id,
+      publicUuid: user.public_uuid ?? user.publicuuid,
       email: user.email,
       role: user.role_name,
       username: user.username,
       department: user.department,
-      createdAt: Date.now()
+      mustChangePassword,
     });
 
-    console.log(`✅ User ${email} (${user.role_name}) logged in successfully`);
-
-    const redirectTo = user.role_name === 'hod' ? '/users' : '/allotment';
-    return res.status(200).json({ 
-      success: true, 
-      message: 'Login successful',
-      token,
-      user: {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        role: user.role_name,
-        department: user.department
-      },
-      redirectTo
-    });
-
+    return attachAuthResponse(res, req, token, body);
   } catch (error) {
-    console.error('Login error:', error);
-    return res.status(500).json({ 
-      success: false, 
-      message: 'Server error during login' 
-    });
+    console.error("Login error:", error.message);
+    return res.status(500).json({ success: false, message: "Server error during login" });
   }
 });
 
-/* ===============================
-    POST /api/auth/verify
-    Verify if session token is valid
-=============================== */
-router.post('/verify', (req, res) => {
-  const { token } = req.body;
-
-  if (!token || !sessions.has(token)) {
-    return res.status(401).json({ 
-      valid: false, 
-      message: 'Invalid or expired session' 
-    });
-  }
-
-  const session = sessions.get(token);
-  
-  // Check if session is older than 24 hours
-  const sessionAge = Date.now() - session.createdAt;
-  if (sessionAge > 24 * 60 * 60 * 1000) {
-    sessions.delete(token);
-    return res.status(401).json({ 
-      valid: false, 
-      message: 'Session expired' 
-    });
-  }
-  
-  return res.status(200).json({ 
+router.post("/verify", sessionAuth, (req, res) => {
+  return res.status(200).json({
     valid: true,
     user: {
-      userId: session.userId,
-      email: session.email,
-      role: session.role,
-      username: session.username,
-      department: session.department
+      uuid: req.user.publicUuid ?? req.session?.publicUuid,
+      email: req.user.email,
+      role: req.user.role,
+      username: req.user.username,
+      department: req.user.department,
+    },
+  });
+});
+
+router.post("/change-password", sessionAuth, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ success: false, message: "Current and new password are required" });
     }
-  });
+
+    const strength = validatePasswordStrength(newPassword);
+    if (!strength.valid) {
+      return res.status(400).json({ success: false, message: strength.message });
+    }
+
+    const user = await User.getUserWithRole(req.user.id);
+    if (!user) {
+      return res.status(401).json({ success: false, message: "User not found" });
+    }
+
+    let valid = await verifyPassword(currentPassword, user.password);
+    if (!valid && !isBcryptHash(user.password) && String(user.password) === String(currentPassword)) {
+      valid = true;
+    }
+    if (!valid) {
+      return res.status(401).json({ success: false, message: "Current password is incorrect" });
+    }
+
+    await User.updatePassword(req.user.id, newPassword, { clearMustChange: true });
+
+    const token = getTokenFromRequest(req);
+    if (token) {
+      await require("../utils/sessionStore").set(token, {
+        ...req.session,
+        mustChangePassword: false,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Password updated successfully",
+      redirectTo:
+        user.role_name === "faculty"
+          ? "/faculty/dashboard"
+          : user.role_name === "hod"
+            ? "/users"
+            : "/allotment",
+    });
+  } catch (error) {
+    console.error("Change password error:", error.message);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
 });
 
-/* ===============================
-    POST /api/auth/logout
-=============================== */
-router.post('/logout', (req, res) => {
-  const { token } = req.body;
-  
-  if (token && sessions.has(token)) {
-    sessions.delete(token);
-    console.log('✅ User logged out successfully');
-  }
-
-  return res.status(200).json({ 
-    success: true, 
-    message: 'Logged out successfully' 
-  });
+router.post("/logout", async (req, res) => {
+  await destroySession(req, res);
+  return res.status(200).json({ success: true, message: "Logged out successfully" });
 });
 
-/* ===============================
-    GET /api/auth/session-info
-    Get current session info
-=============================== */
-router.get('/session-info', (req, res) => {
-  const token = req.headers.authorization?.replace('Bearer ', '');
-
-  if (!token || !sessions.has(token)) {
-    return res.status(401).json({ message: 'Unauthorized' });
-  }
-
-  const session = sessions.get(token);
-  
-  return res.status(200).json({ 
+router.get("/session-info", sessionAuth, (req, res) => {
+  return res.status(200).json({
     user: {
-      userId: session.userId,
-      email: session.email,
-      role: session.role,
-      username: session.username,
-      department: session.department
-    }
+      uuid: req.user.publicUuid ?? req.session?.publicUuid,
+      email: req.user.email,
+      role: req.user.role,
+      username: req.user.username,
+      department: req.user.department,
+      mustChangePassword: req.session?.mustChangePassword ?? false,
+    },
   });
 });
 
-/* ===============================
-    GET /api/auth/sessions/count
-    Debug: Get active session count
-=============================== */
-router.get('/sessions/count', (req, res) => {
-  return res.json({ 
-    activeSessions: sessions.size 
+router.get("/me", sessionAuth, (req, res) => {
+  return res.status(200).json({
+    uuid: req.user.publicUuid ?? req.session?.publicUuid,
+    email: req.user.email,
+    role: req.user.role,
+    username: req.user.username,
+    department: req.user.department,
+    mustChangePassword: req.session?.mustChangePassword ?? false,
   });
 });
 
-// Export sessions for use in other routes
 module.exports = router;
-module.exports.sessions = sessions;
-module.exports.generateToken = generateToken;

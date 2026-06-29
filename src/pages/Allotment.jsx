@@ -1,6 +1,8 @@
 // Allotment.jsx - FIXED: AUTO faculty assignment now saves faculty ID to database
 import React, { useState, useEffect, useMemo } from "react";
-import axios from "axios";
+import api from "../lib/api";
+import { useToast } from "../context/ToastContext";
+import { getApiError, getApiErrorTitle } from "../lib/errors";
 import {
   BuildingOffice2Icon,
   UserGroupIcon,
@@ -11,42 +13,7 @@ import {
   PlusIcon,
   TrashIcon,
 } from "@heroicons/react/24/outline";
- 
-// ✅ Create axios instance with auth
-const api = axios.create({
-  baseURL: "/api",
-});
- 
-api.interceptors.request.use(
-  (config) => {
-    const token = sessionStorage.getItem("authToken");
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  (error) => {
-    return Promise.reject(error);
-  }
-);
- 
-api.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      sessionStorage.clear();
-      window.location.href = "/login";
-    } else if (error.response?.status === 403) {
-      return Promise.reject({
-        ...error,
-        isForbidden: true,
-        message: error.response?.data?.details || "You do not have permission to perform this action."
-      });
-    }
-    return Promise.reject(error);
-  }
-);
- 
+
 // Normalize student/ineligible objects (PostgreSQL may return lowercase keys)
 const normalizeStudent = (s) => ({
   ...s,
@@ -90,6 +57,7 @@ const getCalendarMonth = (dateStr) => {
 };
 
 const Allotment = () => {
+  const toast = useToast();
  
   // --- State Management ---
   const [venues, setVenues] = useState([]);
@@ -374,9 +342,16 @@ const Allotment = () => {
         const facultyWithStatus = await Promise.all(
           allFaculty.map(async (f) => {
             try {
-              const allocRes = await api.get(`/faculty/${f.id}/can-allocate`);
-              const canAllocate = allocRes.data?.allowed ?? false;
- 
+              const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
+              const allocRes = await api.get(`/faculty/${f.uuid}/can-allocate`, {
+                params: {
+                  examDate: dateOnly,
+                  examStartTime,
+                  examEndTime,
+                },
+              });
+              const canAllocate = allocRes.data?.data?.allowed ?? false;
+
               const availRes = await api.post("/seating/check-faculty-availability", {
                 examDate,
                 examSession,
@@ -384,17 +359,19 @@ const Allotment = () => {
                 examEndTime,
                 venueCount: 1
               });
- 
-              const facultyStatus = availRes.data.facultyStatus?.find(fs => fs.id === f.id);
+
+              const facultyStatus = availRes.data.facultyStatus?.find(
+                (fs) => (fs.uuid ?? fs.id) === f.uuid
+              );
               const hasTimeConflict = facultyStatus?.hasTimeConflict || false;
- 
+
               return {
                 ...f,
-                canAllocate: canAllocate && !hasTimeConflict,
+                canAllocate,
                 hasTimeConflict
               };
             } catch (err) {
-              console.error(`Error checking faculty ${f.id}:`, err);
+              console.error(`Error checking faculty ${f.uuid}:`, err);
               return { ...f, canAllocate: false, hasTimeConflict: false };
             }
           })
@@ -421,11 +398,11 @@ const Allotment = () => {
     }
    
     if (!manualVenueId || manualVenueId === "") return;
-    if (selectedVenues.some(v => String(v._id) === String(manualVenueId))) {
+    if (selectedVenues.some(v => String(v.uuid) === String(manualVenueId))) {
         setManualVenueId("");
         return;
     }
-    const venueToAdd = venues.find(v => String(v._id) === String(manualVenueId));
+    const venueToAdd = venues.find(v => String(v.uuid) === String(manualVenueId));
     if (venueToAdd) {
         setSelectedVenues(prev => [...prev, venueToAdd]);
         setManualVenueId("");
@@ -437,15 +414,15 @@ const Allotment = () => {
       setError("You do not have permission to modify venue selection.");
       return;
     }
-    setSelectedVenues(prev => prev.filter(v => v._id !== venueId));
+    setSelectedVenues(prev => prev.filter(v => v.uuid !== venueId));
   };
 
   const toggleVenueSelection = (venue) => {
     if (!hasWriteAccess) return;
-    const isSelected = selectedVenues.some((v) => v._id === venue._id);
-    if (isSelected) removeManualVenue(venue._id);
+    const isSelected = selectedVenues.some((v) => v.uuid === venue.uuid);
+    if (isSelected) removeManualVenue(venue.uuid);
     else {
-      if (!selectedVenues.some((v) => String(v._id) === String(venue._id)))
+      if (!selectedVenues.some((v) => String(v.uuid) === String(venue.uuid)))
         setSelectedVenues((prev) => [...prev, venue]);
     }
   };
@@ -774,10 +751,10 @@ const Allotment = () => {
       
       if (facultyMode === "AUTO" && availableFaculty.length > 0) {
         const faculty = availableFaculty[facultyAssignmentIndex % availableFaculty.length];
-        assignedFacultyId = faculty.id;  // ✅ SAVE ACTUAL FACULTY ID!
+        assignedFacultyId = faculty.uuid;
         previewFacultyName = `${faculty.name} (${faculty.department})`;
         
-        console.log(`  Venue ${facultyAssignmentIndex + 1} (${venue.name}): Assigned ${faculty.name} (ID: ${faculty.id})`);
+        console.log(`  Venue ${facultyAssignmentIndex + 1} (${venue.name}): Assigned ${faculty.name} (UUID: ${faculty.uuid})`);
         facultyAssignmentIndex++; // Increment only for venues with students
       }
  
@@ -803,12 +780,12 @@ const Allotment = () => {
       return setError("Access denied: Only Admin and Faculty Incharge can save seating plans.");
     }
  
-    if (facultyMode === "MANUAL" && generatedSeating.some(v => !manualFacultyAssignments[v.venue._id])) {
+    if (facultyMode === "MANUAL" && generatedSeating.some(v => !manualFacultyAssignments[v.venue.uuid])) {
       return setError("Assign faculty to all rooms.");
     }
  
     const invalidFaculty = Object.values(manualFacultyAssignments).some(fid => {
-      const faculty = allFaculty.find(f => String(f.id) === String(fid));
+      const faculty = allFaculty.find(f => String(f.uuid) === String(fid));
       return faculty && (!faculty.canAllocate || faculty.hasTimeConflict);
     });
  
@@ -828,14 +805,13 @@ const Allotment = () => {
       students: allottedStudents,
       facultyMode,
       venuesUsed: generatedSeating.map(v => ({
-        venueId: v.venue._id,
+        venueId: v.venue.uuid,
         venueName: v.venue.name,
         seatingArrangement: v.seats,
         benchConfig: v.venue.benchConfig || Array(v.venue.benchesCol).fill(2),
-        // ✅ CRITICAL FIX: Use facultyId from generated seating (AUTO) or manual assignments (MANUAL)
         facultyId: facultyMode === "MANUAL" 
-          ? manualFacultyAssignments[v.venue._id] 
-          : v.facultyId  // ✅ Now sends the actual faculty ID!
+          ? manualFacultyAssignments[v.venue.uuid] 
+          : v.facultyId
       }))
     };
  
@@ -850,7 +826,7 @@ const Allotment = () => {
     try {
       setLoading(true);
       await api.post("/seating/save-plan", payload);
-      alert("✅ Seating Plan Saved Successfully!");
+      toast.success("Seating plan saved successfully.");
       setGeneratedSeating(null);
       setAllottedStudents([]);
       setTimetableCourses([]);
@@ -1103,7 +1079,7 @@ const Allotment = () => {
                         const ineligibleCount = ineligibilityStats.byCourse[uniqueKey] || 0;
                         const eligibleCount = totalStudents - ineligibleCount;
                         return (
-                          <tr key={course.id} className="hover:bg-gray-50/50">
+                          <tr key={uniqueKey} className="hover:bg-gray-50/50">
                             <td className="px-4 py-3 text-sm font-semibold text-blue-600">
                               {course.courseCode}
                             </td>
@@ -1197,10 +1173,10 @@ const Allotment = () => {
                 ) : (
                   <div className="space-y-2 max-h-48 overflow-y-auto">
                     {venues.map((v) => {
-                      const isChecked = selectedVenues.some((vx) => vx._id === v._id);
+                      const isChecked = selectedVenues.some((vx) => vx.uuid === v.uuid);
                       return (
                         <label
-                          key={v._id}
+                          key={v.uuid}
                           className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${
                             isChecked ? "border-blue-200 bg-blue-50/50" : "border-gray-200 hover:bg-gray-50"
                           } ${!hasWriteAccess ? "cursor-not-allowed opacity-60" : ""}`}
@@ -1332,7 +1308,7 @@ const Allotment = () => {
               <div className="bg-indigo-50 p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-indigo-200 grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4">
                 {generatedSeating.map(item => (
                   <div
-                    key={item.venue._id}
+                    key={item.venue.uuid}
                     className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 bg-white px-3 py-2 rounded-xl border border-gray-200 shadow-sm"
                   >
                     <span className="text-sm font-medium text-gray-800 truncate">
@@ -1343,19 +1319,19 @@ const Allotment = () => {
                       onChange={e =>
                         setManualFacultyAssignments(prev => ({
                           ...prev,
-                          [item.venue._id]: e.target.value,
+                          [item.venue.uuid]: e.target.value,
                         }))
                       }
-                      value={manualFacultyAssignments[item.venue._id] || ""}
+                      value={manualFacultyAssignments[item.venue.uuid] || ""}
                     >
                       <option value="">Assign Faculty</option>
                       {allFaculty.map(f => (
                         <option
-                          key={f.id}
-                          value={f.id}
+                          key={f.uuid}
+                          value={f.uuid}
                           disabled={!f.canAllocate || f.hasTimeConflict}
                         >
-                          {f.name} {!f.canAllocate ? "(Full)" : ""}{" "}
+                          {f.name} {!f.canAllocate && !f.hasTimeConflict ? "(Full)" : ""}{" "}
                           {f.hasTimeConflict ? "(Busy)" : ""}
                         </option>
                       ))}
@@ -1368,7 +1344,7 @@ const Allotment = () => {
             <div className="space-y-6 sm:space-y-8">
               {generatedSeating.map((item, idx) => (
                 <div
-                  key={`${item.venue._id}-${idx}`}
+                  key={`${item.venue.uuid}-${idx}`}
                   className="bg-gray-50 rounded-xl sm:rounded-2xl border border-gray-200 p-3 sm:p-4 md:p-5 space-y-3 sm:space-y-4"
                 >
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
@@ -1394,8 +1370,8 @@ const Allotment = () => {
                           ? item.previewFacultyName
                           : allFaculty.find(
                               f =>
-                                String(f.id) ===
-                                String(manualFacultyAssignments[item.venue._id])
+                                String(f.uuid) ===
+                                String(manualFacultyAssignments[item.venue.uuid])
                             )?.name || "Unassigned"}
                       </p>
                     </div>

@@ -6,7 +6,7 @@ const { andClause, whereClause, insertField } = require("../utils/ownerFilter");
 function toStudentRow(row) {
   if (!row || typeof row !== "object") return row;
   return {
-    id: row.id,
+    uuid: row.public_uuid ?? row.publicuuid ?? row.uuid,
     regnNo: row.regnno ?? row.regnNo ?? "",
     studentName: row.studentname ?? row.studentName ?? "",
     email: row.email ?? "",
@@ -18,7 +18,7 @@ function toStudentRow(row) {
 function toIneligibleRow(row) {
   if (!row || typeof row !== "object") return row;
   return {
-    id: row.id,
+    uuid: row.public_uuid ?? row.publicuuid ?? row.uuid,
     regnNo: row.regnno ?? row.regnNo ?? "",
     studentName: row.studentname ?? row.studentName ?? "",
     email: row.email ?? "",
@@ -39,6 +39,7 @@ const IneligibleStudent = {
     const [rows] = await db.query(`
       SELECT
         id,
+        public_uuid,
         regn_no AS regnNo,
         student_name AS studentName,
         email,
@@ -62,6 +63,7 @@ const IneligibleStudent = {
     const [rows] = await db.query(`
       SELECT
         id,
+        public_uuid,
         regn_no AS regnNo,
         student_name AS studentName,
         email,
@@ -86,6 +88,7 @@ const IneligibleStudent = {
     const [rows] = await db.query(`
       SELECT
         id,
+        public_uuid,
         regn_no AS regnNo,
         student_name AS studentName,
         email,
@@ -112,6 +115,7 @@ const IneligibleStudent = {
     const [rows] = await db.query(`
       SELECT
         i.id,
+        i.public_uuid,
         i.regn_no AS regnNo,
         i.student_name AS studentName,
         i.email,

@@ -1,16 +1,18 @@
-//examRoutes.js
+// examRoutes.js
 const express = require("express");
 const router = express.Router();
-const Exam = require("../models/Exam"); // MySQL model
+const Exam = require("../models/Exam");
+const { getPublicUuid, TABLE } = require("../utils/publicId");
+const sessionAuth = require("../middleware/sessionAuth");
+const checkRole = require("../middleware/checkRole");
 
-// ================================
-// POST: Create a new exam
-// ================================
-router.post("/", async (req, res) => {
+const READ_ROLES = ["admin", "faculty_incharge", "hod", "faculty"];
+const WRITE_ROLES = ["admin", "faculty_incharge"];
+
+router.post("/", sessionAuth, checkRole(WRITE_ROLES), async (req, res) => {
   try {
     const { examName, examCode, examTime, examSession, examDate } = req.body;
 
-    // Validation (same as before)
     if (!examName || !examCode || !examTime || !examSession || !examDate) {
       return res.status(400).json({
         error: "Validation Error",
@@ -18,7 +20,6 @@ router.post("/", async (req, res) => {
       });
     }
 
-    // Insert into MySQL
     const examId = await Exam.create({
       examName,
       examCode,
@@ -27,10 +28,12 @@ router.post("/", async (req, res) => {
       examDate,
     });
 
+    const uuid = await getPublicUuid(TABLE.exams, examId);
+
     res.status(201).json({
       message: "Exam saved successfully!",
       data: {
-        id: examId,
+        uuid,
         examName,
         examCode,
         examTime,
@@ -39,35 +42,24 @@ router.post("/", async (req, res) => {
       },
     });
   } catch (err) {
-    // MySQL duplicate key error
-    if (err.code === "ER_DUP_ENTRY") {
+    if (err.code === "ER_DUP_ENTRY" || err.code === "23505") {
       return res.status(400).json({
         error: "Duplicate Exam Code",
         details: "An exam with this code already exists.",
       });
     }
-
-    console.error("Error saving exam:", err);
-    res.status(500).json({
-      error: "Server Error",
-      details: err.message,
-    });
+    console.error("Error saving exam:", err.message);
+    res.status(500).json({ error: "Server Error" });
   }
 });
 
-// ================================
-// GET: Fetch all exams
-// ================================
-router.get("/", async (req, res) => {
+router.get("/", sessionAuth, checkRole(READ_ROLES), async (req, res) => {
   try {
     const exams = await Exam.getAll();
     res.status(200).json(exams);
   } catch (err) {
-    console.error("Error fetching exams:", err);
-    res.status(500).json({
-      error: "Server Error",
-      details: err.message,
-    });
+    console.error("Error fetching exams:", err.message);
+    res.status(500).json({ error: "Server Error" });
   }
 });
 

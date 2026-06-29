@@ -25,7 +25,7 @@ const SeatingPlan = {
   /* ===============================
       CREATE SEATING PLAN
   =============================== */
-  createPlan: async (planData, opts = {}) => {
+  createPlan: async (planData, opts = {}, externalConn = null) => {
     const {
       examDate,
       examSession,
@@ -46,13 +46,14 @@ const SeatingPlan = {
       examStartTime,
       examEndTime,
       JSON.stringify(selectedCourses),
-      facultyMode
+      facultyMode,
     ];
     if (val != null) vals.push(val);
 
-    const conn = await db.getConnection();
+    const conn = externalConn || (await db.getConnection());
+    const ownsTxn = !externalConn;
     try {
-      await conn.beginTransaction();
+      if (ownsTxn) await conn.beginTransaction();
 
       // 1️⃣ Insert into seating_plans
       const [planResult] = await conn.query(
@@ -136,14 +137,14 @@ const SeatingPlan = {
         }
       }
 
-      await conn.commit();
+      if (ownsTxn) await conn.commit();
       return seatingPlanId;
 
     } catch (err) {
-      await conn.rollback();
+      if (ownsTxn) await conn.rollback();
       throw err;
     } finally {
-      conn.release();
+      if (ownsTxn) conn.release();
     }
   },
 
@@ -165,6 +166,7 @@ const SeatingPlan = {
     const [rows] = await db.query(`
       SELECT 
         id AS _id,
+        public_uuid,
         exam_date,
         exam_session,
         exam_type,
@@ -182,8 +184,7 @@ const SeatingPlan = {
     for (let row of rows) {
       const planId = row._id ?? row.id;
       const plan = {
-        _id: planId,
-        id: planId,
+        uuid: row.public_uuid ?? row.publicuuid,
         examDate: row.exam_date ?? row.examdate,
         examSession: row.exam_session ?? row.examsession,
         examType: row.exam_type ?? row.examtype,
@@ -202,6 +203,7 @@ const SeatingPlan = {
       const [venues] = await db.query(`
         SELECT 
           spv.id as internalId,
+          v.public_uuid as venueUuid,
           spv.venue_id as venueId,
           spv.venue_name as venueName,
           spv.display_order as displayOrder,
@@ -210,6 +212,7 @@ const SeatingPlan = {
           f.name as facultyName,
           f.department as facultyDepartment
         FROM seating_plan_venues spv
+        LEFT JOIN venues v ON spv.venue_id = v.id
         LEFT JOIN faculty f ON spv.faculty_id = f.id
         WHERE spv.seating_plan_id = ?
         ORDER BY COALESCE(spv.display_order, 0), spv.id
@@ -244,7 +247,12 @@ const SeatingPlan = {
           }
         }
         v.venueName = v.venueName ?? v.venuename ?? v.venue_name;
-        v.venueId = v.venueId ?? v.venueid ?? v.venue_id;
+        if (v.venueUuid ?? v.venueuuid) {
+          v.uuid = v.venueUuid ?? v.venueuuid;
+        }
+        delete v.venueId;
+        delete v.venueUuid;
+        delete v.internalId;
         if (seatingLayoutRaw) {
           try {
             const parsedLayout = typeof seatingLayoutRaw === "string"
@@ -299,6 +307,7 @@ const SeatingPlan = {
     const [plans] = await db.query(
       `SELECT 
         id AS _id,
+        public_uuid,
         exam_date,
         exam_session,
         exam_type,
@@ -317,8 +326,7 @@ const SeatingPlan = {
     const row = plans[0];
     const pid = row._id ?? row.id;
     const plan = {
-      _id: pid,
-      id: pid,
+      uuid: row.public_uuid ?? row.publicuuid,
       examDate: row.exam_date ?? row.examdate,
       examSession: row.exam_session ?? row.examsession,
       examType: row.exam_type ?? row.examtype,
@@ -335,6 +343,7 @@ const SeatingPlan = {
     const [venues] = await db.query(`
       SELECT 
         spv.id as internalId,
+        v.public_uuid as venueUuid,
         spv.venue_id as venueId,
         spv.venue_name as venueName,
         spv.display_order as displayOrder,
@@ -343,6 +352,7 @@ const SeatingPlan = {
         f.name as facultyName,
         f.department as facultyDepartment
       FROM seating_plan_venues spv
+      LEFT JOIN venues v ON spv.venue_id = v.id
       LEFT JOIN faculty f ON spv.faculty_id = f.id
       WHERE spv.seating_plan_id = ?
       ORDER BY COALESCE(spv.display_order, 0), spv.id
@@ -375,7 +385,12 @@ const SeatingPlan = {
         }
       }
       v.venueName = v.venueName ?? v.venuename ?? v.venue_name;
-      v.venueId = v.venueId ?? v.venueid ?? v.venue_id;
+      if (v.venueUuid ?? v.venueuuid) {
+        v.uuid = v.venueUuid ?? v.venueuuid;
+      }
+      delete v.venueId;
+      delete v.venueUuid;
+      delete v.internalId;
       if (seatingLayoutRaw) {
         try {
           const parsedLayout = typeof seatingLayoutRaw === "string"
@@ -410,7 +425,7 @@ const SeatingPlan = {
   /* ===============================
       DELETE SEATING PLAN
   =============================== */
-  deletePlan: async (planId, opts = {}) => {
+  deletePlan: async (planId, opts = {}, externalConn = null) => {
     let ownerSql = "";
     let ownerParams = [];
     if (opts.hodAllowedOwnerIds && opts.hodAllowedOwnerIds.length > 0) {
@@ -422,9 +437,11 @@ const SeatingPlan = {
       ownerSql = clause.sql;
       ownerParams = clause.params;
     }
-    const conn = await db.getConnection();
+
+    const conn = externalConn || (await db.getConnection());
+    const ownsTxn = !externalConn;
     try {
-      await conn.beginTransaction();
+      if (ownsTxn) await conn.beginTransaction();
 
       // 1️⃣ Delete seating arrangements (PostgreSQL-compatible)
       await conn.query(
@@ -453,12 +470,12 @@ const SeatingPlan = {
         [planId, ...ownerParams]
       );
 
-      await conn.commit();
+      if (ownsTxn) await conn.commit();
     } catch (err) {
-      await conn.rollback();
+      if (ownsTxn) await conn.rollback();
       throw err;
     } finally {
-      conn.release();
+      if (ownsTxn) conn.release();
     }
   }
 };

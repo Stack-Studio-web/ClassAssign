@@ -1,12 +1,31 @@
 // Class/backend/models/User.js
 const db = require("../config/db");
 const Role = require("./Role");
+const { hashPassword } = require("../utils/password");
+
+function toPublicUser(row) {
+  if (!row || typeof row !== "object") return row;
+  return {
+    uuid: row.public_uuid ?? row.publicuuid ?? row.uuid,
+    username: row.username,
+    email: row.email,
+    department: row.department,
+    microsoft_id: row.microsoft_id ?? row.microsoftid,
+    is_active: row.is_active ?? row.isactive,
+    role_name: row.role_name ?? row.rolename,
+    role_id: row.role_id ?? row.roleid,
+    created_at: row.created_at ?? row.createdat,
+    updated_at: row.updated_at ?? row.updatedat,
+    created_by_username: row.created_by_username ?? row.created_by_username,
+    created_by_hod_username: row.created_by_hod_username ?? row.created_by_hod_username,
+  };
+}
 
 const User = {
   /* ===============================
       CREATE LOCAL USER
   =============================== */
-  createLocal: async ({ username, email, password, role_id = 2, department = null, created_by = null, created_by_hod_id = null, createdByRole = 'admin' }) => {
+  createLocal: async ({ username, email, password, role_id = 2, department = null, created_by = null, created_by_hod_id = null, createdByRole = 'admin', must_change_password = false }) => {
     const isValidRole = await Role.isValidForUserCreation(role_id, createdByRole);
     if (!isValidRole) {
       throw new Error(createdByRole === 'hod'
@@ -14,19 +33,25 @@ const User = {
         : 'Invalid role. Admin can create HoD or Faculty Incharge.');
     }
 
+    const hashedPassword =
+      password && String(password).startsWith("$2")
+        ? password
+        : await hashPassword(password);
+
     const sql = `
-      INSERT INTO users (username, email, password, role_id, department, created_by, created_by_hod_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO users (username, email, password, role_id, department, created_by, created_by_hod_id, must_change_password)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const [result] = await db.query(sql, [
       username.trim(),
       email.trim().toLowerCase(),
-      password,
+      hashedPassword,
       role_id,
       department,
       created_by || null,
-      created_by_hod_id || null
+      created_by_hod_id || null,
+      !!must_change_password
     ]);
 
     return result.insertId;
@@ -108,12 +133,23 @@ const User = {
       FINDERS
   =============================== */
   findByEmail: async (email) => {
+    const normalized = String(email || "").trim().toLowerCase();
     const [rows] = await db.query(
       `SELECT u.*, r.name as role_name
        FROM users u
        LEFT JOIN roles r ON u.role_id = r.id
-       WHERE u.email = ? AND u.is_active = TRUE`,
-      [email.toLowerCase()]
+       WHERE LOWER(TRIM(u.email)) = ? AND u.is_active = TRUE`,
+      [normalized]
+    );
+    return rows[0];
+  },
+
+  findByEmailAny: async (email) => {
+    const [rows] = await db.query(
+      `SELECT u.id, u.email, u.username, u.is_active
+       FROM users u
+       WHERE LOWER(u.email) = ?`,
+      [email.trim().toLowerCase()]
     );
     return rows[0];
   },
@@ -148,6 +184,7 @@ const User = {
     const baseSelect = `
       SELECT 
         u.id,
+        u.public_uuid,
         u.username,
         u.email,
         u.department,
@@ -167,7 +204,7 @@ const User = {
     `;
     if (requesterRole === 'admin') {
       const [rows] = await db.query(`${baseSelect} ORDER BY u.created_at DESC`);
-      return rows;
+      return (rows || []).map(toPublicUser);
     }
     if (requesterRole === 'hod' && requesterUserId) {
       const [rows] = await db.query(
@@ -176,7 +213,7 @@ const User = {
          ORDER BY u.created_at DESC`,
         [requesterUserId, requesterUserId]
       );
-      return rows;
+      return (rows || []).map(toPublicUser);
     }
     return [];
   },
@@ -193,12 +230,12 @@ const User = {
   /* Get all HoDs (admin only) - users with role hod */
   getHods: async () => {
     const [rows] = await db.query(`
-      SELECT u.id, u.username, u.email, u.department, u.is_active, u.created_at
+      SELECT u.id, u.public_uuid, u.username, u.email, u.department, u.is_active, u.created_at
       FROM users u
       JOIN roles r ON u.role_id = r.id AND r.name = 'hod'
       ORDER BY u.department, u.username
     `);
-    return rows;
+    return (rows || []).map(toPublicUser);
   },
 
   /* ===============================
@@ -288,11 +325,22 @@ const User = {
   /* ===============================
       UPDATE PASSWORD
   =============================== */
-  updatePassword: async (userId, newPassword) => {
-    // ⚠️ In production, hash password with bcrypt
+  updatePassword: async (userId, newPassword, { clearMustChange = true } = {}) => {
+    const hashed =
+      newPassword && String(newPassword).startsWith("$2")
+        ? newPassword
+        : await hashPassword(newPassword);
     const [result] = await db.query(
-      "UPDATE users SET password = ? WHERE id = ?",
-      [newPassword, userId]
+      `UPDATE users SET password = ?, must_change_password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [hashed, clearMustChange ? false : true, userId]
+    );
+    return result.affectedRows > 0;
+  },
+
+  setMustChangePassword: async (userId, value = true) => {
+    const [result] = await db.query(
+      `UPDATE users SET must_change_password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [!!value, userId]
     );
     return result.affectedRows > 0;
   },
@@ -324,3 +372,4 @@ const User = {
 };
 
 module.exports = User;
+module.exports.toPublicUser = toPublicUser;

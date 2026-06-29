@@ -14,6 +14,9 @@ async function ensureHodSchema() {
       `ALTER TABLE users ADD COLUMN IF NOT EXISTS created_by_hod_id INT REFERENCES users(id)`
     );
     await db.query(
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE`
+    );
+    await db.query(
       `ALTER TABLE faculty ADD COLUMN IF NOT EXISTS is_available BOOLEAN DEFAULT TRUE`
     );
     await db.query(

@@ -9,10 +9,27 @@ const Faculty = require("../models/Faculty");
 const Venue = require("../models/venue");
 const sessionAuth = require("../middleware/sessionAuth");
 const checkRole = require("../middleware/checkRole");
+const { importLimiter } = require("../middleware/rateLimiters");
+const { MAX_UPLOAD_BYTES, validateUploadedFile } = require("../utils/uploadValidation");
+const Api = require("../utils/apiResponse");
+const DependencyChecks = require("../utils/dependencyChecks");
 
 const router = express.Router();
 const ownerOpts = (req) => ({ ownerUserId: req.user?.id, role: req.user?.role });
-const upload = multer({ dest: "uploads/" });
+const upload = multer({
+  dest: "uploads/",
+  limits: { fileSize: MAX_UPLOAD_BYTES },
+});
+
+function assertValidUpload(req, res) {
+  const check = validateUploadedFile(req.file);
+  if (!check.valid) {
+    if (req.file) fs.unlink(req.file.path, () => {});
+    res.status(400).json({ message: check.message });
+    return false;
+  }
+  return true;
+}
 
 let lastFacultyImport = {
   insertedIds: [],
@@ -46,11 +63,12 @@ router.delete("/delete-all-students", sessionAuth, checkRole(["admin", "faculty_
 /* =====================================================
    IMPORT STUDENTS FROM EXCEL
 ===================================================== */
-router.post("/import-students", sessionAuth, checkRole(["admin", "faculty_incharge"]), upload.single("file"), async (req, res) => {
+router.post("/import-students", sessionAuth, checkRole(["admin", "faculty_incharge"]), importLimiter, upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ message: "No file uploaded." });
     }
+    if (!assertValidUpload(req, res)) return;
 
     const workbook = xlsx.readFile(req.file.path);
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -122,13 +140,14 @@ router.delete("/delete-all-faculty", sessionAuth, checkRole(["admin", "faculty_i
 /* =====================================================
    IMPORT FACULTY FROM EXCEL (DUPLICATE SAFE)
 ===================================================== */
-router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharge"]), upload.single("file"), async (req, res) => {
+router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharge"]), importLimiter, upload.single("file"), async (req, res) => {
   try {
     lastFacultyImport = { insertedIds: [], skippedEmails: [] };
 
     if (!req.file) {
       return res.status(400).json({ message: "No file uploaded." });
     }
+    if (!assertValidUpload(req, res)) return;
 
     const workbook = xlsx.readFile(req.file.path);
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -201,13 +220,14 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
    - NO PREFIX (like "5 2,2,3")
    - Only numbers 2 or 3
 ===================================================== */
-router.post("/import-venues", sessionAuth, checkRole(["admin", "faculty_incharge"]), upload.single("file"), async (req, res) => {
+router.post("/import-venues", sessionAuth, checkRole(["admin", "faculty_incharge"]), importLimiter, upload.single("file"), async (req, res) => {
   try {
     lastVenueImport = { insertedIds: [] };
 
     if (!req.file) {
       return res.status(400).json({ message: "No file uploaded." });
     }
+    if (!assertValidUpload(req, res)) return;
 
     const workbook = xlsx.readFile(req.file.path);
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -353,16 +373,25 @@ router.post("/import-venues", sessionAuth, checkRole(["admin", "faculty_incharge
 /* =====================================================
    UNDO ROUTES
 ===================================================== */
-router.get("/last-faculty-import", (req, res) => {
+router.get("/last-faculty-import", sessionAuth, checkRole(["admin", "faculty_incharge"]), (req, res) => {
   res.json(lastFacultyImport);
 });
 
 router.post("/undo-faculty-import", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
   try {
     if (lastFacultyImport.insertedIds.length === 0) {
-      return res.status(400).json({
-        message: "No import to undo"
-      });
+      return Api.validationError(res, "No import to undo", "There is no faculty import from this session to revert.");
+    }
+
+    const blocked = await DependencyChecks.facultyIdsWithBlockers(lastFacultyImport.insertedIds);
+    if (blocked.length > 0) {
+      const first = blocked[0];
+      return Api.conflict(
+        res,
+        first.code || "FACULTY_ASSIGNED",
+        first.message || "Cannot undo faculty import.",
+        `${blocked.length} imported faculty record(s) are assigned to examinations. Remove assignments before undoing the import.`
+      );
     }
 
     await Faculty.deleteByIds(lastFacultyImport.insertedIds, ownerOpts(req));
@@ -370,18 +399,13 @@ router.post("/undo-faculty-import", sessionAuth, checkRole(["admin", "faculty_in
     const deletedCount = lastFacultyImport.insertedIds.length;
     lastFacultyImport = { insertedIds: [], skippedEmails: [] };
 
-    res.json({
-      message: `Undo successful. Removed ${deletedCount} faculty records.`
-    });
+    return Api.success(res, `Undo successful. Removed ${deletedCount} faculty records.`, { deletedCount });
   } catch (error) {
-    res.status(500).json({
-      message: "Undo failed",
-      error: error.message
-    });
+    return Api.fromError(res, error);
   }
 });
 
-router.get("/last-student-import", (req, res) => {
+router.get("/last-student-import", sessionAuth, checkRole(["admin", "faculty_incharge"]), (req, res) => {
   res.json(lastStudentImport);
 });
 
@@ -410,7 +434,7 @@ router.post("/undo-student-import", sessionAuth, checkRole(["admin", "faculty_in
 });
 
 // ✅ NEW: Undo venue import
-router.get("/last-venue-import", (req, res) => {
+router.get("/last-venue-import", sessionAuth, checkRole(["admin", "faculty_incharge"]), (req, res) => {
   res.json(lastVenueImport);
 });
 

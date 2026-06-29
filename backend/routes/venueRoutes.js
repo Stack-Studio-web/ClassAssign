@@ -7,6 +7,8 @@ const sessionAuth = require("../middleware/sessionAuth");
 const checkRole = require("../middleware/checkRole"); // New flexible middleware
 const auditLogger = require("../middleware/auditLogger");
 const { andClause } = require("../utils/ownerFilter");
+const { resolveEntity } = require("../middleware/resolvePublicId");
+const { TABLE, getPublicUuid } = require("../utils/publicId");
 
 /* ================================
    GET ALL VENUES
@@ -72,7 +74,8 @@ router.post("/",
         benchConfig,
       }, ownerOpts(req));
 
-      res.status(201).json({ message: "Venue created successfully", venueId, id: venueId });
+      const uuid = await getPublicUuid(TABLE.venues, venueId);
+      res.status(201).json({ message: "Venue created successfully", uuid });
     } catch (err) {
       const isDuplicate = err.code === "ER_DUP_ENTRY" || err.code === "23505";
       res.status(isDuplicate ? 400 : 500).json({ 
@@ -86,22 +89,22 @@ router.post("/",
    UPDATE VENUE AVAILABILITY (toggle)
    Roles: admin, faculty_incharge
 ================================ */
-router.put("/:id/availability",
+router.put("/:uuid/availability",
   sessionAuth,
   checkRole(['admin', 'faculty_incharge']),
+  resolveEntity(TABLE.venues),
   auditLogger("UPDATE_VENUE_AVAILABILITY", "Venue"),
   async (req, res) => {
     try {
-      const { id } = req.params;
       const { isAvailable } = req.body || {};
       if (typeof isAvailable !== "boolean") {
         return res.status(400).json({ error: "isAvailable (boolean) is required" });
       }
-      const updated = await Venue.setAvailability(id, isAvailable, ownerOpts(req));
+      const updated = await Venue.setAvailability(req.internalId, isAvailable, ownerOpts(req));
       if (!updated) {
         return res.status(404).json({ error: "Venue not found or not allowed" });
       }
-      res.json({ message: "Availability updated", id, isAvailable });
+      res.json({ message: "Availability updated", uuid: req.publicUuid, isAvailable });
     } catch (err) {
       res.status(500).json({ error: "Server error", details: err.message });
     }
@@ -112,12 +115,13 @@ router.put("/:id/availability",
    UPDATE VENUE
    Roles: admin, faculty_incharge
 ================================ */
-router.put("/:id",
+router.put("/:uuid",
   sessionAuth,
   checkRole(['admin', 'faculty_incharge']),
+  resolveEntity(TABLE.venues),
   auditLogger("UPDATE_VENUE", "Venue"),
   async (req, res) => {
-    const { id } = req.params;
+    const id = req.internalId;
     let { name, type, benchesRow, benchesCol, benchConfig } = req.body;
 
     try {
@@ -155,7 +159,7 @@ router.put("/:id",
         }
 
         await conn.commit();
-        res.json({ message: "Venue updated successfully", id });
+        res.json({ message: "Venue updated successfully", uuid: req.publicUuid });
       } catch (err) {
         await conn.rollback();
         throw err;
@@ -171,14 +175,15 @@ router.put("/:id",
    DELETE VENUE (With Foreign Key Checks)
    Roles: admin, faculty_incharge
 ================================ */
-router.delete("/:id",
+router.delete("/:uuid",
   sessionAuth,
   checkRole(['admin', 'faculty_incharge']),
+  resolveEntity(TABLE.venues),
   auditLogger("DELETE_VENUE", "Venue"),
   async (req, res) => {
     const conn = await db.getConnection();
     try {
-      const { id } = req.params;
+      const id = req.internalId;
       await conn.beginTransaction();
 
       // Check if venue is linked to any active seating plans
@@ -204,7 +209,7 @@ router.delete("/:id",
       const [result] = await conn.query(`DELETE FROM venues WHERE id = ?${ownerSql}`, [id, ...ownerParams]);
 
       await conn.commit();
-      res.json({ message: "Venue deleted successfully", id });
+      res.json({ message: "Venue deleted successfully", uuid: req.publicUuid });
     } catch (err) {
       await conn.rollback();
       res.status(500).json({ error: "Server error", details: err.message });

@@ -8,8 +8,7 @@ function toVenueRow(row) {
   const benchesRow = Number(row.benchesrow ?? row.benchesRow ?? 0) || 1;
   const benchesCol = Number(row.benchescol ?? row.benchesCol ?? 0) || 1;
   return {
-    _id: row._id ?? row.id,
-    id: row.id ?? row._id,
+    uuid: row.public_uuid ?? row.publicuuid ?? row.uuid,
     name: row.name,
     type: row.type,
     capacity: Number(row.capacity ?? 0) || benchesRow * benchesCol * 2,
@@ -95,6 +94,7 @@ const Venue = {
     const [rawVenues] = await db.query(`
       SELECT
         id,
+        public_uuid,
         name,
         type,
         capacity,
@@ -105,8 +105,9 @@ const Venue = {
     `, ownerParams);
     const venues = (rawVenues || []).map(toVenueRow);
 
-    for (const v of venues) {
-      const venueId = v._id ?? v.id;
+    for (let i = 0; i < (rawVenues || []).length; i++) {
+      const v = venues[i];
+      const venueId = rawVenues[i].id;
       const [rawSessions] = await db.query(
         `SELECT 
            session_date AS date,
@@ -135,8 +136,8 @@ const Venue = {
     return venues;
   },
 
-  isAvailable: async (venueId, date, startTime, endTime) => {
-    const [rows] = await db.query(
+  isAvailable: async (venueId, date, startTime, endTime, executor = db) => {
+    const [rows] = await executor.query(
       `SELECT 1 FROM venue_sessions
        WHERE venue_id = ?
        AND session_date = ?
@@ -156,8 +157,8 @@ const Venue = {
     return rows.length > 0;
   },
 
-  addSession: async (venueId, date, startTime, endTime) => {
-    await db.query(
+  addSession: async (venueId, date, startTime, endTime, executor = db) => {
+    await executor.query(
       `INSERT INTO venue_sessions
        (venue_id, session_date, start_time, end_time)
        VALUES (?, ?, ?, ?)`,

@@ -1,9 +1,9 @@
 services:
-  # 1. Redis Service
   redis:
-    image: "redis:alpine"
+    image: "redis:7-alpine"
+    restart: unless-stopped
+    command: redis-server --appendonly yes
 
-  # 2. PostgreSQL Database Service
   db:
     image: postgres:15-alpine
     volumes:
@@ -13,12 +13,18 @@ services:
       - ./backend/databasemigration/002_add_hod_role.sql:/docker-entrypoint-initdb.d/zz_002_add_hod_role.sql
       - ./backend/databasemigration/003_allow_duplicate_student_regn.sql:/docker-entrypoint-initdb.d/zz_003_allow_duplicate_student_regn.sql
       - ./backend/databasemigration:/migrations
-    env_file:
-      - ./backend/.env
-    ports:
-      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-classassign}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env or shell}
+      POSTGRES_DB: ${POSTGRES_DB:-classassign}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
 
-  # 3. Backend (Express / Node.js)
   backend:
     build:
       context: ./backend
@@ -31,13 +37,30 @@ services:
       - app_uploads:/app/uploads
     ports:
       - "5000:5000"
-    env_file:
-      - ./backend/.env
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 5000
+      POSTGRES_USER: ${POSTGRES_USER:-classassign}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-classassign}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      REDIS_URL: redis://redis:6379/1
+      CELERY_BROKER_URL: redis://redis:6379/0
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-86400}
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
+      MICROSOFT_TENANT_ID: ${MICROSOFT_TENANT_ID:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
     depends_on:
-      - redis
-      - db
+      redis:
+        condition: service_started
+      db:
+        condition: service_healthy
+    restart: unless-stopped
 
-  # 4. Bull Worker Service
   worker:
     build:
       context: ./backend
@@ -46,14 +69,23 @@ services:
     volumes:
       - ./backend:/app
       - /app/node_modules
-    env_file:
-      - ./backend/.env
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      POSTGRES_USER: ${POSTGRES_USER:-classassign}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-classassign}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      CELERY_BROKER_URL: redis://redis:6379/0
     depends_on:
-      - redis
-      - db
+      redis:
+        condition: service_started
+      db:
+        condition: service_healthy
+    restart: unless-stopped
 
-  # 5. Bull Board (queue monitor — Flower equivalent for Bull)
   flower:
+    profiles: ["dev"]
     image: deadly0/bull-board:latest
     ports:
       - "3001:3000"
@@ -64,7 +96,6 @@ services:
       - redis
       - worker
 
-  # 6. Frontend (React / Vite — served via Nginx)
   frontend:
     build:
       context: .

@@ -1,12 +1,17 @@
-// Class/frontend/src/pages/IneligibleStudentsView.jsx
 import React, { useState, useEffect } from "react";
-import axios from "axios";
+import api from "../lib/api";
 import { TrashIcon, MagnifyingGlassIcon } from "@heroicons/react/24/outline";
+import { useToast } from "../context/ToastContext";
+import { useConfirm } from "../context/ConfirmContext";
+import { getApiError, getApiErrorTitle } from "../lib/errors";
 
 export default function IneligibleStudentsView() {
+  const toast = useToast();
+  const showConfirm = useConfirm();
   const [ineligibleStudents, setIneligibleStudents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
+  const [deletingId, setDeletingId] = useState(null);
   const [message, setMessage] = useState("");
 
   useEffect(() => {
@@ -16,32 +21,30 @@ export default function IneligibleStudentsView() {
   const fetchIneligibleStudents = async () => {
     setLoading(true);
     try {
-      const token = sessionStorage.getItem("authToken");
-      const res = await axios.get("/api/ineligibility/all", {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const res = await api.get("/ineligibility/all");
       setIneligibleStudents(res.data);
     } catch (err) {
       console.error("Error fetching ineligible students:", err);
-      setMessage("❌ Failed to load ineligible students");
+      setMessage("Failed to load ineligible students");
     } finally {
       setLoading(false);
     }
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm("Remove this student from ineligible list?")) return;
-
+    const ok = await showConfirm("Remove this student from the ineligible list?");
+    if (!ok) return;
+    setDeletingId(id);
     try {
-      const token = sessionStorage.getItem("authToken");
-      await axios.delete(`/api/ineligibility/${id}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setMessage("✅ Student removed from ineligible list");
+      await api.delete(`/ineligibility/${id}`);
+      setMessage("Student removed from ineligible list");
+      toast.success("Student removed from ineligible list.");
       fetchIneligibleStudents();
     } catch (err) {
-      console.error("Error deleting:", err);
-      setMessage("❌ Failed to remove student");
+      setMessage("Failed to remove student");
+      toast.error(getApiError(err), getApiErrorTitle(err, "Remove failed"));
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -51,7 +54,6 @@ export default function IneligibleStudentsView() {
     (s.courseCode ?? "").toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  // Group by exam type and date
   const groupedStudents = filteredStudents.reduce((acc, student) => {
     const key = `${student.examType} - ${new Date(student.examDate).toLocaleDateString()}`;
     if (!acc[key]) acc[key] = [];
@@ -87,13 +89,12 @@ export default function IneligibleStudentsView() {
 
       {message && (
         <div className={`mb-4 p-4 rounded-lg ${
-          message.includes("❌") ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"
+          message.includes("Failed") ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"
         }`}>
           {message}
         </div>
       )}
 
-      {/* Search Bar */}
       <div className="bg-white p-4 rounded-xl shadow-md border border-gray-100 mb-6">
         <div className="relative">
           <MagnifyingGlassIcon className="absolute left-3 top-3.5 h-5 w-5 text-gray-400" />
@@ -107,7 +108,6 @@ export default function IneligibleStudentsView() {
         </div>
       </div>
 
-      {/* Grouped List */}
       {Object.keys(groupedStudents).length === 0 ? (
         <div className="bg-white p-8 rounded-xl shadow-md text-center text-gray-500">
           No ineligible students found
@@ -136,7 +136,7 @@ export default function IneligibleStudentsView() {
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {students.map((student) => (
-                      <tr key={student.id} className="hover:bg-red-50 transition-colors">
+                      <tr key={student.uuid} className="hover:bg-red-50 transition-colors">
                         <td className="p-3 font-medium text-blue-700">{student.regnNo ?? "—"}</td>
                         <td className="p-3 font-semibold text-gray-800">{student.studentName ?? "—"}</td>
                         <td className="p-3 text-gray-600 text-sm">{student.email || "N/A"}</td>
@@ -145,8 +145,9 @@ export default function IneligibleStudentsView() {
                         <td className="p-3 text-gray-600 text-sm">{student.markedBy || "System"}</td>
                         <td className="p-3 text-center">
                           <button
-                            onClick={() => handleDelete(student.id)}
-                            className="text-red-600 hover:bg-red-100 p-2 rounded-lg transition-colors"
+                            onClick={() => handleDelete(student.uuid)}
+                            disabled={deletingId === student.uuid}
+                            className="text-red-600 hover:bg-red-100 disabled:opacity-50 p-2 rounded-lg transition-colors"
                             title="Remove from ineligible list"
                           >
                             <TrashIcon className="h-5 w-5" />

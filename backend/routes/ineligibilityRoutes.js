@@ -1,144 +1,114 @@
-// Class/backend/routes/ineligibilityRoutes.js
 const express = require("express");
 const router = express.Router();
 const IneligibleStudent = require("../models/IneligibleStudent");
 const sessionAuth = require("../middleware/sessionAuth");
 const checkRole = require("../middleware/checkRole");
 const auditLogger = require("../middleware/auditLogger");
+const { resolveEntity } = require("../middleware/resolvePublicId");
+const { TABLE } = require("../utils/publicId");
 
 const ownerOpts = (req) => ({ ownerUserId: req.user?.id, role: req.user?.role });
+const READ_ROLES = ["admin", "faculty_incharge", "hod"];
 
-/* ===============================
-    GET /api/ineligibility/students/:courseCode
-    ✅ NO AUTH - Public endpoint for listing students
-    Used by: Student Management > Notifications
-=============================== */
-router.get("/students/:courseCode", async (req, res) => {
-  try {
-    const { courseCode } = req.params;
-    const students = await IneligibleStudent.getStudentsByCourse(
-      decodeURIComponent(courseCode)
-    );
-    res.json(students);
-  } catch (err) {
-    console.error("❌ Error fetching students:", err);
-    res.status(500).json({ error: err.message });
+router.get(
+  "/students/:courseCode",
+  sessionAuth,
+  checkRole(READ_ROLES),
+  async (req, res) => {
+    try {
+      const { courseCode } = req.params;
+      const students = await IneligibleStudent.getStudentsByCourse(
+        decodeURIComponent(courseCode)
+      );
+      res.json(students);
+    } catch (err) {
+      console.error("Error fetching students:", err.message);
+      res.status(500).json({ error: "Server error" });
+    }
   }
-});
+);
 
-/* ===============================
-    ✅ NEW: GET /api/ineligibility/students/:courseCode/:department
-    ✅ NO AUTH - Public endpoint for course+dept matching
-    Used by: Allotment page
-    Returns students matching BOTH course code AND department
-=============================== */
-router.get("/students/:courseCode/:department", async (req, res) => {
-  try {
-    const { courseCode, department } = req.params;
-    
-    console.log(`📋 Request: students for ${courseCode}, dept ${department}`);
-    
-    const students = await IneligibleStudent.getStudentsByCourseAndDept(
-      decodeURIComponent(courseCode),
-      department.toUpperCase()
-    );
-    
-    res.json(students);
-  } catch (err) {
-    console.error("❌ Error fetching students by course and dept:", err);
-    res.status(500).json({ error: err.message });
+router.get(
+  "/students/:courseCode/:department",
+  sessionAuth,
+  checkRole(READ_ROLES),
+  async (req, res) => {
+    try {
+      const { courseCode, department } = req.params;
+      const students = await IneligibleStudent.getStudentsByCourseAndDept(
+        decodeURIComponent(courseCode),
+        department.toUpperCase()
+      );
+      res.json(students);
+    } catch (err) {
+      console.error("Error fetching students by course and dept:", err.message);
+      res.status(500).json({ error: "Server error" });
+    }
   }
-});
+);
 
-/* ===============================
-    GET /api/ineligibility/check
-    ✅ AUTH REQUIRED - Used by Allotment page
-    Returns list of ineligible students for a course/exam/date combo
-=============================== */
 router.get(
   "/check",
   sessionAuth,
-  checkRole(['admin', 'faculty_incharge']),
+  checkRole(["admin", "faculty_incharge"]),
   async (req, res) => {
     try {
       const { examType, courseCode, examDate } = req.query;
-      
-      console.log('🔍 Ineligibility check request:', { examType, courseCode, examDate });
-      
+
       if (!examType || !courseCode || !examDate) {
-        return res.status(400).json({ 
+        return res.status(400).json({
           error: "Missing required parameters",
-          details: "examType, courseCode, and examDate are required"
+          details: "examType, courseCode, and examDate are required",
         });
       }
 
-      // Normalize exam date
       const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
-
       const ineligible = await IneligibleStudent.getIneligibleStudents(
         examType,
         decodeURIComponent(courseCode),
         dateOnly,
         ownerOpts(req)
       );
-      
-      console.log(`✅ Found ${ineligible.length} ineligible students for ${courseCode} on ${dateOnly}`);
-      
       res.json(ineligible);
     } catch (err) {
-      console.error("❌ Error checking ineligibility:", err);
-      res.status(500).json({ error: err.message });
+      console.error("Error checking ineligibility:", err.message);
+      res.status(500).json({ error: "Server error" });
     }
   }
 );
 
-/* ===============================
-    GET /api/ineligibility/all
-    ✅ AUTH REQUIRED
-=============================== */
 router.get(
   "/all",
   sessionAuth,
-  checkRole(['admin', 'faculty_incharge']),
+  checkRole(["admin", "faculty_incharge"]),
   async (req, res) => {
     try {
       const ineligible = await IneligibleStudent.getAllIneligible();
       res.json(ineligible);
     } catch (err) {
-      console.error("❌ Error fetching all ineligible:", err);
-      res.status(500).json({ error: err.message });
+      console.error("Error fetching all ineligible:", err.message);
+      res.status(500).json({ error: "Server error" });
     }
   }
 );
 
-/* ===============================
-    POST /api/ineligibility/bulk-update
-    ✅ AUTH REQUIRED
-=============================== */
 router.post(
   "/bulk-update",
   sessionAuth,
-  checkRole(['admin', 'faculty_incharge']),
+  checkRole(["admin", "faculty_incharge"]),
   auditLogger("MARK_STUDENTS_INELIGIBLE", "IneligibleStudent"),
   async (req, res) => {
     try {
-      console.log('📥 Bulk update request received');
-      console.log('👤 User:', req.user);
-      console.log('📊 Body:', req.body);
-
       const { examType, courseCode, examDate, ineligibleStudents } = req.body;
 
       if (!examType || !courseCode || !examDate) {
         return res.status(400).json({ error: "Missing required fields" });
       }
-
       if (!Array.isArray(ineligibleStudents)) {
         return res.status(400).json({ error: "ineligibleStudents must be an array" });
       }
 
-      // Normalize exam date
       const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
-
       const result = await IneligibleStudent.bulkUpdateIneligibility(
         examType,
         courseCode,
@@ -148,8 +118,6 @@ router.post(
         ownerOpts(req)
       );
 
-      console.log(`✅ Successfully updated ${result.count} students`);
-
       res.json({
         success: true,
         message: `Updated ineligibility status for ${result.count} students`,
@@ -157,41 +125,33 @@ router.post(
         id: `${examType}_${courseCode}_${dateOnly}`,
         examType,
         courseCode,
-        examDate: dateOnly
+        examDate: dateOnly,
       });
     } catch (err) {
-      console.error("❌ Error bulk updating ineligibility:", err);
-      res.status(500).json({ error: err.message });
+      console.error("Error bulk updating ineligibility:", err.message);
+      res.status(500).json({ error: "Server error" });
     }
   }
 );
 
-/* ===============================
-    DELETE /api/ineligibility/:id
-    ✅ AUTH REQUIRED
-=============================== */
 router.delete(
-  "/:id",
+  "/:uuid",
   sessionAuth,
-  checkRole(['admin', 'faculty_incharge']),
+  checkRole(["admin", "faculty_incharge"]),
+  resolveEntity(TABLE.ineligible),
   auditLogger("REMOVE_INELIGIBILITY", "IneligibleStudent"),
   async (req, res) => {
     try {
-      const { id } = req.params;
-      const deleted = await IneligibleStudent.deleteById(id, ownerOpts(req));
-      
+      const deleted = await IneligibleStudent.deleteById(req.internalId, ownerOpts(req));
+
       if (!deleted) {
         return res.status(404).json({ error: "Record not found" });
       }
 
-      res.json({ 
-        success: true, 
-        message: "Ineligibility record removed",
-        id
-      });
+      res.json({ success: true, message: "Ineligibility record removed", uuid: req.publicUuid });
     } catch (err) {
-      console.error("❌ Error deleting ineligibility:", err);
-      res.status(500).json({ error: err.message });
+      console.error("Error deleting ineligibility:", err.message);
+      res.status(500).json({ error: "Server error" });
     }
   }
 );

@@ -128,7 +128,7 @@ const Role = {
     const role = await Role.getById(roleId);
     if (!role) return false;
     if (createdByRole === 'admin') {
-      return role.name === 'hod' || role.name === 'faculty_incharge';
+      return role.name === 'hod' || role.name === 'faculty_incharge' || role.name === 'faculty';
     }
     if (createdByRole === 'hod') {
       return role.name === 'faculty_incharge';

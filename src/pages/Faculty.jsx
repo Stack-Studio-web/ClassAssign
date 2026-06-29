@@ -1,33 +1,14 @@
-// Faculty.jsx - UI aligned with Venue page + mobile view
 import React, { useState, useEffect, useMemo } from "react";
-import axios from "axios";
+import api from "../lib/api";
 import { UserGroupIcon } from "@heroicons/react/24/outline";
-
-const api = axios.create({ baseURL: "/api" });
-api.interceptors.request.use((config) => {
-  const token = sessionStorage.getItem("authToken");
-  if (token) config.headers.Authorization = `Bearer ${token}`;
-  return config;
-});
-api.interceptors.response.use(
-  (r) => r,
-  (e) => {
-    if (e.response?.status === 401) {
-      sessionStorage.clear();
-      window.location.href = "/";
-    }
-    return Promise.reject(e);
-  }
-);
-
-const downloadFacultyTemplate = () => {
-  const a = document.createElement("a");
-  a.href = "/format/faculty_import_template_CORRECT.xlsx";
-  a.download = "faculty_import_template_CORRECT.xlsx";
-  a.click();
-};
+import { useToast } from "../context/ToastContext";
+import { useConfirm } from "../context/ConfirmContext";
+import { getApiError, getApiErrorTitle } from "../lib/errors";
+import { downloadTemplate } from "../lib/downloadTemplate";
 
 export default function Faculty() {
+  const toast = useToast();
+  const showConfirm = useConfirm();
   const [totalFaculty, setTotalFaculty] = useState(0);
   const [faculty, setFaculty] = useState([]);
   const [activeTab, setActiveTab] = useState("add");
@@ -41,7 +22,9 @@ export default function Faculty() {
   const [skippedEmails, setSkippedEmails] = useState([]);
   const [insertedCount, setInsertedCount] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
   const [message, setMessage] = useState("");
+  const [createSuccess, setCreateSuccess] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
 
   /* -------- Manual Entry State -------- */
@@ -91,7 +74,7 @@ export default function Faculty() {
 
   /* ================= EDIT LOGIC ================= */
   const handleEditClick = (f) => {
-    setEditingId(f.id);
+    setEditingId(f.uuid);
     setEditValue(f.maxClassrooms ?? f.max_classrooms ?? 0);
   };
 
@@ -110,9 +93,9 @@ export default function Faculty() {
 
   const handleToggleAvailability = async (f) => {
     const on = f.isAvailable !== false;
-    setTogglingAvailabilityId(f.id);
+    setTogglingAvailabilityId(f.uuid);
     try {
-      await api.put(`/faculty/${f.id}/availability`, { isAvailable: !on });
+      await api.put(`/faculty/${f.uuid}/availability`, { isAvailable: !on });
       setMessage("✅ Availability updated");
       await fetchFaculty();
     } catch {
@@ -172,40 +155,54 @@ export default function Faculty() {
   };
 
   const handleUndo = async () => {
-    if (!window.confirm("Undo last faculty import? This will remove the faculty members added in the last session.")) return;
+    const ok = await showConfirm("Undo last faculty import? This will remove records added in the last session.");
+    if (!ok) return;
 
+    setLoading(true);
     try {
       const res = await api.post("/import/undo-faculty-import");
-      setMessage(`⏪ ${res.data.message}`);
+      toast.success(res.data?.message || "Import undone");
       setInsertedCount(0);
       setSkippedEmails([]);
       fetchFaculty();
       fetchFacultyStats();
-    } catch {
-      setMessage("❌ Undo failed");
+    } catch (err) {
+      toast.error(getApiError(err, "Undo failed"), getApiErrorTitle(err, "Undo failed"));
+    } finally {
+      setLoading(false);
     }
   };
 
   /* ================= MANUAL ENTRY ================= */
   const handleManualSubmit = async () => {
-    if (!manualData.name || !manualData.email) {
+    const email = manualData.email.trim().toLowerCase();
+    if (!manualData.name || !email) {
       setMessage("⚠️ Name and Email are required");
+      setCreateSuccess(null);
       return;
     }
-    if (!manualData.email.endsWith("@kct.ac.in")) {
+    if (!/^[^\s@]+@kct\.ac\.in$/i.test(email)) {
       setMessage("⚠️ Enter valid college email (@kct.ac.in)");
+      setCreateSuccess(null);
       return;
     }
 
     setLoading(true);
+    setCreateSuccess(null);
     try {
-      await api.post("/faculty", manualData);
-      setMessage("✅ Faculty added successfully");
+      const res = await api.post("/faculty", { ...manualData, email });
+      setMessage("✅ Faculty Added Successfully");
+      setCreateSuccess({
+        email: res.data.data?.email || res.data.email || email,
+        generatedPassword: res.data.data?.generatedPassword || res.data.generatedPassword,
+      });
       setManualData({ name: "", department: "", email: "" });
       fetchFaculty();
       fetchFacultyStats();
-    } catch {
-      setMessage("❌ Failed to add faculty");
+    } catch (err) {
+      setCreateSuccess(null);
+      const msg = err.response?.data?.message;
+      setMessage(msg ? `❌ ${msg}` : "❌ Failed to add faculty");
     } finally {
       setLoading(false);
     }
@@ -213,13 +210,19 @@ export default function Faculty() {
 
   /* ================= DELETE ================= */
   const handleDelete = async (id) => {
-    if (!window.confirm("Delete this faculty?")) return;
+    const ok = await showConfirm("Are you sure you want to delete this faculty member?");
+    if (!ok) return;
+
+    setDeletingId(id);
     try {
       await api.delete(`/faculty/${id}`);
+      toast.success("Faculty deleted successfully");
       fetchFaculty();
       fetchFacultyStats();
-    } catch {
-      setMessage("❌ Delete failed");
+    } catch (err) {
+      toast.error(getApiError(err, "Delete failed"), getApiErrorTitle(err, "Cannot delete faculty"));
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -256,7 +259,14 @@ export default function Faculty() {
               "bg-red-50 text-red-700 border-red-200"
             }`}
           >
-            {message}
+            <p>{message}</p>
+            {createSuccess && (
+              <div className="mt-3 pt-3 border-t border-green-200 space-y-1 text-green-900">
+                <p><span className="font-semibold">Email:</span> {createSuccess.email}</p>
+                <p><span className="font-semibold">Generated Password:</span> {createSuccess.generatedPassword}</p>
+                <p className="text-xs text-green-700 mt-2">Share these credentials securely. The faculty member must change this password on first login.</p>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -283,7 +293,7 @@ export default function Faculty() {
             <button
               key={tab}
               type="button"
-              onClick={() => { setActiveTab(tab); setMessage(""); }}
+              onClick={() => { setActiveTab(tab); setMessage(""); setCreateSuccess(null); }}
               className={`py-4 px-4 md:px-6 text-sm font-medium whitespace-nowrap border-b-2 transition-all duration-200 ${
                 activeTab === tab ? "border-blue-600 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"
               }`}
@@ -348,7 +358,7 @@ export default function Faculty() {
                   </p>
                   <button
                     type="button"
-                    onClick={downloadFacultyTemplate}
+                    onClick={() => downloadTemplate("faculty").catch((e) => toast.error(e.message, "Download failed"))}
                     className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-sm transition-colors"
                   >
                     Download Faculty Template
@@ -435,7 +445,7 @@ export default function Faculty() {
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {filteredFaculty.map((f) => (
-                    <tr key={f.id} className="hover:bg-gray-50/50 transition-colors">
+                    <tr key={f.uuid} className="hover:bg-gray-50/50 transition-colors">
                       <td className="px-4 md:px-6 py-3 md:py-4 font-medium text-gray-800">{f.name}</td>
                       <td className="px-4 md:px-6 py-3 md:py-4 text-gray-600">{f.department || "—"}</td>
                       <td className="px-4 md:px-6 py-3 md:py-4 text-gray-500 text-sm hidden sm:table-cell">{f.email}</td>
@@ -454,7 +464,7 @@ export default function Faculty() {
                           role="switch"
                           aria-checked={f.isAvailable !== false}
                           aria-label={f.isAvailable !== false ? "Mark unavailable" : "Mark available"}
-                          disabled={togglingAvailabilityId === f.id}
+                          disabled={togglingAvailabilityId === f.uuid}
                           onClick={() => handleToggleAvailability(f)}
                           className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 ${
                             f.isAvailable !== false ? "bg-emerald-500" : "bg-gray-300"
@@ -468,7 +478,7 @@ export default function Faculty() {
                         </button>
                       </td>
                       <td className="px-4 md:px-6 py-3 md:py-4">
-                        {editingId === f.id ? (
+                        {editingId === f.uuid ? (
                           <div className="flex flex-wrap items-center gap-2">
                             <input
                               type="number"
@@ -476,13 +486,13 @@ export default function Faculty() {
                               onChange={(e) => setEditValue(Number(e.target.value))}
                               className="w-14 h-9 px-2 rounded-lg border border-gray-200 text-center text-sm"
                             />
-                            <button type="button" onClick={() => handleUpdateMaxClassrooms(f.id)} className="px-3 py-1.5 rounded-xl bg-green-600 text-white text-sm font-medium">Save</button>
+                            <button type="button" onClick={() => handleUpdateMaxClassrooms(f.uuid)} className="px-3 py-1.5 rounded-xl bg-green-600 text-white text-sm font-medium">Save</button>
                             <button type="button" onClick={() => setEditingId(null)} className="px-3 py-1.5 rounded-xl bg-gray-400 text-white text-sm font-medium">Cancel</button>
                           </div>
                         ) : (
                           <div className="flex flex-wrap gap-2">
                             <button type="button" onClick={() => handleEditClick(f)} className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium">Edit</button>
-                            <button type="button" onClick={() => handleDelete(f.id)} className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-medium">Delete</button>
+                            <button type="button" disabled={deletingId === f.uuid || loading} onClick={() => handleDelete(f.uuid)} className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium">{deletingId === f.uuid ? "Deleting..." : "Delete"}</button>
                           </div>
                         )}
                       </td>

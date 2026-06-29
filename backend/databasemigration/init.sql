@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS users (
   role_id INT REFERENCES roles(id),
   department VARCHAR(100),
   is_active BOOLEAN DEFAULT TRUE,
+  must_change_password BOOLEAN DEFAULT FALSE,
   created_by INT REFERENCES users(id),
   created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP

@@ -1,5 +1,9 @@
 import React, { useState, useEffect } from "react";
-import axios from "axios";
+import api from "../lib/api";
+import { useToast } from "../context/ToastContext";
+import { useConfirm } from "../context/ConfirmContext";
+import { getApiError, getApiErrorTitle } from "../lib/errors";
+import { downloadTemplate as downloadTemplateFile } from "../lib/downloadTemplate";
 import {
   ArrowUpTrayIcon,
   DocumentArrowDownIcon,
@@ -11,33 +15,9 @@ import {
   Squares2X2Icon,
 } from "@heroicons/react/24/outline";
 
-const api = axios.create({
-  baseURL: "/api",
-});
-
-api.interceptors.request.use(
-  (config) => {
-    const token = sessionStorage.getItem("authToken");
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  (error) => Promise.reject(error)
-);
-
-api.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      sessionStorage.clear();
-      window.location.href = "/login";
-    }
-    return Promise.reject(error);
-  }
-);
-
 export default function AddVenue() {
+  const toast = useToast();
+  const showConfirm = useConfirm();
   const [totalVenues, setTotalVenues] = useState(0);
   const [totalCapacity, setTotalCapacity] = useState(0);
   const [activeTab, setActiveTab] = useState("basic");
@@ -68,6 +48,9 @@ export default function AddVenue() {
   const [lastImportInfo, setLastImportInfo] = useState(null);
   const [isImporting, setIsImporting] = useState(false);
   const [togglingVenueId, setTogglingVenueId] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
+  const [isUndoing, setIsUndoing] = useState(false);
 
   const venueTypes = [
     { value: "", label: "Select Type" },
@@ -173,12 +156,13 @@ export default function AddVenue() {
     };
 
     try {
+      setSaving(true);
       if (editingId) {
         await api.put(`/venues/${editingId}`, payload);
-        alert("✅ Venue updated successfully!");
+        toast.success("Venue updated successfully.");
       } else {
         await api.post("/venues", payload);
-        alert("✅ Venue added successfully!");
+        toast.success("Venue added successfully.");
       }
       handleReset();
       fetchStats();
@@ -189,13 +173,15 @@ export default function AddVenue() {
         setIsDuplicateError(true);
         setError(`A venue named "${form.name}" with type "${form.type}" already exists.`);
       } else {
-        setError(err.response?.data?.details || "Failed to save venue.");
+        setError(getApiError(err, "Failed to save venue."));
       }
+    } finally {
+      setSaving(false);
     }
   };
 
   const handleToggleVenueAvailability = async (venue) => {
-    const id = venue._id || venue.id;
+    const id = venue.uuid;
     const on = venue.isAvailable !== false;
     setTogglingVenueId(id);
     try {
@@ -204,7 +190,7 @@ export default function AddVenue() {
       fetchVenues();
     } catch (err) {
       if (err.response?.status !== 401) {
-        alert(err.response?.data?.error || err.response?.data?.details || "Could not update availability.");
+        toast.error(getApiError(err), "Could not update availability");
       }
     } finally {
       setTogglingVenueId(null);
@@ -213,26 +199,22 @@ export default function AddVenue() {
 
   const handleDelete = async (id) => {
     if (!id) {
-      alert("❌ Invalid Venue ID.");
+      toast.error("Invalid venue ID.", "Cannot delete");
       return;
     }
-    if (!window.confirm("⚠️ Are you sure you want to delete this venue?")) return;
+    const ok = await showConfirm("Are you sure you want to delete this venue?");
+    if (!ok) return;
+    setDeletingId(id);
     try {
       await api.delete(`/venues/${id}`);
-      alert("✅ Venue deleted successfully!");
+      toast.success("Venue deleted successfully.");
       fetchStats();
       fetchVenues();
     } catch (err) {
       if (err.response?.status === 401) return;
-      if (err.response?.status === 400) {
-        const errorData = err.response?.data;
-        if (errorData?.details) alert(`❌ ${errorData.details}`);
-        else if (errorData?.error) alert(`❌ ${errorData.error}`);
-        else alert("❌ Cannot delete this venue. It may be in use.");
-      } else {
-        alert("❌ Failed to delete venue. Please try again or contact support.");
-      }
-      console.error("Delete error:", err.response?.data || err.message);
+      toast.error(getApiError(err), getApiErrorTitle(err, "Cannot delete venue"));
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -246,7 +228,7 @@ export default function AddVenue() {
     setBenchConfig(venue.benchConfig || Array(venue.benchesCol).fill(2));
     setConfigMode("custom");
     setCalculatedCapacity(venue.capacity);
-    setEditingId(venue._id || venue.id);
+    setEditingId(venue.uuid);
     setActiveTab("basic");
   };
 
@@ -312,24 +294,25 @@ export default function AddVenue() {
   };
 
   const handleUndoImport = async () => {
-    if (!window.confirm("⚠️ This will delete all venues from the last import. Continue?")) return;
+    const ok = await showConfirm("This will delete all venues from the last import. Continue?");
+    if (!ok) return;
+    setIsUndoing(true);
     try {
       const res = await api.post("/import/undo-venue-import");
-      alert(res.data.message);
+      toast.success(res.data.message || res.data.data?.message || "Import undone successfully.");
       await fetchStats();
       await fetchVenues();
       await checkLastImport();
     } catch (err) {
       if (err.response?.status === 401) return;
-      alert(err.response?.data?.message || "Undo failed");
+      toast.error(getApiError(err), getApiErrorTitle(err, "Undo failed"));
+    } finally {
+      setIsUndoing(false);
     }
   };
 
-  const downloadTemplate = () => {
-    const a = document.createElement("a");
-    a.href = "/format/venue_import.xlsx";
-    a.download = "venue_import.xlsx";
-    a.click();
+  const handleDownloadTemplate = () => {
+    downloadTemplateFile("venue").catch((e) => toast.error(e.message, "Download failed"));
   };
 
   const handleSearch = (e) => setSearchQuery(e.target.value);
@@ -596,9 +579,10 @@ export default function AddVenue() {
                 <div className="flex flex-wrap gap-3 pt-4">
                   <button
                     type="submit"
-                    className="px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-sm hover:shadow-md transition-all duration-200"
+                    disabled={saving}
+                    className="px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold shadow-sm hover:shadow-md transition-all duration-200"
                   >
-                    {editingId ? "Update Venue" : "Add Venue"}
+                    {saving ? "Saving..." : editingId ? "Update Venue" : "Add Venue"}
                   </button>
                   <button
                     type="button"
@@ -665,7 +649,7 @@ export default function AddVenue() {
                   </p>
                   <button
                     type="button"
-                    onClick={downloadTemplate}
+                    onClick={handleDownloadTemplate}
                     className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium shadow-sm transition-all duration-200"
                   >
                     <DocumentArrowDownIcon className="h-5 w-5" />
@@ -717,10 +701,11 @@ export default function AddVenue() {
                 <button
                   type="button"
                   onClick={handleUndoImport}
-                  className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-medium bg-red-600 hover:bg-red-700 text-white shadow-sm transition-all duration-200"
+                  disabled={isUndoing}
+                  className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-medium bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white shadow-sm transition-all duration-200"
                 >
                   <ArrowUturnLeftIcon className="h-5 w-5" />
-                  Undo Last Import ({lastImportInfo.insertedIds.length})
+                  {isUndoing ? "Undoing..." : `Undo Last Import (${lastImportInfo.insertedIds.length})`}
                 </button>
               )}
             </div>
@@ -794,7 +779,7 @@ export default function AddVenue() {
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {filteredVenues.map((venue) => (
-                      <tr key={venue._id || venue.id} className="hover:bg-gray-50/50 transition-colors">
+                      <tr key={venue.uuid} className="hover:bg-gray-50/50 transition-colors">
                         <td className="px-6 py-4 font-medium text-gray-800">{venue.name}</td>
                         <td className="px-6 py-4 text-gray-600 capitalize">{venue.type}</td>
                         <td className="px-6 py-4 font-medium text-gray-800">{venue.capacity}</td>
@@ -810,7 +795,7 @@ export default function AddVenue() {
                             role="switch"
                             aria-checked={venue.isAvailable !== false}
                             aria-label={venue.isAvailable !== false ? "Mark unavailable" : "Mark available"}
-                            disabled={togglingVenueId === (venue._id || venue.id)}
+                            disabled={togglingVenueId === (venue.uuid)}
                             onClick={() => handleToggleVenueAvailability(venue)}
                             className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 ${
                               venue.isAvailable !== false ? "bg-emerald-500" : "bg-gray-300"
@@ -834,10 +819,11 @@ export default function AddVenue() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => handleDelete(venue._id || venue.id)}
-                              className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition-all duration-200"
+                              disabled={deletingId === (venue.uuid)}
+                              onClick={() => handleDelete(venue.uuid)}
+                              className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium transition-all duration-200"
                             >
-                              Delete
+                              {deletingId === (venue.uuid) ? "Deleting..." : "Delete"}
                             </button>
                           </div>
                         </td>

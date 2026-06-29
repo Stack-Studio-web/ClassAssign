@@ -1,21 +1,9 @@
 import React, { useEffect, useState, useRef } from "react";
-import axios from "axios";
+import api from "../lib/api";
 import { useReactToPrint } from "react-to-print";
 import { PrinterIcon } from "@heroicons/react/24/outline";
 import KCT from "../assets/logo.png";
 import KSI from '../assets/KSI logo.png';
-
-const api = axios.create({
-  baseURL: "/api",
-});
-
-api.interceptors.request.use((config) => {
-  const token = sessionStorage.getItem("authToken");
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-});
 
 const normalizeDateToYYYYMMDD = (dateInput) => {
   if (!dateInput) return null;
@@ -69,17 +57,7 @@ export const StudentAttendance = () => {
     `
   });
 
-  // Check authentication
-  useEffect(() => {
-    const token = sessionStorage.getItem("authToken");
-    if (!token) {
-      setError("Please login to view attendance sheets");
-      setLoading(false);
-      return;
-    }
-  }, []);
-
-  // Fetch all seating plans
+  // Session validated by AuthGuard; fetch plans on mount
   useEffect(() => {
     const fetchPlans = async () => {
       try {

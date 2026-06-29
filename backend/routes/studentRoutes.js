@@ -2,8 +2,15 @@
 const express = require("express");
 const router = express.Router();
 const Student = require("../models/Student");
+const db = require("../config/db");
+const { whereClause, andClause } = require("../utils/ownerFilter");
 const sessionAuth = require("../middleware/sessionAuth");
 const checkRole = require("../middleware/checkRole");
+
+const DependencyChecks = require("../utils/dependencyChecks");
+const Api = require("../utils/apiResponse");
+const { resolveEntity } = require("../middleware/resolvePublicId");
+const { TABLE } = require("../utils/publicId");
 
 const ownerOpts = (req) => ({ ownerUserId: req.user?.id, role: req.user?.role });
 
@@ -121,58 +128,75 @@ router.get("/course-dept/:courseCode/:dept", sessionAuth, checkRole(["admin", "f
 // ✅ DELETE all students
 router.delete("/all", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
   try {
-    console.log("🗑️ DELETE /api/students/all");
-    const deletedCount = await Student.deleteAll(ownerOpts(req));
-    console.log(`✅ Deleted ${deletedCount} students`);
-    res.json({ message: "All students deleted.", deletedCount });
+    const opts = ownerOpts(req);
+    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId);
+    const [rows] = await db.query(`SELECT id FROM students${ownerSql || " WHERE 1=1"}`, ownerParams);
+    const ids = (rows || []).map((r) => r.id);
+    const blocked = await DependencyChecks.studentIdsWithBlockers(ids);
+    if (blocked.length > 0) {
+      return Api.conflict(
+        res,
+        blocked[0].code || "STUDENT_ALLOTTED",
+        "Cannot delete all students.",
+        `${blocked.length} student(s) are assigned to seating plans or have locked attendance. Remove dependencies first.`
+      );
+    }
+
+    const deletedCount = await Student.deleteAll(opts);
+    return Api.success(res, "All students deleted.", { deletedCount });
   } catch (error) {
-    console.error("❌ Error deleting all students:", error);
-    res.status(500).json({
-      message: "Server error deleting students.",
-      error: error.message,
-    });
+    return Api.fromError(res, error);
   }
 });
 
-// ✅ DELETE students by course code
 router.delete("/by-course/:courseCode", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
   try {
     const courseCode = decodeURIComponent(req.params.courseCode);
-    console.log("🗑️ DELETE /api/students/by-course/" + courseCode);
-    const deletedCount = await Student.deleteByCourseCode(courseCode, ownerOpts(req));
-    console.log(`✅ Deleted ${deletedCount} students for course ${courseCode}`);
-    res.json({ message: `Deleted ${deletedCount} student(s) for course ${courseCode}.`, deletedCount });
+    const opts = ownerOpts(req);
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    const [rows] = await db.query(
+      `SELECT id FROM students WHERE course_description = ?${ownerSql}`,
+      [String(courseCode).trim(), ...ownerParams]
+    );
+    const ids = (rows || []).map((r) => r.id);
+    const blocked = await DependencyChecks.studentIdsWithBlockers(ids);
+    if (blocked.length > 0) {
+      return Api.conflict(
+        res,
+        blocked[0].code || "STUDENT_ALLOTTED",
+        "Cannot delete students for this course.",
+        `${blocked.length} student(s) in this course are assigned to seating or have locked attendance.`
+      );
+    }
+
+    const deletedCount = await Student.deleteByCourseCode(courseCode, opts);
+    return Api.success(res, `Deleted ${deletedCount} student(s) for course ${courseCode}.`, { deletedCount });
   } catch (error) {
-    console.error("❌ Error deleting students by course:", error);
-    res.status(500).json({
-      message: "Server error deleting students by course.",
-      error: error.message,
-    });
+    return Api.fromError(res, error);
   }
 });
 
-// ✅ DELETE student by ID
-router.delete("/:id", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
+// ✅ DELETE student by UUID
+router.delete("/:uuid", sessionAuth, checkRole(["admin", "faculty_incharge"]), resolveEntity(TABLE.students), async (req, res) => {
   try {
-    console.log("🗑️ DELETE /api/students/:id - ID:", req.params.id);
+    const studentId = req.internalId;
 
-    const deleted = await Student.deleteById(req.params.id, ownerOpts(req));
-
-    if (!deleted) {
-      console.log(`❌ Student ${req.params.id} not found`);
-      return res.status(404).json({
-        message: "Student not found in database",
-      });
+    const check = await DependencyChecks.studentDeleteBlockers(studentId);
+    if (check.blocked) {
+      return Api.conflict(res, check.code, check.message, check.details);
+    }
+    if (check.notFound) {
+      return Api.notFound(res, "Student not found");
     }
 
-    console.log(`✅ Student ${req.params.id} deleted successfully`);
-    res.json({ message: "Student deleted successfully." });
+    const deleted = await Student.deleteById(studentId, ownerOpts(req));
+    if (!deleted) {
+      return Api.notFound(res, "Student not found or not allowed");
+    }
+
+    return Api.success(res, "Student deleted successfully");
   } catch (error) {
-    console.error("❌ Error deleting student:", error);
-    res.status(500).json({
-      message: "Server error deleting student.",
-      error: error.message,
-    });
+    return Api.fromError(res, error);
   }
 });
 

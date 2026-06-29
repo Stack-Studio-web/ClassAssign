@@ -1,41 +1,10 @@
 // StudentArrangement.jsx - UPDATED WITH AUTH, RBAC & IMPROVED NOTIFICATION FEEDBACK
 import React, { useEffect, useState, useRef } from "react";
-import axios from "axios";
+import api from "../lib/api";
 import { useReactToPrint } from "react-to-print";
 import { useAcademicSession } from "../context/AcademicSessionContext";
 import LogoKCT from "../assets/logo.png";
 import LogoKSI from "../assets/logo KSI.png";
-
-// ✅ 1. Create authenticated API instance to fix 401 Unauthorized
-const api = axios.create({
-  baseURL: "http://10.1.150.51:5000/api",
-});
-
-api.interceptors.request.use((config) => {
-  const token = sessionStorage.getItem("authToken");
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-});
-
-// ✅ Response interceptor for better error handling
-api.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      sessionStorage.clear();
-      window.location.href = "/login";
-    } else if (error.response?.status === 403) {
-      return Promise.reject({
-        ...error,
-        isForbidden: true,
-        message: error.response?.data?.details || "You do not have permission to perform this action."
-      });
-    }
-    return Promise.reject(error);
-  }
-);
 
 const getNumericPart = (rollNo) => {
   if (!rollNo) return NaN;

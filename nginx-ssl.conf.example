@@ -1,0 +1,23 @@
+# Production TLS overlay — mount or include alongside nginx.conf
+server {
+    listen 443 ssl http2;
+    server_name your-domain.example.com;
+
+    ssl_certificate     /etc/nginx/ssl/fullchain.pem;
+    ssl_certificate_key /etc/nginx/ssl/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    # Include the same location blocks as nginx.conf or proxy to upstream frontend container
+}
+
+server {
+    listen 80;
+    server_name your-domain.example.com;
+    return 301 https://$host$request_uri;
+}

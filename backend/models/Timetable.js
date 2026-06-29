@@ -6,7 +6,7 @@ const { andClause, whereClause, whereClauseForHod, andClauseForHod, insertField 
 function toTimetableRow(row) {
   if (!row || typeof row !== "object") return row;
   return {
-    id: row.id,
+    uuid: row.public_uuid ?? row.publicuuid ?? row.uuid,
     date: row.date,
     startTime: row.starttime ?? row.startTime ?? "",
     endTime: row.endtime ?? row.endTime ?? "",
@@ -31,6 +31,7 @@ const Timetable = {
     const [rows] = await db.query(
       `SELECT 
         id,
+        public_uuid,
         date,
         start_time as startTime,
         end_time as endTime,
@@ -58,6 +59,7 @@ const Timetable = {
     const [rows] = await db.query(
       `SELECT 
         id,
+        public_uuid,
         date,
         start_time as startTime,
         end_time as endTime,
@@ -166,6 +168,7 @@ const Timetable = {
     const [rows] = await db.query(
       `SELECT 
         id,
+        public_uuid,
         date,
         start_time as startTime,
         end_time as endTime,
@@ -191,6 +194,7 @@ const Timetable = {
     let query = `
       SELECT 
         id,
+        public_uuid,
         date,
         start_time as startTime,
         end_time as endTime,

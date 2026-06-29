@@ -1,7 +1,7 @@
-// src/pages/Landing.jsx
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import Logo from "../assets/logo.png";
+import api, { fetchCurrentUser } from '../lib/api';
 
 function Landing() {
     const navigate = useNavigate();
@@ -13,45 +13,39 @@ function Landing() {
     const [flashMessage, setFlashMessage] = useState(''); 
     const [loading, setLoading] = useState(false);
 
-    const API_BASE = 'http://10.1.150.51:5000/api';
-
-    // Check for SSO callback or errors
     useEffect(() => {
         const ssoSuccess = searchParams.get('sso_success');
-        const token = searchParams.get('token');
         const errorMsg = searchParams.get('error');
 
         if (errorMsg) {
             setError(decodeURIComponent(errorMsg));
         }
 
-        if (ssoSuccess === 'true' && token) {
-            // Store token
-            sessionStorage.setItem('authToken', token);
-            
-            // Fetch user info
-            fetchUserInfo(token);
+        if (ssoSuccess === 'true') {
+            completeSsoLogin();
         }
-    }, [searchParams, navigate]);
+    }, [searchParams]);
 
-    const fetchUserInfo = async (token) => {
+    const completeSsoLogin = async () => {
         try {
-            const response = await fetch(`${API_BASE}/auth/session-info`, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-            
-            const data = await response.json();
-            
-            if (data.user) {
-                sessionStorage.setItem('user', JSON.stringify(data.user));
-                setFlashMessage('Successfully logged in! Redirecting...');
-                
-                setTimeout(() => {
-                    navigate('/allotment');
-                }, 1000);
+            const user = await fetchCurrentUser();
+            if (!user) {
+                setError('Failed to complete login');
+                return;
             }
-        } catch (err) {
-            console.error('Failed to fetch user info:', err);
+            setFlashMessage('Successfully logged in! Redirecting...');
+            setTimeout(() => {
+                if (user.mustChangePassword) {
+                    navigate('/change-password', { replace: true });
+                } else if (user.role === 'faculty') {
+                    navigate('/faculty/dashboard', { replace: true });
+                } else if (user.role === 'hod') {
+                    navigate('/users', { replace: true });
+                } else {
+                    navigate('/allotment', { replace: true });
+                }
+            }, 800);
+        } catch {
             setError('Failed to complete login');
         }
     };
@@ -63,35 +57,26 @@ function Landing() {
         setLoading(true);
 
         try {
-            const response = await fetch(`${API_BASE}/auth/login`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email, password }),
-            });
-
-            const data = await response.json();
+            const { data } = await api.post('/auth/login', { email, password });
 
             if (data.success) {
-                // Store token and user info
-                sessionStorage.setItem('authToken', data.token); 
                 sessionStorage.setItem('user', JSON.stringify(data.user));
                 
-                setFlashMessage('Successfully logged in! Redirecting...');
-                
-                setTimeout(() => {
-                    navigate(data.redirectTo || '/allotment');
-                }, 1500);
-                
+                if (data.mustChangePassword) {
+                    setFlashMessage('Please set a new password to continue...');
+                    setTimeout(() => navigate('/change-password', { replace: true }), 800);
+                } else {
+                    setFlashMessage('Successfully logged in! Redirecting...');
+                    setTimeout(() => navigate(data.redirectTo || '/allotment'), 1500);
+                }
             } else {
                 setError(data.message || 'Login failed. Please check your credentials.');
             }
         } catch (err) {
             console.error('Login error:', err);
-            setError('Could not connect to the server. Please try again later.');
+            setError(err.response?.data?.message || 'Could not connect to the server. Please try again later.');
         } finally {
-            if (!flashMessage) {
-                setLoading(false);
-            }
+            if (!flashMessage) setLoading(false);
         }
     };
 
@@ -99,25 +84,21 @@ function Landing() {
         setError('');
         setFlashMessage('Redirecting to Microsoft...');
         try {
-            const response = await fetch(`${API_BASE}/auth/microsoft/login`);
-            const data = await response.json();
-
+            const { data } = await api.get('/auth/microsoft/login');
             if (data.authUrl) {
                 window.location.href = data.authUrl;
             } else {
-                setFlashMessage(''); 
+                setFlashMessage('');
                 setError(data.message || 'Could not initiate Microsoft login.');
             }
         } catch (err) {
-            setFlashMessage(''); 
-            console.error('Microsoft login initiation error:', err);
+            setFlashMessage('');
             setError('Error connecting to authentication service.');
         }
     };
 
     return (
       <div className="min-h-screen bg-gray-100 flex flex-col justify-between">
-        {/* Navbar */}
         <nav className="bg-white shadow-md px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <img src={Logo} alt="KCT Logo" className="h-12 w-auto" />
@@ -133,14 +114,12 @@ function Landing() {
           </div>
         </nav>
 
-        {/* Main Content */}
         <div
           className="flex flex-col lg:flex-row flex-grow bg-cover bg-center bg-no-repeat"
           style={{ backgroundImage: "url('https://admissions.kct.ac.in/images/dome-new.png')" }}
         >
           <div className="lg:w-1/2"></div>
           
-          {/* Login Form */}
           <div className="lg:w-1/2 p-6 flex items-center justify-center">
             <div className="bg-white/30 backdrop-blur-md p-6 rounded-lg shadow-lg w-full max-w-sm">
               <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">Login</h2>
@@ -194,7 +173,6 @@ function Landing() {
                   onClick={handleMicrosoftLogin} 
                   className="w-full flex items-center justify-center gap-3 bg-white text-gray-800 py-2 rounded-lg border border-gray-300 hover:bg-gray-100 transition shadow-sm font-semibold text-sm"
                 >
-                  {/* Microsoft Logo */}
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <path fill="#F25022" d="M11 2.25H2.25V11H11V2.25Z"/>
                     <path fill="#7FBA00" d="M21.75 2.25H13V11H21.75V2.25Z"/>
@@ -212,7 +190,6 @@ function Landing() {
           </div>
         </div>
 
-        {/* Footer */}
         <footer className="bg-gray-900 text-white text-center py-4 text-sm">
           <p className="max-w-3xl mx-auto px-4">
             Pursues excellence in providing training to develop a sense of professional responsibility,

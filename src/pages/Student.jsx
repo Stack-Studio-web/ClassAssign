@@ -1,34 +1,14 @@
-// Student.jsx - FIXED VERSION WITH PROPER AUTH HEADERS
 import React, { useState, useEffect, useMemo } from "react";
-import axios from "axios";
+import api, { logout } from "../lib/api";
 import { MagnifyingGlassIcon, XMarkIcon } from "@heroicons/react/24/outline";
-
-// API instance: attach auth token to every request (fixes notifications + delete)
-const api = axios.create({ baseURL: "/api" });
-api.interceptors.request.use((config) => {
-  const token = sessionStorage.getItem("authToken");
-  if (token) config.headers.Authorization = `Bearer ${token}`;
-  return config;
-});
-api.interceptors.response.use(
-  (res) => res,
-  (err) => {
-    if (err.response?.status === 401) {
-      sessionStorage.clear();
-      window.location.href = "/";
-    }
-    return Promise.reject(err);
-  }
-);
-
-const downloadStudentTemplate = () => {
-  const a = document.createElement("a");
-  a.href = "/format/student_import_template_CORRECT.xlsx";
-  a.download = "student_import_template_CORRECT.xlsx";
-  a.click();
-};
+import { useToast } from "../context/ToastContext";
+import { useConfirm } from "../context/ConfirmContext";
+import { getApiError, getApiErrorTitle } from "../lib/errors";
+import { downloadTemplate } from "../lib/downloadTemplate";
 
 export default function Student() {
+  const toast = useToast();
+  const showConfirm = useConfirm();
   const [totalStudents, setTotalStudents] = useState(0);
   const [students, setStudents] = useState([]);
   const [activeTab, setActiveTab] = useState("all");
@@ -41,6 +21,7 @@ export default function Student() {
   const [skippedRecords, setSkippedRecords] = useState([]);
   const [deleteByCourseCode, setDeleteByCourseCode] = useState("");
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
 
   // Filter States
   const [showFilters, setShowFilters] = useState(false);
@@ -208,32 +189,47 @@ export default function Student() {
   };
 
   const handleUndo = async () => {
-    if (!window.confirm("Undo last student import? This will remove records added in the last session.")) return;
+    const ok = await showConfirm("Undo last student import? This will remove records added in the last session.");
+    if (!ok) return;
     try {
       const res = await api.post("/import/undo-student-import");
-      setMessage(`✅ ${res.data.message}`);
+      const msg = res.data.message || res.data.data?.message || "Import undone.";
+      setMessage(`✅ ${msg}`);
+      toast.success(msg);
       fetchStudents();
       fetchStudentStats();
     } catch (err) {
-      setMessage(err.response?.status === 400 ? "ℹ️ No student import available to undo" : "❌ Undo failed");
+      const msg = err.response?.status === 400
+        ? "No student import available to undo"
+        : getApiError(err, "Undo failed");
+      setMessage(`❌ ${msg}`);
+      toast.error(msg);
     }
   };
 
   /* ================= DELETE ================= */
   const handleDelete = async (id) => {
-    if (!window.confirm("Are you sure you want to delete this student?")) return;
+    const ok = await showConfirm("Are you sure you want to delete this student?");
+    if (!ok) return;
+    setDeletingId(id);
     try {
       await api.delete(`/students/${id}`);
       setMessage("✅ Student deleted successfully");
+      toast.success("Student deleted successfully.");
       fetchStudentStats();
       fetchStudents();
     } catch (err) {
-      setMessage("❌ Failed to delete the student.");
+      const msg = getApiError(err, "Failed to delete the student.");
+      setMessage(`❌ ${msg}`);
+      toast.error(msg, getApiErrorTitle(err, "Cannot delete student"));
+    } finally {
+      setDeletingId(null);
     }
   };
 
   const handleDeleteAll = async () => {
-    if (!window.confirm("Are you sure you want to delete ALL students? This cannot be undone.")) return;
+    const ok = await showConfirm("Are you sure you want to delete ALL students? This cannot be undone.");
+    if (!ok) return;
     setDeleteLoading(true);
     try {
       const res = await api.delete("/students/all");
@@ -253,9 +249,11 @@ export default function Student() {
     const code = (deleteByCourseCode || "").trim();
     if (!code) {
       setMessage("⚠️ Please select a course code.");
+      toast.warning("Please select a course code.");
       return;
     }
-    if (!window.confirm(`Delete all students for course "${code}"? This cannot be undone.`)) return;
+    const ok = await showConfirm(`Delete all students for course "${code}"? This cannot be undone.`);
+    if (!ok) return;
     setDeleteLoading(true);
     try {
       const res = await api.delete(`/students/by-course/${encodeURIComponent(code)}`);
@@ -347,7 +345,7 @@ export default function Student() {
     } catch (err) {
       console.error("Error loading students:", err);
       const errorMsg = err.response?.data?.error || err.response?.data?.message || err.message;
-      alert(`Failed to load students for this course: ${errorMsg}`);
+      toast.error(errorMsg, "Failed to load students");
     } finally {
       setIneligibilityLoading(false);
     }
@@ -365,24 +363,19 @@ export default function Student() {
 
   const saveIneligibilityAndClose = async () => {
     if (!ineligibilityData.examDate) {
-      alert("⚠️ Please select exam date");
+      toast.warning("Please select exam date.");
       return;
     }
 
     if (!notificationForm.examType) {
-      alert("⚠️ Please select exam type first");
+      toast.warning("Please select exam type first.");
       return;
     }
 
     setIneligibilityLoading(true);
 
     try {
-      const token = sessionStorage.getItem("authToken");
-      
-      console.log('🔐 Auth Check:', {
-        hasToken: !!token,
-        tokenPreview: token ? token.substring(0, 20) + '...' : 'none',
-        examType: notificationForm.examType,
+      console.log('Saving ineligibility for course:', currentCourseForIneligibility, {
         courseCode: currentCourseForIneligibility,
         examDate: ineligibilityData.examDate
       });
@@ -430,25 +423,17 @@ export default function Student() {
       });
       setIneligibilitySearch("");
 
-      alert(`✅ Saved! ${ineligibleStudents.length} students marked ineligible for ${currentCourseForIneligibility}`);
+      toast.success(`${ineligibleStudents.length} students marked ineligible for ${currentCourseForIneligibility}.`);
     } catch (err) {
-      console.error("❌ Error saving ineligibility:", err);
-      console.error("Response:", err.response?.data);
-      console.error("Status:", err.response?.status);
-      
       if (err.response?.status === 401) {
         const errorMsg = err.response?.data?.hint || "Authentication failed. Please logout and login again.";
-        alert(`❌ ${errorMsg}`);
-        
-        if (window.confirm("Your session has expired. Would you like to logout and login again?")) {
-          sessionStorage.clear();
-          window.location.href = '/';
-        }
+        toast.error(errorMsg, "Session expired");
+        const relog = await showConfirm("Your session has expired. Would you like to logout and login again?");
+        if (relog) await logout("/");
       } else if (err.response?.status === 403) {
-        alert("❌ You don't have permission to perform this action.");
+        toast.error("You don't have permission to perform this action.", "Access denied");
       } else {
-        const errorMsg = err.response?.data?.error || err.response?.data?.message || err.message;
-        alert(`❌ Failed to save ineligibility data: ${errorMsg}`);
+        toast.error(getApiError(err), "Failed to save ineligibility");
       }
     } finally {
       setIneligibilityLoading(false);
@@ -511,31 +496,10 @@ export default function Student() {
     });
 
     try {
-      // ✅ GET AUTH TOKEN
-      const token = sessionStorage.getItem("authToken");
-      
-      if (!token) {
-        setNotificationStatus({
-          loading: false,
-          message: "You are not logged in. Please login again.",
-          error: true,
-          details: null
-        });
-        return;
-      }
-
-      // Prepare request with course-specific dates
       const coursesWithDates = selectedCourses.map(course => ({
         courseCode: course,
         examDate: courseIneligibilityMap[course].examDate
       }));
-
-      console.log('📤 Sending notifications with auth:', {
-        hasToken: !!token,
-        tokenPreview: token.substring(0, 20) + '...',
-        examType,
-        coursesCount: coursesWithDates.length
-      });
 
       const res = await api.post("/notifications/exam-announcement-v2", {
         examType,
@@ -573,10 +537,8 @@ export default function Student() {
           details: err.response?.data
         });
         
-        if (window.confirm("Your session has expired. Would you like to logout and login again?")) {
-          sessionStorage.clear();
-          window.location.href = '/';
-        }
+        const relog = await showConfirm("Your session has expired. Would you like to logout and login again?");
+        if (relog) await logout("/");
       } else if (err.response?.status === 403) {
         setNotificationStatus({
           loading: false,
@@ -739,7 +701,7 @@ export default function Student() {
                 </p>
                 <button
                   type="button"
-                  onClick={downloadStudentTemplate}
+                  onClick={() => downloadTemplate("student").catch((e) => toast.error(e.message, "Download failed"))}
                   className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-sm transition-colors"
                 >
                   Download Student Template
@@ -903,14 +865,14 @@ export default function Student() {
               <tbody className="divide-y divide-gray-100">
                 {filteredStudents.length > 0 ? (
                   filteredStudents.map((s) => (
-                    <tr key={s.id} className="hover:bg-gray-50/50 transition-colors">
+                    <tr key={s.uuid} className="hover:bg-gray-50/50 transition-colors">
                       <td className="px-4 py-3 text-sm font-semibold text-blue-600">{s.regnNo}</td>
                       <td className="px-4 py-3 text-sm font-medium text-gray-800">{s.studentName ?? "—"}</td>
                       <td className="px-4 py-3 text-sm font-medium text-gray-700">{s.courseName}</td>
                       <td className="px-4 py-3 text-sm font-medium text-gray-600">{s.courseDescription}</td>
                       <td className="px-4 py-3">
                         <button
-                          onClick={() => handleDelete(s.id)}
+                          onClick={() => handleDelete(s.uuid)}
                           className="text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors"
                         >
                           Delete
@@ -1125,7 +1087,7 @@ export default function Student() {
                             const isIneligible = ineligibilityData.ineligibleSet.has(student.regnNo);
                             return (
                               <tr
-                                key={student.id}
+                                key={student.uuid}
                                 className={`hover:bg-gray-100 transition-colors ${
                                   isIneligible ? "bg-red-50" : "bg-white"
                                 }`}

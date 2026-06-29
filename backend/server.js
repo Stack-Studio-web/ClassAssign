@@ -1,22 +1,27 @@
-// IMPORTANT: instrument.js must be the very first import
 require("./instrument.js");
 
 const Sentry = require("@sentry/node");
 const express = require("express");
 const path = require("path");
 const cors = require("cors");
+const helmet = require("helmet");
+const cookieParser = require("cookie-parser");
 require("dotenv").config();
 
 const ensureHodSchema = require("./utils/ensureHodSchema");
+const ensureAttendanceSchema = require("./utils/ensureAttendanceSchema");
+const ensureUuidSchema = require("./utils/ensureUuidSchema");
+const SessionStore = require("./utils/sessionStore");
+const sessionAuth = require("./middleware/sessionAuth");
+const checkRole = require("./middleware/checkRole");
+const { apiLimiter } = require("./middleware/rateLimiters");
+const { notFoundHandler, errorHandler } = require("./middleware/errorHandler");
 const fs = require("fs");
 
-// Format folder: serve templates as static files (no auth required)
-// Docker: ./format mounted at /app/format; local: format at project root
 const formatDir = fs.existsSync(path.join(__dirname, "format"))
   ? path.join(__dirname, "format")
   : path.join(__dirname, "..", "format");
 
-// --- Route Imports ---
 const venueRoutes = require("./routes/venueRoutes");
 const seatingRoutes = require("./routes/seatingRoutes");
 const examRoutes = require("./routes/examRoutes");
@@ -30,122 +35,112 @@ const userManagementRoutes = require("./routes/userManagementRoutes");
 const auditLogRoutes = require("./routes/auditLogRoutes");
 const ineligibilityRoutes = require("./routes/ineligibilityRoutes");
 const timetableRoutes = require("./routes/timetableRoutes");
+const attendanceRoutes = require("./routes/attendanceRoutes");
+const facultyAttendanceRoutes = require("./routes/facultyAttendanceRoutes");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// --- Middleware ---
-app.use(cors());
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ limit: "50mb", extended: true }));
+app.set("trust proxy", 1);
 
-// --- Static: format folder (Excel templates) - no auth required ---
-app.use("/format", express.static(formatDir));
+const allowedOrigins = (
+  process.env.CORS_ORIGINS ||
+  process.env.FRONTEND_URL ||
+  "http://localhost:5173"
+)
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
 
-// --- Health Check ---
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
-  });
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+  })
+);
+app.use(cookieParser());
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error("Not allowed by CORS"));
+    },
+    credentials: true,
+  })
+);
+app.use(express.json({ limit: "5mb" }));
+app.use(express.urlencoded({ limit: "5mb", extended: true }));
+app.use("/api", apiLimiter);
+
+app.use(
+  "/format",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge", "hod"]),
+  express.static(formatDir)
+);
+
+app.get("/health", (_req, res) => {
+  res.json({ status: "OK" });
 });
 
-// --- Debug Sentry (remove after testing) ---
-app.get("/debug-sentry", function (req, res) {
-  throw new Error("Sentry test error from ClassAssign!");
-});
-
-// --- Mount Routes ---
 app.use("/api/venues", venueRoutes);
 app.use("/api/seating", seatingRoutes);
 app.use("/api/exams", examRoutes);
 app.use("/api/students", studentRoutes);
 app.use("/api/import", importRouter);
 app.use("/api/faculty", facultyRoutes);
-
-// AUTH ROUTES
 app.use("/api/auth", authRoutes);
 app.use("/api/auth/microsoft", microsoftAuthRoutes);
-
-// USER MANAGEMENT (ADMIN ONLY)
 app.use("/api/users", userManagementRoutes);
-
-// AUDIT LOGS (ADMIN ONLY)
 app.use("/api/audit-logs", auditLogRoutes);
-
-// INELIGIBILITY
 app.use("/api/ineligibility", ineligibilityRoutes);
-
-// TIMETABLE
 app.use("/api/timetable", timetableRoutes);
-
-// NOTIFICATIONS
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/attendance", attendanceRoutes);
+app.use("/api/faculty-attendance", facultyAttendanceRoutes);
 
-// --- Sentry Error Handler ---
-// IMPORTANT: Must be after all routes and before other error middleware
 Sentry.setupExpressErrorHandler(app);
+app.use(notFoundHandler);
+app.use(errorHandler);
 
-// --- Error Handler ---
-app.use((err, req, res, next) => {
-  console.error('❌ Server Error:', err);
-  res.status(500).json({ 
-    error: 'Internal Server Error',
-    message: process.env.NODE_ENV === 'development' ? err.message : undefined
-  });
-});
+const { connectWithRetry } = require("./config/db");
 
-// --- 404 Handler ---
-app.use((req, res) => {
-  res.status(404).json({ 
-    error: 'Not Found',
-    path: req.path
-  });
-});
+const STARTUP_MAX_ATTEMPTS = 20;
+const STARTUP_RETRY_DELAY_MS = 3000;
 
-// --- Start Server (ensure DB has HoD migration applied) ---
 async function start() {
-  try {
-    await ensureHodSchema();
-  } catch (e) {
-    console.error("Fatal: database schema check failed. Fix DB connection or run migration 002.");
-    process.exit(1);
+  for (let attempt = 1; attempt <= STARTUP_MAX_ATTEMPTS; attempt++) {
+    try {
+      await connectWithRetry();
+      await SessionStore.connect();
+      await ensureHodSchema();
+      await ensureAttendanceSchema();
+      await ensureUuidSchema();
+      break;
+    } catch (e) {
+      const isLast = attempt === STARTUP_MAX_ATTEMPTS;
+      console.error(
+        `Startup attempt ${attempt}/${STARTUP_MAX_ATTEMPTS} failed:`,
+        e.message
+      );
+      if (isLast) {
+        console.error(
+          "Fatal: startup failed. Ensure db and redis containers are running."
+        );
+        process.exit(1);
+      }
+      await new Promise((r) => setTimeout(r, STARTUP_RETRY_DELAY_MS));
+    }
   }
 
   app.listen(PORT, () => {
-    console.log(`
-╔════════════════════════════════════════════════╗
-║                                                ║
-║   🚀 KCT Exam Seating System Server           ║
-║                                                ║
-║   Port: ${PORT}                                    ║
-║   Environment: ${process.env.NODE_ENV || 'development'}                    ║
-║   Time: ${new Date().toLocaleString()}         ║
-║                                                ║
-║   Routes:                                      ║
-║   - /api/auth (Login & SSO)                    ║
-║   - /api/users (User Management - Admin)       ║
-║   - /api/audit-logs (Audit Logs - Admin)       ║
-║   - /api/timetable (Timetable Management)      ║
-║   - /api/venues                                ║
-║   - /api/seating                               ║
-║   - /api/faculty                               ║
-║                                                ║
-╚════════════════════════════════════════════════╝
-  `);
+    console.log(`Server listening on port ${PORT} (${process.env.NODE_ENV || "development"})`);
   });
 }
 
 start();
 
-// --- Graceful Shutdown ---
-process.on('SIGTERM', () => {
-  console.log('👋 SIGTERM received, shutting down gracefully...');
-  process.exit(0);
-});
-
-process.on('SIGINT', () => {
-  console.log('\n👋 SIGINT received, shutting down gracefully...');
-  process.exit(0);
-});
+process.on("SIGTERM", () => process.exit(0));
+process.on("SIGINT", () => process.exit(0));

@@ -2,16 +2,74 @@
 const express = require("express");
 const router = express.Router();
 const SeatingPlan = require("../models/SeatingPlan");
+const AttendanceService = require("../services/attendanceService");
 const Venue = require("../models/venue");
 const Faculty = require("../models/Faculty");
 const User = require("../models/User");
 const db = require("../config/db");
+const DependencyChecks = require("../utils/dependencyChecks");
+const Api = require("../utils/apiResponse");
 const { andClause, whereClause } = require("../utils/ownerFilter");
 const sessionAuth = require("../middleware/sessionAuth");
 const checkRole = require("../middleware/checkRole");
 const auditLogger = require("../middleware/auditLogger");
+const { resolveEntity } = require("../middleware/resolvePublicId");
+const { TABLE, getPublicUuid, resolveInternalId } = require("../utils/publicId");
 
 const ownerOpts = (req) => ({ ownerUserId: req.user?.id, role: req.user?.role });
+
+async function resolveVenuesUsedIds(venuesUsed) {
+  const resolved = [];
+  for (const v of venuesUsed || []) {
+    const venueId = await resolveInternalId(TABLE.venues, v.venueId, {
+      allowLegacyNumeric: true,
+    });
+    if (!venueId) {
+      const err = new Error(`Unknown venue: ${v.venueId}`);
+      err.statusCode = 404;
+      throw err;
+    }
+    let facultyId = null;
+    if (v.facultyId != null && v.facultyId !== "") {
+      facultyId = await resolveInternalId(TABLE.faculty, v.facultyId, {
+        allowLegacyNumeric: true,
+      });
+      if (!facultyId) {
+        const err = new Error(`Unknown faculty: ${v.facultyId}`);
+        err.statusCode = 404;
+        throw err;
+      }
+    }
+    resolved.push({ ...v, venueId, facultyId });
+  }
+  return resolved;
+}
+
+function normalizeTimeParam(value) {
+  if (!value) return "";
+  const match = String(value).trim().match(/(\d{1,2}):(\d{2})/);
+  if (match) {
+    return `${match[1].padStart(2, "0")}:${match[2]}`;
+  }
+  return String(value).substring(0, 5);
+}
+
+function buildOwnerFilterForAttendance(user) {
+  if (user?.role === "faculty") {
+    // Invigilators don't own seating plans — lookup by date/session/time only.
+    return { ownerSql: "", ownerParams: [], isFacultyInvigilator: true };
+  }
+  if (user?.role === "hod") {
+    return { ownerSql: "", ownerParams: [], isFacultyInvigilator: false, isHod: true };
+  }
+  const clause = andClause(user?.role, user?.id);
+  return {
+    ownerSql: clause.sql,
+    ownerParams: clause.params,
+    isFacultyInvigilator: false,
+    isHod: false,
+  };
+}
 
 /* =====================================================
     POST: SAVE SEATING PLAN
@@ -55,14 +113,17 @@ router.post(
         });
       }
 
+      const resolvedVenues = await resolveVenuesUsedIds(venuesUsed);
+
       const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
 
-      const venueCheckPromises = venuesUsed.map(async (v) => {
+      const venueCheckPromises = resolvedVenues.map(async (v) => {
         const isAvailable = await Venue.isAvailable(
           v.venueId,
           dateOnly,
           examStartTime,
-          examEndTime
+          examEndTime,
+          connection
         );
         if (!isAvailable) {
           return {
@@ -87,7 +148,7 @@ router.post(
       }
 
       // Validate faculty allocation for BOTH AUTO and MANUAL modes
-      const facultyIds = venuesUsed
+      const facultyIds = resolvedVenues
         .map(v => v.facultyId)
         .filter(id => id != null);
 
@@ -96,12 +157,18 @@ router.post(
             `SELECT 
               f.id,
               COALESCE(f.max_classrooms, 1) AS max_classrooms,
-              COUNT(spv.id) AS current_allocation
+              COALESCE((
+                SELECT COUNT(spv.id)
+                FROM seating_plan_venues spv
+                JOIN seating_plans sp ON sp.id = spv.seating_plan_id
+                WHERE spv.faculty_id = f.id
+                  AND sp.exam_date = ?
+                  AND NOT (sp.exam_end_time <= ? OR sp.exam_start_time >= ?)
+              ), 0) AS current_allocation
              FROM faculty f
-             LEFT JOIN seating_plan_venues spv ON spv.faculty_id = f.id
              WHERE f.id = ?
              GROUP BY f.id, f.max_classrooms`,
-            [fId]
+            [dateOnly, examStartTime, examEndTime, fId]
           );
 
           if (!allocCheck.length) {
@@ -153,24 +220,28 @@ router.post(
         examEndTime,
         selectedCourses,
         students,
-        venuesUsed,
+        venuesUsed: resolvedVenues,
         facultyMode
-      }, ownerOpts(req));
+      }, ownerOpts(req), connection);
 
-      for (const v of venuesUsed) {
-        await Venue.addSession(v.venueId, dateOnly, examStartTime, examEndTime);
+      const attendanceSync = await AttendanceService.syncAssignmentsFromSeatingPlan(seatingPlanId, connection);
+
+      for (const v of resolvedVenues) {
+        await Venue.addSession(v.venueId, dateOnly, examStartTime, examEndTime, connection);
       }
 
       await connection.commit();
 
+      const uuid = await getPublicUuid(TABLE.seatingPlans, seatingPlanId);
+
       res.status(201).json({
         message: "Seating plan created successfully",
-        seatingPlanId,
-        id: seatingPlanId,
+        uuid,
         examDate: dateOnly,
         examType,
-        venuesCount: venuesUsed.length,
-        studentsCount: students?.length || 0
+        venuesCount: resolvedVenues.length,
+        studentsCount: students?.length || 0,
+        attendanceAssignmentsSynced: attendanceSync.synced,
       });
 
     } catch (err) {
@@ -191,16 +262,27 @@ router.post(
     Roles: admin, faculty_incharge, hod (hod: only plans owned by self or their faculty incharge)
 ===================================================== */
 router.delete(
-  "/delete-plan/:id",
+  "/delete-plan/:uuid",
   sessionAuth,
   checkRole(['admin', 'faculty_incharge', 'hod']),
+  resolveEntity(TABLE.seatingPlans),
   auditLogger("DELETE_SEATING_PLAN", "SeatingPlan"),
   async (req, res) => {
-    const planId = req.params.id;
+    const planId = req.internalId;
     const connection = await db.getConnection();
 
     try {
       await connection.beginTransaction();
+
+      const blockers = await DependencyChecks.seatingPlanDeleteBlockers(planId);
+      if (blockers.blocked) {
+        await connection.rollback();
+        return Api.conflict(res, blockers.code, blockers.message, blockers.details);
+      }
+      if (blockers.notFound) {
+        await connection.rollback();
+        return Api.notFound(res, "Seating plan not found");
+      }
 
       let opts = ownerOpts(req);
       if (req.user?.role === "hod") {
@@ -210,9 +292,7 @@ router.delete(
       const plan = await SeatingPlan.getPlanById(planId, opts);
       if (!plan) {
         await connection.rollback();
-        return res.status(404).json({ 
-          error: "Seating plan not found" 
-        });
+        return Api.notFound(res, "Seating plan not found");
       }
 
       const [venues] = await connection.query(
@@ -243,28 +323,28 @@ router.delete(
         }
       }
 
-      await SeatingPlan.deletePlan(planId, opts);
+      const cleanup = await AttendanceService.removeAssignmentsForSeatingPlan(planId, connection);
+
+      await SeatingPlan.deletePlan(planId, opts, connection);
 
       await connection.commit();
 
-      res.status(200).json({
-        message: "Seating plan deleted successfully",
-        id: planId,
+      return Api.success(res, "Seating plan deleted successfully", {
+        uuid: req.publicUuid,
+        attendanceRecordsRemoved: cleanup.attendanceRemoved ?? 0,
+        facultyAssignmentsRemoved: cleanup.removed ?? 0,
         deletedPlan: {
           examDate: plan.examDate,
           examType: plan.examType,
           examSession: plan.examSession,
-          venuesCount: venues.length
-        }
+          venuesCount: venues.length,
+        },
       });
 
     } catch (err) {
       await connection.rollback();
       console.error("DELETE SEATING PLAN ERROR:", err);
-      res.status(500).json({
-        error: "Failed to delete seating plan",
-        details: err.message
-      });
+      return Api.serverError(res, err, "DELETE seating plan");
     } finally {
       connection.release();
     }
@@ -303,7 +383,7 @@ router.get("/",
 ===================================================== */
 router.get("/attendance", 
   sessionAuth, 
-  checkRole(['admin', 'faculty_incharge', 'hod']),
+  checkRole(['admin', 'faculty_incharge', 'hod', 'faculty']),
   async (req, res) => {
     try {
         const { date, session, startTime, endTime, venue } = req.query;
@@ -319,23 +399,23 @@ router.get("/attendance",
         }
 
         const dateOnly = date.includes("T") ? date.split("T")[0] : date;
+        const reqStart = normalizeTimeParam(startTime);
+        const reqEnd = normalizeTimeParam(endTime);
         console.log("🗓️  Normalized date:", dateOnly);
 
-        // ✅ Step 1: Find ALL plans for this date and session (with owner filter for faculty/hod)
-        let ownerSql = "";
-        let ownerParams = [];
-        if (req.user?.role === "hod") {
+        const ownerFilter = buildOwnerFilterForAttendance(req.user);
+        let ownerSql = ownerFilter.ownerSql;
+        let ownerParams = ownerFilter.ownerParams;
+
+        if (ownerFilter.isHod) {
           const hodAllowedOwnerIds = await User.getOwnerIdsForHod(req.user.id);
           if (hodAllowedOwnerIds.length > 0) {
             const placeholders = hodAllowedOwnerIds.map(() => "?").join(",");
             ownerSql = ` AND owner_user_id IN (${placeholders})`;
             ownerParams = hodAllowedOwnerIds;
           }
-        } else {
-          const clause = andClause(req.user?.role, req.user?.id);
-          ownerSql = clause.sql;
-          ownerParams = clause.params;
         }
+
         const [plans] = await db.query(
             `SELECT id, exam_type, exam_date, exam_session, exam_start_time, exam_end_time 
              FROM seating_plans 
@@ -355,14 +435,14 @@ router.get("/attendance",
         if (plans.length === 0) {
             let fallbackWhere = "";
             let fallbackParams = [];
-            if (req.user?.role === "hod") {
+            if (ownerFilter.isHod) {
               const hodAllowedOwnerIds = await User.getOwnerIdsForHod(req.user.id);
               if (hodAllowedOwnerIds.length > 0) {
                 const placeholders = hodAllowedOwnerIds.map(() => "?").join(",");
                 fallbackWhere = ` WHERE owner_user_id IN (${placeholders})`;
                 fallbackParams = hodAllowedOwnerIds;
               }
-            } else {
+            } else if (!ownerFilter.isFacultyInvigilator) {
               const clause = whereClause(req.user?.role, req.user?.id);
               fallbackWhere = clause.sql;
               fallbackParams = clause.params;
@@ -390,15 +470,11 @@ router.get("/attendance",
         }
 
         // ✅ Step 2: Find plan matching the time slot
-        console.log(`🕐 Looking for time match: ${startTime} - ${endTime}`);
+        console.log(`🕐 Looking for time match: ${reqStart} - ${reqEnd}`);
         
         const plan = plans.find(p => {
-          const planStartRaw = p.exam_start_time ?? p.examstarttime ?? "";
-          const planEndRaw = p.exam_end_time ?? p.examendtime ?? "";
-          const planStart = String(planStartRaw).substring(0, 5);
-          const planEnd = String(planEndRaw).substring(0, 5);
-          const reqStart = String(startTime || "").substring(0, 5);
-          const reqEnd = String(endTime || "").substring(0, 5);
+          const planStart = normalizeTimeParam(p.exam_start_time ?? p.examstarttime ?? "");
+          const planEnd = normalizeTimeParam(p.exam_end_time ?? p.examendtime ?? "");
           
           console.log(`  Comparing: Plan(${planStart}-${planEnd}) vs Request(${reqStart}-${reqEnd})`);
           
@@ -409,7 +485,7 @@ router.get("/attendance",
             console.log("❌ No time match found!");
             return res.status(404).json({ 
               error: "No matching time slot found",
-              requestedTime: `${startTime} - ${endTime}`,
+              requestedTime: `${reqStart} - ${reqEnd}`,
               availableTimes: plans.map(p => ({
                 planId: p.id,
                 start: p.exam_start_time,
@@ -466,6 +542,26 @@ router.get("/attendance",
         }
 
         console.log(`✅ Matched venue: ${matchedVenue.venue_name ?? matchedVenue.venuename} (ID: ${matchedVenue.id})`);
+
+        if (ownerFilter.isFacultyInvigilator) {
+          const facultyProfile = await AttendanceService.findFacultyByUserEmail(req.user.email);
+          if (!facultyProfile) {
+            return res.status(403).json({
+              error: "No faculty profile linked to your account",
+            });
+          }
+
+          const [spvRows] = await db.query(
+            `SELECT faculty_id FROM seating_plan_venues WHERE id = ?`,
+            [matchedVenue.id]
+          );
+          const assignedFacultyId = spvRows[0]?.faculty_id ?? spvRows[0]?.facultyid;
+          if (Number(assignedFacultyId) !== Number(facultyProfile.id)) {
+            return res.status(403).json({
+              error: "You are not assigned as invigilator for this hall",
+            });
+          }
+        }
         
         const venueId = matchedVenue.id;
 
@@ -594,6 +690,7 @@ router.post("/check-faculty-availability",
       const [allFaculty] = await db.query(
         `SELECT 
           f.id,
+          f.public_uuid,
           f.name,
           f.department,
           COALESCE(f.max_classrooms, 1) AS max_classrooms,
@@ -622,7 +719,7 @@ router.post("/check-faculty-availability",
             f.is_available !== false && f.isavailable !== false;
 
           return {
-            id: f.id,
+            uuid: f.public_uuid,
             name: f.name,
             department: f.department,
             canAllocate: remaining > 0 && facultyMarkedAvailable,
@@ -661,12 +758,13 @@ router.post("/check-faculty-availability",
     Roles: admin, faculty_incharge
     ⚠️ IMPORTANT: This MUST come AFTER /attendance route!
 ===================================================== */
-router.get("/:id",
+router.get("/:uuid",
   sessionAuth,
   checkRole(['admin', 'faculty_incharge']),
+  resolveEntity(TABLE.seatingPlans, { allowLegacyNumeric: true }),
   async (req, res) => {
     try {
-      const plan = await SeatingPlan.getPlanById(req.params.id, ownerOpts(req));
+      const plan = await SeatingPlan.getPlanById(req.internalId, ownerOpts(req));
       if (!plan) {
         return res.status(404).json({ error: "Seating plan not found" });
       }

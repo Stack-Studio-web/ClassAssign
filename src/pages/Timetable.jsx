@@ -1,42 +1,14 @@
 import React, { useState, useEffect } from "react";
-import axios from "axios";
+import api from "../lib/api";
 import { TrashIcon, FunnelIcon, XMarkIcon, CalendarDaysIcon } from "@heroicons/react/24/outline";
-
-// ✅ Create axios instance with auth
-const api = axios.create({
-  baseURL: "/api",
-});
-
-api.interceptors.request.use(
-  (config) => {
-    const token = sessionStorage.getItem("authToken");
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  (error) => Promise.reject(error)
-);
-
-api.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      sessionStorage.clear();
-      window.location.href = "/login";
-    }
-    return Promise.reject(error);
-  }
-);
-
-const downloadTimetableTemplate = () => {
-  const a = document.createElement("a");
-  a.href = "/format/Timetable_Bulk_Import_Template.xlsx";
-  a.download = "Timetable_Bulk_Import_Template.xlsx";
-  a.click();
-};
+import { useToast } from "../context/ToastContext";
+import { useConfirm } from "../context/ConfirmContext";
+import { getApiError, getApiErrorTitle } from "../lib/errors";
+import { downloadTemplate } from "../lib/downloadTemplate";
 
 const Timetable = () => {
+  const toast = useToast();
+  const showConfirm = useConfirm();
   const [activeTab, setActiveTab] = useState("add");
   const [schedules, setSchedules] = useState([]);
   const [filteredSchedules, setFilteredSchedules] = useState([]);
@@ -262,14 +234,18 @@ const Timetable = () => {
       return;
     }
 
-    if (!window.confirm("Delete this schedule?")) return;
+    const ok = await showConfirm("Delete this schedule?");
+    if (!ok) return;
 
     try {
       await api.delete(`/timetable/${id}`);
       setMessage("✅ Schedule deleted");
+      toast.success("Schedule deleted.");
       fetchSchedules();
     } catch (err) {
-      setMessage("❌ Failed to delete schedule");
+      const msg = getApiError(err, "Failed to delete schedule");
+      setMessage(`❌ ${msg}`);
+      toast.error(msg, getApiErrorTitle(err, "Cannot delete schedule"));
     }
   };
 
@@ -278,7 +254,7 @@ const Timetable = () => {
     if (selectedSchedules.length === filteredSchedules.length) {
       setSelectedSchedules([]);
     } else {
-      setSelectedSchedules(filteredSchedules.map((s) => s.id));
+      setSelectedSchedules(filteredSchedules.map((s) => s.uuid));
     }
   };
 
@@ -303,20 +279,21 @@ const Timetable = () => {
       return;
     }
 
-    if (
-      !window.confirm(
-        `Delete ${selectedSchedules.length} selected schedule(s)?`
-      )
-    )
-      return;
+    const ok = await showConfirm(
+      `Delete ${selectedSchedules.length} selected schedule(s)?`
+    );
+    if (!ok) return;
 
     try {
       await api.post("/timetable/bulk-delete", { ids: selectedSchedules });
       setMessage(`✅ Deleted ${selectedSchedules.length} schedule(s)`);
+      toast.success(`Deleted ${selectedSchedules.length} schedule(s).`);
       setSelectedSchedules([]);
       fetchSchedules();
     } catch (err) {
-      setMessage("❌ Failed to delete schedules");
+      const msg = getApiError(err, "Failed to delete schedules");
+      setMessage(`❌ ${msg}`);
+      toast.error(msg, getApiErrorTitle(err, "Bulk delete failed"));
     }
   };
 
@@ -509,7 +486,7 @@ const Timetable = () => {
               </ul>
               <button
                 type="button"
-                onClick={downloadTimetableTemplate}
+                onClick={() => downloadTemplate("timetable").catch((e) => toast.error(e.message, "Download failed"))}
                 className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-sm transition-colors"
               >
                 Download Timetable Template
@@ -683,12 +660,12 @@ const Timetable = () => {
                     </tr>
                   ) : (
                     filteredSchedules.map((schedule) => (
-                      <tr key={schedule.id} className="hover:bg-gray-50/50 transition-colors">
+                      <tr key={schedule.uuid} className="hover:bg-gray-50/50 transition-colors">
                         <td className="px-4 md:px-6 py-3 md:py-4">
                           <input
                             type="checkbox"
-                            checked={selectedSchedules.includes(schedule.id)}
-                            onChange={() => toggleSelection(schedule.id)}
+                            checked={selectedSchedules.includes(schedule.uuid)}
+                            onChange={() => toggleSelection(schedule.uuid)}
                             className="w-4 h-4 cursor-pointer rounded border-gray-300"
                           />
                         </td>
@@ -715,7 +692,7 @@ const Timetable = () => {
                           {hasWriteAccess && (
                             <button
                               type="button"
-                              onClick={() => handleDelete(schedule.id)}
+                              onClick={() => handleDelete(schedule.uuid)}
                               className="p-2 rounded-xl text-red-600 hover:bg-red-50 transition-all duration-200"
                               aria-label="Delete"
                             >

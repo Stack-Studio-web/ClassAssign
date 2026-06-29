@@ -15,6 +15,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { NavLink } from "react-router-dom";
 import { useSidebar } from "../context/SidebarContext";
+import { logout } from "../lib/api";
 
 const Sidebar = () => {
   const ctx = useSidebar();
@@ -23,24 +24,19 @@ const Sidebar = () => {
   const open = ctx?.mobileMenuOpen ?? false;
   const setOpen = ctx?.setMobileMenuOpen ?? (() => {});
 
-  const user = JSON.parse(sessionStorage.getItem("user"));
+  const user = (() => {
+    try {
+      const raw = sessionStorage.getItem("user");
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  })();
   const userRole = user?.role;
 
   if (!userRole) return null;
 
-  const handleLogout = async () => {
-    try {
-      await fetch("/api/auth/logout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      });
-    } catch (error) {
-      console.error("Logout error:", error);
-    } finally {
-      sessionStorage.clear();
-      window.location.href = "/";
-    }
-  };
+  const handleLogout = () => logout();
 
   let navItems;
   if (userRole === "hod") {
@@ -63,6 +59,11 @@ const Sidebar = () => {
     }
     navItems.push({ to: "/report", label: "Report", icon: NewspaperIcon });
     if (userRole === "admin" || userRole === "faculty_incharge") {
+      navItems.push({
+        to: "/admin/attendance",
+        label: "Exam Attendance",
+        icon: UserGroupIcon,
+      });
       navItems.push({
         to: "/ineligibility/view",
         label: "Ineligibility",

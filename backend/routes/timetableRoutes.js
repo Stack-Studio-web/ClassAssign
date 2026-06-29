@@ -5,6 +5,10 @@ const multer = require("multer");
 const xlsx = require("xlsx");
 const fs = require("fs");
 const Timetable = require("../models/Timetable");
+const DependencyChecks = require("../utils/dependencyChecks");
+const Api = require("../utils/apiResponse");
+const { resolveEntity } = require("../middleware/resolvePublicId");
+const { TABLE, getPublicUuid, resolveInternalId } = require("../utils/publicId");
 const sessionAuth = require("../middleware/sessionAuth");
 const checkRole = require("../middleware/checkRole");
 const auditLogger = require("../middleware/auditLogger");
@@ -137,9 +141,11 @@ router.post("/",
         examType
       }, ownerOpts(req));
 
+      const uuid = await getPublicUuid(TABLE.timetable, id);
+
       res.status(201).json({
         message: "Schedule created successfully",
-        id
+        uuid
       });
 
     } catch (err) {
@@ -341,33 +347,29 @@ router.post("/bulk-import",
     DELETE: SINGLE SCHEDULE
     Roles: admin, faculty_incharge, hod (hod: own department only)
 ===================================================== */
-router.delete("/:id",
+router.delete("/:uuid",
   sessionAuth,
   checkRole(['admin', 'faculty_incharge', 'hod']),
+  resolveEntity(TABLE.timetable),
   auditLogger("DELETE_TIMETABLE_SCHEDULE", "Timetable"),
   async (req, res) => {
     try {
-      const { id } = req.params;
-
-      const deleted = await Timetable.deleteById(id, ownerOpts(req));
-
-      if (!deleted) {
-        return res.status(404).json({
-          error: "Schedule not found"
-        });
+      const check = await DependencyChecks.timetableDeleteBlockers(req.internalId);
+      if (check.blocked) {
+        return Api.conflict(res, check.code, check.message, check.details);
+      }
+      if (check.notFound) {
+        return Api.notFound(res, "Schedule not found");
       }
 
-      res.json({
-        message: "Schedule deleted successfully",
-        id
-      });
+      const deleted = await Timetable.deleteById(req.internalId, ownerOpts(req));
+      if (!deleted) {
+        return Api.notFound(res, "Schedule not found");
+      }
 
+      return Api.success(res, "Schedule deleted successfully", { uuid: req.publicUuid });
     } catch (err) {
-      console.error("DELETE SCHEDULE ERROR:", err);
-      res.status(500).json({
-        error: "Failed to delete schedule",
-        details: err.message
-      });
+      return Api.serverError(res, err, "DELETE timetable");
     }
   }
 );
@@ -390,7 +392,16 @@ router.post("/bulk-delete",
         });
       }
 
-      const deleted = await Timetable.deleteByIds(ids, ownerOpts(req));
+      const internalIds = [];
+      for (const raw of ids) {
+        const internalId = await resolveInternalId(TABLE.timetable, raw, { allowLegacyNumeric: true });
+        if (!internalId) {
+          return Api.notFound(res, "Not found");
+        }
+        internalIds.push(internalId);
+      }
+
+      const deleted = await Timetable.deleteByIds(internalIds, ownerOpts(req));
 
       res.json({
         message: `Deleted ${deleted} schedule(s)`,

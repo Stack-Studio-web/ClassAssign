@@ -1,6 +1,9 @@
 // src/pages/UserManagement.jsx
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import api from '../lib/api';
+import { useToast } from '../context/ToastContext';
+import { useConfirm, usePrompt } from '../context/ConfirmContext';
+import { getApiError, getApiErrorTitle } from '../lib/errors';
 import { 
   PencilIcon, 
   KeyIcon, 
@@ -10,6 +13,9 @@ import {
 } from '@heroicons/react/24/outline';
 
 const UserManagement = () => {
+  const toast = useToast();
+  const showConfirm = useConfirm();
+  const showPrompt = usePrompt();
   const [users, setUsers] = useState([]);
   const [roles, setRoles] = useState([]);
   const [stats, setStats] = useState(null);
@@ -18,6 +24,7 @@ const UserManagement = () => {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
+  const [actionLoading, setActionLoading] = useState(null);
 
   const userStr = typeof window !== 'undefined' ? sessionStorage.getItem('user') : null;
   const currentUser = userStr ? (() => { try { return JSON.parse(userStr); } catch { return null; } })() : null;
@@ -44,24 +51,10 @@ const UserManagement = () => {
     fetchStats();
   }, []);
 
-  const getAuthHeaders = () => {
-    const token = sessionStorage.getItem('authToken');
-    if (!token) return {};
-    return { Authorization: `Bearer ${token}` };
-  };
-
-  const handleAuthFailure = () => {
-    setError('Session expired. Please log in again.');
-    sessionStorage.clear();
-    window.location.href = '/login';
-  };
-
   const fetchUsers = async () => {
     try {
       setLoading(true);
-      const response = await axios.get(`${API_BASE}/users`, {
-        headers: getAuthHeaders()
-      });
+      const response = await api.get('/users');
       setUsers(response.data);
     } catch (err) {
       if (err.response?.status === 401) handleAuthFailure();
@@ -73,15 +66,8 @@ const UserManagement = () => {
   };
 
   const fetchRoles = async () => {
-    const headers = getAuthHeaders();
-    if (!headers.Authorization) {
-      setError('Not logged in. Please log in again.');
-      return [];
-    }
     try {
-      const response = await axios.get(`${API_BASE}/users/roles`, {
-        headers
-      });
+      const response = await api.get('/users/roles');
       const list = Array.isArray(response.data) ? response.data : [];
       setRoles(list);
       setError(''); // clear any previous error
@@ -98,11 +84,15 @@ const UserManagement = () => {
     }
   };
 
+  const handleAuthFailure = () => {
+    setError('Session expired. Please log in again.');
+    sessionStorage.removeItem('user');
+    window.location.href = '/login';
+  };
+
   const fetchStats = async () => {
     try {
-      const response = await axios.get(`${API_BASE}/users/stats`, {
-        headers: getAuthHeaders()
-      });
+      const response = await api.get('/users/stats');
       setStats(response.data);
     } catch (err) {
       console.error('Failed to fetch stats:', err);
@@ -111,6 +101,7 @@ const UserManagement = () => {
 
   const handleAddUser = async (e) => {
     e.preventDefault();
+    setActionLoading('add');
     try {
       const payload = {
         username: formData.username,
@@ -119,43 +110,40 @@ const UserManagement = () => {
         role_id: formData.role_id,
         department: isHod ? hodDepartment : formData.department
       };
-      await axios.post(
-        `${API_BASE}/users`,
-        payload,
-        { headers: getAuthHeaders() }
-      );
-      alert('User created successfully!');
+      await api.post('/users', payload);
+      toast.success('User created successfully.');
       setShowAddModal(false);
       const defaultRoleId = roles.length ? roles[0].id : 2;
       setFormData({ username: '', email: '', password: '', role_id: defaultRoleId, department: '' });
       fetchUsers();
       fetchStats();
     } catch (err) {
-      alert(err.response?.data?.error || 'Failed to create user');
+      toast.error(getApiError(err), getApiErrorTitle(err, 'Failed to create user'));
+    } finally {
+      setActionLoading(null);
     }
   };
 
   const handleEditUser = async (e) => {
     e.preventDefault();
+    setActionLoading('edit');
     try {
-      await axios.put(
-        `${API_BASE}/users/${editingUser.id}`,
-        {
+      await api.put(`/users/${editingUser.uuid}`, {
           username: formData.username,
           email: formData.email,
           department: formData.department,
           role_id: formData.role_id
-        },
-        { headers: getAuthHeaders() }
-      );
+        });
       
-      alert('User updated successfully!');
+      toast.success('User updated successfully.');
       setShowEditModal(false);
       setEditingUser(null);
       fetchUsers();
       fetchStats();
     } catch (err) {
-      alert(err.response?.data?.error || 'Failed to update user');
+      toast.error(getApiError(err), getApiErrorTitle(err, 'Failed to update user'));
+    } finally {
+      setActionLoading(null);
     }
   };
 
@@ -171,61 +159,56 @@ const UserManagement = () => {
     setShowEditModal(true);
   };
 
-  const handleResetPassword = async (userId) => {
-    const newPassword = prompt('Enter new password (min 6 characters):');
-    
+  const handleResetPassword = async (userUuid) => {
+    const newPassword = await showPrompt({
+      message: 'Enter new password (min 8 characters with complexity):',
+      inputType: 'password',
+      placeholder: 'New password',
+    });
     if (!newPassword) return;
-    
-    if (newPassword.length < 6) {
-      alert('Password must be at least 6 characters');
+    if (newPassword.length < 8) {
+      toast.warning('Password must meet strength requirements (8+ chars).');
       return;
     }
-
+    setActionLoading(`pwd-${userUuid}`);
     try {
-      await axios.put(
-        `${API_BASE}/users/${userId}/password`,
-        { password: newPassword },
-        { headers: getAuthHeaders() }
-      );
-      
-      alert('Password reset successfully!');
+      await api.put(`/users/${userUuid}/password`, { password: newPassword });
+      toast.success('Password reset successfully.');
     } catch (err) {
-      alert(err.response?.data?.error || 'Failed to reset password');
+      toast.error(getApiError(err), getApiErrorTitle(err, 'Failed to reset password'));
+    } finally {
+      setActionLoading(null);
     }
   };
 
-  const handleToggleActive = async (userId, isActive) => {
+  const handleToggleActive = async (userUuid, isActive) => {
+    setActionLoading(`toggle-${userUuid}`);
     try {
       const endpoint = isActive ? 'deactivate' : 'activate';
-      
-      await axios.put(
-        `${API_BASE}/users/${userId}/${endpoint}`,
-        {},
-        { headers: getAuthHeaders() }
-      );
-      
-      alert(`User ${isActive ? 'deactivated' : 'activated'} successfully!`);
+      await api.put(`/users/${userUuid}/${endpoint}`);
+      toast.success(`User ${isActive ? 'deactivated' : 'activated'} successfully.`);
       fetchUsers();
       fetchStats();
     } catch (err) {
-      alert(err.response?.data?.error || 'Failed to update user status');
+      toast.error(getApiError(err), getApiErrorTitle(err, 'Failed to update user status'));
+    } finally {
+      setActionLoading(null);
     }
   };
 
-  const handleDeleteUser = async (userId, userEmail) => {
-    if (!window.confirm(`Are you sure you want to delete user: ${userEmail}?`)) return;
-
+  const handleDeleteUser = async (userUuid, userEmail) => {
+    const ok = await showConfirm(`Are you sure you want to delete user: ${userEmail}?`);
+    if (!ok) return;
+    setActionLoading(`del-${userUuid}`);
     try {
-      await axios.delete(
-        `${API_BASE}/users/${userId}`,
-        { headers: getAuthHeaders() }
-      );
-      
-      alert('User deleted successfully!');
+      await api.delete(`/users/${userUuid}`);
+      toast.success('User deleted successfully.');
       fetchUsers();
       fetchStats();
     } catch (err) {
-      alert(err.response?.data?.error || 'Failed to delete user');
+      toast.error(getApiError(err), getApiErrorTitle(err, 'Cannot delete user'));
+    } finally {
+      setActionLoading(null);
     }
   };
 
@@ -332,8 +315,8 @@ const UserManagement = () => {
             </thead>
             <tbody className="divide-y divide-gray-200">
               {users.map((user) => (
-                <tr key={user.id} className={`hover:bg-gray-50 ${!user.is_active ? 'opacity-60' : ''}`}>
-                  <td className="px-4 py-3 text-sm">{user.id}</td>
+                <tr key={user.uuid} className={`hover:bg-gray-50 ${!user.is_active ? 'opacity-60' : ''}`}>
+                  <td className="px-4 py-3 text-sm font-mono text-xs">{user.uuid}</td>
                   <td className="px-4 py-3">
                     <div className="font-semibold text-gray-800">{user.username}</div>
                     <div className="text-xs text-gray-500">
@@ -379,7 +362,7 @@ const UserManagement = () => {
 
                       {/* Reset Password Button */}
                       <button
-                        onClick={() => handleResetPassword(user.id)}
+                        onClick={() => handleResetPassword(user.uuid)}
                         className="p-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition-colors"
                         title="Reset Password"
                       >
@@ -388,7 +371,7 @@ const UserManagement = () => {
 
                       {/* Activate/Deactivate Button */}
                       <button
-                        onClick={() => handleToggleActive(user.id, user.is_active)}
+                        onClick={() => handleToggleActive(user.uuid, user.is_active)}
                         className={`p-2 rounded-lg transition-colors ${
                           user.is_active
                             ? 'bg-yellow-500 text-white hover:bg-yellow-600'
@@ -406,7 +389,7 @@ const UserManagement = () => {
                       {/* Delete Button - Only for non-admin users */}
                       {user.role_name !== 'admin' && (
                         <button
-                          onClick={() => handleDeleteUser(user.id, user.email)}
+                          onClick={() => handleDeleteUser(user.uuid, user.email)}
                           className="p-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
                           title="Delete User"
                         >
