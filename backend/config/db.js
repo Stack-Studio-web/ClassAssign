@@ -56,6 +56,12 @@ function buildBulkInsert(sql, params) {
 }
 
 function extractRowCount(results, metadata) {
+  if (Array.isArray(results) && results.length > 0) {
+    const first = results[0];
+    if (first && typeof first === "object" && ("id" in first || "ID" in first)) {
+      return results.length;
+    }
+  }
   if (metadata && typeof metadata === "object" && metadata.rowCount != null) {
     return metadata.rowCount;
   }

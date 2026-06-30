@@ -109,14 +109,14 @@ const DependencyChecks = {
 
   async timetableDeleteBlockers(scheduleId) {
     const [rows] = await db.query(
-      `SELECT course_code, department, exam_date, exam_type FROM timetable WHERE id = ?`,
+      `SELECT course_code, department, date, exam_type FROM timetable WHERE id = ?`,
       [scheduleId]
     );
     if (!rows?.length) return { blocked: false, notFound: true };
 
     const s = rows[0];
     const courseCode = s.course_code ?? s.coursecode;
-    const examDate = s.exam_date ?? s.examdate;
+    const examDate = s.date ?? s.examdate ?? s.exam_date;
 
     const planCount = await countQuery(
       `SELECT COUNT(*) AS count FROM seating_plans sp

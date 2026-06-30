@@ -233,7 +233,7 @@ export default function Student() {
     setDeleteLoading(true);
     try {
       const res = await api.delete("/students/all");
-      const count = res.data?.deletedCount ?? 0;
+      const count = res.data?.data?.deletedCount ?? res.data?.deletedCount ?? 0;
       setMessage(`✅ Deleted all students (${count}).`);
       setDeleteByCourseCode("");
       fetchStudents();
@@ -257,7 +257,7 @@ export default function Student() {
     setDeleteLoading(true);
     try {
       const res = await api.delete(`/students/by-course/${encodeURIComponent(code)}`);
-      const count = res.data?.deletedCount ?? 0;
+      const count = res.data?.data?.deletedCount ?? res.data?.deletedCount ?? 0;
       setMessage(`✅ Deleted ${count} student(s) for course ${code}.`);
       setDeleteByCourseCode("");
       fetchStudents();
