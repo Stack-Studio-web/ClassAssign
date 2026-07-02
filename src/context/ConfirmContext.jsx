@@ -119,7 +119,7 @@ export function ConfirmProvider({ children }) {
   const promptInputRef = useRef(null);
 
   const origin =
-    typeof window !== "undefined" ? window.location.host || "localhost" : "localhost";
+    typeof window !== "undefined" ? window.location.host || "10.1.150.51" : "10.1.150.51";
 
   const closeConfirm = useCallback((result) => {
     setConfirmState(null);

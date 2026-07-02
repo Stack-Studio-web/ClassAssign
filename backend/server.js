@@ -46,7 +46,7 @@ app.set("trust proxy", 1);
 const allowedOrigins = (
   process.env.CORS_ORIGINS ||
   process.env.FRONTEND_URL ||
-  "http://localhost:5173"
+  process.env.FRONTEND_URL || `http://${process.env.API_HOST || '10.1.150.51'}:${process.env.FRONTEND_PORT || 5173}`
 )
   .split(",")
   .map((o) => o.trim())

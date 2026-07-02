@@ -38,6 +38,7 @@ function getExpoDevHost() {
 
 export function getApiBaseUrl() {
   const extra = getExtraConfig();
+  const DEFAULT_API_HOST = "10.1.150.51"; // Matches API_HOST in root .env
 
   if (extra.apiUrl) return stripTrailingSlash(extra.apiUrl);
 
@@ -67,7 +68,8 @@ export function getApiBaseUrl() {
     return `http://${devHost}:${API_PORT}`;
   }
 
-  return `http://localhost:${API_PORT}`;
+  // Fallback to centralized API_HOST from root .env
+  return `http://${DEFAULT_API_HOST}:${API_PORT}`;
 }
 
 export const BASE_URL = getApiBaseUrl();

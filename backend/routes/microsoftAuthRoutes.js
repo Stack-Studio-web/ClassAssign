@@ -12,7 +12,7 @@ const MICROSOFT_CLIENT_ID = process.env.MICROSOFT_CLIENT_ID;
 const MICROSOFT_CLIENT_SECRET = process.env.MICROSOFT_CLIENT_SECRET;
 const MICROSOFT_TENANT_ID = process.env.MICROSOFT_TENANT_ID;
 const MICROSOFT_SCOPES = ["openid", "profile", "email", "User.Read"];
-const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
+const FRONTEND_URL = process.env.FRONTEND_URL || `http://${process.env.API_HOST || '10.1.150.51'}:${process.env.FRONTEND_PORT || 5173}`;
 const AUTH_BASE_URL = `https://login.microsoftonline.com/${MICROSOFT_TENANT_ID}/oauth2/v2.0`;
 const REDIRECT_URI = `${FRONTEND_URL}/api/auth/microsoft/callback`;
 
