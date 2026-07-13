@@ -14,6 +14,22 @@
   display: none;
 }
 
+@keyframes logo-loader-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.06);
+    opacity: 0.92;
+  }
+}
+
+.logo-loader-pulse {
+  animation: logo-loader-pulse 1.6s ease-in-out infinite;
+}
+
 /* Custom print styles */
 @media print {
   @page {

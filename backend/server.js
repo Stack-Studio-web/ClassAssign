@@ -37,6 +37,9 @@ const ineligibilityRoutes = require("./routes/ineligibilityRoutes");
 const timetableRoutes = require("./routes/timetableRoutes");
 const attendanceRoutes = require("./routes/attendanceRoutes");
 const facultyAttendanceRoutes = require("./routes/facultyAttendanceRoutes");
+const facultyTransferRoutes = require("./routes/facultyTransferRoutes");
+const ensureTransferSchema = require("./utils/ensureTransferSchema");
+const ensureStudentIndexes = require("./utils/ensureStudentIndexes");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -46,7 +49,7 @@ app.set("trust proxy", 1);
 const allowedOrigins = (
   process.env.CORS_ORIGINS ||
   process.env.FRONTEND_URL ||
-  process.env.FRONTEND_URL || `http://${process.env.API_HOST || '10.1.150.51'}:${process.env.FRONTEND_PORT || 5173}`
+  "http://localhost:5173,http://127.0.0.1:5173"
 )
   .split(",")
   .map((o) => o.trim())
@@ -100,6 +103,7 @@ app.use("/api/timetable", timetableRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/attendance", attendanceRoutes);
 app.use("/api/faculty-attendance", facultyAttendanceRoutes);
+app.use("/api/faculty-transfers", facultyTransferRoutes);
 
 Sentry.setupExpressErrorHandler(app);
 app.use(notFoundHandler);
@@ -117,6 +121,8 @@ async function start() {
       await SessionStore.connect();
       await ensureHodSchema();
       await ensureAttendanceSchema();
+      await ensureTransferSchema();
+      await ensureStudentIndexes();
       await ensureUuidSchema();
       break;
     } catch (e) {

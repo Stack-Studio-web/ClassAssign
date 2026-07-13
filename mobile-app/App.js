@@ -1,20 +1,27 @@
-// App.js
-import React from "react";
-import { ActivityIndicator, View, StyleSheet, Linking } from "react-native";
+import React, { useEffect } from "react";
+import { Linking } from "react-native";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
+import * as Notifications from "expo-notifications";
 
 import { AuthProvider, useAuth } from "./src/context/AuthContext";
+import { NetworkProvider } from "./src/context/NetworkContext";
+import { ThemeProvider } from "./src/context/ThemeContext";
+import ErrorBoundary from "./src/components/ErrorBoundary";
+import LogoLoader from "./src/components/LogoLoader";
+import OfflineBanner from "./src/components/OfflineBanner";
 import LoginScreen from "./src/screens/LoginScreen";
-import HomeScreen from "./src/screens/HomeScreen";
+import ChangePasswordScreen from "./src/screens/ChangePasswordScreen";
 import FacultyDashboardScreen from "./src/screens/FacultyDashboardScreen";
 import ExamListScreen from "./src/screens/ExamListScreen";
 import AttendanceScreen from "./src/screens/AttendanceScreen";
 import AttendanceSummaryScreen from "./src/screens/AttendanceSummaryScreen";
+import TransferRequestScreen from "./src/screens/TransferRequestScreen";
+import QrScannerScreen from "./src/screens/QrScannerScreen";
+import { ALLOWED_MOBILE_ROLES } from "./src/constants";
+import { checkDeviceIntegrity } from "./src/services/securityService";
 
 const Stack = createNativeStackNavigator();
-
-const ATTENDANCE_ROLES = new Set(["faculty"]);
 
 function AuthStack() {
   return (
@@ -31,82 +38,116 @@ function FacultyStack() {
       <Stack.Screen name="ExamList" component={ExamListScreen} />
       <Stack.Screen name="Attendance" component={AttendanceScreen} />
       <Stack.Screen name="AttendanceSummary" component={AttendanceSummaryScreen} />
+      <Stack.Screen name="TransferRequest" component={TransferRequestScreen} />
+      <Stack.Screen name="QrScanner" component={QrScannerScreen} />
     </Stack.Navigator>
   );
 }
 
-function AppStack() {
+function ChangePasswordStack() {
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="Home" component={HomeScreen} />
+      <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} />
     </Stack.Navigator>
   );
 }
 
 function RootNavigator() {
-  const { user, loading } = useAuth();
+  const { user, loading, mustChangePassword, logout } = useAuth();
 
   if (loading) {
+    return <LogoLoader message="Restoring session..." />;
+  }
+
+  if (!user) {
     return (
-      <View style={styles.splash}>
-        <ActivityIndicator size="large" color="#2563EB" />
-      </View>
+      <>
+        <OfflineBanner />
+        <AuthStack />
+      </>
     );
   }
 
-  if (!user) return <AuthStack />;
-
-  if (ATTENDANCE_ROLES.has(user.role)) {
-    return <FacultyStack />;
+  if (mustChangePassword) {
+    return <ChangePasswordStack />;
   }
 
-  return <AppStack />;
+  if (!ALLOWED_MOBILE_ROLES.has(user.role)) {
+    logout();
+    return (
+      <>
+        <OfflineBanner />
+        <AuthStack />
+      </>
+    );
+  }
+
+  return (
+    <>
+      <OfflineBanner />
+      <FacultyStack />
+    </>
+  );
 }
 
 function useMicrosoftDeepLink() {
   const { loginWithMicrosoft } = useAuth();
 
-  React.useEffect(() => {
+  useEffect(() => {
     const handle = async ({ url }) => {
-      if (!url) return;
-      const match = url.match(/[?&]token=([^&]+)/);
-      if (match) {
+      if (!url || !url.includes("hallora://auth")) return;
+      const matchToken = url.match(/[?&]token=([^&]+)/);
+      const matchError = url.match(/[?&]error=([^&]+)/);
+      if (matchError) return;
+      if (matchToken) {
         try {
-          await loginWithMicrosoft(decodeURIComponent(match[1]));
-        } catch (e) {
-          console.error("Microsoft login callback error:", e);
+          await loginWithMicrosoft(decodeURIComponent(matchToken[1]));
+        } catch {
+          /* surfaced on login screen via auth state */
         }
       }
     };
 
     const sub = Linking.addEventListener("url", handle);
-    Linking.getInitialURL().then((url) => { if (url) handle({ url }); });
+    Linking.getInitialURL().then((url) => {
+      if (url) handle({ url });
+    });
     return () => sub.remove();
   }, [loginWithMicrosoft]);
 }
 
-function InnerApp() {
+function useNotificationPermission() {
+  useEffect(() => {
+    Notifications.requestPermissionsAsync().catch(() => {});
+  }, []);
+}
+
+function AppShell() {
+  const { logout } = useAuth();
   useMicrosoftDeepLink();
+  useNotificationPermission();
+
+  useEffect(() => {
+    checkDeviceIntegrity();
+  }, []);
+
   return (
-    <NavigationContainer>
-      <RootNavigator />
-    </NavigationContainer>
+    <ErrorBoundary onLogout={logout}>
+      <NavigationContainer>
+        <RootNavigator />
+      </NavigationContainer>
+    </ErrorBoundary>
   );
 }
 
 export default function App() {
   return (
-    <AuthProvider>
-      <InnerApp />
-    </AuthProvider>
+    <ThemeProvider>
+      <NetworkProvider>
+        <AuthProvider>
+          <AppShell />
+        </AuthProvider>
+      </NetworkProvider>
+    </ThemeProvider>
   );
 }
-
-const styles = StyleSheet.create({
-  splash: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "#F8FAFC",
-  },
-});

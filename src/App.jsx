@@ -21,6 +21,8 @@ import FacultyLogin from './pages/FacultyLogin';
 import FacultyDashboard from './pages/FacultyDashboard';
 import FacultyAttendance from './pages/FacultyAttendance';
 import AttendanceReports from './pages/AttendanceReports';
+import FacultyTransferRequests from './pages/FacultyTransferRequests';
+import Loader from './Components/Loader';
 
 /* ===============================
     AUTH GUARD COMPONENT
@@ -63,14 +65,7 @@ const AuthGuard = ({ children, allowedRoles = [] }) => {
   }, [navigate, location.pathname, allowedRoles]);
 
   if (isChecking) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-100">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-blue-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600 font-semibold">Loading...</p>
-        </div>
-      </div>
-    );
+    return <Loader fullPage message="Loading..." size="xl" />;
   }
   
   return children;
@@ -112,6 +107,15 @@ function App() {
         element={
           <AuthGuard allowedRoles={['faculty']}>
             <FacultyAttendance />
+          </AuthGuard>
+        }
+      />
+
+      <Route
+        path="/admin/attendance/transfers"
+        element={
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod']}>
+            <Layout><FacultyTransferRequests /></Layout>
           </AuthGuard>
         }
       />

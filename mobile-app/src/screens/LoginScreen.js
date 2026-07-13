@@ -1,5 +1,4 @@
-// src/screens/LoginScreen.js
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import {
   View,
   Text,
@@ -10,26 +9,40 @@ import {
   SafeAreaView,
   ActivityIndicator,
   Alert,
-  Linking,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import * as WebBrowser from "expo-web-browser";
 import { useAuth } from "../context/AuthContext";
-import { getMicrosoftLoginUrl } from "../services/authService";
+import { fetchMicrosoftAuthUrl, getMicrosoftRedirectUri } from "../services/authService";
+import { ApiError } from "../api/errors";
+import { useTheme } from "../context/ThemeContext";
 
-const LoginScreen = ({ navigation }) => {
-  const { login } = useAuth();
+WebBrowser.maybeCompleteAuthSession();
+
+const LoginScreen = () => {
+  const { login, loginWithMicrosoft, sessionExpired, clearSessionExpired } = useAuth();
+  const { colors } = useTheme();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [msLoading, setMsLoading] = useState(false);
   const [error, setError] = useState("");
+  const loginInFlight = useRef(false);
 
-  /* ─── Manual Login ──────────────────────────────────────── */
+  React.useEffect(() => {
+    if (sessionExpired) {
+      setError("Your session expired. Please log in again.");
+      clearSessionExpired();
+    }
+  }, [sessionExpired, clearSessionExpired]);
+
   const handleLogin = async () => {
     setError("");
-
-    // Basic client-side validation
     if (!email.trim()) {
       setError("Please enter your KCT email.");
       return;
@@ -38,132 +51,152 @@ const LoginScreen = ({ navigation }) => {
       setError("Please enter your password.");
       return;
     }
+    if (loginInFlight.current) return;
 
+    loginInFlight.current = true;
     setLoading(true);
     try {
-      const data = await login(email.trim().toLowerCase(), password);
-
-      // Faculty attendance roles go to dashboard; others use legacy home
-      if (data.user.role === "faculty") {
-        navigation?.replace("FacultyDashboard");
-      } else {
-        setError("This app is for faculty attendance login only.");
-      }
+      await login(email.trim().toLowerCase(), password);
     } catch (err) {
-      setError(err.message || "Login failed. Please try again.");
+      if (err instanceof ApiError && err.code === "RATE_LIMIT") {
+        setError("Too many login attempts. Please wait a moment.");
+      } else {
+        setError(err.message || "Login failed. Please try again.");
+      }
     } finally {
       setLoading(false);
+      loginInFlight.current = false;
     }
   };
 
-  /* ─── Microsoft SSO ─────────────────────────────────────── */
   const handleMicrosoftLogin = async () => {
+    if (msLoading) return;
+    setMsLoading(true);
+    setError("");
     try {
-      const url = getMicrosoftLoginUrl();
-      const supported = await Linking.canOpenURL(url);
-      if (supported) {
-        await Linking.openURL(url);
-      } else {
-        Alert.alert("Error", "Cannot open Microsoft login page.");
+      const authUrl = await fetchMicrosoftAuthUrl();
+      const redirectUri = getMicrosoftRedirectUri();
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
+      if (result.type === "success" && result.url) {
+        const matchToken = result.url.match(/[?&]token=([^&]+)/);
+        const matchError = result.url.match(/[?&]error=([^&]+)/);
+        if (matchError) {
+          setError(decodeURIComponent(matchError[1]));
+        } else if (matchToken) {
+          await loginWithMicrosoft(decodeURIComponent(matchToken[1]));
+        }
       }
-    } catch {
-      Alert.alert("Error", "Microsoft login unavailable.");
+    } catch (err) {
+      setError(err.message || "Microsoft login unavailable.");
+    } finally {
+      setMsLoading(false);
     }
   };
+
+  const busy = loading || msLoading;
 
   return (
-    <SafeAreaView style={styles.container}>
-      {/* Logo */}
-      <Image
-        source={require("../../assets/logo.png")}
-        style={styles.logo}
-      />
-
-      {/* Title */}
-      <Text style={styles.title}>Hallora</Text>
-      <Text style={styles.subtitle}>Smart Seating</Text>
-
-      {/* Error banner */}
-      {error ? (
-        <View style={styles.errorBox}>
-          <Ionicons name="alert-circle-outline" size={16} color="#DC2626" />
-          <Text style={styles.errorText}>{error}</Text>
-        </View>
-      ) : null}
-
-      {/* Email */}
-      <View style={[styles.inputContainer, error && !email && styles.inputError]}>
-        <Ionicons name="mail-outline" size={20} color="#666" />
-        <TextInput
-          placeholder="KCT Email"
-          placeholderTextColor="#999"
-          style={styles.input}
-          value={email}
-          onChangeText={(t) => { setEmail(t); setError(""); }}
-          autoCapitalize="none"
-          keyboardType="email-address"
-          returnKeyType="next"
-          editable={!loading}
-        />
-      </View>
-
-      {/* Password */}
-      <View style={[styles.inputContainer, error && !password && styles.inputError]}>
-        <Ionicons name="lock-closed-outline" size={20} color="#666" />
-        <TextInput
-          placeholder="Password"
-          placeholderTextColor="#999"
-          secureTextEntry={!showPassword}
-          style={styles.input}
-          value={password}
-          onChangeText={(t) => { setPassword(t); setError(""); }}
-          returnKeyType="done"
-          onSubmitEditing={handleLogin}
-          editable={!loading}
-        />
-        <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
-          <Ionicons
-            name={showPassword ? "eye-outline" : "eye-off-outline"}
-            size={22}
-            color="#666"
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+        >
+          <Image
+            source={require("../../assets/logo.png")}
+            style={styles.logo}
+            accessibilityLabel="KCT logo"
           />
-        </TouchableOpacity>
-      </View>
+          <Text style={[styles.title, { color: colors.text }]}>Hallora</Text>
+          <Text style={styles.subtitle}>Faculty Attendance</Text>
 
-      {/* Login Button */}
-      <TouchableOpacity
-        style={[styles.loginButton, loading && styles.loginButtonDisabled]}
-        onPress={handleLogin}
-        disabled={loading}
-        activeOpacity={0.85}
-      >
-        {loading ? (
-          <ActivityIndicator color="#fff" />
-        ) : (
-          <Text style={styles.loginText}>Login</Text>
-        )}
-      </TouchableOpacity>
+          {error ? (
+            <View style={styles.errorBox} accessibilityRole="alert">
+              <Ionicons name="alert-circle-outline" size={16} color="#DC2626" />
+              <Text style={styles.errorText}>{error}</Text>
+            </View>
+          ) : null}
 
-      {/* Divider */}
-      <View style={styles.dividerContainer}>
-        <View style={styles.divider} />
-        <Text style={styles.orText}>OR</Text>
-        <View style={styles.divider} />
-      </View>
+          <View style={[styles.inputContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <Ionicons name="mail-outline" size={20} color="#666" />
+            <TextInput
+              placeholder="KCT Email"
+              placeholderTextColor="#999"
+              style={[styles.input, { color: colors.text }]}
+              value={email}
+              onChangeText={(t) => { setEmail(t); setError(""); }}
+              autoCapitalize="none"
+              keyboardType="email-address"
+              returnKeyType="next"
+              editable={!busy}
+              accessibilityLabel="Email address"
+              maxFontSizeMultiplier={1.4}
+            />
+          </View>
 
-      {/* Microsoft Login */}
-      <TouchableOpacity
-        style={styles.msButton}
-        onPress={handleMicrosoftLogin}
-        disabled={loading}
-        activeOpacity={0.85}
-      >
-        <Ionicons name="logo-microsoft" size={22} color="#2563EB" />
-        <Text style={styles.msText}>Continue with Microsoft</Text>
-      </TouchableOpacity>
+          <View style={[styles.inputContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <Ionicons name="lock-closed-outline" size={20} color="#666" />
+            <TextInput
+              placeholder="Password"
+              placeholderTextColor="#999"
+              secureTextEntry={!showPassword}
+              style={[styles.input, { color: colors.text }]}
+              value={password}
+              onChangeText={(t) => { setPassword(t); setError(""); }}
+              returnKeyType="done"
+              onSubmitEditing={handleLogin}
+              editable={!busy}
+              accessibilityLabel="Password"
+              maxFontSizeMultiplier={1.4}
+            />
+            <TouchableOpacity
+              onPress={() => setShowPassword(!showPassword)}
+              accessibilityLabel={showPassword ? "Hide password" : "Show password"}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons name={showPassword ? "eye-outline" : "eye-off-outline"} size={22} color="#666" />
+            </TouchableOpacity>
+          </View>
 
-      {/* Footer */}
-      <Text style={styles.footer}>Kumaraguru College of Technology</Text>
+          <TouchableOpacity
+            style={[styles.loginButton, busy && styles.loginButtonDisabled]}
+            onPress={handleLogin}
+            disabled={busy}
+            accessibilityRole="button"
+            accessibilityLabel="Login"
+          >
+            {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.loginText}>Login</Text>}
+          </TouchableOpacity>
+
+          <View style={styles.dividerContainer}>
+            <View style={styles.divider} />
+            <Text style={styles.orText}>OR</Text>
+            <View style={styles.divider} />
+          </View>
+
+          <TouchableOpacity
+            style={[styles.msButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
+            onPress={handleMicrosoftLogin}
+            disabled={busy}
+            accessibilityRole="button"
+            accessibilityLabel="Continue with Microsoft"
+          >
+            {msLoading ? (
+              <ActivityIndicator color="#2563EB" />
+            ) : (
+              <>
+                <Ionicons name="logo-microsoft" size={22} color="#2563EB" />
+                <Text style={[styles.msText, { color: colors.text }]}>Continue with Microsoft</Text>
+              </>
+            )}
+          </TouchableOpacity>
+
+          <Text style={styles.footer}>Kumaraguru College of Technology</Text>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 };
@@ -171,30 +204,18 @@ const LoginScreen = ({ navigation }) => {
 export default LoginScreen;
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#F8FAFC",
+  flex: { flex: 1 },
+  container: { flex: 1 },
+  scrollContent: {
+    flexGrow: 1,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 25,
+    paddingBottom: 40,
   },
-  logo: {
-    width: 120,
-    height: 120,
-    resizeMode: "contain",
-    marginBottom: 20,
-  },
-  title: {
-    fontSize: 30,
-    fontWeight: "bold",
-    color: "#0F172A",
-  },
-  subtitle: {
-    fontSize: 14,
-    color: "#64748B",
-    marginTop: 6,
-    marginBottom: 35,
-  },
+  logo: { width: 120, height: 120, resizeMode: "contain", marginBottom: 20 },
+  title: { fontSize: 30, fontWeight: "bold" },
+  subtitle: { fontSize: 14, color: "#64748B", marginTop: 6, marginBottom: 35 },
   errorBox: {
     width: "100%",
     flexDirection: "row",
@@ -208,87 +229,42 @@ const styles = StyleSheet.create({
     borderColor: "#FECACA",
     gap: 8,
   },
-  errorText: {
-    color: "#DC2626",
-    fontSize: 13,
-    flex: 1,
-  },
+  errorText: { color: "#DC2626", fontSize: 13, flex: 1 },
   inputContainer: {
     width: "100%",
-    height: 55,
-    backgroundColor: "#fff",
+    minHeight: 55,
     borderRadius: 14,
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 15,
     marginBottom: 18,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
   },
-  inputError: {
-    borderColor: "#FCA5A5",
-    backgroundColor: "#FFF5F5",
-  },
-  input: {
-    flex: 1,
-    marginLeft: 10,
-    fontSize: 16,
-    color: "#0F172A",
-  },
+  input: { flex: 1, marginLeft: 10, fontSize: 16 },
   loginButton: {
     width: "100%",
-    height: 55,
+    minHeight: 55,
     backgroundColor: "#2563EB",
     borderRadius: 14,
     justifyContent: "center",
     alignItems: "center",
     marginTop: 10,
   },
-  loginButtonDisabled: {
-    backgroundColor: "#93C5FD",
-  },
-  loginText: {
-    color: "#fff",
-    fontSize: 18,
-    fontWeight: "600",
-  },
-  dividerContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginVertical: 30,
-    width: "100%",
-  },
-  divider: {
-    flex: 1,
-    height: 1,
-    backgroundColor: "#CBD5E1",
-  },
-  orText: {
-    marginHorizontal: 10,
-    color: "#64748B",
-    fontWeight: "500",
-  },
+  loginButtonDisabled: { backgroundColor: "#93C5FD" },
+  loginText: { color: "#fff", fontSize: 18, fontWeight: "600" },
+  dividerContainer: { flexDirection: "row", alignItems: "center", marginVertical: 30, width: "100%" },
+  divider: { flex: 1, height: 1, backgroundColor: "#CBD5E1" },
+  orText: { marginHorizontal: 10, color: "#64748B", fontWeight: "500" },
   msButton: {
     width: "100%",
-    height: 55,
-    backgroundColor: "#fff",
+    minHeight: 55,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "#CBD5E1",
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
+    gap: 10,
   },
-  msText: {
-    marginLeft: 10,
-    fontSize: 16,
-    color: "#0F172A",
-    fontWeight: "500",
-  },
-  footer: {
-    position: "absolute",
-    bottom: 30,
-    color: "#94A3B8",
-    fontSize: 13,
-  },
+  msText: { fontSize: 16, fontWeight: "500" },
+  footer: { marginTop: 40, color: "#94A3B8", fontSize: 13, textAlign: "center" },
 });

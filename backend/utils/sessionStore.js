@@ -89,17 +89,30 @@ const SessionStore = {
     }
   },
 
-  async setOAuthState(state, payload = "1") {
-    await getRedis().setex(`${OAUTH_STATE_PREFIX}${state}`, OAUTH_STATE_TTL_SECONDS, payload);
+  async setOAuthState(state, payload = { platform: "web" }) {
+    const body =
+      typeof payload === "string" ? payload : JSON.stringify(payload);
+    await getRedis().setex(
+      `${OAUTH_STATE_PREFIX}${state}`,
+      OAUTH_STATE_TTL_SECONDS,
+      body
+    );
   },
 
   async consumeOAuthState(state) {
-    if (!state) return false;
+    if (!state) return null;
     const key = `${OAUTH_STATE_PREFIX}${state}`;
     const val = await getRedis().get(key);
-    if (!val) return false;
+    if (!val) return null;
     await getRedis().del(key);
-    return true;
+    try {
+      const parsed = JSON.parse(val);
+      return typeof parsed === "object" && parsed !== null
+        ? parsed
+        : { platform: "web" };
+    } catch {
+      return { platform: "web" };
+    }
   },
 };
 

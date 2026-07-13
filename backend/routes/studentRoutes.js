@@ -18,19 +18,51 @@ const ownerOpts = (req) => ({ ownerUserId: req.user?.id, role: req.user?.role })
    📁 STUDENT ROUTES - Role-based: Admin sees all, Faculty sees own
 ================================ */
 
-// ✅ GET all students
+// ✅ GET students (paginated, server-side filters/search/sort)
 router.get("/", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
   try {
-    console.log('📋 GET /api/students - Fetching all students...');
-    const students = await Student.getAll(ownerOpts(req));
-    console.log(`✅ Found ${students.length} students`);
-    res.status(200).json(students);
+    const filters = {
+      page: req.query.page,
+      limit: req.query.limit,
+      search: req.query.search || "",
+      department: req.query.department || "",
+      batch: req.query.batch || "",
+      year: req.query.year || "",
+      section: req.query.section || "",
+      courseName: req.query.courseName || "",
+      courseDescription: req.query.courseDescription || "",
+      sortBy: req.query.sortBy || "regnNo",
+      sortOrder: req.query.sortOrder || "asc",
+    };
+
+    const result = await Student.listPaginated(filters, ownerOpts(req));
+    return Api.success(res, "Students", result);
   } catch (error) {
     console.error("❌ Error fetching students:", error);
-    res.status(500).json({ 
-      message: "Server error fetching students.",
-      error: error.message 
+    return Api.fromError(res, error, "Server error fetching students.");
+  }
+});
+
+// ✅ GET filter dropdown options (distinct years, departments, courses)
+router.get("/filter-options", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
+  try {
+    const options = await Student.getFilterOptions(ownerOpts(req));
+    return Api.success(res, "Student filter options", options);
+  } catch (error) {
+    return Api.fromError(res, error, "Failed to load filter options.");
+  }
+});
+
+// ✅ GET per-course student counts (for stats card)
+router.get("/course-stats", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
+  try {
+    const result = await Student.getCourseStats(ownerOpts(req), {
+      page: req.query.page,
+      limit: req.query.limit,
     });
+    return Api.success(res, "Student course stats", result);
+  } catch (error) {
+    return Api.fromError(res, error, "Failed to load course stats.");
   }
 });
 

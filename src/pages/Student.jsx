@@ -1,18 +1,37 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import api, { logout } from "../lib/api";
 import { MagnifyingGlassIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
 import { downloadTemplate } from "../lib/downloadTemplate";
+import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import {
+  useStudentsQuery,
+  useStudentFilterOptions,
+  useStudentCourseStats,
+  useStudentStatsTotal,
+  invalidateStudentsQueries,
+} from "../hooks/useStudents";
+import StudentPagination from "../Components/StudentPagination";
+import StudentTableRow from "../Components/StudentTableRow";
+import VirtualizedStudentBody from "../Components/VirtualizedStudentBody";
+import Loader from "../Components/Loader";
 
 export default function Student() {
   const toast = useToast();
   const showConfirm = useConfirm();
-  const [totalStudents, setTotalStudents] = useState(0);
-  const [students, setStudents] = useState([]);
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState("all");
   const [userRole, setUserRole] = useState(null);
+
+  // Pagination & server-side list
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [courseStatsPage, setCourseStatsPage] = useState(1);
+  const [courseStatsPageSize, setCourseStatsPageSize] = useState(12);
+  const [sortBy] = useState("studentName");
 
   // Status/Import States
   const [loading, setLoading] = useState(false);
@@ -30,12 +49,12 @@ export default function Student() {
     courseDescription: "",
     year: "",
     department: "",
+    section: "",
   });
-  const [uniqueCourseNames, setUniqueCourseNames] = useState([]);
-  const [uniqueCourseDescriptions, setUniqueCourseDescriptions] = useState([]);
 
   // Search & Sort
   const [searchQuery, setSearchQuery] = useState("");
+  const debouncedSearch = useDebouncedValue(searchQuery, 400);
   const [sortOrder, setSortOrder] = useState("asc");
 
   // Notification States
@@ -79,28 +98,63 @@ export default function Student() {
     }
   }, []);
 
-  /* ================= FETCH DATA ================= */
-  const fetchStudentStats = async () => {
-    try {
-      const res = await api.get("/students/stats");
-      setTotalStudents(res.data.totalStudents);
-    } catch (err) {
-      setTotalStudents(0);
-    }
+  const listEnabled = activeTab === "all";
+  const { data: statsTotal = 0 } = useStudentStatsTotal(true);
+  const { data: filterOptions = {} } = useStudentFilterOptions(listEnabled);
+  const { data: courseStatsData, isFetching: courseStatsFetching } = useStudentCourseStats({
+    page: courseStatsPage,
+    limit: courseStatsPageSize,
+    enabled: true,
+  });
+
+  const studentsPerCourse = courseStatsData?.courses ?? [];
+  const courseStatsPagination = courseStatsData?.pagination ?? {
+    page: courseStatsPage,
+    limit: courseStatsPageSize,
+    totalItems: 0,
+    totalPages: 0,
+    hasNext: false,
+    hasPrevious: false,
   };
 
-  const fetchStudents = async () => {
-    try {
-      const res = await api.get("/students");
-      setStudents((res.data || []).map(s => ({
-        ...s,
-        studentName: s.studentName ?? "",
-        regnNo: s.regnNo ?? ""
-      })));
-    } catch (err) {
-      setStudents([]);
-    }
+  const {
+    data: studentsPage,
+    isLoading: studentsLoading,
+    isFetching: studentsFetching,
+    isError: studentsError,
+    error: studentsQueryError,
+  } = useStudentsQuery({
+    page,
+    limit: pageSize,
+    search: debouncedSearch,
+    filters,
+    sortBy,
+    sortOrder,
+    enabled: listEnabled,
+  });
+
+  const students = studentsPage?.students ?? [];
+  const pagination = studentsPage?.pagination ?? {
+    page: 1,
+    limit: pageSize,
+    totalItems: 0,
+    totalPages: 0,
+    hasNext: false,
+    hasPrevious: false,
   };
+
+  const uniqueYears = filterOptions.years ?? [];
+  const uniqueDepartments = filterOptions.departments ?? [];
+  const uniqueCourseNames = filterOptions.courseNames ?? [];
+  const uniqueCourseDescriptions = filterOptions.courseDescriptions ?? [];
+
+  const refreshStudentData = useCallback(async () => {
+    await invalidateStudentsQueries(queryClient);
+  }, [queryClient]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, filters, sortOrder, pageSize]);
 
   const fetchCourses = async () => {
     try {
@@ -112,41 +166,14 @@ export default function Student() {
   };
 
   useEffect(() => {
-    fetchStudentStats();
-    fetchStudents();
     fetchCourses();
   }, []);
 
   useEffect(() => {
-    if (students.length > 0) {
-      const courseNames = [...new Set(students.map((s) => s.courseName))];
-      const courseDescriptions = [...new Set(students.map((s) => s.courseDescription))];
-      setUniqueCourseNames(courseNames.sort());
-      setUniqueCourseDescriptions(courseDescriptions.sort());
+    if (studentsError && studentsQueryError) {
+      toast.error(getApiError(studentsQueryError, "Failed to load students"), "Load failed");
     }
-  }, [students]);
-
-  // Dynamic year options from reg_no prefix (e.g. 23BCS001 -> "23")
-  const uniqueYears = useMemo(() => {
-    const years = new Set();
-    students.forEach((s) => {
-      const reg = (s.regnNo ?? "").trim();
-      const match = reg.match(/^(\d{2})/);
-      if (match) years.add(match[1]);
-    });
-    return Array.from(years).sort((a, b) => b.localeCompare(a));
-  }, [students]);
-
-  // Dynamic department options from reg_no (e.g. 23BCS001 -> BCS, 24BIT001 -> BIT)
-  const uniqueDepartments = useMemo(() => {
-    const depts = new Set();
-    students.forEach((s) => {
-      const reg = (s.regnNo ?? "").trim().toUpperCase();
-      const match = reg.match(/^\d{2}([A-Z]+)\d*$/);
-      if (match) depts.add(match[1]);
-    });
-    return Array.from(depts).sort();
-  }, [students]);
+  }, [studentsError, studentsQueryError, toast]);
 
   /* ================= IMPORT LOGIC ================= */
   const handleFileChange = (e) => {
@@ -174,8 +201,7 @@ export default function Student() {
       });
       setMessage(`🎉 Success! Imported records: ${response.data.inserted}`);
       setSkippedRecords(response.data.skippedRecords || []);
-      fetchStudentStats();
-      fetchStudents();
+      await refreshStudentData();
     } catch (error) {
       const errorMessage = error.response?.data?.message || "Failed to connect to the server.";
       setMessage(`❌ Error: ${errorMessage}`);
@@ -196,8 +222,7 @@ export default function Student() {
       const msg = res.data.message || res.data.data?.message || "Import undone.";
       setMessage(`✅ ${msg}`);
       toast.success(msg);
-      fetchStudents();
-      fetchStudentStats();
+      await refreshStudentData();
     } catch (err) {
       const msg = err.response?.status === 400
         ? "No student import available to undo"
@@ -208,24 +233,26 @@ export default function Student() {
   };
 
   /* ================= DELETE ================= */
-  const handleDelete = async (id) => {
-    const ok = await showConfirm("Are you sure you want to delete this student?");
-    if (!ok) return;
-    setDeletingId(id);
-    try {
-      await api.delete(`/students/${id}`);
-      setMessage("✅ Student deleted successfully");
-      toast.success("Student deleted successfully.");
-      fetchStudentStats();
-      fetchStudents();
-    } catch (err) {
-      const msg = getApiError(err, "Failed to delete the student.");
-      setMessage(`❌ ${msg}`);
-      toast.error(msg, getApiErrorTitle(err, "Cannot delete student"));
-    } finally {
-      setDeletingId(null);
-    }
-  };
+  const handleDelete = useCallback(
+    async (id) => {
+      const ok = await showConfirm("Are you sure you want to delete this student?");
+      if (!ok) return;
+      setDeletingId(id);
+      try {
+        await api.delete(`/students/${id}`);
+        setMessage("✅ Student deleted successfully");
+        toast.success("Student deleted successfully.");
+        await refreshStudentData();
+      } catch (err) {
+        const msg = getApiError(err, "Failed to delete the student.");
+        setMessage(`❌ ${msg}`);
+        toast.error(msg, getApiErrorTitle(err, "Cannot delete student"));
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [showConfirm, toast, refreshStudentData]
+  );
 
   const handleDeleteAll = async () => {
     const ok = await showConfirm("Are you sure you want to delete ALL students? This cannot be undone.");
@@ -236,8 +263,7 @@ export default function Student() {
       const count = res.data?.data?.deletedCount ?? res.data?.deletedCount ?? 0;
       setMessage(`✅ Deleted all students (${count}).`);
       setDeleteByCourseCode("");
-      fetchStudents();
-      fetchStudentStats();
+      await refreshStudentData();
     } catch (err) {
       setMessage(err.response?.data?.message || "❌ Failed to delete all students.");
     } finally {
@@ -260,8 +286,7 @@ export default function Student() {
       const count = res.data?.data?.deletedCount ?? res.data?.deletedCount ?? 0;
       setMessage(`✅ Deleted ${count} student(s) for course ${code}.`);
       setDeleteByCourseCode("");
-      fetchStudents();
-      fetchStudentStats();
+      await refreshStudentData();
     } catch (err) {
       setMessage(err.response?.data?.message || "❌ Failed to delete students by course.");
     } finally {
@@ -276,31 +301,10 @@ export default function Student() {
   };
 
   const clearFilters = () => {
-    setFilters({ courseName: "", courseDescription: "", year: "", department: "" });
+    setFilters({ courseName: "", courseDescription: "", year: "", department: "", section: "" });
     setSearchQuery("");
+    setPage(1);
   };
-
-  const filteredStudents = useMemo(() => {
-    return students
-      .filter((student) => {
-        const regnNo = (student.regnNo ?? "").trim();
-        if (filters.department && !regnNo.toUpperCase().includes(filters.department.toUpperCase())) return false;
-        if (filters.year && !regnNo.startsWith(filters.year)) return false;
-        if (filters.courseName && student.courseName !== filters.courseName) return false;
-        if (filters.courseDescription && student.courseDescription !== filters.courseDescription) return false;
-        const query = searchQuery.toLowerCase();
-        const name = (student.studentName ?? "").toLowerCase();
-        const reg = regnNo.toLowerCase();
-        if (query && !(name.includes(query) || reg.includes(query))) return false;
-
-        return true;
-      })
-      .sort((a, b) => {
-        const nameA = (a.studentName ?? "").toLowerCase();
-        const nameB = (b.studentName ?? "").toLowerCase();
-        return sortOrder === "asc" ? nameA.localeCompare(nameB) : nameB.localeCompare(nameA);
-      });
-  }, [students, filters, searchQuery, sortOrder]);
 
   /* ================= NEW: INELIGIBILITY MODAL LOGIC ================= */
   
@@ -567,20 +571,6 @@ export default function Student() {
     });
   }, [courses, notificationForm.department]);
 
-  // Count students per course (by course description/code)
-  const studentsPerCourse = useMemo(() => {
-    const map = {};
-    students.forEach((s) => {
-      const key = (s.courseDescription ?? s.course_description ?? s.courseCode ?? "").trim();
-      const name = (s.courseName ?? s.course_name ?? "").trim();
-      if (!key) return;
-      if (!map[key]) map[key] = { courseCode: key, courseName: name, count: 0 };
-      map[key].count += 1;
-      if (name && !map[key].courseName) map[key].courseName = name;
-    });
-    return Object.values(map).sort((a, b) => b.count - a.count);
-  }, [students]);
-
   const filteredIneligibilityStudents = useMemo(() => {
     if (!ineligibilitySearch) return ineligibilityData.courseStudents;
     
@@ -631,15 +621,15 @@ export default function Student() {
 
         {/* Stats: Total + Per-course count — white card like Allotment */}
         <section className="bg-white border border-gray-100 rounded-xl sm:rounded-2xl shadow-sm overflow-hidden">
-          <div className="px-4 sm:px-5 md:px-6 py-4 sm:py-5 flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-6">
-            <div className="flex items-center gap-4">
+          <div className="px-4 sm:px-5 md:px-6 py-4 sm:py-5">
+            <div className="flex flex-col sm:flex-row sm:items-start gap-4 sm:gap-6">
               <div className="rounded-xl bg-blue-600 text-white px-5 py-4 shrink-0">
                 <p className="text-xs font-semibold text-blue-100 uppercase tracking-wider">Total Students</p>
-                <p className="text-2xl sm:text-3xl font-bold mt-0.5">{totalStudents}</p>
+                <p className="text-2xl sm:text-3xl font-bold mt-0.5">{statsTotal}</p>
               </div>
-              <div className="min-w-0">
-                <p className="text-xs font-bold text-gray-800 mb-2">Students per course</p>
-                <div className="flex flex-wrap gap-2">
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-bold text-gray-800 mb-3">Students per course</p>
+                <div className="flex flex-wrap gap-2 min-h-[72px]">
                   {studentsPerCourse.length === 0 ? (
                     <span className="text-sm font-medium text-gray-500">No course data yet.</span>
                   ) : (
@@ -650,7 +640,7 @@ export default function Student() {
                       >
                         <span className="text-sm font-semibold text-gray-900">{courseCode}</span>
                         {courseName && courseName !== courseCode && (
-                          <span className="text-gray-500 text-xs truncate max-w-[100px]" title={courseName}>
+                          <span className="text-gray-500 text-xs truncate max-w-[140px]" title={courseName}>
                             ({courseName})
                           </span>
                         )}
@@ -663,6 +653,24 @@ export default function Student() {
               </div>
             </div>
           </div>
+          {courseStatsPagination.totalItems > 0 && (
+            <StudentPagination
+              page={courseStatsPagination.page}
+              pageSize={courseStatsPagination.limit}
+              totalItems={courseStatsPagination.totalItems}
+              totalPages={courseStatsPagination.totalPages}
+              hasNext={courseStatsPagination.hasNext}
+              hasPrevious={courseStatsPagination.hasPrevious}
+              onPageChange={setCourseStatsPage}
+              onPageSizeChange={(size) => {
+                setCourseStatsPageSize(size);
+                setCourseStatsPage(1);
+              }}
+              disabled={courseStatsFetching}
+              itemLabel="courses"
+              pageSizeOptions={[8, 12, 16, 24]}
+            />
+          )}
         </section>
 
         {/* TABS — match Allotment style */}
@@ -810,13 +818,13 @@ export default function Student() {
           </div>
 
           {showFilters && (
-            <div className="px-4 sm:px-5 md:px-6 py-4 bg-gray-50/80 border-b border-gray-100 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="px-4 sm:px-5 md:px-6 py-4 bg-gray-50/80 border-b border-gray-100 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
               <div>
-                <label className="text-xs font-semibold text-gray-700 mb-1 block">Year</label>
+                <label className="text-xs font-semibold text-gray-700 mb-1 block">Year / Batch</label>
                 <select name="year" value={filters.year} onChange={handleFilterChange} className="w-full h-9 px-3 rounded-lg border border-gray-200 text-sm font-medium text-gray-800 focus:ring-2 focus:ring-blue-500 outline-none bg-white">
                   <option value="">All Years</option>
                   {uniqueYears.map((y) => (
-                    <option key={y} value={y}>{y}-</option>
+                    <option key={y} value={y}>{y}</option>
                   ))}
                 </select>
               </div>
@@ -828,6 +836,16 @@ export default function Student() {
                     <option key={d} value={d}>{d}</option>
                   ))}
                 </select>
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-gray-700 mb-1 block">Section</label>
+                <input
+                  name="section"
+                  value={filters.section}
+                  onChange={handleFilterChange}
+                  placeholder="e.g. 094"
+                  className="w-full h-9 px-3 rounded-lg border border-gray-200 text-sm font-medium text-gray-800 focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+                />
               </div>
               <div>
                 <label className="text-xs font-semibold text-gray-700 mb-1 block">Course</label>
@@ -844,52 +862,73 @@ export default function Student() {
                     {uniqueCourseDescriptions.map((d) => <option key={d} value={d}>{d}</option>)}
                   </select>
                 </div>
-                <button onClick={clearFilters} className="h-9 px-3 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 font-semibold text-sm transition-colors">
+                <button type="button" onClick={clearFilters} className="h-9 px-3 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 font-semibold text-sm transition-colors">
                   Reset
                 </button>
               </div>
             </div>
           )}
 
-            <div className="overflow-x-auto">
+          {pageSize > 100 ? (
+            <VirtualizedStudentBody
+              students={students}
+              onDelete={handleDelete}
+              deletingId={deletingId}
+            />
+          ) : (
+            <div className="overflow-x-auto min-h-[480px]">
               <table className="min-w-[900px] md:min-w-full text-left">
-              <thead className="bg-gray-50 border-b border-gray-200">
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">Reg. No.</th>
-                  <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">Student Name</th>
-                  <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">Course</th>
-                  <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">Description</th>
-                  <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {filteredStudents.length > 0 ? (
-                  filteredStudents.map((s) => (
-                    <tr key={s.uuid} className="hover:bg-gray-50/50 transition-colors">
-                      <td className="px-4 py-3 text-sm font-semibold text-blue-600">{s.regnNo}</td>
-                      <td className="px-4 py-3 text-sm font-medium text-gray-800">{s.studentName ?? "—"}</td>
-                      <td className="px-4 py-3 text-sm font-medium text-gray-700">{s.courseName}</td>
-                      <td className="px-4 py-3 text-sm font-medium text-gray-600">{s.courseDescription}</td>
-                      <td className="px-4 py-3">
-                        <button
-                          onClick={() => handleDelete(s.uuid)}
-                          className="text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors"
-                        >
-                          Delete
-                        </button>
+                <thead className="bg-gray-50 border-b border-gray-200">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">Reg. No.</th>
+                    <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">Student Name</th>
+                    <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">Course</th>
+                    <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">Description</th>
+                    <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {studentsLoading && !students.length ? (
+                    <tr>
+                      <td colSpan="5" className="px-4 py-16">
+                        <Loader message="Loading students..." size="md" />
                       </td>
                     </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan="5" className="px-4 py-8 text-center text-sm font-medium text-gray-500">
-                      No students found matching the criteria.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+                  ) : students.length > 0 ? (
+                    students.map((s) => (
+                      <StudentTableRow
+                        key={s.uuid}
+                        student={s}
+                        onDelete={handleDelete}
+                        deletingId={deletingId}
+                      />
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan="5" className="px-4 py-8 text-center text-sm font-medium text-gray-500">
+                        No students found matching the criteria.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <StudentPagination
+            page={pagination.page}
+            pageSize={pagination.limit}
+            totalItems={pagination.totalItems}
+            totalPages={pagination.totalPages}
+            hasNext={pagination.hasNext}
+            hasPrevious={pagination.hasPrevious}
+            onPageChange={setPage}
+            onPageSizeChange={(size) => {
+              setPageSize(size);
+              setPage(1);
+            }}
+            disabled={studentsFetching}
+          />
         </section>
       )}
 
@@ -1041,7 +1080,7 @@ export default function Student() {
             <div className="p-6 flex-1 overflow-y-auto">
               {ineligibilityLoading ? (
                 <div className="flex items-center justify-center py-12">
-                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+                  <Loader message="Loading students..." size="md" />
                 </div>
               ) : (
                 <>

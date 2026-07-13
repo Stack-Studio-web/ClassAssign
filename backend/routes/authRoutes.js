@@ -17,7 +17,7 @@ const {
   attachAuthResponse,
   getTokenFromRequest,
 } = require("../utils/authHelpers");
-const { clearSessionCookie } = require("../utils/cookieAuth");
+const { clearSessionCookie, isMobileClient } = require("../utils/cookieAuth");
 
 router.post("/login", loginLimiter, async (req, res) => {
   try {
@@ -60,6 +60,13 @@ router.post("/login", loginLimiter, async (req, res) => {
 
     if (!passwordValid) {
       return res.status(401).json({ success: false, message: "Invalid credentials" });
+    }
+
+    if (isMobileClient(req) && user.role_name !== "faculty") {
+      return res.status(403).json({
+        success: false,
+        message: "Hallora Mobile is for faculty attendance only.",
+      });
     }
 
     if (mustChangePassword) {

@@ -17,6 +17,7 @@ const TABLE = {
   seatingPlans: "seating_plans",
   assignments: "faculty_assignments",
   attendanceSessions: "attendance_sessions",
+  facultyTransferRequests: "faculty_transfer_requests",
 };
 
 function isValidUuid(value) {

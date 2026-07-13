@@ -2,7 +2,7 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-const apiHost = process.env.API_HOST || '10.1.150.51';
+const apiHost = process.env.API_HOST || 'localhost';
 const apiPort = process.env.API_PORT || 5000;
 
 // https://vite.dev/config/

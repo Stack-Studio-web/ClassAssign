@@ -15,6 +15,7 @@ const PUBLIC_UUID_TABLES = [
   "seating_plans",
   "faculty_assignments",
   "attendance_sessions",
+  "faculty_transfer_requests",
 ];
 
 async function ensureUuidSchema() {

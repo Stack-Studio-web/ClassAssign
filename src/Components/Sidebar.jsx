@@ -12,6 +12,7 @@ import {
   CalendarDaysIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  ArrowsRightLeftIcon,
 } from "@heroicons/react/24/outline";
 import { NavLink } from "react-router-dom";
 import { useSidebar } from "../context/SidebarContext";
@@ -44,6 +45,7 @@ const Sidebar = () => {
       { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
       { to: "/report", label: "Report", icon: NewspaperIcon },
       { to: "/attendance", label: "Attendance", icon: UserGroupIcon },
+      { to: "/admin/attendance/transfers", label: "Faculty Change Requests", icon: ArrowsRightLeftIcon },
       { to: "/Hall", label: "Hall", icon: BuildingOfficeIcon },
       { to: "/users", label: "User Management", icon: UsersIcon },
     ];
@@ -63,6 +65,11 @@ const Sidebar = () => {
         to: "/admin/attendance",
         label: "Exam Attendance",
         icon: UserGroupIcon,
+      });
+      navItems.push({
+        to: "/admin/attendance/transfers",
+        label: "Faculty Change Requests",
+        icon: ArrowsRightLeftIcon,
       });
       navItems.push({
         to: "/ineligibility/view",
