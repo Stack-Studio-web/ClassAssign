@@ -8,13 +8,17 @@ export class ApiError extends Error {
   }
 }
 
-export function mapHttpError(error) {
+export function mapHttpError(error, baseUrl) {
   if (!error.response) {
     if (error.code === "ERR_CANCELED") {
       return new ApiError("Request cancelled", { code: "CANCELLED" });
     }
+    const hint =
+      baseUrl && (baseUrl.includes("localhost") || baseUrl.includes("127.0.0.1"))
+        ? " On a physical device, localhost refers to the phone — use your PC's LAN IP or leave EXPO_PUBLIC_API_URL unset for auto-detection."
+        : " Ensure the backend is running, Docker port 5000 is exposed, and the phone is on the same Wi‑Fi as your PC.";
     return new ApiError(
-      error.message || "Network error — check your connection and try again.",
+      (error.message || "Network error") + hint,
       { code: "NETWORK" }
     );
   }

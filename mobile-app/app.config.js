@@ -8,11 +8,18 @@ module.exports = {
   expo: {
     ...app.expo,
 
+    plugins: [
+      "expo-font",
+      "expo-web-browser",
+      ...(app.expo.plugins || []),
+    ],
+
     android: {
       ...(app.expo.android || {}),
       package: process.env.ANDROID_PACKAGE || "com.kct.hallora",
       versionCode: Number(process.env.ANDROID_VERSION_CODE) || 1,
-      usesCleartextTraffic: !isProduction && process.env.EXPO_PUBLIC_ALLOW_HTTP === "true",
+      usesCleartextTraffic:
+        !isProduction || process.env.EXPO_PUBLIC_ALLOW_HTTP === "true",
     },
 
     extra: {

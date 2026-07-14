@@ -40,13 +40,13 @@ api.interceptors.request.use(
     }
     return config;
   },
-  (error) => Promise.reject(mapHttpError(error))
+  (error) => Promise.reject(mapHttpError(error, BASE_URL))
 );
 
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
-    const mapped = mapHttpError(error);
+    const mapped = mapHttpError(error, BASE_URL);
 
     if (mapped.code === "UNAUTHORIZED" && onUnauthorized) {
       await onUnauthorized(mapped);
@@ -62,7 +62,7 @@ async function executeWithRetry(requestFn, { retries = API_RETRY_ATTEMPTS } = {}
     try {
       return await requestFn();
     } catch (error) {
-      lastError = error instanceof ApiError ? error : mapHttpError(error);
+      lastError = error instanceof ApiError ? error : mapHttpError(error, BASE_URL);
       if (attempt >= retries || !isRetryableError(lastError)) {
         throw lastError;
       }

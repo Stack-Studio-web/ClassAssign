@@ -15,6 +15,7 @@ const SessionStore = require("./utils/sessionStore");
 const sessionAuth = require("./middleware/sessionAuth");
 const checkRole = require("./middleware/checkRole");
 const { apiLimiter } = require("./middleware/rateLimiters");
+const { registerBodyParsers } = require("./middleware/requestBody");
 const { notFoundHandler, errorHandler } = require("./middleware/errorHandler");
 const fs = require("fs");
 
@@ -73,8 +74,10 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json({ limit: "5mb" }));
-app.use(express.urlencoded({ limit: "5mb", extended: true }));
+
+// Body parsers MUST run before /api routes and rate limiters (see middleware/requestBody.js)
+registerBodyParsers(app);
+
 app.use("/api", apiLimiter);
 
 app.use(
@@ -141,8 +144,10 @@ async function start() {
     }
   }
 
-  app.listen(PORT, () => {
-    console.log(`Server listening on port ${PORT} (${process.env.NODE_ENV || "development"})`);
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(
+      `Server listening on 0.0.0.0:${PORT} (${process.env.NODE_ENV || "development"})`
+    );
   });
 }
 

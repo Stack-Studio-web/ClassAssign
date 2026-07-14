@@ -21,12 +21,22 @@ const { clearSessionCookie, isMobileClient } = require("../utils/cookieAuth");
 
 router.post("/login", loginLimiter, async (req, res) => {
   try {
-    const { email: rawEmail, password } = req.body;
+    const loginBody = req.body && typeof req.body === "object" ? req.body : {};
+    const { email: rawEmail, password } = loginBody;
+
+    if (process.env.BODY_PARSER_DEBUG === "true") {
+      console.log("[LOGIN_DEBUG] content-type:", req.headers["content-type"], "body:", loginBody);
+    }
 
     if (!rawEmail || !password) {
       return res.status(400).json({
         success: false,
+        code: "VALIDATION_ERROR",
         message: "Email and password are required",
+        hint:
+          !String(req.headers["content-type"] || "").includes("json")
+            ? "Send Content-Type: application/json with a JSON body"
+            : undefined,
       });
     }
 
