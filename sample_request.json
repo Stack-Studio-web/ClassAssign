@@ -1,0 +1,51 @@
+{
+  "venues": [
+    {
+      "venue_id": "V1",
+      "venue_name": "Main Hall A",
+      "benches_row": 5,
+      "benches_col": 4,
+      "bench_config": [2, 2, 2, 2]
+    },
+    {
+      "venue_id": "V2",
+      "venue_name": "Annex Room B",
+      "benches_row": 4,
+      "benches_col": 3,
+      "bench_config": [2, 3, 2]
+    }
+  ],
+  "students": [
+    { "regn_no": "STU001", "course_code": "CS101", "department": "CSE" },
+    { "regn_no": "STU002", "course_code": "CS101", "department": "CSE" },
+    { "regn_no": "STU003", "course_code": "CS101", "department": "CSE" },
+    { "regn_no": "STU004", "course_code": "CS101", "department": "CSE" },
+    { "regn_no": "STU005", "course_code": "CS101", "department": "CSE" },
+    { "regn_no": "STU006", "course_code": "CS101", "department": "CSE" },
+    { "regn_no": "STU007", "course_code": "CS101", "department": "CSE" },
+    { "regn_no": "STU008", "course_code": "CS101", "department": "CSE" },
+    { "regn_no": "STU009", "course_code": "CS101", "department": "CSE" },
+    { "regn_no": "STU010", "course_code": "CS101", "department": "CSE" },
+    { "regn_no": "STU011", "course_code": "CS101", "department": "CSE" },
+    { "regn_no": "STU012", "course_code": "CS101", "department": "CSE" },
+    { "regn_no": "STU013", "course_code": "EC201", "department": "ECE" },
+    { "regn_no": "STU014", "course_code": "EC201", "department": "ECE" },
+    { "regn_no": "STU015", "course_code": "EC201", "department": "ECE" },
+    { "regn_no": "STU016", "course_code": "EC201", "department": "ECE" },
+    { "regn_no": "STU017", "course_code": "EC201", "department": "ECE" },
+    { "regn_no": "STU018", "course_code": "EC201", "department": "ECE" },
+    { "regn_no": "STU019", "course_code": "EC201", "department": "ECE" },
+    { "regn_no": "STU020", "course_code": "EC201", "department": "ECE" },
+    { "regn_no": "STU021", "course_code": "EC201", "department": "ECE" },
+    { "regn_no": "STU022", "course_code": "ME301", "department": "MECH" },
+    { "regn_no": "STU023", "course_code": "ME301", "department": "MECH" },
+    { "regn_no": "STU024", "course_code": "ME301", "department": "MECH" },
+    { "regn_no": "STU025", "course_code": "ME301", "department": "MECH" },
+    { "regn_no": "STU026", "course_code": "ME301", "department": "MECH" },
+    { "regn_no": "STU027", "course_code": "ME301", "department": "MECH" },
+    { "regn_no": "STU028", "course_code": "ME301", "department": "MECH" },
+    { "regn_no": "STU029", "course_code": "ME301", "department": "MECH" },
+    { "regn_no": "STU030", "course_code": "ME301", "department": "MECH" }
+  ],
+  "allow_adjacent_override": false
+}

@@ -1,0 +1,23 @@
+# Virtualenv
+Include/
+Lib/
+Scripts/
+pyvenv.cfg
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+.env
+.env.*
