@@ -5,6 +5,7 @@ const xlsx = require("xlsx");
 const fs = require("fs");
 
 const Student = require("../models/Student");
+const Batch = require("../models/Batch");
 const Faculty = require("../models/Faculty");
 const Venue = require("../models/venue");
 const sessionAuth = require("../middleware/sessionAuth");
@@ -13,9 +14,14 @@ const { importLimiter } = require("../middleware/rateLimiters");
 const { MAX_UPLOAD_BYTES, validateUploadedFile } = require("../utils/uploadValidation");
 const Api = require("../utils/apiResponse");
 const DependencyChecks = require("../utils/dependencyChecks");
+const { resolveInternalId } = require("../utils/publicId");
+const db = require("../config/db");
+const {
+  assertSemesterMutableByBatchInternalId,
+} = require("../utils/semesterGuards");
 
 const router = express.Router();
-const ownerOpts = (req) => ({ ownerUserId: req.user?.id, role: req.user?.role });
+const { ownerOpts } = require("../utils/rbac");
 const upload = multer({
   dest: "uploads/",
   limits: { fileSize: MAX_UPLOAD_BYTES },
@@ -37,8 +43,73 @@ let lastFacultyImport = {
 };
 
 let lastStudentImport = {
-  insertedIds: []
+  batchId: null,
+  insertedIds: [],
+  sessionId: null,
 };
+
+function cellStr(value) {
+  if (value == null || value === "") return "";
+  return String(value).trim();
+}
+
+function parseStudentRows(sheet) {
+  const data = xlsx.utils.sheet_to_json(sheet);
+  const valid = [];
+  const skipped = [];
+
+  for (const row of data) {
+    const parsed = {
+      regnNo: cellStr(row["Regn. No."]),
+      studentName: cellStr(row["Student Name"]),
+      courseDescription: cellStr(row["Course Description"]),
+      courseName: cellStr(row["Course Name"]),
+      email: cellStr(row["Email"]) || null,
+    };
+    const desc = parsed.courseDescription;
+    if (!parsed.regnNo || !desc) {
+      skipped.push({ ...parsed, reason: "Missing registration number or course description" });
+      continue;
+    }
+    if (desc.endsWith("L") || desc.includes("L-R21") || desc.includes("MENTOR")) {
+      skipped.push({ ...parsed, reason: "Lab or mentor row excluded" });
+      continue;
+    }
+    valid.push(parsed);
+  }
+  return { valid, skipped };
+}
+
+async function resolveBatchId(batchUuid) {
+  if (!batchUuid) return null;
+  return resolveInternalId("batches", batchUuid);
+}
+
+async function assertBatchAccess(batchInternalId, req, res) {
+  if (!batchInternalId) return false;
+  const batchRow = await Batch.getAccessRowByInternalId(batchInternalId);
+  if (!batchRow) {
+    res.status(404).json({ message: "Batch not found" });
+    return false;
+  }
+  if (!Batch.canAccess(batchRow, ownerOpts(req))) {
+    res.status(403).json({ message: "You do not have access to this batch." });
+    return false;
+  }
+  return true;
+}
+
+async function getBatchAcademicContext(batchInternalId) {
+  const [rows] = await db.query(
+    `SELECT b.id AS batch_id, b.semester_id, s.academic_year_id
+     FROM batches b
+     JOIN semesters s ON s.id = b.semester_id
+     WHERE b.id = ?
+     LIMIT 1`,
+    [batchInternalId]
+  );
+  return rows[0] ?? null;
+}
 
 // ✅ NEW: Track venue imports for undo
 let lastVenueImport = {
@@ -50,8 +121,21 @@ let lastVenueImport = {
 ===================================================== */
 router.delete("/delete-all-students", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
   try {
-    await Student.deleteAll(ownerOpts(req));
-    res.json({ message: "Successfully deleted all student records." });
+    const batchInternalId = await resolveBatchId(req.query.batchId);
+    if (!batchInternalId) {
+      return res.status(400).json({ message: "batchId query parameter is required." });
+    }
+    if (!(await assertBatchAccess(batchInternalId, req, res))) return;
+    if (!(await assertSemesterMutableByBatchInternalId(batchInternalId, res))) return;
+    const ids = await Student.getIdsInBatch(batchInternalId, ownerOpts(req));
+    const blocked = await DependencyChecks.studentIdsWithBlockers(ids);
+    if (blocked.length > 0) {
+      return res.status(409).json({
+        message: `${blocked.length} student(s) in this batch have seating or attendance dependencies.`,
+      });
+    }
+    const deletedCount = await Student.deleteAll(ownerOpts(req), batchInternalId);
+    res.json({ message: `Deleted ${deletedCount} student(s) in batch.`, deletedCount });
   } catch (error) {
     res.status(500).json({
       message: "Server error during student deletion.",
@@ -61,7 +145,67 @@ router.delete("/delete-all-students", sessionAuth, checkRole(["admin", "faculty_
 });
 
 /* =====================================================
-   IMPORT STUDENTS FROM EXCEL
+   PREVIEW STUDENT IMPORT (batch-scoped)
+===================================================== */
+router.post(
+  "/preview-students",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge"]),
+  upload.single("file"),
+  async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ message: "No file uploaded." });
+      if (!assertValidUpload(req, res)) return;
+
+      const batchInternalId = await resolveBatchId(req.body?.batchId);
+      if (!batchInternalId) {
+        return res.status(400).json({ message: "batchId is required." });
+      }
+      if (!(await assertBatchAccess(batchInternalId, req, res))) return;
+      if (!(await assertSemesterMutableByBatchInternalId(batchInternalId, res))) return;
+
+      const workbook = xlsx.readFile(req.file.path);
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const { valid, skipped } = parseStudentRows(sheet);
+      const existing = await Student.getBatchDuplicateKeys(batchInternalId, ownerOpts(req));
+      const duplicates = [];
+      const toInsert = [];
+
+      for (const row of valid) {
+        const key = `${String(row.regnNo).toLowerCase()}::${String(row.courseDescription).toLowerCase()}`;
+        if (existing.has(key)) {
+          duplicates.push({ ...row, reason: "Already exists in this batch" });
+        } else {
+          toInsert.push(row);
+        }
+      }
+
+      const batch = await Batch.getByInternalId(batchInternalId);
+      return res.json({
+        batch,
+        existingCount: await Student.countInBatch(batchInternalId, ownerOpts(req)),
+        validCount: toInsert.length,
+        duplicateCount: duplicates.length,
+        skippedCount: skipped.length,
+        preview: toInsert.slice(0, 50),
+        duplicates: duplicates.slice(0, 50),
+        skippedRecords: skipped.slice(0, 50),
+      });
+    } catch (error) {
+      console.error("STUDENT PREVIEW ERROR:", error);
+      const detail = error?.message || "Unknown error";
+      res.status(400).json({
+        message: `Preview failed: ${detail}`,
+        error: detail,
+      });
+    } finally {
+      if (req.file) fs.unlink(req.file.path, () => {});
+    }
+  }
+);
+
+/* =====================================================
+   IMPORT STUDENTS FROM EXCEL (batch-scoped)
 ===================================================== */
 router.post("/import-students", sessionAuth, checkRole(["admin", "faculty_incharge"]), importLimiter, upload.single("file"), async (req, res) => {
   try {
@@ -70,52 +214,140 @@ router.post("/import-students", sessionAuth, checkRole(["admin", "faculty_inchar
     }
     if (!assertValidUpload(req, res)) return;
 
+    const batchInternalId = await resolveBatchId(req.body?.batchId);
+    if (!batchInternalId) {
+      return res.status(400).json({ message: "batchId is required. Select Academic Year, Semester, and Batch." });
+    }
+    if (!(await assertBatchAccess(batchInternalId, req, res))) return;
+    if (!(await assertSemesterMutableByBatchInternalId(batchInternalId, res))) return;
+
+    const importMode = String(req.body?.importMode || "append").toLowerCase();
+    if (!["append", "replace"].includes(importMode)) {
+      return res.status(400).json({ message: "importMode must be append or replace." });
+    }
+
+    const existingCount = await Student.countInBatch(batchInternalId, ownerOpts(req));
+    if (existingCount > 0 && importMode === "append" && req.body?.confirmAppend !== "true") {
+      return res.status(409).json({
+        code: "BATCH_NOT_EMPTY",
+        message: "Batch already contains students. Confirm append or choose replace.",
+        existingCount,
+      });
+    }
+
     const workbook = xlsx.readFile(req.file.path);
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const data = xlsx.utils.sheet_to_json(sheet);
+    const { valid, skipped } = parseStudentRows(sheet);
 
-    const formattedData = data
-      .map(row => ({
-        regnNo: row["Regn. No."]?.trim(),
-        studentName: row["Student Name"]?.trim(),
-        courseDescription: row["Course Description"]?.trim(),
-        courseName: row["Course Name"]?.trim(),
-        email: row["Email"]?.trim() || null
-      }))
-      .filter(row => {
-        const desc = row.courseDescription;
-        return (
-          row.regnNo &&
-          desc &&
-          !desc.endsWith("L") &&
-          !desc.includes("L-R21") &&
-          !desc.includes("MENTOR")
-        );
-      });
-
-    if (!formattedData.length) {
+    if (!valid.length) {
       return res.status(400).json({
-        message: "No valid student records found."
+        message: "No valid student records found.",
+        skippedRecords: skipped,
       });
     }
 
-    lastStudentImport = { insertedIds: [] };
-
-    for (const s of formattedData) {
-      const insertId = await Student.insertOne(s, ownerOpts(req));
-      lastStudentImport.insertedIds.push(insertId);
+    if (importMode === "replace" && existingCount > 0) {
+      const ids = await Student.getIdsInBatch(batchInternalId, ownerOpts(req));
+      const blocked = await DependencyChecks.studentIdsWithBlockers(ids);
+      if (blocked.length > 0) {
+        return res.status(409).json({
+          message: `Cannot replace batch: ${blocked.length} student(s) have seating or attendance dependencies.`,
+        });
+      }
+      await Student.deleteAll(ownerOpts(req), batchInternalId);
     }
+
+    const existing = importMode === "append"
+      ? await Student.getBatchDuplicateKeys(batchInternalId, ownerOpts(req))
+      : new Set();
+    const insertedIds = [];
+    const duplicates = [];
+
+    const batchCtx = await getBatchAcademicContext(batchInternalId);
+    const batchAccess = await Batch.getAccessRowByInternalId(batchInternalId);
+    const scopedOpts = {
+      ...ownerOpts(req),
+      department: req.user?.department ?? batchAccess?.department ?? null,
+      academicYearId: batchCtx?.academic_year_id ?? null,
+      semesterId: batchCtx?.semester_id ?? null,
+    };
+
+    for (const s of valid) {
+      const key = `${String(s.regnNo).toLowerCase()}::${String(s.courseDescription).toLowerCase()}`;
+      if (existing.has(key)) {
+        duplicates.push(s);
+        continue;
+      }
+      const insertId = await Student.insertOne({ ...s, batchId: batchInternalId }, scopedOpts);
+      insertedIds.push(insertId);
+      existing.add(key);
+    }
+
+    let sessionId = null;
+    if (insertedIds.length) {
+      const [sessionResult] = await db.query(
+        `INSERT INTO student_import_sessions (batch_id, import_mode, inserted_count, skipped_count, imported_by)
+         VALUES (?, ?, ?, ?, ?)
+         RETURNING id`,
+        [
+          batchInternalId,
+          importMode,
+          insertedIds.length,
+          skipped.length + duplicates.length,
+          req.user?.id ?? null,
+        ]
+      );
+      sessionId = sessionResult?.insertId ?? sessionResult?.[0]?.id ?? null;
+      if (!sessionId) {
+        throw new Error("Failed to record import session.");
+      }
+      for (const sid of insertedIds) {
+        if (!sid) {
+          throw new Error("Failed to insert one or more student records.");
+        }
+        await db.query(
+          `INSERT INTO student_import_session_rows (session_id, student_id) VALUES (?, ?) RETURNING session_id`,
+          [sessionId, sid]
+        );
+      }
+    }
+
+    lastStudentImport = {
+      batchId: batchInternalId,
+      insertedIds,
+      sessionId,
+    };
 
     res.json({
       message: "Students imported successfully",
-      inserted: lastStudentImport.insertedIds.length
+      inserted: insertedIds.length,
+      duplicates: duplicates.length,
+      skipped: skipped.length,
+      skippedRecords: skipped,
+      duplicateRecords: duplicates,
+      importMode,
     });
 
   } catch (error) {
     console.error("STUDENT IMPORT ERROR:", error);
-    res.status(500).json({
-      message: "Server error during student import.",
-      error: error.message
+    if (error?.code === "23503") {
+      return res.status(409).json({
+        message: "Cannot import: batch or related academic record was removed.",
+        error: error.message,
+      });
+    }
+    if (error?.code === "23505") {
+      return res.status(409).json({
+        message: "Duplicate student record detected during import.",
+        error: error.message,
+      });
+    }
+    const detail = error?.message || "Unknown error";
+    const isValidation =
+      /required|invalid|must be|no valid|failed to insert|failed to record/i.test(detail);
+    return res.status(isValidation ? 400 : 500).json({
+      message: isValidation ? detail : `Import failed: ${detail}`,
+      error: detail,
     });
   } finally {
     if (req.file) fs.unlink(req.file.path, () => {});
@@ -411,16 +643,25 @@ router.get("/last-student-import", sessionAuth, checkRole(["admin", "faculty_inc
 
 router.post("/undo-student-import", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
   try {
-    if (!lastStudentImport.insertedIds.length) {
+    const batchInternalId = await resolveBatchId(req.body?.batchId);
+    if (
+      !lastStudentImport.insertedIds.length ||
+      (batchInternalId && lastStudentImport.batchId !== batchInternalId)
+    ) {
       return res.status(400).json({
-        message: "No student import to undo"
+        message: "No student import to undo for this batch"
       });
+    }
+    if (batchInternalId && !(await assertBatchAccess(batchInternalId, req, res))) return;
+    const effectiveBatchId = batchInternalId || lastStudentImport.batchId;
+    if (effectiveBatchId && !(await assertSemesterMutableByBatchInternalId(effectiveBatchId, res))) {
+      return;
     }
 
     await Student.deleteByIds(lastStudentImport.insertedIds, ownerOpts(req));
 
     const count = lastStudentImport.insertedIds.length;
-    lastStudentImport = { insertedIds: [] };
+    lastStudentImport = { batchId: null, insertedIds: [], sessionId: null };
 
     res.json({
       message: `Undo successful. Removed ${count} students.`

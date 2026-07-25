@@ -3,6 +3,7 @@ import Sidebar from "./Sidebar";
 import DashboardNavbar from "./DashboardNavbar";
 import { SidebarProvider, useSidebar } from "../context/SidebarContext";
 import { AcademicSessionProvider } from "../context/AcademicSessionContext";
+import { AcademicContextProvider } from "../context/AcademicContext";
 
 const LayoutMain = ({ children }) => {
   const { collapsed } = useSidebar();
@@ -26,13 +27,15 @@ const Layout = ({ children }) => {
   return (
     <SidebarProvider>
       <AcademicSessionProvider>
-        <div className="flex min-h-screen flex-col bg-gray-50">
-          <DashboardNavbar />
-          <div className="flex flex-1 pt-14 min-h-0">
-            <Sidebar />
-            <LayoutMain>{children}</LayoutMain>
+        <AcademicContextProvider>
+          <div className="flex min-h-screen flex-col bg-gray-50">
+            <DashboardNavbar />
+            <div className="flex flex-1 pt-14 min-h-0">
+              <Sidebar />
+              <LayoutMain>{children}</LayoutMain>
+            </div>
           </div>
-        </div>
+        </AcademicContextProvider>
       </AcademicSessionProvider>
     </SidebarProvider>
   );

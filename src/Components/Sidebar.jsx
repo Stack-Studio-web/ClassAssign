@@ -13,10 +13,54 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   ArrowsRightLeftIcon,
+  AcademicCapIcon,
+  RectangleStackIcon,
+  TableCellsIcon,
 } from "@heroicons/react/24/outline";
 import { NavLink } from "react-router-dom";
 import { useSidebar } from "../context/SidebarContext";
 import { logout } from "../lib/api";
+
+const ADMIN_NAV = [
+  { to: "/allotment", label: "Dashboard", icon: ComputerDesktopIcon },
+  { to: "/student/academic", label: "Academic Management", icon: CalendarDaysIcon },
+  { to: "/student/manage", label: "Student Management", icon: UserGroupIcon },
+  { to: "/student/batches", label: "Batch Management", icon: RectangleStackIcon },
+  { to: "/student/browser", label: "Student Browser", icon: TableCellsIcon },
+  { to: "/mentor/import", label: "Mentor Management", icon: UsersIcon },
+  { to: "/faculty", label: "Faculty Management", icon: UserPlusIcon },
+  { to: "/report", label: "Reports", icon: NewspaperIcon },
+  { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
+  { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
+  { to: "/admin/attendance", label: "Exam Attendance", icon: UserGroupIcon },
+  { to: "/admin/attendance/transfers", label: "Faculty Change Requests", icon: ArrowsRightLeftIcon },
+  { to: "/ineligibility/view", label: "Ineligibility", icon: ExclamationTriangleIcon },
+  { to: "/users", label: "User Management", icon: UsersIcon },
+  { to: "/logs", label: "Logs", icon: NewspaperIcon },
+];
+
+const FACULTY_NAV = [
+  { to: "/allotment", label: "Allotment", icon: ComputerDesktopIcon },
+  { to: "/student/academic", label: "Academic Context", icon: AcademicCapIcon },
+  { to: "/student/batches", label: "Batch Management", icon: RectangleStackIcon },
+  { to: "/mentor/import", label: "Mentor Management", icon: UsersIcon },
+  { to: "/report", label: "Reports", icon: NewspaperIcon },
+  { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
+  { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
+  { to: "/admin/attendance", label: "Exam Attendance", icon: UserGroupIcon },
+  { to: "/admin/attendance/transfers", label: "Faculty Change Requests", icon: ArrowsRightLeftIcon },
+  { to: "/ineligibility/view", label: "Ineligibility", icon: ExclamationTriangleIcon },
+];
+
+const HOD_NAV = [
+  { to: "/student/browser", label: "Student Browser", icon: TableCellsIcon },
+  { to: "/report", label: "Reports", icon: NewspaperIcon },
+  { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
+  { to: "/attendance", label: "Attendance", icon: UserGroupIcon },
+  { to: "/admin/attendance/transfers", label: "Faculty Change Requests", icon: ArrowsRightLeftIcon },
+  { to: "/Hall", label: "Hall", icon: BuildingOfficeIcon },
+  { to: "/users", label: "User Management", icon: UsersIcon },
+];
 
 const Sidebar = () => {
   const ctx = useSidebar();
@@ -41,51 +85,15 @@ const Sidebar = () => {
 
   let navItems;
   if (userRole === "hod") {
-    navItems = [
-      { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
-      { to: "/report", label: "Report", icon: NewspaperIcon },
-      { to: "/attendance", label: "Attendance", icon: UserGroupIcon },
-      { to: "/admin/attendance/transfers", label: "Faculty Change Requests", icon: ArrowsRightLeftIcon },
-      { to: "/Hall", label: "Hall", icon: BuildingOfficeIcon },
-      { to: "/users", label: "User Management", icon: UsersIcon },
-    ];
+    navItems = HOD_NAV;
+  } else if (userRole === "admin") {
+    navItems = ADMIN_NAV;
   } else {
-    navItems = [
-      { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
-      { to: "/student", label: "Student", icon: UserGroupIcon },
-      { to: "/faculty", label: "Faculty", icon: UserPlusIcon },
-    ];
-    navItems.push({ to: "/timetable", label: "Timetable", icon: CalendarDaysIcon });
-    if (userRole === "admin" || userRole === "faculty_incharge") {
-      navItems.push({ to: "/allotment", label: "Allotment", icon: ComputerDesktopIcon });
-    }
-    navItems.push({ to: "/report", label: "Report", icon: NewspaperIcon });
-    if (userRole === "admin" || userRole === "faculty_incharge") {
-      navItems.push({
-        to: "/admin/attendance",
-        label: "Exam Attendance",
-        icon: UserGroupIcon,
-      });
-      navItems.push({
-        to: "/admin/attendance/transfers",
-        label: "Faculty Change Requests",
-        icon: ArrowsRightLeftIcon,
-      });
-      navItems.push({
-        to: "/ineligibility/view",
-        label: "Ineligibility",
-        icon: ExclamationTriangleIcon,
-      });
-    }
-    if (userRole === "admin") {
-      navItems.push({ to: "/users", label: "User Management", icon: UsersIcon });
-      navItems.push({ to: "/logs", label: "Logs", icon: NewspaperIcon });
-    }
+    navItems = FACULTY_NAV;
   }
 
   return (
     <>
-      {/* Overlay (mobile) */}
       {open && (
         <div
           className="fixed inset-0 top-14 bg-black/40 z-30 lg:hidden backdrop-blur-sm transition-opacity duration-200"
@@ -94,7 +102,6 @@ const Sidebar = () => {
         />
       )}
 
-      {/* Sidebar */}
       <aside
         className={`fixed top-14 left-0 bottom-0 z-40 flex flex-col text-gray-800 transition-all duration-300 ease-in-out
           bg-white border-r border-gray-200
@@ -103,7 +110,6 @@ const Sidebar = () => {
           rounded-none lg:top-14 lg:h-[calc(100vh-3.5rem)]`}
         style={{ fontFamily: "'Inter', 'Poppins', system-ui, sans-serif" }}
       >
-        {/* Close (mobile only) */}
         <button
           onClick={() => setOpen(false)}
           className="lg:hidden absolute top-3 right-3 p-2 rounded-lg text-gray-600 hover:bg-gray-100 transition-colors"
@@ -112,11 +118,10 @@ const Sidebar = () => {
           <XMarkIcon className="h-6 w-6" />
         </button>
 
-        {/* Nav */}
         <nav className="flex-1 overflow-y-auto scrollbar-hide pt-12 lg:pt-4 pb-4 px-3 min-h-0">
           <ul className="space-y-0.5">
             {navItems.map(({ to, label, icon: Icon }) => (
-              <li key={to}>
+              <li key={`${to}-${label}`}>
                 <NavLink
                   to={to}
                   onClick={() => setOpen(false)}
@@ -137,7 +142,6 @@ const Sidebar = () => {
           </ul>
         </nav>
 
-        {/* Collapse toggle (desktop) */}
         <div className="shrink-0 p-3 border-t border-gray-100 hidden lg:block">
           <button
             onClick={() => setCollapsed((c) => !c)}
@@ -155,7 +159,6 @@ const Sidebar = () => {
           </button>
         </div>
 
-        {/* Logout */}
         <div className="shrink-0 p-3 border-t border-gray-100">
           <button
             onClick={handleLogout}
@@ -167,7 +170,6 @@ const Sidebar = () => {
           </button>
         </div>
 
-        {/* Footer */}
         {(!collapsed || open) && (
           <div className="shrink-0 px-4 py-3 border-t border-gray-100 text-center text-xs text-gray-500">
             © 2025 KCT • All Rights Reserved

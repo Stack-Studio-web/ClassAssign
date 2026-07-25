@@ -2,6 +2,7 @@
 const express = require("express");
 const router = express.Router();
 const Student = require("../models/Student");
+const Batch = require("../models/Batch");
 const db = require("../config/db");
 const { whereClause, andClause } = require("../utils/ownerFilter");
 const sessionAuth = require("../middleware/sessionAuth");
@@ -10,16 +11,35 @@ const checkRole = require("../middleware/checkRole");
 const DependencyChecks = require("../utils/dependencyChecks");
 const Api = require("../utils/apiResponse");
 const { resolveEntity } = require("../middleware/resolvePublicId");
+const { resolveInternalId } = require("../utils/publicId");
 const { TABLE } = require("../utils/publicId");
 
-const ownerOpts = (req) => ({ ownerUserId: req.user?.id, role: req.user?.role });
+const { ownerOpts } = require("../utils/rbac");
+const {
+  assertSemesterMutableByBatchInternalId,
+  assertSemesterMutableByStudentInternalId,
+} = require("../utils/semesterGuards");
+
+async function resolveAccessibleBatchId(batchUuid, req, res) {
+  if (!batchUuid) return null;
+  const batchRow = await Batch.getInternalIdByUuid(batchUuid);
+  if (!batchRow) {
+    Api.notFound(res, "Batch not found");
+    return null;
+  }
+  if (!Batch.canAccess(batchRow, ownerOpts(req))) {
+    Api.forbidden(res, "You do not have access to this batch.");
+    return null;
+  }
+  return batchRow.id;
+}
 
 /* ================================
    📁 STUDENT ROUTES - Role-based: Admin sees all, Faculty sees own
 ================================ */
 
 // ✅ GET students (paginated, server-side filters/search/sort)
-router.get("/", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
+router.get("/", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), async (req, res) => {
   try {
     const filters = {
       page: req.query.page,
@@ -35,6 +55,26 @@ router.get("/", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (re
       sortOrder: req.query.sortOrder || "asc",
     };
 
+    if (req.query.batchId) {
+      const batchInternalId = await resolveAccessibleBatchId(req.query.batchId, req, res);
+      if (batchInternalId == null && res.headersSent) return;
+      if (!batchInternalId) return Api.notFound(res, "Batch not found");
+      filters.batchId = batchInternalId;
+    }
+
+    if (req.query.createdBy) {
+      const ownerUserId = await resolveInternalId("users", req.query.createdBy, {
+        allowLegacyNumeric: true,
+      });
+      if (!ownerUserId) {
+        return Api.notFound(res, "Faculty owner not found");
+      }
+      if (req.user.role === "faculty_incharge" && Number(ownerUserId) !== Number(req.user.id)) {
+        return Api.forbidden(res, "You can only view your own students.");
+      }
+      filters.createdByUserId = ownerUserId;
+    }
+
     const result = await Student.listPaginated(filters, ownerOpts(req));
     return Api.success(res, "Students", result);
   } catch (error) {
@@ -44,9 +84,16 @@ router.get("/", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (re
 });
 
 // ✅ GET filter dropdown options (distinct years, departments, courses)
-router.get("/filter-options", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
+router.get("/filter-options", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), async (req, res) => {
   try {
-    const options = await Student.getFilterOptions(ownerOpts(req));
+    const filters = {};
+    if (req.query.batchId) {
+      const batchInternalId = await resolveAccessibleBatchId(req.query.batchId, req, res);
+      if (batchInternalId == null && res.headersSent) return;
+      if (!batchInternalId) return Api.notFound(res, "Batch not found");
+      filters.batchId = batchInternalId;
+    }
+    const options = await Student.getFilterOptions(ownerOpts(req), filters);
     return Api.success(res, "Student filter options", options);
   } catch (error) {
     return Api.fromError(res, error, "Failed to load filter options.");
@@ -54,12 +101,19 @@ router.get("/filter-options", sessionAuth, checkRole(["admin", "faculty_incharge
 });
 
 // ✅ GET per-course student counts (for stats card)
-router.get("/course-stats", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
+router.get("/course-stats", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), async (req, res) => {
   try {
+    const listFilters = {};
+    if (req.query.batchId) {
+      const batchInternalId = await resolveAccessibleBatchId(req.query.batchId, req, res);
+      if (batchInternalId == null && res.headersSent) return;
+      if (!batchInternalId) return Api.notFound(res, "Batch not found");
+      listFilters.batchId = batchInternalId;
+    }
     const result = await Student.getCourseStats(ownerOpts(req), {
       page: req.query.page,
       limit: req.query.limit,
-    });
+    }, listFilters);
     return Api.success(res, "Student course stats", result);
   } catch (error) {
     return Api.fromError(res, error, "Failed to load course stats.");
@@ -67,11 +121,18 @@ router.get("/course-stats", sessionAuth, checkRole(["admin", "faculty_incharge"]
 });
 
 // ✅ GET student stats
-router.get("/stats", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
+router.get("/stats", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), async (req, res) => {
   try {
-    console.log('📊 GET /api/students/stats - Fetching stats...');
-    const totalStudents = await Student.count(ownerOpts(req));
-    console.log(`✅ Total students: ${totalStudents}`);
+    const filters = {};
+    if (req.query.batchId) {
+      const batchInternalId = await resolveAccessibleBatchId(req.query.batchId, req, res);
+      if (batchInternalId == null && res.headersSent) return;
+      if (!batchInternalId) return res.status(404).json({ message: "Batch not found" });
+      filters.batchId = batchInternalId;
+    }
+    const totalStudents = filters.batchId
+      ? await Student.countInBatch(filters.batchId, ownerOpts(req))
+      : await Student.count(ownerOpts(req));
     res.status(200).json({ totalStudents });
   } catch (error) {
     console.error("❌ Error fetching student stats:", error);
@@ -161,21 +222,31 @@ router.get("/course-dept/:courseCode/:dept", sessionAuth, checkRole(["admin", "f
 router.delete("/all", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
   try {
     const opts = ownerOpts(req);
-    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId);
-    const [rows] = await db.query(`SELECT id FROM students${ownerSql || " WHERE 1=1"}`, ownerParams);
-    const ids = (rows || []).map((r) => r.id);
+    const batchInternalId = req.query.batchId
+      ? await resolveAccessibleBatchId(req.query.batchId, req, res)
+      : null;
+    if (batchInternalId == null && res.headersSent) return;
+    if (!batchInternalId) {
+      return res.status(400).json({
+        success: false,
+        message: "batchId query parameter is required.",
+      });
+    }
+    if (!(await assertSemesterMutableByBatchInternalId(batchInternalId, res))) return;
+
+    const ids = await Student.getIdsInBatch(batchInternalId, opts);
     const blocked = await DependencyChecks.studentIdsWithBlockers(ids);
     if (blocked.length > 0) {
       return Api.conflict(
         res,
         blocked[0].code || "STUDENT_ALLOTTED",
-        "Cannot delete all students.",
+        "Cannot delete all students in this batch.",
         `${blocked.length} student(s) are assigned to seating plans or have locked attendance. Remove dependencies first.`
       );
     }
 
-    const deletedCount = await Student.deleteAll(opts);
-    return Api.success(res, "All students deleted.", { deletedCount });
+    const deletedCount = await Student.deleteAll(opts, batchInternalId);
+    return Api.success(res, "Batch students deleted.", { deletedCount });
   } catch (error) {
     return Api.fromError(res, error);
   }
@@ -184,11 +255,22 @@ router.delete("/all", sessionAuth, checkRole(["admin", "faculty_incharge"]), asy
 router.delete("/by-course/:courseCode", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
   try {
     const courseCode = decodeURIComponent(req.params.courseCode);
+    const batchInternalId = req.query.batchId
+      ? await resolveAccessibleBatchId(req.query.batchId, req, res)
+      : null;
+    if (batchInternalId == null && res.headersSent) return;
+    if (!batchInternalId) {
+      return res.status(400).json({
+        success: false,
+        message: "batchId query parameter is required.",
+      });
+    }
+    if (!(await assertSemesterMutableByBatchInternalId(batchInternalId, res))) return;
     const opts = ownerOpts(req);
     const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
     const [rows] = await db.query(
-      `SELECT id FROM students WHERE course_description = ?${ownerSql}`,
-      [String(courseCode).trim(), ...ownerParams]
+      `SELECT id FROM students WHERE course_description = ? AND batch_id = ?${ownerSql}`,
+      [String(courseCode).trim(), batchInternalId, ...ownerParams]
     );
     const ids = (rows || []).map((r) => r.id);
     const blocked = await DependencyChecks.studentIdsWithBlockers(ids);
@@ -201,7 +283,7 @@ router.delete("/by-course/:courseCode", sessionAuth, checkRole(["admin", "facult
       );
     }
 
-    const deletedCount = await Student.deleteByCourseCode(courseCode, opts);
+    const deletedCount = await Student.deleteByCourseCode(courseCode, opts, batchInternalId);
     return Api.success(res, `Deleted ${deletedCount} student(s) for course ${courseCode}.`, { deletedCount });
   } catch (error) {
     return Api.fromError(res, error);
@@ -212,6 +294,8 @@ router.delete("/by-course/:courseCode", sessionAuth, checkRole(["admin", "facult
 router.delete("/:uuid", sessionAuth, checkRole(["admin", "faculty_incharge"]), resolveEntity(TABLE.students), async (req, res) => {
   try {
     const studentId = req.internalId;
+
+    if (!(await assertSemesterMutableByStudentInternalId(studentId, res))) return;
 
     const check = await DependencyChecks.studentDeleteBlockers(studentId);
     if (check.blocked) {

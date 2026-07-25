@@ -74,6 +74,12 @@ function extractRowCount(results, metadata) {
   return Array.isArray(results) ? results.length : 0;
 }
 
+function returningColumnCount(sql) {
+  const match = String(sql).match(/RETURNING\s+(.+?)(?:;|\s*$)/i);
+  if (!match) return 0;
+  return match[1].split(",").map((s) => s.trim()).filter(Boolean).length;
+}
+
 async function runQuery(sql, params, transaction) {
   const { sql: pgSql, params: pgParams } = buildBulkInsert(sql, params);
   let finalSql = pgParams === params ? convertPlaceholders(pgSql) : pgSql;
@@ -91,15 +97,28 @@ async function runQuery(sql, params, transaction) {
   const [results, metadata] = await sequelize.query(finalSql, queryOpts);
 
   if (/^\s*INSERT/i.test(sql)) {
-    let insertId = null;
     if (Array.isArray(results) && results[0]) {
       const row = results[0];
-      insertId = row.id ?? row.ID ?? (Array.isArray(row) ? row[0] : null);
+      const insertId = row.id ?? row.ID ?? (Array.isArray(row) ? row[0] : null);
+      if (returningColumnCount(finalSql) > 1) {
+        return [results, []];
+      }
+      return [{ insertId, affectedRows: 1 }, []];
     }
-    return [{ insertId, affectedRows: 1 }, []];
+    return [{ insertId: null, affectedRows: 0 }, []];
   }
 
-  if (/^\s*(DELETE|UPDATE)/i.test(sql)) {
+  if (/^\s*UPDATE/i.test(sql)) {
+    if (/RETURNING/i.test(finalSql) && Array.isArray(results) && results.length > 0) {
+      return [results, []];
+    }
+    return [{ affectedRows: extractRowCount(results, metadata) }, []];
+  }
+
+  if (/^\s*DELETE/i.test(sql)) {
+    if (/RETURNING/i.test(finalSql) && Array.isArray(results) && results.length > 0) {
+      return [results, []];
+    }
     return [{ affectedRows: extractRowCount(results, metadata) }, []];
   }
 

@@ -18,6 +18,9 @@ const TABLE = {
   assignments: "faculty_assignments",
   attendanceSessions: "attendance_sessions",
   facultyTransferRequests: "faculty_transfer_requests",
+  academicYears: "academic_years",
+  semesters: "semesters",
+  batches: "batches",
 };
 
 function isValidUuid(value) {

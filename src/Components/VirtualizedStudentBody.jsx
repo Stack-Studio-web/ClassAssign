@@ -1,9 +1,16 @@
 import React, { useRef, memo } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import StudentTableRow from "./StudentTableRow";
 
-function VirtualizedStudentBody({ students, onDelete, deletingId, rowHeight = 48 }) {
+function VirtualizedStudentBody({
+  students,
+  onDelete,
+  deletingId,
+  rowHeight = 48,
+  showCreatedBy = false,
+}) {
   const parentRef = useRef(null);
+  const canDelete = typeof onDelete === "function";
+
   const virtualizer = useVirtualizer({
     count: students.length,
     getScrollElement: () => parentRef.current,
@@ -26,11 +33,18 @@ function VirtualizedStudentBody({ students, onDelete, deletingId, rowHeight = 48
               Course
             </th>
             <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">
-              Description
+              Batch
             </th>
-            <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">
-              Action
-            </th>
+            {showCreatedBy && (
+              <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">
+                Created By
+              </th>
+            )}
+            {canDelete && (
+              <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">
+                Action
+              </th>
+            )}
           </tr>
         </thead>
         <tbody
@@ -39,6 +53,7 @@ function VirtualizedStudentBody({ students, onDelete, deletingId, rowHeight = 48
         >
           {virtualizer.getVirtualItems().map((virtualRow) => {
             const student = students[virtualRow.index];
+            const isDeleting = deletingId === student.uuid;
             return (
               <tr
                 key={student.uuid}
@@ -48,28 +63,35 @@ function VirtualizedStudentBody({ students, onDelete, deletingId, rowHeight = 48
                   transform: `translateY(${virtualRow.start}px)`,
                 }}
               >
-                <td className="px-4 py-3 text-sm font-semibold text-blue-600 w-[18%]">
+                <td className="px-4 py-3 text-sm font-semibold text-blue-600 w-[14%]">
                   {student.regnNo}
                 </td>
-                <td className="px-4 py-3 text-sm font-medium text-gray-800 w-[28%]">
+                <td className="px-4 py-3 text-sm font-medium text-gray-800 w-[22%]">
                   {student.studentName ?? "—"}
                 </td>
-                <td className="px-4 py-3 text-sm font-medium text-gray-700 w-[22%]">
-                  {student.courseName}
+                <td className="px-4 py-3 text-sm font-medium text-gray-700 w-[20%]">
+                  {student.courseName ?? "—"}
                 </td>
-                <td className="px-4 py-3 text-sm font-medium text-gray-600 w-[22%]">
-                  {student.courseDescription}
+                <td className="px-4 py-3 text-sm font-medium text-gray-600 w-[16%]">
+                  {student.batchName ?? "—"}
                 </td>
-                <td className="px-4 py-3 w-[10%]">
-                  <button
-                    type="button"
-                    onClick={() => onDelete(student.uuid)}
-                    disabled={deletingId === student.uuid}
-                    className="text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50"
-                  >
-                    {deletingId === student.uuid ? "..." : "Delete"}
-                  </button>
-                </td>
+                {showCreatedBy && (
+                  <td className="px-4 py-3 text-sm font-medium text-gray-600 w-[16%]">
+                    {student.createdBy?.name ?? "—"}
+                  </td>
+                )}
+                {canDelete && (
+                  <td className="px-4 py-3 w-[12%]">
+                    <button
+                      type="button"
+                      onClick={() => onDelete(student.uuid)}
+                      disabled={isDeleting}
+                      className="text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50"
+                    >
+                      {isDeleting ? "..." : "Delete"}
+                    </button>
+                  </td>
+                )}
               </tr>
             );
           })}

@@ -43,6 +43,16 @@ function fromError(res, err, fallbackMessage = "Request failed") {
   if (err?.code === "23505") {
     return conflict(res, "DUPLICATE_RECORD", "A record with this value already exists.");
   }
+  if (err?.code === "DUPLICATE_BATCH") {
+    return conflict(res, err.code, err.message);
+  }
+  if (err?.name === "SequelizeUniqueConstraintError") {
+    const detail =
+      err?.parent?.detail ||
+      err?.original?.detail ||
+      "This record already exists.";
+    return conflict(res, "DUPLICATE_RECORD", detail);
+  }
   return serverError(res, err);
 }
 

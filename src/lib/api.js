@@ -7,6 +7,12 @@ const api = axios.create({
 });
 
 function loginRedirectPath() {
+  if (window.location.pathname.startsWith("/mentor-portal")) {
+    if (window.location.pathname === "/mentor-portal/change-password") {
+      return "/mentor-portal/change-password";
+    }
+    return "/mentor-portal/login";
+  }
   if (window.location.pathname.startsWith("/faculty") || window.location.pathname.startsWith("/attendance/login")) {
     return "/attendance/login";
   }
@@ -18,6 +24,7 @@ api.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       sessionStorage.removeItem("user");
+      sessionStorage.removeItem("mentorUser");
       const path = loginRedirectPath();
       if (!window.location.pathname.startsWith(path) && window.location.pathname !== "/") {
         window.location.href = path;

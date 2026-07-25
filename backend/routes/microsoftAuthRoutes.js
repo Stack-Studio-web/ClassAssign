@@ -3,6 +3,7 @@ const router = express.Router();
 const axios = require("axios");
 const crypto = require("crypto");
 const User = require("../models/User");
+const Mentor = require("../models/Mentor");
 const SessionStore = require("../utils/sessionStore");
 const { createSession } = require("../utils/authHelpers");
 const { URLSearchParams } = require("url");
@@ -27,20 +28,13 @@ function mobileDeepLink(params) {
   return `${MOBILE_APP_SCHEME}://auth${qs ? `?${qs}` : ""}`;
 }
 
-async function completeMicrosoftAuth(req, res, redirectUri) {
-  const { code, error, error_description, state } = req.query;
+async function completeMicrosoftAuth(req, res, redirectUri, stateData) {
+  const { code } = req.query;
 
-  if (error) {
-    return {
-      error: `Microsoft Login Failed: ${error_description || error}`,
-    };
+  if (!code) {
+    return { error: "Missing authorization code" };
   }
 
-  if (!code || !state) {
-    return { error: "Missing authorization code or state" };
-  }
-
-  const stateData = await SessionStore.consumeOAuthState(state);
   if (!stateData) {
     return { error: "Invalid or expired OAuth state" };
   }
@@ -112,6 +106,77 @@ async function completeMicrosoftAuth(req, res, redirectUri) {
       mustChangePassword: !!(user.must_change_password ?? user.mustchangepassword),
     },
     platform: stateData.platform || "web",
+    portal: stateData.portal || "admin",
+  };
+}
+
+async function completeMentorMicrosoftAuth(req, res, redirectUri, stateData) {
+  const { code } = req.query;
+
+  if (!code) {
+    return { error: "Missing authorization code" };
+  }
+
+  if (!stateData) {
+    return { error: "Invalid or expired OAuth state" };
+  }
+
+  const tokenResponse = await axios.post(
+    `${AUTH_BASE_URL}/token`,
+    new URLSearchParams({
+      client_id: MICROSOFT_CLIENT_ID,
+      client_secret: MICROSOFT_CLIENT_SECRET,
+      code,
+      redirect_uri: redirectUri,
+      grant_type: "authorization_code",
+    }).toString(),
+    { headers: { "Content-Type": "application/x-www-form-urlencoded" }, timeout: 15000 }
+  );
+
+  const accessToken = tokenResponse.data.access_token;
+  const userResponse = await axios.get("https://graph.microsoft.com/v1.0/me", {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    timeout: 15000,
+  });
+
+  const userInfo = userResponse.data;
+  const email = (userInfo.mail || userInfo.userPrincipalName || "").trim().toLowerCase();
+  const microsoftId = userInfo.id;
+  const displayName = userInfo.displayName || email.split("@")[0];
+
+  if (!email) {
+    return { error: "Microsoft did not provide email" };
+  }
+
+  let mentor = await Mentor.findByEmailForAuth(email);
+  if (!mentor) {
+    return { accessDenied: true, email };
+  }
+
+  if (microsoftId && !mentor.microsoft_id) {
+    await Mentor.linkMicrosoftId(mentor.id, microsoftId);
+  }
+
+  const token = await createSession(res, req, {
+    mentorId: mentor.id,
+    publicUuid: mentor.public_uuid ?? mentor.publicuuid,
+    email: mentor.email,
+    role: mentor.role ?? "mentor",
+    username: mentor.name || displayName,
+    department: mentor.department ?? null,
+    mustChangePassword: false,
+  });
+
+  return {
+    token,
+    user: {
+      uuid: mentor.public_uuid ?? mentor.publicuuid,
+      username: mentor.name || displayName,
+      email: mentor.email,
+      role: "mentor",
+      department: mentor.department ?? null,
+    },
+    portal: "mentor",
   };
 }
 
@@ -122,8 +187,9 @@ router.get("/login", loginLimiter, async (req, res) => {
     }
 
     const platform = req.query.platform === "mobile" ? "mobile" : "web";
+    const portal = req.query.portal === "mentor" ? "mentor" : "admin";
     const state = crypto.randomBytes(32).toString("hex");
-    await SessionStore.setOAuthState(state, { platform });
+    await SessionStore.setOAuthState(state, { platform, portal });
 
     const redirectUri = platform === "mobile" ? MOBILE_REDIRECT_URI : WEB_REDIRECT_URI;
 
@@ -145,7 +211,46 @@ router.get("/login", loginLimiter, async (req, res) => {
 
 router.get("/callback", loginLimiter, async (req, res) => {
   try {
-    const result = await completeMicrosoftAuth(req, res, WEB_REDIRECT_URI);
+    const { code, error, error_description, state } = req.query;
+    const stateData = state ? await SessionStore.consumeOAuthState(state) : null;
+    const portal = stateData?.portal === "mentor" ? "mentor" : "admin";
+
+    if (error) {
+      const msg = `Microsoft Login Failed: ${error_description || error}`;
+      if (portal === "mentor") {
+        return res.redirect(
+          `${FRONTEND_URL}/mentor-portal/login?error=${encodeURIComponent(msg)}`
+        );
+      }
+      return res.redirect(`${FRONTEND_URL}/?error=${encodeURIComponent(msg)}`);
+    }
+
+    if (!code || !stateData) {
+      const msg = !stateData
+        ? "Invalid or expired OAuth state"
+        : "Missing authorization code or state";
+      if (portal === "mentor") {
+        return res.redirect(
+          `${FRONTEND_URL}/mentor-portal/login?error=${encodeURIComponent(msg)}`
+        );
+      }
+      return res.redirect(`${FRONTEND_URL}/?error=${encodeURIComponent(msg)}`);
+    }
+
+    if (portal === "mentor") {
+      const result = await completeMentorMicrosoftAuth(req, res, WEB_REDIRECT_URI, stateData);
+      if (result.accessDenied) {
+        return res.redirect(`${FRONTEND_URL}/mentor-portal/access-denied`);
+      }
+      if (result.error) {
+        return res.redirect(
+          `${FRONTEND_URL}/mentor-portal/login?error=${encodeURIComponent(result.error)}`
+        );
+      }
+      return res.redirect(`${FRONTEND_URL}/mentor-portal/dashboard?sso_success=true`);
+    }
+
+    const result = await completeMicrosoftAuth(req, res, WEB_REDIRECT_URI, stateData);
     if (result.error) {
       return res.redirect(
         `${FRONTEND_URL}/?error=${encodeURIComponent(result.error)}`
@@ -162,7 +267,9 @@ router.get("/callback", loginLimiter, async (req, res) => {
 
 router.get("/mobile-callback", loginLimiter, async (req, res) => {
   try {
-    const result = await completeMicrosoftAuth(req, res, MOBILE_REDIRECT_URI);
+    const { state } = req.query;
+    const stateData = state ? await SessionStore.consumeOAuthState(state) : null;
+    const result = await completeMicrosoftAuth(req, res, MOBILE_REDIRECT_URI, stateData);
     if (result.error) {
       return res.redirect(mobileDeepLink({ error: result.error }));
     }
