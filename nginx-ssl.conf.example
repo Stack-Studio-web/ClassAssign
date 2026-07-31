@@ -1,7 +1,9 @@
-# Production TLS overlay — mount or include alongside nginx.conf
+# Production TLS overlay for https://iexam.kumaraguru.in
+# Mount DigiCert wildcard (*.kumaraguru.in) cert/key and include location blocks from nginx.conf
+
 server {
     listen 443 ssl http2;
-    server_name your-domain.example.com;
+    server_name iexam.kumaraguru.in;
 
     ssl_certificate     /etc/nginx/ssl/fullchain.pem;
     ssl_certificate_key /etc/nginx/ssl/privkey.pem;
@@ -13,11 +15,44 @@ server {
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
-    # Include the same location blocks as nginx.conf or proxy to upstream frontend container
+    root /usr/share/nginx/html;
+    index index.html;
+
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    set $backend_upstream backend:5000;
+
+    location /format/ {
+        proxy_pass http://$backend_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Cookie $http_cookie;
+    }
+
+    location /api/ {
+        proxy_pass http://$backend_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Cookie $http_cookie;
+        proxy_cache_bypass $http_upgrade;
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 60s;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
 }
 
 server {
     listen 80;
-    server_name your-domain.example.com;
+    server_name iexam.kumaraguru.in;
     return 301 https://$host$request_uri;
 }

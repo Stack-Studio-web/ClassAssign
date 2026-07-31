@@ -15,7 +15,7 @@ function sessionCookieOptions(maxAgeMs) {
   return {
     httpOnly: true,
     secure: isHttps(), // true only for HTTPS
-    sameSite: isHttps() ? "none" : "lax", // none requires secure=true
+    sameSite: "lax",
     path: "/",
     maxAge: maxAgeMs ?? 24 * 60 * 60 * 1000, // 24 hours
   };
@@ -29,7 +29,7 @@ function clearSessionCookie(res) {
   res.clearCookie(SESSION_COOKIE, {
     httpOnly: true,
     secure: isHttps(),
-    sameSite: isHttps() ? "none" : "lax",
+    sameSite: "lax",
     path: "/",
   });
 }
