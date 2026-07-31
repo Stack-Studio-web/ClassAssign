@@ -6,6 +6,9 @@ function notFoundHandler(req, res) {
 
 function errorHandler(err, req, res, _next) {
   if (res.headersSent) return;
+  if (err?.message === "Not allowed by CORS") {
+    return Api.forbidden(res, "Not allowed by CORS");
+  }
   if (err?.code === "EBADCSRFTOKEN") {
     return Api.forbidden(res, "Invalid request token");
   }

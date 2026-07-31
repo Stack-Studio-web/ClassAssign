@@ -49,6 +49,7 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
       API_PUBLIC_URL: ${API_PUBLIC_URL:-}
       USE_HTTPS: ${USE_HTTPS:-false}
       SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-86400}
