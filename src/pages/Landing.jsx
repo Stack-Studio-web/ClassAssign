@@ -67,7 +67,8 @@ function Landing() {
                     setTimeout(() => navigate('/change-password', { replace: true }), 800);
                 } else {
                     setFlashMessage('Successfully logged in! Redirecting...');
-                    setTimeout(() => navigate(data.redirectTo || '/allotment'), 1500);
+                    const target = data.redirectTo || '/allotment';
+                    setTimeout(() => navigate(target, { replace: true }), 800);
                 }
             } else {
                 setError(data.message || 'Login failed. Please check your credentials.');
@@ -76,7 +77,7 @@ function Landing() {
             console.error('Login error:', err);
             setError(err.response?.data?.message || 'Could not connect to the server. Please try again later.');
         } finally {
-            if (!flashMessage) setLoading(false);
+            setLoading(false);
         }
     };
 

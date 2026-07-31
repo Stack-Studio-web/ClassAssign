@@ -23,11 +23,21 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
+      const url = String(error.config?.url || "");
+      const isAuthEndpoint =
+        url.includes("/auth/me") ||
+        url.includes("/auth/login") ||
+        url.includes("/auth/mentor/me") ||
+        url.includes("/auth/mentor/login");
+
       sessionStorage.removeItem("user");
       sessionStorage.removeItem("mentorUser");
-      const path = loginRedirectPath();
-      if (!window.location.pathname.startsWith(path) && window.location.pathname !== "/") {
-        window.location.href = path;
+
+      if (!isAuthEndpoint) {
+        const path = loginRedirectPath();
+        if (!window.location.pathname.startsWith(path) && window.location.pathname !== "/") {
+          window.location.href = path;
+        }
       }
     } else if (error.response?.status === 403) {
       return Promise.reject({

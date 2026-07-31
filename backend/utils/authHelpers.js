@@ -18,7 +18,7 @@ async function createSession(res, req, sessionData) {
     createdAt: Date.now(),
   };
   await SessionStore.set(token, session);
-  setSessionCookie(res, token);
+  setSessionCookie(res, req, token);
   return token;
 }
 
@@ -27,7 +27,7 @@ async function destroySession(req, res) {
   if (token) {
     await SessionStore.delete(token);
   }
-  clearSessionCookie(res);
+  clearSessionCookie(res, req);
 }
 
 async function getSessionFromRequest(req) {
