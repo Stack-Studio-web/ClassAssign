@@ -38,6 +38,22 @@ const DependencyChecks = {
       };
     }
 
+    const transferCount = await countQuery(
+      `SELECT COUNT(*) AS count FROM faculty_transfer_requests
+       WHERE current_faculty_id = ? OR requested_faculty_id = ?`,
+      [facultyId, facultyId]
+    );
+    if (transferCount > 0) {
+      return {
+        blocked: true,
+        code: "FACULTY_TRANSFER_PENDING",
+        message: "Cannot delete faculty.",
+        details:
+          "This faculty is linked to attendance transfer requests. Resolve or remove those requests first.",
+        count: transferCount,
+      };
+    }
+
     return { blocked: false };
   },
 
@@ -83,27 +99,46 @@ const DependencyChecks = {
   },
 
   async userDeleteBlockers(userId) {
-    const ownedData = await countQuery(
-      `SELECT COUNT(*) AS count FROM (
-         SELECT 1 FROM students WHERE owner_user_id = ?
-         UNION ALL
-         SELECT 1 FROM faculty WHERE owner_user_id = ?
-         UNION ALL
-         SELECT 1 FROM venues WHERE owner_user_id = ?
-         UNION ALL
-         SELECT 1 FROM seating_plans WHERE owner_user_id = ?
-       ) t`,
-      [userId, userId, userId, userId]
+    const ownedTables = [
+      { table: "students", label: "student records" },
+      { table: "faculty", label: "faculty records" },
+      { table: "venues", label: "venue records" },
+      { table: "seating_plans", label: "seating plans" },
+      { table: "exams", label: "exam records" },
+      { table: "timetable", label: "timetable entries" },
+      { table: "ineligible_students", label: "ineligibility records" },
+    ];
+
+    for (const { table, label } of ownedTables) {
+      const ownedCount = await countQuery(
+        `SELECT COUNT(*) AS count FROM ${table} WHERE owner_user_id = ?`,
+        [userId]
+      );
+      if (ownedCount > 0) {
+        return {
+          blocked: true,
+          code: "USER_OWNS_DATA",
+          message: "Cannot delete user.",
+          details: `This user owns ${ownedCount} ${label}. Transfer or delete that data first.`,
+          count: ownedCount,
+        };
+      }
+    }
+
+    const batchCount = await countQuery(
+      `SELECT COUNT(*) AS count FROM batches WHERE owner_user_id = ?`,
+      [userId]
     );
-    if (ownedData > 0) {
+    if (batchCount > 0) {
       return {
         blocked: true,
         code: "USER_OWNS_DATA",
         message: "Cannot delete user.",
-        details: "This user owns records in the system. Transfer or delete owned data first.",
-        count: ownedData,
+        details: `This user owns ${batchCount} batch records. Transfer or delete those batches first.`,
+        count: batchCount,
       };
     }
+
     return { blocked: false };
   },
 

@@ -32,15 +32,31 @@ function serverError(res, err, logLabel = "Server error") {
   return fail(res, 500, "SERVER_ERROR", "Unexpected error occurred.");
 }
 
+function pgErrorCode(err) {
+  return err?.code || err?.parent?.code || err?.original?.code || null;
+}
+
+function isForeignKeyViolation(err) {
+  const code = pgErrorCode(err);
+  if (code === "23503") return true;
+  if (err?.name === "SequelizeForeignKeyConstraintError") return true;
+  return false;
+}
+
 function fromError(res, err, fallbackMessage = "Request failed") {
   if (err?.statusCode || err?.status) {
     const status = err.statusCode || err.status;
     return fail(res, status, err.code || "REQUEST_FAILED", err.message || fallbackMessage, err.details);
   }
-  if (err?.code === "23503") {
-    return conflict(res, "DEPENDENCY_CONFLICT", "Cannot complete operation due to existing references.", "Remove dependent records first.");
+  if (isForeignKeyViolation(err)) {
+    return conflict(
+      res,
+      "DEPENDENCY_CONFLICT",
+      "Cannot complete operation due to existing references.",
+      "Remove or reassign dependent records first."
+    );
   }
-  if (err?.code === "23505") {
+  if (pgErrorCode(err) === "23505") {
     return conflict(res, "DUPLICATE_RECORD", "A record with this value already exists.");
   }
   if (err?.code === "DUPLICATE_BATCH") {

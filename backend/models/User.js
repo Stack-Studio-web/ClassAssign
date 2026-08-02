@@ -315,11 +315,36 @@ const User = {
       DELETE USER
   =============================== */
   deleteUser: async (userId) => {
-    const [result] = await db.query(
-      "DELETE FROM users WHERE id = ?",
-      [userId]
-    );
-    return result.affectedRows > 0;
+    const conn = await db.getConnection();
+    try {
+      await conn.beginTransaction();
+
+      // Clear non-blocking references so delete can proceed when allowed
+      await conn.query(`UPDATE users SET created_by = NULL WHERE created_by = ?`, [userId]);
+      await conn.query(`UPDATE users SET created_by_hod_id = NULL WHERE created_by_hod_id = ?`, [userId]);
+      await conn.query(`DELETE FROM audit_logs WHERE user_id = ?`, [userId]);
+      await conn.query(
+        `UPDATE faculty_transfer_requests SET requested_by_user_id = NULL WHERE requested_by_user_id = ?`,
+        [userId]
+      );
+      await conn.query(
+        `UPDATE faculty_transfer_requests SET approved_by = NULL WHERE approved_by = ?`,
+        [userId]
+      );
+      await conn.query(
+        `UPDATE faculty_transfer_requests SET rejected_by = NULL WHERE rejected_by = ?`,
+        [userId]
+      );
+
+      const [result] = await conn.query(`DELETE FROM users WHERE id = ?`, [userId]);
+      await conn.commit();
+      return result.affectedRows > 0;
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
   },
 
   /* ===============================
