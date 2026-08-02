@@ -1,11 +1,11 @@
 const cors = require("cors");
 
-/** Always permitted — local dev and legacy LAN access. */
+/** Local dev + Hostinger VPS defaults. Override via ALLOWED_ORIGINS in .env */
 const DEFAULT_ORIGINS = [
   "http://localhost:5173",
   "http://127.0.0.1:5173",
-  "http://10.1.150.51:5173",
-  "http://103.196.28.198:5173",
+  "http://213.210.37.189:3002",
+  "http://213.210.37.189:5002",
 ];
 
 const ENV_ORIGIN_KEYS = ["ALLOWED_ORIGINS", "CORS_ORIGINS", "FRONTEND_URL"];

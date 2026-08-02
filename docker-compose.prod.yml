@@ -1,0 +1,26 @@
+# Hostinger VPS production overlay
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Published URLs (defaults):
+#   Frontend: http://213.210.37.189:3002
+#   Backend:  http://213.210.37.189:5002
+
+services:
+  backend:
+    ports:
+      - "${BACKEND_HOST_PORT:-5002}:5000"
+    environment:
+      FRONTEND_URL: ${FRONTEND_URL:-http://213.210.37.189:3002}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://213.210.37.189:3002,http://213.210.37.189:5002}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://213.210.37.189:3002,http://213.210.37.189:5002}
+      API_PUBLIC_URL: ${API_PUBLIC_URL:-http://213.210.37.189:5002}
+      USE_HTTPS: ${USE_HTTPS:-false}
+
+  frontend:
+    ports:
+      - "${FRONTEND_HOST_PORT:-3002}:80"
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-/api}

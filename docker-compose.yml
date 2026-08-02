@@ -36,7 +36,7 @@ services:
       - /app/node_modules
       - app_uploads:/app/uploads
     ports:
-      - "5000:5000"
+      - "${BACKEND_HOST_PORT:-5002}:5000"
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       PORT: 5000
@@ -47,10 +47,10 @@ services:
       POSTGRES_PORT: 5432
       REDIS_URL: redis://redis:6379/1
       CELERY_BROKER_URL: redis://redis:6379/0
-      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
-      API_PUBLIC_URL: ${API_PUBLIC_URL:-}
+      FRONTEND_URL: ${FRONTEND_URL:-http://213.210.37.189:3002}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://213.210.37.189:3002,http://213.210.37.189:5002}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://213.210.37.189:3002,http://213.210.37.189:5002}
+      API_PUBLIC_URL: ${API_PUBLIC_URL:-http://213.210.37.189:5002}
       USE_HTTPS: ${USE_HTTPS:-false}
       SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-86400}
       MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
@@ -103,8 +103,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-/api}
     ports:
-      - "5173:80"
+      - "${FRONTEND_HOST_PORT:-3002}:80"
     depends_on:
       - backend
 
