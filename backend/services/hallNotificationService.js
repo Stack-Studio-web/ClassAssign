@@ -74,7 +74,7 @@ const HallNotificationService = {
     return HallNotificationService.getSettings();
   },
 
-  computeScheduledTime: async (examDate, examStartTime, offsetMinutes, executor = db) {
+  computeScheduledTime: async (examDate, examStartTime, offsetMinutes, executor = db) => {
     const tz = getInstitutionTimezone();
     const [rows] = await executor.query(
       `SELECT ((?::date + ?::time) AT TIME ZONE ?) - (? * INTERVAL '1 minute') AS scheduled_utc`,
