@@ -29,6 +29,7 @@ import FacultyAttendance from './pages/FacultyAttendance';
 import AttendanceReports from './pages/AttendanceReports';
 import ActiveAttendance from './pages/ActiveAttendance';
 import CompletedAttendance from './pages/CompletedAttendance';
+import NotificationManagement from './pages/NotificationManagement';
 import FacultyTransferRequests from './pages/FacultyTransferRequests';
 import Loader from './Components/Loader';
 import MentorLogin from './pages/mentor-portal/MentorLogin';
@@ -136,6 +137,15 @@ function App() {
         element={
           <AuthGuard allowedRoles={['faculty']}>
             <FacultyAttendance />
+          </AuthGuard>
+        }
+      />
+
+      <Route
+        path="/admin/notifications"
+        element={
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge']}>
+            <Layout><NotificationManagement /></Layout>
           </AuthGuard>
         }
       />

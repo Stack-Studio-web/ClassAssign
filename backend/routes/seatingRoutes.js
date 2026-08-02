@@ -3,6 +3,7 @@ const express = require("express");
 const router = express.Router();
 const SeatingPlan = require("../models/SeatingPlan");
 const AttendanceService = require("../services/attendanceService");
+const HallNotificationService = require("../services/hallNotificationService");
 const Venue = require("../models/venue");
 const Faculty = require("../models/Faculty");
 const User = require("../models/User");
@@ -234,6 +235,14 @@ router.post(
 
       const uuid = await getPublicUuid(TABLE.seatingPlans, seatingPlanId);
 
+      let notificationSchedule = { scheduled: 0, skipped: 0 };
+      try {
+        notificationSchedule = await HallNotificationService.scheduleForSeatingPlan(seatingPlanId);
+        await HallNotificationService.processDueNotifications();
+      } catch (schedErr) {
+        console.error("Hall notification schedule error:", schedErr.message);
+      }
+
       res.status(201).json({
         message: "Seating plan created successfully",
         uuid,
@@ -242,6 +251,8 @@ router.post(
         venuesCount: resolvedVenues.length,
         studentsCount: students?.length || 0,
         attendanceAssignmentsSynced: attendanceSync.synced,
+        notificationsScheduled: notificationSchedule.scheduled,
+        notificationsSkipped: notificationSchedule.skipped,
       });
 
     } catch (err) {

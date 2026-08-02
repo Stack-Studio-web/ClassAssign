@@ -68,7 +68,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    command: node config/bullWorker.js
+    command: node config/worker.js
     volumes:
       - ./backend:/app
       - /app/node_modules
@@ -80,6 +80,14 @@ services:
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
       CELERY_BROKER_URL: redis://redis:6379/0
+      KCT_TEAMS_API_URL: ${KCT_TEAMS_API_URL:-}
+      KCT_TEAMS_FROM_EMAIL: ${KCT_TEAMS_FROM_EMAIL:-}
+      KCT_TEAMS_API_USER: ${KCT_TEAMS_API_USER:-}
+      KCT_TEAMS_API_PASSWORD: ${KCT_TEAMS_API_PASSWORD:-}
+      MOCK_TEAMS_API: ${MOCK_TEAMS_API:-false}
+      BULL_CONCURRENCY: ${BULL_CONCURRENCY:-1}
+      BULL_MAX_RETRIES: ${BULL_MAX_RETRIES:-5}
+      INSTITUTION_TIMEZONE: ${INSTITUTION_TIMEZONE:-Asia/Kolkata}
     depends_on:
       redis:
         condition: service_started

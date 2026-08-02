@@ -2,7 +2,7 @@
 const express = require("express");
 const router = express.Router();
 const db = require("../config/db");
-const bull = require("../config/bullWorker");
+const bull = require("../config/bullQueue");
 const IneligibleStudent = require("../models/IneligibleStudent");
 const sessionAuth = require("../middleware/sessionAuth");
 const checkRole = require("../middleware/checkRole");
@@ -233,6 +233,8 @@ router.post(
   checkRole(['admin', 'faculty_incharge']),
   auditLogger("SEND_NOTIFICATION", "Notification"),
   async (req, res) => {
+    // @deprecated Manual Hall notifications — use automated scheduling via seating plan finalize.
+    // Kept for backward compatibility only.
     const { date, session } = req.body;
 
     if (!date || !session) {

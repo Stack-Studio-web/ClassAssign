@@ -16,6 +16,7 @@ import {
   AcademicCapIcon,
   RectangleStackIcon,
   TableCellsIcon,
+  BellAlertIcon,
   CheckCircleIcon,
 } from "@heroicons/react/24/outline";
 import { NavLink } from "react-router-dom";
@@ -33,6 +34,8 @@ const ADMIN_NAV = [
   { to: "/report", label: "Reports", icon: NewspaperIcon },
   { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
   { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
+  { to: "/Hall", label: "Hall Allotment", icon: BuildingOfficeIcon },
+  { to: "/admin/notifications", label: "Hall Notifications", icon: BellAlertIcon },
   { to: "/admin/attendance/transfers", label: "Faculty Change Requests", icon: ArrowsRightLeftIcon },
   { to: "/attendance", label: "Active Attendance", icon: UserGroupIcon },
   { to: "/attendance/completed", label: "Completed Attendance", icon: CheckCircleIcon },
@@ -49,6 +52,8 @@ const FACULTY_NAV = [
   { to: "/report", label: "Reports", icon: NewspaperIcon },
   { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
   { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
+  { to: "/Hall", label: "Hall Allotment", icon: BuildingOfficeIcon },
+  { to: "/admin/notifications", label: "Hall Notifications", icon: BellAlertIcon },
   { to: "/admin/attendance/transfers", label: "Faculty Change Requests", icon: ArrowsRightLeftIcon },
   { to: "/attendance", label: "Active Attendance", icon: UserGroupIcon },
   { to: "/attendance/completed", label: "Completed Attendance", icon: CheckCircleIcon },
@@ -61,8 +66,8 @@ const HOD_NAV = [
   { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
   { to: "/attendance", label: "Active Attendance", icon: UserGroupIcon },
   { to: "/attendance/completed", label: "Completed Attendance", icon: CheckCircleIcon },
+  { to: "/Hall", label: "Hall Allotment", icon: BuildingOfficeIcon },
   { to: "/admin/attendance/transfers", label: "Faculty Change Requests", icon: ArrowsRightLeftIcon },
-  { to: "/Hall", label: "Hall", icon: BuildingOfficeIcon },
   { to: "/users", label: "User Management", icon: UsersIcon },
 ];
 
