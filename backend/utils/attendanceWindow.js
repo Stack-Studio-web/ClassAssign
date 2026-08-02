@@ -42,6 +42,9 @@ function toSessionRow(row) {
     examDate: row.exam_date ?? row.examdate ?? null,
     examTime: row.exam_time ?? row.examtime ?? null,
     examSession: row.exam_session ?? row.examsession ?? null,
+    lifecycleStatus: row.lifecycle_status ?? row.lifecyclestatus ?? "ACTIVE",
+    examEndTime: row.exam_end_time ?? row.examendtime ?? null,
+    completedAt: row.completed_at ?? row.completedat ?? null,
   };
 }
 
@@ -58,6 +61,27 @@ function parseStartTimeFromExamTime(examTime) {
   const match = part.match(/(\d{1,2}):(\d{2})/);
   if (!match) return "09:00:00";
   return `${match[1].padStart(2, "0")}:${match[2]}:00`;
+}
+
+function parseEndTimeFromExamTime(examTime) {
+  if (!examTime) return "11:00:00";
+  const normalized = String(examTime).replace(/\u2013|\u2014/g, "-");
+  const parts = normalized.split("-");
+  const part = (parts.length > 1 ? parts[1] : parts[0])?.trim() || "11:00";
+  const match = part.match(/(\d{1,2}):(\d{2})/);
+  if (!match) return "11:00:00";
+  return `${match[1].padStart(2, "0")}:${match[2]}:00`;
+}
+
+async function computeExamEndUtc(examDate, endTime, executor = db) {
+  const tz = getInstitutionTimezone();
+  const end = endTime || "11:00:00";
+  const [rows] = await executor.query(
+    `SELECT ((?::date + ?::time) AT TIME ZONE ?) AS end_utc`,
+    [examDate, end, tz]
+  );
+  const r = rows[0] || {};
+  return r.end_utc ?? r.endutc;
 }
 
 /**
@@ -97,6 +121,7 @@ async function upsertSessionFromExam({
   venueId,
   examDate,
   startTime,
+  endTime,
   closeOffsetMinutes,
   executor = db,
 }) {
@@ -107,18 +132,26 @@ async function upsertSessionFromExam({
     executor
   );
 
+  let resolvedEndTime = endTime;
+  if (resolvedEndTime == null) {
+    const [examRows] = await executor.query(`SELECT exam_time FROM exams WHERE id = ?`, [examId]);
+    resolvedEndTime = parseEndTimeFromExamTime(examRows[0]?.exam_time ?? examRows[0]?.examtime);
+  }
+  const examEndUtc = await computeExamEndUtc(examDate, resolvedEndTime, executor);
+
   await executor.query(
     `INSERT INTO attendance_sessions
        (exam_id, venue_id, attendance_open_time, attendance_close_time,
-        attendance_status, close_offset_minutes, updated_at)
-     VALUES (?, ?, ?, ?, 'PENDING', ?, NOW())
+        attendance_status, close_offset_minutes, exam_end_time, lifecycle_status, updated_at)
+     VALUES (?, ?, ?, ?, 'PENDING', ?, ?, 'ACTIVE', NOW())
      ON CONFLICT (exam_id, venue_id) DO UPDATE SET
        attendance_open_time = EXCLUDED.attendance_open_time,
        attendance_close_time = EXCLUDED.attendance_close_time,
        close_offset_minutes = EXCLUDED.close_offset_minutes,
+       exam_end_time = COALESCE(EXCLUDED.exam_end_time, attendance_sessions.exam_end_time),
        updated_at = NOW()
      WHERE attendance_sessions.attendance_status NOT IN ('MANUALLY_UNLOCKED', 'MANUALLY_LOCKED')`,
-    [examId, venueId, openUtc, closeUtc, offset]
+    [examId, venueId, openUtc, closeUtc, offset, examEndUtc]
   );
 
   return fetchSession(examId, venueId, executor);
@@ -268,7 +301,71 @@ async function persistAutoStatus(examId, venueId, status, executor = db) {
   );
 }
 
+async function syncLifecycleStatus(examId, venueId, executor = db) {
+  const session = await fetchSession(examId, venueId, executor);
+  if (!session) return null;
+  if (session.lifecycleStatus === "COMPLETED") return session;
+
+  const serverNow = await getServerNow(executor);
+  let examEnd = session.examEndTime;
+  if (!examEnd) {
+    const endTime = parseEndTimeFromExamTime(session.examTime);
+    examEnd = await computeExamEndUtc(session.examDate, endTime, executor);
+    await executor.query(
+      `UPDATE attendance_sessions SET exam_end_time = ?, updated_at = NOW()
+       WHERE exam_id = ? AND venue_id = ?`,
+      [examEnd, examId, venueId]
+    );
+  }
+
+  if (new Date(serverNow) >= new Date(examEnd)) {
+    await executor.query(
+      `UPDATE attendance_sessions
+       SET lifecycle_status = 'COMPLETED',
+           completed_at = COALESCE(completed_at, NOW()),
+           updated_at = NOW()
+       WHERE exam_id = ? AND venue_id = ? AND lifecycle_status = 'ACTIVE'`,
+      [examId, venueId]
+    );
+    await executor.query(
+      `UPDATE attendance SET is_locked = TRUE WHERE exam_id = ? AND venue_id = ?`,
+      [examId, venueId]
+    );
+  }
+
+  return fetchSession(examId, venueId, executor);
+}
+
+async function refreshDueLifecycleStatuses(executor = db) {
+  await executor.query(
+    `UPDATE attendance_sessions
+     SET lifecycle_status = 'COMPLETED',
+         completed_at = COALESCE(completed_at, NOW()),
+         updated_at = NOW()
+     WHERE lifecycle_status = 'ACTIVE'
+       AND exam_end_time IS NOT NULL
+       AND exam_end_time <= NOW()`
+  );
+  await executor.query(
+    `UPDATE attendance att
+     SET is_locked = TRUE
+     FROM attendance_sessions s
+     WHERE s.exam_id = att.exam_id
+       AND s.venue_id = att.venue_id
+       AND s.lifecycle_status = 'COMPLETED'
+       AND att.is_locked = FALSE`
+  );
+}
+
+async function isLifecycleCompleted(examId, venueId, executor = db) {
+  await syncLifecycleStatus(examId, venueId, executor);
+  const session = await fetchSession(examId, venueId, executor);
+  return session?.lifecycleStatus === "COMPLETED";
+}
+
 async function getWindowState(examId, venueId, executor = db) {
+  await refreshDueLifecycleStatuses(executor);
+  await syncLifecycleStatus(examId, venueId, executor);
   const session = await ensureSession(examId, venueId, executor);
   const serverNow = await getServerNow(executor);
   const evaluation = await evaluateWindow(session, serverNow, executor);
@@ -277,7 +374,17 @@ async function getWindowState(examId, venueId, executor = db) {
     await persistAutoStatus(examId, venueId, evaluation.status, executor);
   }
 
-  return { session, ...evaluation };
+  const lifecycleCompleted = session?.lifecycleStatus === "COMPLETED";
+  return {
+    session,
+    ...evaluation,
+    lifecycleStatus: session?.lifecycleStatus ?? "ACTIVE",
+    examEndTime: session?.examEndTime ?? null,
+    completedAt: session?.completedAt ?? null,
+    canWrite: lifecycleCompleted ? false : evaluation.canWrite,
+    canRead: evaluation.canRead || lifecycleCompleted,
+    lifecycleCompleted,
+  };
 }
 
 function buildWindowError(evaluation) {
@@ -291,9 +398,16 @@ function buildWindowError(evaluation) {
 }
 
 async function assertWritable(examId, venueId, { adminBypass = false } = {}) {
+  const completed = await isLifecycleCompleted(examId, venueId);
+  if (completed) {
+    const err = new Error("Attendance is completed and cannot be modified.");
+    err.statusCode = 403;
+    err.code = "ATTENDANCE_COMPLETED";
+    throw err;
+  }
+
   if (adminBypass) {
-    const state = await getWindowState(examId, venueId);
-    return state;
+    return getWindowState(examId, venueId);
   }
 
   const state = await getWindowState(examId, venueId);
@@ -375,12 +489,17 @@ module.exports = {
   getInstitutionTimezone,
   getDefaultCloseOffsetMinutes,
   parseStartTimeFromExamTime,
+  parseEndTimeFromExamTime,
   computeWindowTimes,
+  computeExamEndUtc,
   fetchSession,
   upsertSessionFromExam,
   ensureSession,
   getServerNow,
   evaluateWindow,
+  syncLifecycleStatus,
+  refreshDueLifecycleStatuses,
+  isLifecycleCompleted,
   getWindowState,
   assertWritable,
   buildWindowError,

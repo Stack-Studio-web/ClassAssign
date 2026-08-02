@@ -13,6 +13,47 @@ const {
 
 const ADMIN_ROLES = ["admin", "faculty_incharge"];
 const ALL_ATTENDANCE_ROLES = ["admin", "faculty_incharge", "faculty"];
+const VIEW_ATTENDANCE_ROLES = ["admin", "faculty_incharge", "faculty", "hod"];
+
+router.get(
+  "/active",
+  sessionAuth,
+  checkRole(VIEW_ATTENDANCE_ROLES),
+  requireFacultyProfile,
+  AttendanceController.getActiveSessions
+);
+
+router.get(
+  "/completed",
+  sessionAuth,
+  checkRole(VIEW_ATTENDANCE_ROLES),
+  requireFacultyProfile,
+  AttendanceController.getCompletedSessions
+);
+
+router.get(
+  "/completed/export",
+  sessionAuth,
+  checkRole(VIEW_ATTENDANCE_ROLES),
+  requireFacultyProfile,
+  AttendanceController.exportCompleted
+);
+
+router.get(
+  "/completed/:sessionUuid",
+  sessionAuth,
+  checkRole(VIEW_ATTENDANCE_ROLES),
+  requireFacultyProfile,
+  AttendanceController.getCompletedDetail
+);
+
+router.get(
+  "/counts",
+  sessionAuth,
+  checkRole(VIEW_ATTENDANCE_ROLES),
+  requireFacultyProfile,
+  AttendanceController.getLifecycleCounts
+);
 
 router.get(
   "/assignments",

@@ -226,7 +226,7 @@ const Report = () => {
           Hall View
         </button>
         <button
-          onClick={() => navigate("/attendance")}
+          onClick={() => navigate("/attendance/sheets")}
           className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-medium shadow-sm transition-all duration-200"
         >
           <ClipboardDocumentListIcon className="h-5 w-5" />

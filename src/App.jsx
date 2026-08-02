@@ -27,6 +27,8 @@ import FacultyLogin from './pages/FacultyLogin';
 import FacultyDashboard from './pages/FacultyDashboard';
 import FacultyAttendance from './pages/FacultyAttendance';
 import AttendanceReports from './pages/AttendanceReports';
+import ActiveAttendance from './pages/ActiveAttendance';
+import CompletedAttendance from './pages/CompletedAttendance';
 import FacultyTransferRequests from './pages/FacultyTransferRequests';
 import Loader from './Components/Loader';
 import MentorLogin from './pages/mentor-portal/MentorLogin';
@@ -151,7 +153,43 @@ function App() {
         path="/admin/attendance"
         element={
           <AuthGuard allowedRoles={['admin', 'faculty_incharge']}>
+            <Navigate to="/attendance" replace />
+          </AuthGuard>
+        }
+      />
+
+      <Route
+        path="/admin/attendance/reports"
+        element={
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge']}>
             <Layout><AttendanceReports /></Layout>
+          </AuthGuard>
+        }
+      />
+
+      <Route
+        path="/attendance"
+        element={
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod', 'faculty']}>
+            <Layout><ActiveAttendance /></Layout>
+          </AuthGuard>
+        }
+      />
+
+      <Route
+        path="/attendance/completed"
+        element={
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod', 'faculty']}>
+            <Layout><CompletedAttendance /></Layout>
+          </AuthGuard>
+        }
+      />
+
+      <Route
+        path="/attendance/sheets"
+        element={
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod']}>
+            <Layout><StudentAttendance /></Layout>
           </AuthGuard>
         }
       />
@@ -205,16 +243,6 @@ function App() {
           }
         />
       </Route>
-
-      {/* PROTECTED ROUTES - ACCESSIBLE BY Admin, Faculty Incharge, HoD */}
-      <Route
-        path="/attendance"
-        element={
-          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod']}>
-            <Layout><StudentAttendance /></Layout>
-          </AuthGuard>
-        }
-      />
 
       <Route
         path="/venue"

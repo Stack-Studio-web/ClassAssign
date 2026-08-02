@@ -200,11 +200,13 @@ const AttendanceService = {
       );
 
       const examStartTime = plan.exam_start_time ?? plan.examstarttime;
+      const examEndTime = plan.exam_end_time ?? plan.examendtime;
       await AttendanceWindow.upsertSessionFromExam({
         examId,
         venueId,
         examDate,
         startTime: examStartTime,
+        endTime: examEndTime,
         executor,
       });
 
@@ -325,8 +327,10 @@ const AttendanceService = {
         remainingSeconds: w.remainingSeconds ?? null,
         serverTime: w.serverTime,
         manuallyReopened: w.manuallyReopened ?? false,
-        closeOffsetMinutes: Number(row.close_offset_minutes ?? row.closeoffsetminutes ?? 40),
-        sessionUuid: row.session_public_uuid ?? row.sessionpublicuuid ?? null,
+        lifecycleStatus: w.lifecycleStatus,
+        lifecycleCompleted: w.lifecycleCompleted ?? false,
+        examEndTime: w.examEndTime ?? null,
+        completedAt: w.completedAt ?? null,
       });
     }
     return enriched;
@@ -366,7 +370,8 @@ const AttendanceService = {
       `,
       [facultyId]
     );
-    return AttendanceService.enrichAssignmentsWithWindow(rows || []);
+    const enriched = await AttendanceService.enrichAssignmentsWithWindow(rows || []);
+    return enriched.filter((a) => a.lifecycleStatus !== "COMPLETED");
   },
 
   createAssignment: async ({ facultyId, examId, venueId, assignedDate }) => {

@@ -1,4 +1,5 @@
 const AttendanceService = require("../services/attendanceService");
+const AttendanceLifecycleService = require("../services/attendanceLifecycleService");
 const PublicId = require("../utils/publicId");
 const Api = require("../utils/apiResponse");
 
@@ -33,6 +34,10 @@ function formatWindowPayload(state) {
     remainingSeconds: state.remainingSeconds ?? null,
     manuallyReopened: state.manuallyReopened ?? false,
     sessionUuid: state.sessionUuid ?? null,
+    lifecycleStatus: state.lifecycleStatus ?? "ACTIVE",
+    lifecycleCompleted: state.lifecycleCompleted ?? false,
+    examEndTime: state.examEndTime ?? null,
+    completedAt: state.completedAt ?? null,
   };
 }
 
@@ -56,6 +61,20 @@ async function resolveExamVenueFromBody(body) {
   const venueId = body.venueId ? Number(body.venueId) : null;
   if (examId && venueId) return { examId, venueId };
   return null;
+}
+
+function parseLifecycleFilters(query) {
+  return {
+    date: query.date || null,
+    session: query.session || null,
+    examType: query.examType || query.exam_type || null,
+    hall: query.hall || null,
+    faculty: query.faculty || null,
+    department: query.department || null,
+    search: query.search || null,
+    page: query.page,
+    limit: query.limit,
+  };
 }
 
 const AttendanceController = {
@@ -224,6 +243,16 @@ const AttendanceController = {
       const ctx = await resolveExamVenueFromBody(req.body);
       if (!ctx) return Api.notFound(res, "Not found");
 
+      const AttendanceWindow = require("../utils/attendanceWindow");
+      if (await AttendanceWindow.isLifecycleCompleted(ctx.examId, ctx.venueId)) {
+        return Api.fail(
+          res,
+          403,
+          "ATTENDANCE_COMPLETED",
+          "Completed attendance cannot be unlocked."
+        );
+      }
+
       const result = await AttendanceService.unlockAttendance({
         examId: ctx.examId,
         venueId: ctx.venueId,
@@ -373,16 +402,20 @@ const AttendanceController = {
       ]);
 
       const submittedLock = isLocked && window.status !== "MANUALLY_UNLOCKED";
-      const canWrite = window.canWrite && !submittedLock;
+      const lifecycleCompleted = window.lifecycleCompleted || window.lifecycleStatus === "COMPLETED";
+      const canWrite = window.canWrite && !submittedLock && !lifecycleCompleted;
 
       return res.json({
         success: true,
         assignmentUuid,
         sessionUuid: sessionUuid ?? window.sessionUuid ?? null,
         status: window.status,
-        isLocked: submittedLock,
+        lifecycleStatus: window.lifecycleStatus ?? "ACTIVE",
+        lifecycleCompleted,
+        isLocked: submittedLock || lifecycleCompleted,
         window: formatWindowPayload({ ...window, sessionUuid: sessionUuid ?? window.sessionUuid }),
         canWrite,
+        readOnly: !canWrite,
         students,
       });
     } catch (err) {
@@ -448,6 +481,84 @@ const AttendanceController = {
       });
     } catch (err) {
       return Api.fromError(res, err, "Failed to fetch assigned exams");
+    }
+  },
+
+  getActiveSessions: async (req, res) => {
+    try {
+      const filters = parseLifecycleFilters(req.query);
+      const data = await AttendanceLifecycleService.getActiveSessions(
+        req.user,
+        req.user.role,
+        filters
+      );
+      return res.json({ success: true, ...data });
+    } catch (err) {
+      return Api.fromError(res, err, "Failed to fetch active attendance");
+    }
+  },
+
+  getCompletedSessions: async (req, res) => {
+    try {
+      const filters = parseLifecycleFilters(req.query);
+      const data = await AttendanceLifecycleService.getCompletedSessions(
+        req.user,
+        req.user.role,
+        filters
+      );
+      return res.json({ success: true, ...data });
+    } catch (err) {
+      return Api.fromError(res, err, "Failed to fetch completed attendance");
+    }
+  },
+
+  getLifecycleCounts: async (req, res) => {
+    try {
+      const counts = await AttendanceLifecycleService.getCounts(req.user, req.user.role);
+      return res.json({ success: true, counts });
+    } catch (err) {
+      return Api.fromError(res, err, "Failed to fetch attendance counts");
+    }
+  },
+
+  exportCompleted: async (req, res) => {
+    try {
+      const filters = parseLifecycleFilters(req.query);
+      const { buffer, filename } = await AttendanceLifecycleService.exportCompletedExcel(
+        req.user,
+        req.user.role,
+        filters
+      );
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      return res.send(buffer);
+    } catch (err) {
+      return Api.fromError(res, err, "Failed to export attendance");
+    }
+  },
+
+  getCompletedDetail: async (req, res) => {
+    try {
+      const detail = await AttendanceLifecycleService.getCompletedSessionDetail(
+        req.params.sessionUuid,
+        req.user,
+        req.user.role
+      );
+      if (!detail) {
+        return Api.notFound(res, "Completed session not found");
+      }
+      return res.json({ success: true, ...detail });
+    } catch (err) {
+      if (err.statusCode === 403) {
+        return Api.forbidden(res, err.message);
+      }
+      if (err.statusCode === 400) {
+        return Api.validationError(res, err.message);
+      }
+      return Api.fromError(res, err, "Failed to fetch session detail");
     }
   },
 };

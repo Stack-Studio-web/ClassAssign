@@ -16,6 +16,7 @@ import {
   AcademicCapIcon,
   RectangleStackIcon,
   TableCellsIcon,
+  CheckCircleIcon,
 } from "@heroicons/react/24/outline";
 import { NavLink } from "react-router-dom";
 import { useSidebar } from "../context/SidebarContext";
@@ -32,8 +33,9 @@ const ADMIN_NAV = [
   { to: "/report", label: "Reports", icon: NewspaperIcon },
   { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
   { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
-  { to: "/admin/attendance", label: "Exam Attendance", icon: UserGroupIcon },
   { to: "/admin/attendance/transfers", label: "Faculty Change Requests", icon: ArrowsRightLeftIcon },
+  { to: "/attendance", label: "Active Attendance", icon: UserGroupIcon },
+  { to: "/attendance/completed", label: "Completed Attendance", icon: CheckCircleIcon },
   { to: "/ineligibility/view", label: "Ineligibility", icon: ExclamationTriangleIcon },
   { to: "/users", label: "User Management", icon: UsersIcon },
   { to: "/logs", label: "Logs", icon: NewspaperIcon },
@@ -47,8 +49,9 @@ const FACULTY_NAV = [
   { to: "/report", label: "Reports", icon: NewspaperIcon },
   { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
   { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
-  { to: "/admin/attendance", label: "Exam Attendance", icon: UserGroupIcon },
   { to: "/admin/attendance/transfers", label: "Faculty Change Requests", icon: ArrowsRightLeftIcon },
+  { to: "/attendance", label: "Active Attendance", icon: UserGroupIcon },
+  { to: "/attendance/completed", label: "Completed Attendance", icon: CheckCircleIcon },
   { to: "/ineligibility/view", label: "Ineligibility", icon: ExclamationTriangleIcon },
 ];
 
@@ -56,7 +59,8 @@ const HOD_NAV = [
   { to: "/student/browser", label: "Student Browser", icon: TableCellsIcon },
   { to: "/report", label: "Reports", icon: NewspaperIcon },
   { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
-  { to: "/attendance", label: "Attendance", icon: UserGroupIcon },
+  { to: "/attendance", label: "Active Attendance", icon: UserGroupIcon },
+  { to: "/attendance/completed", label: "Completed Attendance", icon: CheckCircleIcon },
   { to: "/admin/attendance/transfers", label: "Faculty Change Requests", icon: ArrowsRightLeftIcon },
   { to: "/Hall", label: "Hall", icon: BuildingOfficeIcon },
   { to: "/users", label: "User Management", icon: UsersIcon },

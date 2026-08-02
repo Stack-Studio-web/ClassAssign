@@ -239,6 +239,7 @@ export default function FacultyAttendance() {
   const [sheetMeta, setSheetMeta] = useState({ hallNo: "", examDate: "", examSession: "" });
   const [courses, setCourses] = useState([]);
   const [isLocked, setIsLocked] = useState(false);
+  const [lifecycleCompleted, setLifecycleCompleted] = useState(false);
   const [canWrite, setCanWrite] = useState(false);
   const [windowInfo, setWindowInfo] = useState(null);
   const [tick, setTick] = useState(Date.now());
@@ -249,7 +250,7 @@ export default function FacultyAttendance() {
   const [search, setSearch] = useState("");
   const [showConfirm, setShowConfirm] = useState(false);
 
-  const readOnly = isLocked || !canWrite;
+  const readOnly = isLocked || !canWrite || lifecycleCompleted;
 
   useEffect(() => {
     const id = setInterval(() => setTick(Date.now()), 30000);
@@ -332,6 +333,7 @@ export default function FacultyAttendance() {
         const savedStudents = studentsRes.data.students || [];
         const locked = !!studentsRes.data.isLocked;
         const writable = !!studentsRes.data.canWrite;
+        const completed = !!studentsRes.data.lifecycleCompleted;
 
         setSheetMeta({
           hallNo: seatingData.hallNo || examMeta.venueName,
@@ -340,6 +342,7 @@ export default function FacultyAttendance() {
         });
         setCourses(mergeCourseAttendance(seatingData, savedStudents, locked || !writable));
         setIsLocked(locked);
+        setLifecycleCompleted(completed);
         setCanWrite(writable);
         setWindowInfo(studentsRes.data.window || null);
       } catch (err) {
@@ -525,7 +528,12 @@ export default function FacultyAttendance() {
             )}
           </div>
         )}
-        {isLocked && (
+        {lifecycleCompleted && (
+          <div className="mb-4 bg-blue-50 border border-blue-200 text-blue-800 px-4 py-3 rounded-lg text-sm">
+            Exam end time has passed. This attendance session is completed and read-only.
+          </div>
+        )}
+        {isLocked && !lifecycleCompleted && (
           <div className="mb-4 bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-lg text-sm">
             Attendance is submitted and locked. Contact admin to unlock for edits.
           </div>
