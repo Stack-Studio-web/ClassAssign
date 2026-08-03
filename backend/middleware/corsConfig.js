@@ -1,9 +1,11 @@
 const cors = require("cors");
 
-/** Local dev + Hostinger VPS defaults. Override via ALLOWED_ORIGINS in .env */
+/** Local dev + KCT iExam production defaults. Override via ALLOWED_ORIGINS in .env */
 const DEFAULT_ORIGINS = [
   "http://localhost:5173",
   "http://127.0.0.1:5173",
+  "https://iexam.kumaraguru.in",
+  "http://iexam.kumaraguru.in",
   "http://213.210.37.189:3002",
   "http://213.210.37.189:5002",
 ];

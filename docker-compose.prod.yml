@@ -2,7 +2,8 @@
 # Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 #
 # Published URLs (defaults):
-#   Frontend: http://213.210.37.189:3002
+#   Frontend: https://iexam.kumaraguru.in  (or http://213.210.37.189:3002)
+#   API:      https://iexam.kumaraguru.in/api
 #   Backend:  http://213.210.37.189:5002
 
 services:
@@ -10,11 +11,11 @@ services:
     ports:
       - "${BACKEND_HOST_PORT:-5002}:5000"
     environment:
-      FRONTEND_URL: ${FRONTEND_URL:-http://213.210.37.189:3002}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://213.210.37.189:3002,http://213.210.37.189:5002}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://213.210.37.189:3002,http://213.210.37.189:5002}
-      API_PUBLIC_URL: ${API_PUBLIC_URL:-http://213.210.37.189:5002}
-      USE_HTTPS: ${USE_HTTPS:-false}
+      FRONTEND_URL: ${FRONTEND_URL:-https://iexam.kumaraguru.in}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://iexam.kumaraguru.in,http://213.210.37.189:3002,http://213.210.37.189:5002}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://iexam.kumaraguru.in,http://213.210.37.189:3002,http://213.210.37.189:5002}
+      API_PUBLIC_URL: ${API_PUBLIC_URL:-https://iexam.kumaraguru.in}
+      USE_HTTPS: ${USE_HTTPS:-true}
 
   frontend:
     ports:

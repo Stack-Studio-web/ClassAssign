@@ -13,11 +13,17 @@ const MICROSOFT_CLIENT_ID = process.env.MICROSOFT_CLIENT_ID;
 const MICROSOFT_CLIENT_SECRET = process.env.MICROSOFT_CLIENT_SECRET;
 const MICROSOFT_TENANT_ID = process.env.MICROSOFT_TENANT_ID;
 const MICROSOFT_SCOPES = ["openid", "profile", "email", "User.Read"];
-const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
+const FRONTEND_URL =
+  process.env.FRONTEND_URL ||
+  (process.env.NODE_ENV === "production"
+    ? "https://iexam.kumaraguru.in"
+    : "http://localhost:5173");
 const API_PUBLIC_URL =
   process.env.API_PUBLIC_URL ||
   process.env.BACKEND_PUBLIC_URL ||
-  `http://localhost:${process.env.PORT || 5000}`;
+  (process.env.NODE_ENV === "production"
+    ? "https://iexam.kumaraguru.in"
+    : `http://localhost:${process.env.PORT || 5000}`);
 const MOBILE_APP_SCHEME = process.env.MOBILE_APP_SCHEME || "hallora";
 const AUTH_BASE_URL = `https://login.microsoftonline.com/${MICROSOFT_TENANT_ID}/oauth2/v2.0`;
 const WEB_REDIRECT_URI = `${FRONTEND_URL}/api/auth/microsoft/callback`;
