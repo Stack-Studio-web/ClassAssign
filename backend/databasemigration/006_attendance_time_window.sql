@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS attendance_sessions (
     CHECK (attendance_status IN (
       'PENDING', 'OPEN', 'LOCKED', 'MANUALLY_UNLOCKED', 'MANUALLY_LOCKED'
     )),
-  close_offset_minutes INT NOT NULL DEFAULT 40,
+  close_offset_minutes INT NOT NULL DEFAULT 60,
   manually_changed_by INT REFERENCES users(id) ON DELETE SET NULL,
   manually_changed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,

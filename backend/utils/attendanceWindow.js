@@ -9,7 +9,7 @@ function getInstitutionTimezone() {
 
 function getDefaultCloseOffsetMinutes() {
   const n = Number(process.env.DEFAULT_ATTENDANCE_CLOSE_OFFSET_MINUTES);
-  return Number.isFinite(n) && n > 0 ? n : 40;
+  return Number.isFinite(n) && n > 0 ? n : 60;
 }
 
 function formatTimeForMessage(isoString, tz) {
@@ -36,7 +36,7 @@ function toSessionRow(row) {
     attendanceOpenTime: row.attendance_open_time ?? row.attendanceopentime,
     attendanceCloseTime: row.attendance_close_time ?? row.attendanceclosetime,
     attendanceStatus: row.attendance_status ?? row.attendancestatus,
-    closeOffsetMinutes: Number(row.close_offset_minutes ?? row.closeoffsetminutes ?? 40),
+    closeOffsetMinutes: Number(row.close_offset_minutes ?? row.closeoffsetminutes ?? 60),
     manuallyChangedBy: row.manually_changed_by ?? row.manuallychangedby ?? null,
     manuallyChangedAt: row.manually_changed_at ?? row.manuallychangedat ?? null,
     examDate: row.exam_date ?? row.examdate ?? null,

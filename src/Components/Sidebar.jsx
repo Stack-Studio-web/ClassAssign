@@ -32,6 +32,7 @@ const ADMIN_NAV = [
   { to: "/mentor/import", label: "Mentor Management", icon: UsersIcon },
   { to: "/faculty", label: "Faculty Management", icon: UserPlusIcon },
   { to: "/report", label: "Reports", icon: NewspaperIcon },
+  { to: "/report/completed", label: "Completed Reports", icon: CheckCircleIcon },
   { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
   { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
   { to: "/Hall", label: "Hall Allotment", icon: BuildingOfficeIcon },
@@ -50,6 +51,7 @@ const FACULTY_NAV = [
   { to: "/student/batches", label: "Batch Management", icon: RectangleStackIcon },
   { to: "/mentor/import", label: "Mentor Management", icon: UsersIcon },
   { to: "/report", label: "Reports", icon: NewspaperIcon },
+  { to: "/report/completed", label: "Completed Reports", icon: CheckCircleIcon },
   { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
   { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
   { to: "/Hall", label: "Hall Allotment", icon: BuildingOfficeIcon },
@@ -63,6 +65,7 @@ const FACULTY_NAV = [
 const HOD_NAV = [
   { to: "/student/browser", label: "Student Browser", icon: TableCellsIcon },
   { to: "/report", label: "Reports", icon: NewspaperIcon },
+  { to: "/report/completed", label: "Completed Reports", icon: CheckCircleIcon },
   { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
   { to: "/attendance", label: "Active Attendance", icon: UserGroupIcon },
   { to: "/attendance/completed", label: "Completed Attendance", icon: CheckCircleIcon },

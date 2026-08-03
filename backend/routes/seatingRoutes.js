@@ -376,6 +376,10 @@ router.get("/",
         const hodAllowedOwnerIds = await User.getOwnerIdsForHod(req.user.id);
         opts = { ...opts, hodAllowedOwnerIds };
       }
+      const status = String(req.query.status || "all").toLowerCase();
+      if (["active", "completed", "all"].includes(status)) {
+        opts.status = status;
+      }
       const plans = await SeatingPlan.getAllPlans(opts);
       res.status(200).json(plans);
     } catch (err) {
@@ -384,6 +388,48 @@ router.get("/",
         error: "Failed to fetch seating plans",
         message: err.message
       });
+    }
+  }
+);
+
+/* =====================================================
+    POST: MARK SELECTED REPORTS AS COMPLETED
+    Roles: admin, faculty_incharge
+===================================================== */
+router.post(
+  "/mark-completed",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge"]),
+  async (req, res) => {
+    try {
+      const uuids = Array.isArray(req.body?.uuids) ? req.body.uuids : [];
+      if (uuids.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Select at least one seating plan to mark as completed.",
+        });
+      }
+
+      const internalIds = [];
+      for (const uuid of uuids) {
+        const id = await resolveInternalId(TABLE.seatingPlans, uuid, {
+          allowLegacyNumeric: true,
+        });
+        if (id) internalIds.push(id);
+      }
+
+      if (internalIds.length === 0) {
+        return Api.notFound(res, "No matching seating plans found.");
+      }
+
+      const updated = await SeatingPlan.markCompletedByIds(internalIds, ownerOpts(req));
+      return Api.success(res, `Marked ${updated} report(s) as completed.`, {
+        updated,
+        requested: uuids.length,
+      });
+    } catch (err) {
+      console.error("MARK COMPLETED ERROR:", err);
+      return Api.fromError(res, err, "Failed to mark reports as completed.");
     }
   }
 );

@@ -210,7 +210,7 @@ export default function AttendanceReports() {
   const handleConfigureWindow = async (a) => {
     const minutes = window.prompt(
       "Close attendance how many minutes after exam start?",
-      String(a.closeOffsetMinutes || 40)
+      String(a.closeOffsetMinutes || 60)
     );
     if (minutes == null) return;
     const closeOffsetMinutes = Number(minutes);

@@ -9,6 +9,7 @@ import Layout from './Components/Layout';
 import Allotment from './pages/Allotment';
 import Venue from './pages/Venue';
 import Report from './pages/Report';
+import CompletedReports from './pages/CompletedReports';
 import Hall from './pages/StudentArrangement';
 import StudentBrowser from './pages/StudentBrowser';
 import MentorImportPage from './pages/MentorImport';
@@ -277,6 +278,15 @@ function App() {
         element={
           <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod']}>
             <Layout><Report /></Layout>
+          </AuthGuard>
+        }
+      />
+
+      <Route
+        path="/report/completed"
+        element={
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod']}>
+            <Layout><CompletedReports /></Layout>
           </AuthGuard>
         }
       />

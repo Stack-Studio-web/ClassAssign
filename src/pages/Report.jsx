@@ -13,7 +13,9 @@ import {
   UserIcon,
   MapPinIcon,
   TrashIcon,
+  CheckCircleIcon,
 } from "@heroicons/react/24/outline";
+import { Link } from "react-router-dom";
 import PrintLayout from "./PrintLayout";
 import FacultySchedule from '../Components/FacultySchedule.jsx';
 
@@ -37,6 +39,7 @@ const Report = () => {
   const [allFaculty, setAllFaculty] = useState([]);
   const [userRole, setUserRole] = useState("");
   const [deletingPlanId, setDeletingPlanId] = useState(null);
+  const [markingCompleted, setMarkingCompleted] = useState(false);
   const componentRef = useRef();
   const navigate = useNavigate();
 
@@ -60,11 +63,12 @@ const Report = () => {
       setLoading(true);
       // ✅ 4. Use 'api' instance instead of raw 'axios' to fix 401 Unauthorized
       const [plansRes, facultyRes] = await Promise.all([
-        api.get("/seating"),
+        api.get("/seating", { params: { status: "active" } }),
         api.get("/faculty")
       ]);
       setPlans(Array.isArray(plansRes.data) ? plansRes.data : []);
       setAllFaculty(Array.isArray(facultyRes.data) ? facultyRes.data : []);
+      setSelectedPlans([]);
       setError(null);
     } catch (err) {
       console.error("Failed to fetch data:", err);
@@ -149,6 +153,28 @@ const Report = () => {
     }
   };
 
+  const handleMarkCompleted = async () => {
+    if (selectedPlans.length === 0) {
+      toast.warning("Please select at least one report to mark as completed.");
+      return;
+    }
+    const ok = await showConfirm(
+      `Mark ${selectedPlans.length} selected report(s) as completed? They will move to Completed Reports.`
+    );
+    if (!ok) return;
+    setMarkingCompleted(true);
+    try {
+      const res = await api.post("/seating/mark-completed", { uuids: selectedPlans });
+      const updated = res.data?.data?.updated ?? res.data?.updated ?? selectedPlans.length;
+      toast.success(`${updated} report(s) marked as completed.`);
+      navigate("/report/completed");
+    } catch (err) {
+      toast.error(getApiError(err), getApiErrorTitle(err, "Cannot mark completed"));
+    } finally {
+      setMarkingCompleted(false);
+    }
+  };
+
   const formatDate = (dateString) => {
     if (!dateString) return "—";
     const date = new Date(dateString);
@@ -212,8 +238,21 @@ const Report = () => {
     <div className="min-h-screen bg-gray-50 font-[Inter,sans-serif]">
       {/* Header */}
       <div className="px-4 md:px-8 py-4 md:py-6">
-        <h1 className="text-2xl md:text-3xl font-bold text-gray-800">Saved Seating Plans</h1>
-        <p className="text-sm text-gray-500 mt-0.5">Select plans to print or generate faculty schedule.</p>
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+          <div>
+            <h1 className="text-2xl md:text-3xl font-bold text-gray-800">Active Reports</h1>
+            <p className="text-sm text-gray-500 mt-0.5">
+              Select plans to print, or mark as completed after the exam.
+            </p>
+          </div>
+          <Link
+            to="/report/completed"
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-gray-200 text-gray-700 text-sm font-semibold hover:bg-gray-50"
+          >
+            <CheckCircleIcon className="h-4 w-4 text-emerald-600" />
+            Completed Reports
+          </Link>
+        </div>
       </div>
 
       {/* Action Buttons */}
@@ -248,6 +287,18 @@ const Report = () => {
               <DocumentTextIcon className="h-5 w-5" />
               Faculty Schedule PDF
             </button>
+            {(userRole === "admin" || userRole === "faculty_incharge") && (
+              <button
+                onClick={handleMarkCompleted}
+                disabled={markingCompleted}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-medium shadow-sm transition-all duration-200"
+              >
+                <CheckCircleIcon className="h-5 w-5" />
+                {markingCompleted
+                  ? "Marking…"
+                  : `Mark as Completed (${selectedPlans.length})`}
+              </button>
+            )}
           </>
         )}
       </div>

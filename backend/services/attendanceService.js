@@ -30,7 +30,7 @@ function toAssignmentRow(row) {
     windowStatus: row.window_status ?? row.windowstatus ?? null,
     opensAt: row.opens_at ?? row.opensat ?? null,
     closesAt: row.closes_at ?? row.closesat ?? null,
-    closeOffsetMinutes: Number(row.close_offset_minutes ?? row.closeoffsetminutes ?? 40),
+    closeOffsetMinutes: Number(row.close_offset_minutes ?? row.closeoffsetminutes ?? 60),
   };
 }
 

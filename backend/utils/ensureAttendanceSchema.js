@@ -70,7 +70,7 @@ async function ensureAttendanceSchema() {
           CHECK (attendance_status IN (
             'PENDING', 'OPEN', 'LOCKED', 'MANUALLY_UNLOCKED', 'MANUALLY_LOCKED'
           )),
-        close_offset_minutes INT NOT NULL DEFAULT 40,
+        close_offset_minutes INT NOT NULL DEFAULT 60,
         manually_changed_by INT REFERENCES users(id) ON DELETE SET NULL,
         manually_changed_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
@@ -81,6 +81,11 @@ async function ensureAttendanceSchema() {
 
     await db.query(
       `CREATE INDEX IF NOT EXISTS idx_attendance_sessions_exam_venue ON attendance_sessions(exam_id, venue_id)`
+    );
+
+    // Keep column default aligned with app default (60 minutes)
+    await db.query(
+      `ALTER TABLE attendance_sessions ALTER COLUMN close_offset_minutes SET DEFAULT 60`
     );
 
     // Backfill sessions for existing assignments

@@ -163,6 +163,15 @@ const SeatingPlan = {
       ownerSql = clause.sql;
       ownerParams = clause.params;
     }
+
+    const status = String(opts.status || "all").toLowerCase();
+    let statusSql = "";
+    if (status === "active") {
+      statusSql = (ownerSql ? " AND" : " WHERE") + " COALESCE(report_status, 'ACTIVE') = 'ACTIVE'";
+    } else if (status === "completed") {
+      statusSql = (ownerSql ? " AND" : " WHERE") + " report_status = 'COMPLETED'";
+    }
+
     const [rows] = await db.query(`
       SELECT 
         id AS _id,
@@ -174,9 +183,11 @@ const SeatingPlan = {
         exam_end_time,
         selected_courses,
         faculty_mode,
+        COALESCE(report_status, 'ACTIVE') AS report_status,
+        completed_at,
         created_at
-      FROM seating_plans${ownerSql || " WHERE 1=1"}
-      ORDER BY exam_date DESC
+      FROM seating_plans${ownerSql || " WHERE 1=1"}${statusSql}
+      ORDER BY exam_date DESC, created_at DESC
     `, ownerParams);
 
     const plans = [];
@@ -191,6 +202,8 @@ const SeatingPlan = {
         examStartTime: row.exam_start_time ?? row.examstarttime,
         examEndTime: row.exam_end_time ?? row.examendtime,
         facultyMode: row.faculty_mode ?? row.facultymode,
+        reportStatus: row.report_status ?? row.reportstatus ?? "ACTIVE",
+        completedAt: row.completed_at ?? row.completedat ?? null,
         createdAt: row.created_at ?? row.createdat,
         selectedCourses: (() => {
           const sc = row.selected_courses ?? row.selectedcourses;
@@ -420,6 +433,37 @@ const SeatingPlan = {
 
     plan.venuesUsed = venues || [];
     return plan;
+  },
+
+  /* ===============================
+      MARK PLANS AS COMPLETED (report archive)
+  =============================== */
+  markCompletedByIds: async (planIds, opts = {}) => {
+    const ids = (planIds || []).map(Number).filter((id) => Number.isFinite(id) && id > 0);
+    if (ids.length === 0) return 0;
+
+    let ownerSql = "";
+    let ownerParams = [];
+    if (opts.hodAllowedOwnerIds && opts.hodAllowedOwnerIds.length > 0) {
+      const placeholders = opts.hodAllowedOwnerIds.map(() => "?").join(",");
+      ownerSql = ` AND owner_user_id IN (${placeholders})`;
+      ownerParams = opts.hodAllowedOwnerIds;
+    } else {
+      const clause = andClause(opts.role, opts.ownerUserId);
+      ownerSql = clause.sql;
+      ownerParams = clause.params;
+    }
+
+    const idPlaceholders = ids.map(() => "?").join(",");
+    const [result] = await db.query(
+      `UPDATE seating_plans
+       SET report_status = 'COMPLETED',
+           completed_at = COALESCE(completed_at, NOW())
+       WHERE id IN (${idPlaceholders})
+         AND COALESCE(report_status, 'ACTIVE') = 'ACTIVE'${ownerSql}`,
+      [...ids, ...ownerParams]
+    );
+    return result?.affectedRows ?? result?.rowCount ?? 0;
   },
 
   /* ===============================
