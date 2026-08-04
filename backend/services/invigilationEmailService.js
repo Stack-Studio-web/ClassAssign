@@ -57,8 +57,7 @@ async function fetchAllotmentsForPlans(seatingPlanIds) {
       f.department AS faculty_department,
       e.id AS exam_id,
       e.exam_name,
-      e.exam_code,
-      e.exam_type AS exam_table_type
+      e.exam_code
     FROM seating_plan_venues spv
     JOIN seating_plans sp ON sp.id = spv.seating_plan_id
     JOIN faculty f ON f.id = spv.faculty_id
@@ -242,8 +241,7 @@ async function processBatch(batchId, { seatingPlanIds, resend }) {
         row.venue_name ?? row.venuename ?? row.venue_table_name ?? row.venuetablename ?? "—";
       const examDate = row.exam_date ?? row.examdate;
       const session = row.exam_session ?? row.examsession;
-      const examType =
-        row.exam_type ?? row.examtype ?? row.exam_table_type ?? row.examtabletype ?? "—";
+      const examType = row.exam_type ?? row.examtype ?? "—";
       const examName = examNameFromPlan(row);
       const startTime = row.exam_start_time ?? row.examstarttime;
       const endTime = row.exam_end_time ?? row.examendtime;
