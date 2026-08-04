@@ -164,12 +164,14 @@ const SeatingPlan = {
       ownerParams = clause.params;
     }
 
+    // Always start with a WHERE (admins have empty ownerSql), then AND status filters.
+    const baseWhere = ownerSql || " WHERE 1=1";
     const status = String(opts.status || "all").toLowerCase();
     let statusSql = "";
     if (status === "active") {
-      statusSql = (ownerSql ? " AND" : " WHERE") + " COALESCE(report_status, 'ACTIVE') = 'ACTIVE'";
+      statusSql = " AND COALESCE(report_status, 'ACTIVE') = 'ACTIVE'";
     } else if (status === "completed") {
-      statusSql = (ownerSql ? " AND" : " WHERE") + " report_status = 'COMPLETED'";
+      statusSql = " AND report_status = 'COMPLETED'";
     }
 
     const [rows] = await db.query(`
@@ -186,7 +188,7 @@ const SeatingPlan = {
         COALESCE(report_status, 'ACTIVE') AS report_status,
         completed_at,
         created_at
-      FROM seating_plans${ownerSql || " WHERE 1=1"}${statusSql}
+      FROM seating_plans${baseWhere}${statusSql}
       ORDER BY exam_date DESC, created_at DESC
     `, ownerParams);
 
