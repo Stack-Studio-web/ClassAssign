@@ -31,13 +31,20 @@ class Config {
     this.KCT_TEAMS_API_USER = process.env.KCT_TEAMS_API_USER || 'iqube@kct.ac.in';
     this.KCT_TEAMS_API_PASSWORD = process.env.KCT_TEAMS_API_PASSWORD || 'iQube@2025';
     
-    // Mail settings
-    this.MAIL_SERVER = process.env.MAIL_SERVER || 'smtp.office365.com';
-    this.MAIL_PORT = parseInt(process.env.MAIL_PORT || '587');
+    // Mail settings (Microsoft 365 SMTP — invigilation notifications)
+    this.SMTP_HOST = process.env.SMTP_HOST || process.env.MAIL_SERVER || 'smtp.office365.com';
+    this.SMTP_PORT = parseInt(process.env.SMTP_PORT || process.env.MAIL_PORT || '587');
+    this.SMTP_SECURE = String(process.env.SMTP_SECURE || 'false').toLowerCase() === 'true';
+    this.SMTP_USER = process.env.SMTP_USER || process.env.MAIL_USERNAME || 'support.iexam@kct.ac.in';
+    this.SMTP_PASS = process.env.SMTP_PASS || process.env.MAIL_PASSWORD || '';
+    this.MAIL_FROM = process.env.MAIL_FROM || process.env.MAIL_DEFAULT_SENDER ||
+      'Hallora Examination Cell <support.iexam@kct.ac.in>';
+    this.MAIL_SERVER = this.SMTP_HOST;
+    this.MAIL_PORT = this.SMTP_PORT;
     this.MAIL_USE_TLS = process.env.MAIL_USE_TLS !== 'false';
-    this.MAIL_USERNAME = process.env.MAIL_USERNAME;
-    this.MAIL_PASSWORD = process.env.MAIL_PASSWORD;
-    this.MAIL_DEFAULT_SENDER = process.env.MAIL_DEFAULT_SENDER;
+    this.MAIL_USERNAME = this.SMTP_USER;
+    this.MAIL_PASSWORD = this.SMTP_PASS;
+    this.MAIL_DEFAULT_SENDER = this.MAIL_FROM;
     
     // ✅ Bull/Celery Configuration - OPTIMIZED for high volume
     this.CELERY_BROKER_URL = process.env.CELERY_BROKER_URL || 'redis://localhost:6379/0';
