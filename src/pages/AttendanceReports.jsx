@@ -19,7 +19,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { getWindowBadge } from "../lib/attendanceWindow";
 import { useToast } from "../context/ToastContext";
-import { useConfirm } from "../context/ConfirmContext";
+import { useConfirm, usePrompt } from "../context/ConfirmContext";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
 
 function getInitials(name = "") {
@@ -135,6 +135,7 @@ function PaginationBar({ page, pageSize, total, onPageChange, onPageSizeChange }
 export default function AttendanceReports() {
   const toast = useToast();
   const showConfirm = useConfirm();
+  const showPrompt = usePrompt();
   const [assignments, setAssignments] = useState([]);
   const [exams, setExams] = useState([]);
   const [venues, setVenues] = useState([]);
@@ -208,10 +209,13 @@ export default function AttendanceReports() {
   };
 
   const handleConfigureWindow = async (a) => {
-    const minutes = window.prompt(
-      "Close attendance how many minutes after exam start?",
-      String(a.closeOffsetMinutes || 60)
-    );
+    const minutes = await showPrompt({
+      title: "Attendance window",
+      message: "Close attendance how many minutes after exam start?",
+      defaultValue: String(a.closeOffsetMinutes || 60),
+      inputType: "number",
+      confirmLabel: "Save",
+    });
     if (minutes == null) return;
     const closeOffsetMinutes = Number(minutes);
     if (!Number.isFinite(closeOffsetMinutes) || closeOffsetMinutes <= 0) {

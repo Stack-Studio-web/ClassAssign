@@ -125,10 +125,19 @@ async function upsertSessionFromExam({
   closeOffsetMinutes,
   executor = db,
 }) {
+  // Preserve an already-configured offset unless the caller overrides it.
+  let offsetInput = closeOffsetMinutes;
+  if (offsetInput == null) {
+    const existing = await fetchSession(examId, venueId, executor);
+    if (existing?.closeOffsetMinutes) {
+      offsetInput = existing.closeOffsetMinutes;
+    }
+  }
+
   const { openUtc, closeUtc, closeOffsetMinutes: offset } = await computeWindowTimes(
     examDate,
     startTime,
-    closeOffsetMinutes,
+    offsetInput,
     executor
   );
 
