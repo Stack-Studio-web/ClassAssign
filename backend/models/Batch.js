@@ -108,42 +108,12 @@ const Batch = {
     const dept = String(department || "").toUpperCase().trim();
     if (!dept) return [];
 
-    // HOD can only access their own department (double-check for safety).
     if (opts.role === "hod") {
       if (!opts.department || String(opts.department).toUpperCase().trim() !== dept) return [];
     }
 
-    const params = [dept];
-    let sql = `
-      SELECT
-        b.id,
-        b.public_uuid,
-        b.name,
-        b.code,
-        b.status,
-        b.department,
-        b.created_at
-      FROM batches b
-      WHERE UPPER(b.department) = ?`;
-
-    if (opts.role === "faculty_incharge") {
-      sql += ` AND b.owner_user_id = ?`;
-      params.push(opts.ownerUserId);
-    }
-
-    sql += `
-      ORDER BY CASE WHEN b.status = 'COMPLETED' THEN 1 ELSE 0 END, b.name ASC`;
-
-    const [rows] = await db.query(sql, params);
-
-    return (rows || []).map((r) => ({
-      uuid: r.public_uuid ?? r.publicuuid ?? r.uuid,
-      name: r.name ?? "",
-      code: r.code ?? null,
-      status: r.status ?? "ACTIVE",
-      department: r.department ?? null,
-      createdAt: r.created_at ?? r.createdAt ?? null,
-    }));
+    const Student = require("./Student");
+    return Student.listBatchesByDepartment(department, opts);
   },
 
   create: async ({ semesterId, name, code, description }, opts = {}) => {

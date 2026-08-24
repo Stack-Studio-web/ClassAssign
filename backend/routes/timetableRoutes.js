@@ -102,11 +102,14 @@ router.post("/",
         department,
         examType,
         batchUuid,
-        batchId
+        batchId,
+        batch
       } = req.body;
 
-      // Validation
-      const hasBatch = batchId != null || Boolean(String(batchUuid || "").trim());
+      const rawBatch = String(batch || batchUuid || "").toUpperCase().trim();
+      const looksLikeUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(batchUuid || ""));
+      const batchCode = looksLikeUuid ? String(batch || "").toUpperCase().trim() : rawBatch;
+      const hasBatch = Boolean(batchCode) || batchId != null || looksLikeUuid;
       if (!date || !startTime || !endTime || !courseCode || !courseName || !department || !examType || !hasBatch) {
         return res.status(400).json({
           error: "Missing required fields",
@@ -118,18 +121,15 @@ router.post("/",
         return res.status(403).json({ error: "You can only create timetable for your own department." });
       }
 
-      // Resolve batch to internal DB id (timetable stores batch_id)
+      // Resolve batch to internal DB id when a real UUID is provided
       let resolvedBatchId = null;
       if (batchId != null && batchId !== "") {
         resolvedBatchId = Number(batchId);
         if (!Number.isFinite(resolvedBatchId) || resolvedBatchId <= 0) {
           return res.status(400).json({ error: "Invalid batchId" });
         }
-      } else if (batchUuid) {
+      } else if (looksLikeUuid) {
         resolvedBatchId = await resolveInternalId(TABLE.batches, batchUuid);
-        if (!resolvedBatchId) {
-          return res.status(404).json({ error: "Batch not found" });
-        }
       }
 
       // Check for duplicate
@@ -139,6 +139,7 @@ router.post("/",
         courseCode,
         department,
         examType,
+        batch: batchCode,
         batchId: resolvedBatchId
       }, ownerOpts(req));
 
@@ -158,6 +159,7 @@ router.post("/",
         courseName,
         department: department.toUpperCase(),
         examType,
+        batch: batchCode || null,
         batchId: resolvedBatchId
       }, ownerOpts(req));
 

@@ -29,6 +29,7 @@ const Timetable = () => {
     courseCode: "",
     courseName: "",
     department: "",
+    batch: "",
     batchUuid: "",
     examType: "CAT1",
   });
@@ -111,7 +112,7 @@ const Timetable = () => {
     }
 
     // Clear selected batch when department changes
-    setManualData((prev) => ({ ...prev, batchUuid: "" }));
+    setManualData((prev) => ({ ...prev, batch: "", batchUuid: "" }));
     setBatchOptions([]);
     setBatchLoading(true);
 
@@ -120,10 +121,10 @@ const Timetable = () => {
     const fetchBatches = async () => {
       try {
         const res = await api.get(
-          `/academic/batches/by-department/${encodeURIComponent(dept)}`
+          `/students/batches-by-department/${encodeURIComponent(dept)}`
         );
         const body = res?.data?.data ?? res?.data ?? {};
-        const batches = body.batches ?? [];
+        const batches = body.batches ?? (Array.isArray(body) ? body : []);
 
         if (requestId !== batchRequestIdRef.current) return; // stale response guard
 
@@ -264,7 +265,7 @@ const Timetable = () => {
       !manualData.courseCode ||
       !manualData.courseName ||
       !manualData.department ||
-      !manualData.batchUuid
+      !manualData.batch
     ) {
       setMessage("⚠️ Please fill all required fields");
       return;
@@ -282,6 +283,7 @@ const Timetable = () => {
         courseCode: "",
         courseName: "",
         department: "",
+        batch: "",
         batchUuid: "",
         examType: "CAT1",
       });
@@ -521,6 +523,7 @@ const Timetable = () => {
                       setManualData((prev) => ({
                         ...prev,
                         department: (e.target.value || "").toUpperCase(),
+                        batch: "",
                         batchUuid: "",
                       }))
                     }
@@ -539,13 +542,16 @@ const Timetable = () => {
                 <div>
                   <label className="block text-sm font-medium text-gray-600 mb-2">Batch *</label>
                   <select
-                    value={manualData.batchUuid}
-                    onChange={(e) =>
+                    value={manualData.batch}
+                    onChange={(e) => {
+                      const name = e.target.value;
+                      const found = batchOptions.find((b) => b.name === name);
                       setManualData((prev) => ({
                         ...prev,
-                        batchUuid: e.target.value,
-                      }))
-                    }
+                        batch: name,
+                        batchUuid: found?.uuid || "",
+                      }));
+                    }}
                     disabled={!hasWriteAccess || !manualData.department || batchLoading}
                     className="w-full h-11 md:h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed bg-white"
                   >
@@ -558,7 +564,7 @@ const Timetable = () => {
                     </option>
                     {!batchLoading &&
                       batchOptions.map((b) => (
-                        <option key={b.uuid} value={b.uuid}>
+                        <option key={b.name} value={b.name}>
                           {b.name}
                         </option>
                       ))}

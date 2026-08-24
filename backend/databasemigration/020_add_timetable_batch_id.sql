@@ -36,3 +36,6 @@ $$;
 
 CREATE INDEX IF NOT EXISTS idx_timetable_batch_id ON timetable(batch_id);
 
+ALTER TABLE timetable ADD COLUMN IF NOT EXISTS batch VARCHAR(50);
+CREATE INDEX IF NOT EXISTS idx_timetable_batch ON timetable(batch);
+

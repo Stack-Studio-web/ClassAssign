@@ -412,6 +412,45 @@ const Student = {
   /* ===============================
       GET UNIQUE COURSES
   =============================== */
+  /**
+   * Distinct student batch codes for a department, e.g. BAD → 23BAD, 24BAD, 25BAD.
+   * Derived from register numbers in the students table (not hardcoded).
+   */
+  listBatchesByDepartment: async (department, opts = {}) => {
+    const dept = String(department || "").toUpperCase().trim();
+    if (!dept) return [];
+
+    const { sql: ownerSql, params: ownerParams } = andClause(
+      opts.role,
+      opts.ownerUserId,
+      "st."
+    );
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        UPPER(LEFT(st.regn_no, 2) || ?) AS name,
+        MIN(b.public_uuid::text) AS uuid,
+        MIN(b.id) AS batch_id
+      FROM students st
+      LEFT JOIN batches b ON b.id = st.batch_id
+      WHERE UPPER((regexp_match(UPPER(st.regn_no), '^[0-9]{2}([A-Z]+)'))[1]) = ?
+        ${ownerSql}
+      GROUP BY UPPER(LEFT(st.regn_no, 2) || ?)
+      ORDER BY name DESC
+      `,
+      [dept, dept, ...ownerParams, dept]
+    );
+
+    return (rows || [])
+      .map((r) => ({
+        name: String(r.name ?? "").toUpperCase(),
+        uuid: r.uuid ?? r.UUID ?? null,
+        batchId: r.batch_id ?? r.batchId ?? r.batchid ?? null,
+      }))
+      .filter((b) => b.name);
+  },
+
   getCourses: async (opts = {}) => {
     const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId);
     const [rows] = await db.query(`

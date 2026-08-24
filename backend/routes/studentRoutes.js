@@ -143,6 +143,25 @@ router.get("/stats", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]
   }
 });
 
+// Distinct student batch codes for a department (e.g. BAD → 23BAD, 24BAD, 25BAD)
+router.get(
+  "/batches-by-department/:dept",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge", "hod"]),
+  async (req, res) => {
+    try {
+      const department = String(req.params.dept || "").toUpperCase().trim();
+      if (!department) {
+        return Api.validationError(res, "Department is required");
+      }
+      const batches = await Student.listBatchesByDepartment(department, ownerOpts(req));
+      return Api.success(res, "Batches", { batches });
+    } catch (err) {
+      return Api.fromError(res, err, "Failed to load batches.");
+    }
+  }
+);
+
 // ✅ GET all unique courses
 router.get("/courses", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), async (req, res) => {
   try {
