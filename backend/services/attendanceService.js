@@ -25,6 +25,7 @@ function toAssignmentRow(row) {
     venueCapacity: row.venue_capacity ?? row.venuecapacity ?? null,
     studentCount: Number(row.student_count ?? row.studentcount ?? 0) || 0,
     isLocked: !!(row.is_locked ?? row.islocked),
+    isSaved: !!(row.is_saved ?? row.issaved),
     presentCount: Number(row.present_count ?? row.presentcount ?? 0) || 0,
     absentCount: Number(row.absent_count ?? row.absentcount ?? 0) || 0,
     windowStatus: row.window_status ?? row.windowstatus ?? null,
@@ -292,6 +293,11 @@ const AttendanceService = {
           WHERE att.exam_id = fa.exam_id AND att.venue_id = fa.venue_id AND att.is_locked = TRUE
           LIMIT 1
         ) AS is_locked,
+        EXISTS (
+          SELECT 1 FROM attendance att
+          WHERE att.exam_id = fa.exam_id AND att.venue_id = fa.venue_id
+          LIMIT 1
+        ) AS is_saved,
         (
           SELECT COUNT(*) FROM attendance att
           WHERE att.exam_id = fa.exam_id AND att.venue_id = fa.venue_id AND att.status = 'Present'
@@ -359,7 +365,12 @@ const AttendanceService = {
           SELECT 1 FROM attendance att
           WHERE att.exam_id = fa.exam_id AND att.venue_id = fa.venue_id AND att.is_locked = TRUE
           LIMIT 1
-        ) AS is_locked
+        ) AS is_locked,
+        EXISTS (
+          SELECT 1 FROM attendance att
+          WHERE att.exam_id = fa.exam_id AND att.venue_id = fa.venue_id
+          LIMIT 1
+        ) AS is_saved
       FROM faculty_assignments fa
       JOIN faculty f ON f.id = fa.faculty_id
       JOIN exams e ON e.id = fa.exam_id
@@ -511,7 +522,7 @@ const AttendanceService = {
     return (rows || []).map(toStudentRow);
   },
 
-  submitAttendance: async ({
+  upsertAttendance: async ({
     examId,
     venueId,
     facultyId,
@@ -520,6 +531,7 @@ const AttendanceService = {
     ipAddress,
     userAgent,
     adminBypass = false,
+    lock = false,
   }) => {
     if (!Array.isArray(attendanceRows) || attendanceRows.length === 0) {
       throw new Error("Attendance list is required");
@@ -564,15 +576,22 @@ const AttendanceService = {
         await conn.query(
           `
           INSERT INTO attendance (student_id, exam_id, venue_id, faculty_id, status, marked_time, is_locked)
-          VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, TRUE)
+          VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
           ON CONFLICT (student_id, exam_id, venue_id)
           DO UPDATE SET
             status = EXCLUDED.status,
             faculty_id = EXCLUDED.faculty_id,
             marked_time = CURRENT_TIMESTAMP,
-            is_locked = TRUE
+            is_locked = EXCLUDED.is_locked
           `,
-          [row.studentId, examId, venueId, facultyId, row.status]
+          [row.studentId, examId, venueId, facultyId, row.status, lock]
+        );
+      }
+
+      if (lock) {
+        await conn.query(
+          `UPDATE attendance SET is_locked = TRUE WHERE exam_id = ? AND venue_id = ?`,
+          [examId, venueId]
         );
       }
 
@@ -594,7 +613,7 @@ const AttendanceService = {
 
     await AuditLog.create({
       userId,
-      action: "ATTENDANCE_SUBMITTED",
+      action: lock ? "ATTENDANCE_LOCKED" : "ATTENDANCE_SAVED",
       entityType: "Attendance",
       entityId: examId,
       changes: {
@@ -606,13 +625,22 @@ const AttendanceService = {
         venue: meta.venue_name ?? meta.venuename,
         timestamp: new Date().toISOString(),
         recordCount: attendanceRows.length,
+        locked: lock,
       },
       ipAddress,
       userAgent,
     });
 
-    return { submitted: attendanceRows.length, locked: true };
+    return {
+      saved: attendanceRows.length,
+      submitted: lock ? attendanceRows.length : 0,
+      locked: lock,
+    };
   },
+
+  saveAttendance: async (opts) => AttendanceService.upsertAttendance({ ...opts, lock: false }),
+
+  submitAttendance: async (opts) => AttendanceService.upsertAttendance({ ...opts, lock: true }),
 
   unlockAttendance: async ({ examId, venueId, userId, ipAddress, userAgent }) => {
     const [result] = await db.query(

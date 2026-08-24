@@ -103,6 +103,18 @@ router.post(
 );
 
 router.post(
+  "/save",
+  sessionAuth,
+  checkRole(ALL_ATTENDANCE_ROLES),
+  requireFacultyProfile,
+  resolveAssignmentContext,
+  requireAssignmentAccess,
+  requireAttendanceWindow,
+  blockIfLocked,
+  AttendanceController.saveAttendance
+);
+
+router.post(
   "/submit",
   sessionAuth,
   checkRole(ALL_ATTENDANCE_ROLES),

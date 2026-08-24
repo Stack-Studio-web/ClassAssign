@@ -100,11 +100,14 @@ router.post("/",
         courseCode,
         courseName,
         department,
-        examType
+        examType,
+        batchUuid,
+        batchId
       } = req.body;
 
       // Validation
-      if (!date || !startTime || !endTime || !courseCode || !courseName || !department || !examType) {
+      const hasBatch = batchId != null || Boolean(String(batchUuid || "").trim());
+      if (!date || !startTime || !endTime || !courseCode || !courseName || !department || !examType || !hasBatch) {
         return res.status(400).json({
           error: "Missing required fields",
           details: "All fields are required"
@@ -115,18 +118,34 @@ router.post("/",
         return res.status(403).json({ error: "You can only create timetable for your own department." });
       }
 
+      // Resolve batch to internal DB id (timetable stores batch_id)
+      let resolvedBatchId = null;
+      if (batchId != null && batchId !== "") {
+        resolvedBatchId = Number(batchId);
+        if (!Number.isFinite(resolvedBatchId) || resolvedBatchId <= 0) {
+          return res.status(400).json({ error: "Invalid batchId" });
+        }
+      } else if (batchUuid) {
+        resolvedBatchId = await resolveInternalId(TABLE.batches, batchUuid);
+        if (!resolvedBatchId) {
+          return res.status(404).json({ error: "Batch not found" });
+        }
+      }
+
       // Check for duplicate
       const exists = await Timetable.checkDuplicate({
         date,
         session,
         courseCode,
-        department
+        department,
+        examType,
+        batchId: resolvedBatchId
       }, ownerOpts(req));
 
       if (exists) {
         return res.status(409).json({
           error: "Duplicate schedule",
-          details: "A schedule with this course code already exists for the selected date and session"
+          details: "Schedule already exists for this course, exam type, batch, date and session"
         });
       }
 
@@ -138,7 +157,8 @@ router.post("/",
         courseCode,
         courseName,
         department: department.toUpperCase(),
-        examType
+        examType,
+        batchId: resolvedBatchId
       }, ownerOpts(req));
 
       const uuid = await getPublicUuid(TABLE.timetable, id);
@@ -302,7 +322,9 @@ router.post("/bulk-import",
             date: schedule.date,
             session: schedule.session,
             courseCode: schedule.courseCode,
-            department: schedule.department
+            department: schedule.department,
+            examType: schedule.examType,
+            batchId: null
           }, ownerOpts(req));
 
           if (exists) {

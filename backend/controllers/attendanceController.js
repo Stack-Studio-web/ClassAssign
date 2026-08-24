@@ -22,6 +22,23 @@ function sendWindowError(res, err) {
   return res.status(err.statusCode || 403).json(body);
 }
 
+async function buildAttendanceRows(attendance) {
+  const studentUuids = (attendance || [])
+    .map((r) => r.studentUuid ?? r.uuid ?? r.studentId)
+    .filter(Boolean);
+  const uuidMap = await AttendanceService.resolveStudentUuids(studentUuids);
+  return (attendance || []).map((row) => {
+    const key = row.studentUuid ?? row.uuid ?? row.studentId;
+    const studentId = uuidMap.get(key);
+    if (!studentId) {
+      const err = new Error(`Unknown student: ${key}`);
+      err.statusCode = 400;
+      throw err;
+    }
+    return { studentId, status: row.status };
+  });
+}
+
 function formatWindowPayload(state) {
   return {
     status: state.status,
@@ -187,6 +204,45 @@ const AttendanceController = {
     }
   },
 
+  saveAttendance: async (req, res) => {
+    try {
+      const assignment = req.assignment;
+      if (!assignment) {
+        return Api.validationError(res, "assignmentUuid is required");
+      }
+
+      const { examId, venueId, facultyId, uuid: assignmentUuid } = assignment;
+      const attendanceRows = await buildAttendanceRows(req.body.attendance || []);
+
+      const result = await AttendanceService.saveAttendance({
+        examId,
+        venueId,
+        facultyId,
+        attendanceRows,
+        userId: req.user?.id,
+        adminBypass: req.user?.role === "admin",
+        ...getClientMeta(req),
+      });
+
+      const window = await AttendanceService.getWindowState(examId, venueId);
+      return Api.success(res, "Attendance saved. You can still edit until you lock it.", {
+        ...result,
+        assignmentUuid,
+        isSaved: true,
+        isLocked: false,
+        status: window.status,
+      });
+    } catch (err) {
+      if (err.statusCode === 403) {
+        return sendWindowError(res, err);
+      }
+      if (err.message.includes("locked") || err.message.includes("not assigned")) {
+        return Api.forbidden(res, err.message);
+      }
+      return Api.fromError(res, err, "Failed to save attendance");
+    }
+  },
+
   submitAttendance: async (req, res) => {
     try {
       const assignment = req.assignment;
@@ -195,21 +251,7 @@ const AttendanceController = {
       }
 
       const { examId, venueId, facultyId, uuid: assignmentUuid } = assignment;
-      const attendance = req.body.attendance || [];
-
-      const studentUuids = attendance.map((r) => r.studentUuid ?? r.uuid ?? r.studentId).filter(Boolean);
-      const uuidMap = await AttendanceService.resolveStudentUuids(studentUuids);
-
-      const attendanceRows = attendance.map((row) => {
-        const key = row.studentUuid ?? row.uuid ?? row.studentId;
-        const studentId = uuidMap.get(key);
-        if (!studentId) {
-          const err = new Error(`Unknown student: ${key}`);
-          err.statusCode = 400;
-          throw err;
-        }
-        return { studentId, status: row.status };
-      });
+      const attendanceRows = await buildAttendanceRows(req.body.attendance || []);
 
       const result = await AttendanceService.submitAttendance({
         examId,
@@ -222,9 +264,11 @@ const AttendanceController = {
       });
 
       const window = await AttendanceService.getWindowState(examId, venueId);
-      return Api.success(res, "Attendance submitted and locked", {
+      return Api.success(res, "Attendance locked. It can no longer be edited.", {
         ...result,
         assignmentUuid,
+        isSaved: true,
+        isLocked: true,
         status: window.status,
       });
     } catch (err) {
@@ -234,7 +278,7 @@ const AttendanceController = {
       if (err.message.includes("locked") || err.message.includes("not assigned")) {
         return Api.forbidden(res, err.message);
       }
-      return Api.fromError(res, err, "Failed to submit attendance");
+      return Api.fromError(res, err, "Failed to lock attendance");
     }
   },
 
@@ -413,6 +457,7 @@ const AttendanceController = {
         lifecycleStatus: window.lifecycleStatus ?? "ACTIVE",
         lifecycleCompleted,
         isLocked: submittedLock || lifecycleCompleted,
+        isSaved: (students || []).some((s) => s.status),
         window: formatWindowPayload({ ...window, sessionUuid: sessionUuid ?? window.sessionUuid }),
         canWrite,
         readOnly: !canWrite,

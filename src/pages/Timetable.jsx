@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import api from "../lib/api";
 import { TrashIcon, FunnelIcon, XMarkIcon, CalendarDaysIcon } from "@heroicons/react/24/outline";
 import { useToast } from "../context/ToastContext";
@@ -29,8 +29,15 @@ const Timetable = () => {
     courseCode: "",
     courseName: "",
     department: "",
+    batchUuid: "",
     examType: "CAT1",
   });
+
+  // Department -> Batch dropdowns (Manual Entry)
+  const [departmentOptions, setDepartmentOptions] = useState([]);
+  const [batchOptions, setBatchOptions] = useState([]);
+  const [batchLoading, setBatchLoading] = useState(false);
+  const batchRequestIdRef = useRef(0);
 
   // Filter State
   const [filters, setFilters] = useState({
@@ -76,6 +83,63 @@ const Timetable = () => {
     };
     fetchCourses();
   }, []);
+
+  // ✅ NEW: Load Department options for Manual Entry
+  useEffect(() => {
+    const fetchDepartments = async () => {
+      try {
+        const res = await api.get("/students/filter-options");
+        const options = res?.data?.data ?? res?.data ?? {};
+        setDepartmentOptions(options.departments ?? []);
+      } catch (err) {
+        console.error("Failed to load departments:", err);
+        setDepartmentOptions([]);
+      }
+    };
+    fetchDepartments();
+  }, []);
+
+  // ✅ NEW: Load batches only when Department changes
+  useEffect(() => {
+    const dept = String(manualData.department || "").trim().toUpperCase();
+
+    // No department selected: disable batch dropdown
+    if (!dept) {
+      setBatchOptions([]);
+      setBatchLoading(false);
+      return;
+    }
+
+    // Clear selected batch when department changes
+    setManualData((prev) => ({ ...prev, batchUuid: "" }));
+    setBatchOptions([]);
+    setBatchLoading(true);
+
+    const requestId = ++batchRequestIdRef.current;
+
+    const fetchBatches = async () => {
+      try {
+        const res = await api.get(
+          `/academic/batches/by-department/${encodeURIComponent(dept)}`
+        );
+        const body = res?.data?.data ?? res?.data ?? {};
+        const batches = body.batches ?? [];
+
+        if (requestId !== batchRequestIdRef.current) return; // stale response guard
+
+        setBatchOptions(Array.isArray(batches) ? batches : []);
+      } catch (err) {
+        if (requestId !== batchRequestIdRef.current) return; // stale response guard
+        console.error("Failed to load batches:", err);
+        setBatchOptions([]);
+      } finally {
+        if (requestId !== batchRequestIdRef.current) return;
+        setBatchLoading(false);
+      }
+    };
+
+    fetchBatches();
+  }, [manualData.department]);
 
   // Fetch schedules
   const fetchSchedules = async () => {
@@ -199,7 +263,8 @@ const Timetable = () => {
       !manualData.endTime ||
       !manualData.courseCode ||
       !manualData.courseName ||
-      !manualData.department
+      !manualData.department ||
+      !manualData.batchUuid
     ) {
       setMessage("⚠️ Please fill all required fields");
       return;
@@ -217,11 +282,16 @@ const Timetable = () => {
         courseCode: "",
         courseName: "",
         department: "",
+        batchUuid: "",
         examType: "CAT1",
       });
       fetchSchedules();
     } catch (err) {
-      setMessage(err.response?.data?.error || "❌ Failed to add schedule");
+      setMessage(
+        err.response?.data?.details ||
+          err.response?.data?.error ||
+          "❌ Failed to add schedule"
+      );
     } finally {
       setLoading(false);
     }
@@ -445,14 +515,57 @@ const Timetable = () => {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-600 mb-2">Department *</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. BCS, BAD, BIT"
+                  <select
                     value={manualData.department}
-                    onChange={(e) => setManualData({ ...manualData, department: e.target.value.toUpperCase() })}
+                    onChange={(e) =>
+                      setManualData((prev) => ({
+                        ...prev,
+                        department: (e.target.value || "").toUpperCase(),
+                        batchUuid: "",
+                      }))
+                    }
                     disabled={!hasWriteAccess}
-                    className="w-full h-11 md:h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed"
-                  />
+                    className="w-full h-11 md:h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed bg-white"
+                  >
+                    <option value="">-- Select Department --</option>
+                    {departmentOptions.map((d) => (
+                      <option key={d} value={d}>
+                        {d}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-600 mb-2">Batch *</label>
+                  <select
+                    value={manualData.batchUuid}
+                    onChange={(e) =>
+                      setManualData((prev) => ({
+                        ...prev,
+                        batchUuid: e.target.value,
+                      }))
+                    }
+                    disabled={!hasWriteAccess || !manualData.department || batchLoading}
+                    className="w-full h-11 md:h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed bg-white"
+                  >
+                    <option value="">
+                      {manualData.department
+                        ? batchLoading
+                          ? "Loading..."
+                          : "-- Select Batch --"
+                        : "Select Department First"}
+                    </option>
+                    {!batchLoading &&
+                      batchOptions.map((b) => (
+                        <option key={b.uuid} value={b.uuid}>
+                          {b.name}
+                        </option>
+                      ))}
+                  </select>
+                  {!batchLoading && manualData.department && batchOptions.length === 0 && (
+                    <p className="text-xs text-red-600 mt-1">No batches found</p>
+                  )}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-600 mb-2">Exam Type *</label>

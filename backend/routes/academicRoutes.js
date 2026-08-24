@@ -315,6 +315,40 @@ router.patch(
   }
 );
 
+// ✅ NEW: Batches dropdown dependency — list batches by department
+// Note: must be declared BEFORE "/batches/:uuid" because Express matches routes in order.
+router.get(
+  "/batches/by-department/:department",
+  sessionAuth,
+  checkRole(READ_ROLES),
+  requirePermission(PERMISSIONS.BATCH_VIEW),
+  async (req, res) => {
+    try {
+      const department = String(req.params.department || "")
+        .toUpperCase()
+        .trim();
+
+      if (!department) {
+        return Api.validationError(res, "Department is required");
+      }
+
+      // Safety for HOD
+      if (
+        req.user?.role === "hod" &&
+        req.user?.department &&
+        String(req.user.department).toUpperCase().trim() !== department
+      ) {
+        return Api.forbidden(res, "You can only view your own department batches.");
+      }
+
+      const batches = await Batch.listByDepartment(department, ownerOpts(req));
+      return Api.success(res, "Batches", { batches });
+    } catch (err) {
+      return Api.fromError(res, err, "Failed to load batches.");
+    }
+  }
+);
+
 router.get(
   "/batches/:uuid",
   sessionAuth,

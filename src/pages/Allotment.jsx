@@ -28,7 +28,9 @@ const normalizeCourse = (c) => ({
   ...c,
   courseCode: c.courseCode ?? c.coursecode ?? "",
   department: c.department ?? "",
-  examType: c.examType ?? c.examtype ?? ""
+  examType: c.examType ?? c.examtype ?? "",
+  batchName: c.batchName ?? c.batchname ?? c.batch ?? "",
+  batchId: c.batchId ?? c.batchid ?? c.batch_id ?? null,
 });
 
 // Compute session duration in hours from "HH:mm" start/end
@@ -218,9 +220,16 @@ const Allotment = () => {
           return;
         }
  
-        if (courses[0].examType) {
-          setExamType(courses[0].examType);
+        const effectiveExamType = courses[0]?.examType ?? "";
+        if (effectiveExamType) {
+          setExamType(effectiveExamType);
         }
+
+        // System assumption: Allotment can only auto-handle one exam type for a given date/time/session.
+        // If multiple timetable entries exist, keep only the first exam type to avoid ineligibility mismatch.
+        const effectiveCourses = effectiveExamType
+          ? courses.filter((c) => c.examType === effectiveExamType)
+          : courses;
  
         console.log('\n🔍 ===== FETCHING STUDENTS FOR TIMETABLE COURSES =====');
         console.log(`Found ${courses.length} timetable entries:`);
@@ -229,32 +238,50 @@ const Allotment = () => {
         });
  
         const studentsData = {};
+        // Cache by course+department to avoid duplicate API calls
+        const studentsCacheByCourseDept = {};
        
-        for (const course of courses) {
+        for (const course of effectiveCourses) {
           try {
             console.log(`\n📋 Fetching students for: ${course.courseCode} - ${course.department}`);
-           
-            const studentsRes = await api.get(
-              `/ineligibility/students/${encodeURIComponent(course.courseCode)}/${course.department}`
+
+            const courseDeptKey = `${course.courseCode}-${course.department}`;
+            if (!studentsCacheByCourseDept[courseDeptKey]) {
+              const studentsRes = await api.get(
+                `/ineligibility/students/${encodeURIComponent(course.courseCode)}/${course.department}`
+              );
+              studentsCacheByCourseDept[courseDeptKey] = (studentsRes.data || []).map(normalizeStudent);
+            }
+
+            const students = studentsCacheByCourseDept[courseDeptKey];
+            const batchName = String(course.batchName || "").trim().toUpperCase();
+
+            // Batch-specific seating: keep only students belonging to the selected batch
+            const batchFilteredStudents = batchName
+              ? students.filter((s) =>
+                  String(s.regnNo || "").toUpperCase().startsWith(batchName)
+                )
+              : students;
+
+            console.log(
+              `✅ Loaded ${students.length} students for ${course.courseCode} - ${course.department} (batch filter: ${batchName || "all"}) => ${batchFilteredStudents.length}`
             );
-           
-            const students = (studentsRes.data || []).map(normalizeStudent);
-            console.log(`✅ Fetched ${students.length} students for ${course.courseCode} - ${course.department}`);
-           
-            const uniqueKey = `${course.courseCode}-${course.department}`;
-            studentsData[uniqueKey] = students;
+
+            const uniqueKey = `${course.courseCode}-${course.department}-${batchName}`;
+            studentsData[uniqueKey] = batchFilteredStudents;
            
           } catch (err) {
             console.error(`❌ Error fetching students for ${course.courseCode} - ${course.department}:`, err);
-            const uniqueKey = `${course.courseCode}-${course.department}`;
+            const batchName = String(course.batchName || "").trim().toUpperCase();
+            const uniqueKey = `${course.courseCode}-${course.department}-${batchName}`;
             studentsData[uniqueKey] = [];
           }
         }
  
-        console.log('\n✅ Total unique course-department combinations:', Object.keys(studentsData).length);
+        console.log('\n✅ Total unique course-department-batch combinations:', Object.keys(studentsData).length);
         console.log('===== STUDENT FETCH COMPLETE =====\n');
  
-        setTimetableCourses(courses);
+        setTimetableCourses(effectiveCourses);
         setStudentsByCourse(studentsData);
  
       } catch (err) {
@@ -288,26 +315,43 @@ const Allotment = () => {
         const ineligibleMap = {};
         const statsByCourse = {};
         let totalIneligible = 0;
+        // Cache ineligibility list by (examType + courseCode + examDate)
+        const ineligibleCacheByExamCourse = {};
  
         for (const course of timetableCourses) {
           try {
-            const res = await api.get(`/ineligibility/check`, {
-              params: {
-                examType,
-                courseCode: course.courseCode,
-                examDate: dateOnly
-              }
-            });
- 
-            const ineligibleList = (res.data || []).map(normalizeStudent);
-            const uniqueKey = `${course.courseCode}-${course.department}`;
-           
-            ineligibleMap[uniqueKey] = new Set(ineligibleList.map(s => s.regnNo ?? ""));
+            const cacheKey = `${examType}-${course.courseCode}-${dateOnly}`;
+            if (!ineligibleCacheByExamCourse[cacheKey]) {
+              const res = await api.get(`/ineligibility/check`, {
+                params: {
+                  examType,
+                  courseCode: course.courseCode,
+                  examDate: dateOnly,
+                },
+              });
+              ineligibleCacheByExamCourse[cacheKey] = (res.data || []).map(normalizeStudent);
+            }
+
+            const ineligibleListRaw = ineligibleCacheByExamCourse[cacheKey];
+            const batchName = String(course.batchName || "").trim().toUpperCase();
+
+            const ineligibleList = batchName
+              ? ineligibleListRaw.filter((s) =>
+                  String(s.regnNo || "").toUpperCase().startsWith(batchName)
+                )
+              : ineligibleListRaw;
+
+            const uniqueKey = `${course.courseCode}-${course.department}-${batchName}`;
+
+            ineligibleMap[uniqueKey] = new Set(
+              ineligibleList.map((s) => s.regnNo ?? "")
+            );
             statsByCourse[uniqueKey] = ineligibleList.length;
             totalIneligible += ineligibleList.length;
           } catch (err) {
             console.error(`Error fetching ineligibility for ${course.courseCode} - ${course.department}:`, err);
-            const uniqueKey = `${course.courseCode}-${course.department}`;
+            const batchName = String(course.batchName || "").trim().toUpperCase();
+            const uniqueKey = `${course.courseCode}-${course.department}-${batchName}`;
             ineligibleMap[uniqueKey] = new Set();
             statsByCourse[uniqueKey] = 0;
           }
@@ -468,7 +512,8 @@ const Allotment = () => {
     timetableCourses.forEach(course => {
       const courseCode = course.courseCode;
       const department = course.department;
-      const uniqueKey = `${courseCode}-${department}`;
+      const batchName = String(course.batchName || "").trim().toUpperCase();
+      const uniqueKey = `${courseCode}-${department}-${batchName}`;
      
       console.log(`\n🔍 Processing: ${uniqueKey}`);
      
@@ -1074,7 +1119,8 @@ const Allotment = () => {
                     </thead>
                     <tbody className="divide-y divide-gray-100">
                       {timetableCourses.map((course) => {
-                        const uniqueKey = `${course.courseCode}-${course.department}`;
+                        const batchName = String(course.batchName || "").trim().toUpperCase();
+                        const uniqueKey = `${course.courseCode}-${course.department}-${batchName}`;
                         const totalStudents = studentsByCourse[uniqueKey]?.length || 0;
                         const ineligibleCount = ineligibilityStats.byCourse[uniqueKey] || 0;
                         const eligibleCount = totalStudents - ineligibleCount;
@@ -1091,6 +1137,7 @@ const Allotment = () => {
                             </td>
                             <td className="px-4 py-3 text-sm font-medium text-gray-700 capitalize">
                               {course.department}
+                              {course.batchName ? ` · ${course.batchName}` : ""}
                             </td>
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-2">

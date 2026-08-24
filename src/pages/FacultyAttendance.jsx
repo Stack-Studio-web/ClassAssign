@@ -450,6 +450,39 @@ export default function FacultyAttendance() {
     }
   };
 
+  const handleSave = async () => {
+    setMessage("");
+    setError("");
+    setSubmitting(true);
+
+    const attendance = buildSubmitPayload(courses);
+    const missingIds = allStudents.filter((s) => !s.studentUuid);
+
+    if (missingIds.length > 0) {
+      setError(
+        `${missingIds.length} student(s) could not be linked to records. Contact administrator.`
+      );
+      setSubmitting(false);
+      return;
+    }
+
+    try {
+      await api.post("/attendance/save", {
+        assignmentUuid,
+        attendance,
+      });
+      setMessage("Attendance saved. You can still edit and lock it later.");
+    } catch (err) {
+      setError(getApiError(err, err.response?.data?.message || "Failed to save attendance"));
+      if (err.response?.data?.code) {
+        setCanWrite(false);
+        if (err.response.data.window) setWindowInfo(err.response.data.window);
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
@@ -617,14 +650,22 @@ export default function FacultyAttendance() {
 
       {!readOnly && totalStudents > 0 && (
         <div className="fixed bottom-0 inset-x-0 bg-white border-t border-slate-200 shadow-lg z-30">
-          <div className="max-w-6xl mx-auto px-4 py-3 flex justify-end">
+          <div className="max-w-6xl mx-auto px-4 py-3 flex gap-3 justify-end">
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={submitting}
+              className="w-full sm:w-auto px-6 py-2.5 bg-white text-slate-700 rounded-lg font-semibold border border-slate-200 hover:bg-slate-50 disabled:opacity-60 transition-colors"
+            >
+              Save
+            </button>
             <button
               type="button"
               onClick={() => setShowConfirm(true)}
               disabled={submitting}
               className="w-full sm:w-auto px-6 py-2.5 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 disabled:opacity-60 transition-colors"
             >
-              Submit Attendance
+              Lock Attendance
             </button>
           </div>
         </div>

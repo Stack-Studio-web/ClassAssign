@@ -15,6 +15,9 @@ function toTimetableRow(row) {
     courseName: row.coursename ?? row.courseName ?? "",
     department: row.department ?? "",
     examType: row.examtype ?? row.examType ?? "",
+    batchId: row.batch_id ?? row.batchId ?? row.batchid ?? null,
+    batchUuid: row.batch_uuid ?? row.batchUuid ?? row.batchuuid ?? null,
+    batchName: row.batch_name ?? row.batchName ?? row.batchname ?? null,
     createdAt: row.createdat ?? row.createdAt
   };
 }
@@ -40,6 +43,7 @@ const Timetable = {
         course_name as courseName,
         department,
         exam_type as examType,
+        batch_id as batchId,
         created_at as createdAt
        FROM timetable${ownerSql || " WHERE 1=1"}
        ORDER BY date DESC, start_time ASC`,
@@ -57,23 +61,27 @@ const Timetable = {
       ? andClauseForHod(opts.department)
       : andClause(opts.role, opts.ownerUserId);
     const [rows] = await db.query(
-      `SELECT 
-        id,
-        public_uuid,
-        date,
-        start_time as startTime,
-        end_time as endTime,
-        session,
-        course_code as courseCode,
-        course_name as courseName,
-        department,
-        exam_type as examType
-       FROM timetable
-       WHERE date = ?
-         AND start_time = ?
-         AND end_time = ?
-         AND session = ?${ownerSql}
-       ORDER BY department, course_code`,
+      `SELECT
+        t.id,
+        t.public_uuid,
+        t.date,
+        t.start_time as startTime,
+        t.end_time as endTime,
+        t.session,
+        t.course_code as courseCode,
+        t.course_name as courseName,
+        t.department,
+        t.exam_type as examType,
+        t.batch_id as batchId,
+        b.public_uuid as batchUuid,
+        b.name as batchName
+       FROM timetable t
+       LEFT JOIN batches b ON b.id = t.batch_id
+       WHERE t.date = ?
+         AND t.start_time = ?
+         AND t.end_time = ?
+         AND t.session = ?${String(ownerSql || "").replace(/\\bdepartment\\b/g, "t.department").replace(/\\bowner_user_id\\b/g, "t.owner_user_id")}
+       ORDER BY t.department, t.course_code`,
       [date, startTime, endTime, session, ...ownerParams]
     );
     return (rows || []).map(toTimetableRow);
@@ -91,17 +99,28 @@ const Timetable = {
       courseCode,
       courseName,
       department,
-      examType
+      examType,
+      batchId = null
     } = data;
 
     const { col, val } = insertField(opts.role, opts.ownerUserId);
-    const vals = [date, startTime, endTime, session, courseCode, courseName, department, examType];
+    const vals = [
+      date,
+      startTime,
+      endTime,
+      session,
+      courseCode,
+      courseName,
+      department,
+      examType,
+      batchId,
+    ];
     if (val != null) vals.push(val);
 
     const [result] = await db.query(
       `INSERT INTO timetable 
-       (date, start_time, end_time, session, course_code, course_name, department, exam_type${col})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?${val != null ? ", ?" : ""})`,
+       (date, start_time, end_time, session, course_code, course_name, department, exam_type, batch_id${col})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?${val != null ? ", ?" : ""})`,
       vals
     );
 
@@ -111,7 +130,7 @@ const Timetable = {
   /* ===============================
       CHECK FOR DUPLICATE
   =============================== */
-  checkDuplicate: async ({ date, session, courseCode, department }, opts = {}) => {
+  checkDuplicate: async ({ date, session, courseCode, department, examType, batchId }, opts = {}) => {
     const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
       ? andClauseForHod(opts.department)
       : andClause(opts.role, opts.ownerUserId);
@@ -120,9 +139,11 @@ const Timetable = {
        WHERE date = ? 
        AND session = ? 
        AND course_code = ?
+       AND exam_type = ?
        AND department = ?${ownerSql}
+       AND (batch_id = ? OR (batch_id IS NULL AND ? IS NULL))
        LIMIT 1`,
-      [date, session, courseCode, department, ...ownerParams]
+      [date, session, courseCode, examType, department, ...ownerParams, batchId, batchId]
     );
 
     return rows.length > 0;
@@ -176,7 +197,8 @@ const Timetable = {
         course_code as courseCode,
         course_name as courseName,
         department,
-        exam_type as examType
+        exam_type as examType,
+        batch_id as batchId
        FROM timetable
        WHERE date BETWEEN ? AND ?${ownerSql}
        ORDER BY date, start_time`,
@@ -202,7 +224,8 @@ const Timetable = {
         course_code as courseCode,
         course_name as courseName,
         department,
-        exam_type as examType
+        exam_type as examType,
+        batch_id as batchId
       FROM timetable
       WHERE 1=1${ownerSql}
     `;
