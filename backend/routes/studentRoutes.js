@@ -198,7 +198,7 @@ router.get("/course/:courseCode", sessionAuth, checkRole(["admin", "faculty_inch
 });
 
 // ✅ GET students by department
-router.get("/department/:dept", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
+router.get("/department/:dept", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), async (req, res) => {
   try {
     const department = req.params.dept.toUpperCase();
     console.log(`🏢 GET /api/students/department/${department}`);

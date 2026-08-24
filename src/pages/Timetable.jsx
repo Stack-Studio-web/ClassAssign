@@ -119,20 +119,64 @@ const Timetable = () => {
     const requestId = ++batchRequestIdRef.current;
 
     const fetchBatches = async () => {
+      const toOptions = (rows) => {
+        const names = new Set();
+        (rows || []).forEach((row) => {
+          const name = String(row?.name || row?.regnNo || row?.regnno || "")
+            .toUpperCase()
+            .trim();
+          const match = name.match(/^(\d{2}[A-Z]+)/);
+          const batchName = row?.name && /^\d{2}[A-Z]+$/.test(String(row.name).toUpperCase())
+            ? String(row.name).toUpperCase()
+            : match?.[1];
+          if (batchName && batchName.endsWith(dept)) names.add(batchName);
+        });
+        return [...names].sort().reverse().map((name) => ({ name, uuid: name }));
+      };
+
       try {
         const res = await api.get(
           `/students/batches-by-department/${encodeURIComponent(dept)}`
         );
         const body = res?.data?.data ?? res?.data ?? {};
         const batches = body.batches ?? (Array.isArray(body) ? body : []);
+        const options = (Array.isArray(batches) ? batches : [])
+          .map((b) => ({
+            name: String(b.name || b.uuid || "").toUpperCase(),
+            uuid: b.uuid || b.name || null,
+          }))
+          .filter((b) => b.name);
 
-        if (requestId !== batchRequestIdRef.current) return; // stale response guard
+        if (requestId !== batchRequestIdRef.current) return;
 
-        setBatchOptions(Array.isArray(batches) ? batches : []);
+        if (options.length > 0) {
+          setBatchOptions(options);
+          return;
+        }
+
+        const studentsRes = await api.get(
+          `/students/department/${encodeURIComponent(dept)}`
+        );
+        const students = Array.isArray(studentsRes.data)
+          ? studentsRes.data
+          : studentsRes.data?.data ?? [];
+        if (requestId !== batchRequestIdRef.current) return;
+        setBatchOptions(toOptions(students));
       } catch (err) {
-        if (requestId !== batchRequestIdRef.current) return; // stale response guard
-        console.error("Failed to load batches:", err);
-        setBatchOptions([]);
+        try {
+          const studentsRes = await api.get(
+            `/students/department/${encodeURIComponent(dept)}`
+          );
+          const students = Array.isArray(studentsRes.data)
+            ? studentsRes.data
+            : studentsRes.data?.data ?? [];
+          if (requestId !== batchRequestIdRef.current) return;
+          setBatchOptions(toOptions(students));
+        } catch (fallbackErr) {
+          if (requestId !== batchRequestIdRef.current) return;
+          console.error("Failed to load batches:", err, fallbackErr);
+          setBatchOptions([]);
+        }
       } finally {
         if (requestId !== batchRequestIdRef.current) return;
         setBatchLoading(false);

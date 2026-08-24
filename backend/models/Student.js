@@ -426,28 +426,23 @@ const Student = {
       "st."
     );
 
+    const escapedDept = dept.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const [rows] = await db.query(
       `
-      SELECT
-        UPPER(LEFT(st.regn_no, 2) || ?) AS name,
-        MIN(b.public_uuid::text) AS uuid,
-        MIN(b.id) AS batch_id
+      SELECT DISTINCT UPPER(SUBSTRING(UPPER(TRIM(st.regn_no)) FROM '^[0-9]{2}[A-Z]+')) AS name
       FROM students st
-      LEFT JOIN batches b ON b.id = st.batch_id
-      WHERE UPPER((regexp_match(UPPER(st.regn_no), '^[0-9]{2}([A-Z]+)'))[1]) = ?
+      WHERE UPPER(TRIM(st.regn_no)) ~ ?
         ${ownerSql}
-      GROUP BY UPPER(LEFT(st.regn_no, 2) || ?)
       ORDER BY name DESC
       `,
-      [dept, dept, ...ownerParams, dept]
+      [`^[0-9]{2}${escapedDept}`, ...ownerParams]
     );
 
     return (rows || [])
-      .map((r) => ({
-        name: String(r.name ?? "").toUpperCase(),
-        uuid: r.uuid ?? r.UUID ?? null,
-        batchId: r.batch_id ?? r.batchId ?? r.batchid ?? null,
-      }))
+      .map((r) => {
+        const name = String(r.name ?? "").toUpperCase();
+        return { name, uuid: name, batchId: null };
+      })
       .filter((b) => b.name);
   },
 
