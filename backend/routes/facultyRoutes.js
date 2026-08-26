@@ -165,7 +165,8 @@ router.delete("/:uuid", sessionAuth, checkRole(["admin", "faculty_incharge"]), r
   try {
     const facultyId = req.internalId;
 
-    // Soft-delete only — preserve seating plans, attendance, reports, history.
+    // Soft-delete only — never block on seating/attendance assignments.
+    // Historical plans keep faculty_id; faculty row stays with is_active=false.
     const deleted = await Faculty.softDeleteById(facultyId, ownerOpts(req));
     if (!deleted) {
       return Api.notFound(res, "Faculty not found or already removed");
@@ -176,6 +177,7 @@ router.delete("/:uuid", sessionAuth, checkRole(["admin", "faculty_incharge"]), r
       "Faculty removed from active management. Historical seating and attendance data were preserved."
     );
   } catch (err) {
+    console.error("FACULTY SOFT DELETE ERROR:", err);
     return Api.fromError(res, err);
   }
 });

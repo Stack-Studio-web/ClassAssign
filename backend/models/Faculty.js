@@ -128,12 +128,27 @@ const Faculty = {
    * Keeps the row so seating_plan_venues.faculty_id and history stay valid.
    */
   softDeleteById: async (id, opts = {}) => {
+    // Ensure soft-delete columns exist (safe on every call; IF NOT EXISTS).
+    try {
+      await db.query(
+        `ALTER TABLE faculty ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`
+      );
+      await db.query(
+        `ALTER TABLE faculty ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ NULL`
+      );
+    } catch (_) {
+      /* ignore if concurrent / permission — UPDATE below will surface real errors */
+    }
+
     const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
       ? andClauseForHod(opts.department)
       : andClause(opts.role, opts.ownerUserId);
 
     const [match] = await db.query(
-      `SELECT id, email FROM faculty WHERE id = ? AND ${ACTIVE_ONLY_SQL}${ownerSql}`,
+      `SELECT id, email FROM faculty
+       WHERE id = ?
+         AND COALESCE(is_active, TRUE) = TRUE
+         ${ownerSql}`,
       [id, ...ownerParams]
     );
     if (!Array.isArray(match) || match.length === 0) return false;
@@ -142,15 +157,19 @@ const Faculty = {
     const conn = await db.getConnection();
     try {
       await conn.beginTransaction();
-      await conn.query(
+      const [result] = await conn.query(
         `UPDATE faculty
          SET is_active = FALSE,
              is_available = FALSE,
              deleted_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
+         WHERE id = ?
+           AND COALESCE(is_active, TRUE) = TRUE`,
         [id]
       );
-      // Prevent login / new portal use; history still references faculty row.
+      if ((result.affectedRows ?? 0) === 0) {
+        await conn.rollback();
+        return false;
+      }
       if (email) {
         await conn.query(
           `UPDATE users SET is_active = FALSE WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))`,

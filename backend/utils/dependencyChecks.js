@@ -7,53 +7,11 @@ async function countQuery(sql, params) {
 }
 
 const DependencyChecks = {
-  async facultyDeleteBlockers(facultyId) {
-    const seatingCount = await countQuery(
-      `SELECT COUNT(*) AS count FROM seating_plan_venues WHERE faculty_id = ?`,
-      [facultyId]
-    );
-    if (seatingCount > 0) {
-      return {
-        blocked: true,
-        code: "FACULTY_ASSIGNED",
-        message: "Cannot delete faculty.",
-        details:
-          "This faculty is assigned to one or more examinations. Remove the assignment before deleting.",
-        count: seatingCount,
-      };
-    }
-
-    const assignmentCount = await countQuery(
-      `SELECT COUNT(*) AS count FROM faculty_assignments WHERE faculty_id = ?`,
-      [facultyId]
-    );
-    if (assignmentCount > 0) {
-      return {
-        blocked: true,
-        code: "FACULTY_ASSIGNED",
-        message: "Cannot delete faculty.",
-        details:
-          "This faculty has active attendance assignments. Remove assignments before deleting.",
-        count: assignmentCount,
-      };
-    }
-
-    const transferCount = await countQuery(
-      `SELECT COUNT(*) AS count FROM faculty_transfer_requests
-       WHERE current_faculty_id = ? OR requested_faculty_id = ?`,
-      [facultyId, facultyId]
-    );
-    if (transferCount > 0) {
-      return {
-        blocked: true,
-        code: "FACULTY_TRANSFER_PENDING",
-        message: "Cannot delete faculty.",
-        details:
-          "This faculty is linked to attendance transfer requests. Resolve or remove those requests first.",
-        count: transferCount,
-      };
-    }
-
+  /**
+   * Faculty removal is soft-delete (is_active=false). Historical seating/attendance
+   * stay linked to the faculty row, so assignment presence must NOT block removal.
+   */
+  async facultyDeleteBlockers(_facultyId) {
     return { blocked: false };
   },
 
