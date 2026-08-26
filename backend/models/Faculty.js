@@ -16,9 +16,11 @@ function toFacultyRow(row) {
   const maxClassrooms = Number(row.max_classrooms ?? row.maxclassrooms ?? row.maxClassrooms ?? 1) || 1;
   const allocation = Number(row.allocation ?? 0) || 0;
   const completed = Number(row.completed ?? 0) || 0;
-  // Remaining = released capacity from fully completed exams (idempotent; equals completed).
+  // Remaining = currently free slots (normal capacity − active allocated). Not a completed counter.
   const remaining =
-    row.remaining != null ? Number(row.remaining) || 0 : completed;
+    row.remaining != null
+      ? Number(row.remaining) || 0
+      : maxClassrooms - allocation;
   return {
     uuid: row.public_uuid ?? row.publicuuid ?? row.uuid,
     name: row.name ?? "",
@@ -27,12 +29,12 @@ function toFacultyRow(row) {
     maxClassrooms,
     /** Active allocations (attendance OR report still pending). */
     allocation,
-    /** Fully completed allocations (attendance AND report done). */
+    /** Fully completed allocations (attendance AND report done) — history only. */
     completed,
-    /** Released assignments (same as completed; does not increment on refresh). */
+    /** Free slots available to allocate again. Always: maxClassrooms ≈ allocation + remaining. */
     remaining,
-    /** Free allotment slots = maxClassrooms − active allocation. */
-    freeSlots: Math.max(0, maxClassrooms - allocation),
+    /** Alias of remaining (free allotment slots). */
+    freeSlots: remaining,
     /** Assignments with attendance completed (may still be active if report pending). */
     attendanceCompleted: Number(row.attendance_completed ?? row.attendanceCompleted ?? 0) || 0,
     /** Assignments with report completed (may still be active if attendance pending). */
@@ -186,9 +188,9 @@ const Faculty = {
      GET ALL FACULTY WITH ALLOCATION INFO
      Derived from seating_plan_venues + attendance + report status.
        Allocated  = active (attendance OR report still pending)
-       Completed  = fully completed (attendance AND report done)
-       Remaining  = fully completed / released (idempotent; equals Completed)
-       Free slots for new allotment = max_classrooms - Allocated (via canAllocate)
+       Completed  = fully completed history (attendance AND report done)
+       Remaining  = max_classrooms − Allocated (free slots to allocate again)
+       Invariant  = max_classrooms = Allocated + Remaining (when Allocated ≤ max)
   ===================================== */
   getAllWithAllocation: async (opts = {}) => {
     const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
@@ -207,7 +209,10 @@ const Faculty = {
         COUNT(spv.id) AS total_assignments,
         COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${ACTIVE_ALLOCATION_SQL})) AS allocation,
         COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${FULLY_COMPLETED_SQL})) AS completed,
-        COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${FULLY_COMPLETED_SQL})) AS remaining,
+        (
+          COALESCE(f.max_classrooms, 1)
+          - COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${ACTIVE_ALLOCATION_SQL}))
+        ) AS remaining,
         COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${ATTENDANCE_DONE_SQL})) AS attendance_completed,
         COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${REPORT_DONE_SQL})) AS report_completed
       FROM faculty f
@@ -245,7 +250,10 @@ const Faculty = {
         COUNT(spv.id) AS total_assignments,
         COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${ACTIVE_ALLOCATION_SQL})) AS allocation,
         COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${FULLY_COMPLETED_SQL})) AS completed,
-        COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${FULLY_COMPLETED_SQL})) AS remaining,
+        (
+          COALESCE(f.max_classrooms, 1)
+          - COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${ACTIVE_ALLOCATION_SQL}))
+        ) AS remaining,
         COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${ATTENDANCE_DONE_SQL})) AS attendance_completed,
         COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${REPORT_DONE_SQL})) AS report_completed
       FROM faculty f
