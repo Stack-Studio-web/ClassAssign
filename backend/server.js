@@ -57,6 +57,7 @@ const ensureMentorSchema = require("./utils/ensureMentorSchema");
 const ensureMentorAuthSchema = require("./utils/ensureMentorAuthSchema");
 const ensureStudentIndexes = require("./utils/ensureStudentIndexes");
 const ensureTimetableSchema = require("./utils/ensureTimetableSchema");
+const ensureFacultyActiveSchema = require("./utils/ensureFacultyActiveSchema");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -142,6 +143,7 @@ async function start() {
       await ensureStudentIndexes();
       await ensureUuidSchema();
       await ensureTimetableSchema();
+      await ensureFacultyActiveSchema();
       break;
     } catch (e) {
       const isLast = attempt === STARTUP_MAX_ATTEMPTS;

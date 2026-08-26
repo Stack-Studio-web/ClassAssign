@@ -160,6 +160,8 @@ router.post(
             `SELECT 
               f.id,
               COALESCE(f.max_classrooms, 1) AS max_classrooms,
+              COALESCE(f.is_active, TRUE) AS is_active,
+              COALESCE(f.is_available, TRUE) AS is_available,
               COALESCE((
                 SELECT COUNT(spv.id)
                 FROM seating_plan_venues spv
@@ -171,7 +173,7 @@ router.post(
               ), 0) AS current_allocation
              FROM faculty f
              WHERE f.id = ?
-             GROUP BY f.id, f.max_classrooms`,
+             GROUP BY f.id, f.max_classrooms, f.is_active, f.is_available`,
             [dateOnly, examStartTime, examEndTime, fId]
           );
 
@@ -184,6 +186,20 @@ router.post(
           }
 
           const r = allocCheck[0];
+          if (r.is_active === false || r.isactive === false) {
+            await connection.rollback();
+            return res.status(400).json({
+              error: "Faculty unavailable",
+              details: `Faculty ID ${fId} has been removed from active management and cannot be assigned to new exams`
+            });
+          }
+          if (r.is_available === false || r.isavailable === false) {
+            await connection.rollback();
+            return res.status(400).json({
+              error: "Faculty unavailable",
+              details: `Faculty ID ${fId} is marked unavailable`
+            });
+          }
           const maxClassrooms = Number(r.max_classrooms ?? r.maxclassrooms ?? 1) || 1;
           const currentAlloc = Number(r.current_allocation ?? r.currentallocation ?? 0) || 0;
           const remaining = maxClassrooms - currentAlloc;
@@ -763,7 +779,7 @@ router.post("/check-faculty-availability",
 
       const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
 
-      // Active allocation only (attendance OR report still pending). Fully completed are released.
+      // Active faculty only — soft-deleted faculty stay in DB for history but cannot be assigned.
       const [allFaculty] = await db.query(
         `SELECT 
           f.id,
@@ -779,7 +795,8 @@ router.post("/check-faculty-availability",
             WHERE spv.faculty_id = f.id
               AND (${ACTIVE_ALLOCATION_SQL})
           ) AS current_allocation
-         FROM faculty f`
+         FROM faculty f
+         WHERE COALESCE(f.is_active, TRUE) = TRUE`
       );
 
       const facultyStatus = await Promise.all(

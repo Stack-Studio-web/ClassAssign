@@ -7,7 +7,6 @@ const db = require("../config/db");
 const sessionAuth = require("../middleware/sessionAuth");
 const checkRole = require("../middleware/checkRole");
 const { insertField } = require("../utils/ownerFilter");
-const DependencyChecks = require("../utils/dependencyChecks");
 const Api = require("../utils/apiResponse");
 const { resolveEntity } = require("../middleware/resolvePublicId");
 const { TABLE } = require("../utils/publicId");
@@ -56,6 +55,21 @@ router.post("/", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (r
 
     const existingFaculty = await Faculty.findByEmail(email);
     if (existingFaculty) {
+      const inactive =
+        existingFaculty.is_active === false || existingFaculty.isactive === false;
+      if (inactive) {
+        await Faculty.reactivateById(existingFaculty.id, {
+          name: name.trim(),
+          department: department?.trim() || null,
+        });
+        const plainPassword = passwordFromEmail(email);
+        return Api.success(
+          res,
+          "Faculty restored to active management (was previously removed).",
+          { email, restored: true, generatedPassword: plainPassword },
+          200
+        );
+      }
       return Api.conflict(res, "DUPLICATE_EMAIL", "Faculty with this email already exists.");
     }
 
@@ -151,17 +165,16 @@ router.delete("/:uuid", sessionAuth, checkRole(["admin", "faculty_incharge"]), r
   try {
     const facultyId = req.internalId;
 
-    const check = await DependencyChecks.facultyDeleteBlockers(facultyId);
-    if (check.blocked) {
-      return Api.conflict(res, check.code, check.message, check.details);
-    }
-
-    const deleted = await Faculty.deleteById(facultyId, ownerOpts(req));
+    // Soft-delete only — preserve seating plans, attendance, reports, history.
+    const deleted = await Faculty.softDeleteById(facultyId, ownerOpts(req));
     if (!deleted) {
-      return Api.notFound(res, "Faculty not found or not allowed");
+      return Api.notFound(res, "Faculty not found or already removed");
     }
 
-    return Api.success(res, "Faculty deleted successfully");
+    return Api.success(
+      res,
+      "Faculty removed from active management. Historical seating and attendance data were preserved."
+    );
   } catch (err) {
     return Api.fromError(res, err);
   }

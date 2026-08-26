@@ -197,7 +197,10 @@ async function resolveSeatingPlanVenueId({ facultyId, examId, venueId, examDate,
 async function findFacultyByEmail(email) {
   const normalized = String(email || "").trim().toLowerCase();
   const [rows] = await db.query(
-    `SELECT id, public_uuid, name, email, department FROM faculty WHERE LOWER(email) = ?`,
+    `SELECT id, public_uuid, name, email, department
+     FROM faculty
+     WHERE LOWER(email) = ?
+       AND COALESCE(is_active, TRUE) = TRUE`,
     [normalized]
   );
   const r = rows[0];

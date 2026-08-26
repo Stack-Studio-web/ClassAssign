@@ -40,14 +40,19 @@ function toFacultyRow(row) {
     /** Assignments with report completed (may still be active if attendance pending). */
     reportCompleted: Number(row.report_completed ?? row.reportCompleted ?? 0) || 0,
     totalAssignments: Number(row.total_assignments ?? row.totalAssignments ?? allocation + completed) || 0,
-    isAvailable
+    isAvailable,
+    isActive: row.is_active === false || row.isactive === false ? false : true,
   };
 }
+
+const ACTIVE_ONLY_SQL = `COALESCE(is_active, TRUE) = TRUE`;
+const ACTIVE_ONLY_F_SQL = `COALESCE(f.is_active, TRUE) = TRUE`;
 
 const Faculty = {
   findByEmail: async (email) => {
     const [rows] = await db.query(
-      `SELECT id, email FROM faculty WHERE LOWER(email) = ?`,
+      `SELECT id, email, COALESCE(is_active, TRUE) AS is_active
+       FROM faculty WHERE LOWER(email) = ?`,
       [email.trim().toLowerCase()]
     );
     return rows[0];
@@ -66,7 +71,10 @@ const Faculty = {
       ? whereClauseForHod(opts.department)
       : whereClause(opts.role, opts.ownerUserId);
     const [rows] = await db.query(
-      `SELECT * FROM faculty${ownerSql || " WHERE 1=1"} ORDER BY name ASC`,
+      `SELECT * FROM faculty
+       ${ownerSql || "WHERE 1=1"}
+       AND ${ACTIVE_ONLY_SQL}
+       ORDER BY name ASC`,
       ownerParams
     );
     return (rows || []).map(toFacultyRow);
@@ -77,7 +85,9 @@ const Faculty = {
       ? whereClauseForHod(opts.department)
       : whereClause(opts.role, opts.ownerUserId);
     const [rows] = await db.query(
-      `SELECT COUNT(*) AS totalFaculty FROM faculty${ownerSql || " WHERE 1=1"}`,
+      `SELECT COUNT(*) AS totalFaculty FROM faculty
+       ${ownerSql || "WHERE 1=1"}
+       AND ${ACTIVE_ONLY_SQL}`,
       ownerParams
     );
     const r = rows?.[0];
@@ -91,7 +101,7 @@ const Faculty = {
       ? andClauseForHod(opts.department)
       : andClause(opts.role, opts.ownerUserId);
     const [result] = await db.query(
-      `UPDATE faculty SET max_classrooms = ? WHERE id = ?${ownerSql}`,
+      `UPDATE faculty SET max_classrooms = ? WHERE id = ? AND ${ACTIVE_ONLY_SQL}${ownerSql}`,
       [max, id, ...ownerParams]
     );
     return (result.affectedRows ?? 0) > 0;
@@ -102,7 +112,7 @@ const Faculty = {
       ? andClauseForHod(opts.department)
       : andClause(opts.role, opts.ownerUserId);
     const [match] = await db.query(
-      `SELECT id FROM faculty WHERE id = ?${ownerSql}`,
+      `SELECT id FROM faculty WHERE id = ? AND ${ACTIVE_ONLY_SQL}${ownerSql}`,
       [id, ...ownerParams]
     );
     if (!Array.isArray(match) || match.length === 0) return false;
@@ -113,27 +123,94 @@ const Faculty = {
     return true;
   },
 
-  deleteById: async (id, opts = {}) => {
+  /**
+   * Soft-delete: remove from active Faculty Management / allotment.
+   * Keeps the row so seating_plan_venues.faculty_id and history stay valid.
+   */
+  softDeleteById: async (id, opts = {}) => {
     const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
       ? andClauseForHod(opts.department)
       : andClause(opts.role, opts.ownerUserId);
-    const [result] = await db.query(`DELETE FROM faculty WHERE id = ?${ownerSql}`, [id, ...ownerParams]);
-    return (result.affectedRows ?? 0) > 0;
+
+    const [match] = await db.query(
+      `SELECT id, email FROM faculty WHERE id = ? AND ${ACTIVE_ONLY_SQL}${ownerSql}`,
+      [id, ...ownerParams]
+    );
+    if (!Array.isArray(match) || match.length === 0) return false;
+
+    const email = match[0].email;
+    const conn = await db.getConnection();
+    try {
+      await conn.beginTransaction();
+      await conn.query(
+        `UPDATE faculty
+         SET is_active = FALSE,
+             is_available = FALSE,
+             deleted_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [id]
+      );
+      // Prevent login / new portal use; history still references faculty row.
+      if (email) {
+        await conn.query(
+          `UPDATE users SET is_active = FALSE WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))`,
+          [email]
+        );
+      }
+      await conn.commit();
+      return true;
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
   },
+
+  /** Reactivate a soft-deleted faculty (e.g. re-add same email). */
+  reactivateById: async (id, { name, department } = {}) => {
+    await db.query(
+      `UPDATE faculty
+       SET is_active = TRUE,
+           is_available = TRUE,
+           deleted_at = NULL,
+           name = COALESCE(?, name),
+           department = COALESCE(?, department)
+       WHERE id = ?`,
+      [name || null, department ?? null, id]
+    );
+    const [rows] = await db.query(`SELECT email FROM faculty WHERE id = ?`, [id]);
+    const email = rows?.[0]?.email;
+    if (email) {
+      await db.query(
+        `UPDATE users SET is_active = TRUE WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))`,
+        [email]
+      );
+    }
+    return true;
+  },
+
+  deleteById: async (id, opts = {}) => Faculty.softDeleteById(id, opts),
 
   deleteByIds: async (ids, opts = {}) => {
     if (ids.length === 0) return;
-    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
-      ? andClauseForHod(opts.department)
-      : andClause(opts.role, opts.ownerUserId);
-    return db.query(`DELETE FROM faculty WHERE id IN (?)${ownerSql}`, [ids, ...ownerParams]);
+    for (const id of ids) {
+      await Faculty.softDeleteById(id, opts);
+    }
   },
 
   deleteAll: async (opts = {}) => {
     const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
       ? whereClauseForHod(opts.department)
       : whereClause(opts.role, opts.ownerUserId);
-    return db.query(`DELETE FROM faculty${ownerSql || " WHERE 1=1"}`, ownerParams);
+    // Soft-delete all in scope (preserve history)
+    return db.query(
+      `UPDATE faculty
+       SET is_active = FALSE, is_available = FALSE, deleted_at = CURRENT_TIMESTAMP
+       ${ownerSql || "WHERE 1=1"}
+       AND ${ACTIVE_ONLY_SQL}`,
+      ownerParams
+    );
   },
 
   /* =====================================
@@ -147,6 +224,7 @@ const Faculty = {
         f.id,
         COALESCE(f.max_classrooms, 1) AS max_classrooms,
         COALESCE(f.is_available, true) AS is_available,
+        COALESCE(f.is_active, true) AS is_active,
         COALESCE((
           SELECT COUNT(spv.id)
           FROM seating_plan_venues spv
@@ -176,6 +254,7 @@ const Faculty = {
     if (rows.length === 0) return false;
 
     const r = rows[0];
+    if (r.is_active === false || r.isactive === false) return false;
     if (r.is_available === false || r.isavailable === false) return false;
 
     const maxAllowed = Number(r.max_classrooms ?? r.maxclassrooms ?? 1) || 1;
@@ -221,6 +300,7 @@ const Faculty = {
       LEFT JOIN seating_plans sp
         ON sp.id = spv.seating_plan_id
       ${ownerSql || "WHERE 1=1"}
+        AND ${ACTIVE_ONLY_F_SQL}
       GROUP BY f.id, f.public_uuid, f.name, f.department, f.email, f.max_classrooms, f.is_available
       ORDER BY f.name ASC
       `,

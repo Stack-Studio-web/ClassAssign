@@ -230,17 +230,23 @@ export default function Faculty() {
 
   /* ================= DELETE ================= */
   const handleDelete = async (id) => {
-    const ok = await showConfirm("Are you sure you want to delete this faculty member?");
+    const ok = await showConfirm({
+      title: "Remove Faculty?",
+      message:
+        "This will remove the faculty from active faculty management and prevent new assignments.\n\nExisting seating plans, student allocations, attendance, reports, and exam history will be preserved.",
+      confirmLabel: "Remove Faculty",
+      cancelLabel: "Cancel",
+    });
     if (!ok) return;
 
     setDeletingId(id);
     try {
       await api.delete(`/faculty/${id}`);
-      toast.success("Faculty deleted successfully");
+      toast.success("Faculty removed. Historical exam data was preserved.");
       fetchFaculty();
       fetchFacultyStats();
     } catch (err) {
-      toast.error(getApiError(err, "Delete failed"), getApiErrorTitle(err, "Cannot delete faculty"));
+      toast.error(getApiError(err, "Remove failed"), getApiErrorTitle(err, "Cannot remove faculty"));
     } finally {
       setDeletingId(null);
     }
@@ -516,7 +522,7 @@ export default function Faculty() {
                         ) : (
                           <div className="flex flex-wrap gap-2">
                             <button type="button" onClick={() => handleEditClick(f)} className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium">Edit</button>
-                            <button type="button" disabled={deletingId === f.uuid || loading} onClick={() => handleDelete(f.uuid)} className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium">{deletingId === f.uuid ? "Deleting..." : "Delete"}</button>
+                            <button type="button" disabled={deletingId === f.uuid || loading} onClick={() => handleDelete(f.uuid)} className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium">{deletingId === f.uuid ? "Removing..." : "Remove"}</button>
                           </div>
                         )}
                       </td>
