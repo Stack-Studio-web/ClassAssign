@@ -72,6 +72,26 @@ export default function Faculty() {
     fetchLastImport();
   }, []);
 
+  // Keep Alloc/Done/Rem derived from backend after attendance or report updates.
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === "visible") {
+        fetchFaculty();
+        fetchFacultyStats();
+      }
+    };
+    const onFocus = () => {
+      fetchFaculty();
+      fetchFacultyStats();
+    };
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, []);
+
   /* ================= EDIT LOGIC ================= */
   const handleEditClick = (f) => {
     setEditingId(f.uuid);
@@ -430,15 +450,17 @@ export default function Faculty() {
           </div>
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="min-w-[900px] md:min-w-full">
+              <table className="min-w-[1000px] md:min-w-full">
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-100">
                     <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Name</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Department</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide hidden sm:table-cell">Email</th>
-                    <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide">Max</th>
-                    <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide">Alloc</th>
-                    <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide">Rem</th>
+                    <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide" title="Maximum concurrent exam halls">Max</th>
+                    <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide" title="Active exams (attendance or report still pending)">Alloc</th>
+                    <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide" title="Fully completed (attendance + report)">Done</th>
+                    <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide" title="Released assignments (increases only when attendance AND report are completed)">Rem</th>
+                    <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide hidden lg:table-cell" title="Attendance completed / Report completed among all assignments">Att / Rpt</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide">Available</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Actions</th>
                   </tr>
@@ -456,7 +478,15 @@ export default function Faculty() {
                         <span className="font-bold text-orange-700 bg-orange-100 px-2 py-1 rounded-lg text-xs">{f.allocation ?? 0}</span>
                       </td>
                       <td className="px-4 md:px-6 py-3 md:py-4 text-center">
-                        <span className={`font-bold px-2 py-1 rounded-lg text-xs ${f.remaining > 0 ? "text-green-700 bg-green-100" : "text-red-700 bg-red-100"}`}>{f.remaining}</span>
+                        <span className="font-bold text-indigo-700 bg-indigo-100 px-2 py-1 rounded-lg text-xs">{f.completed ?? 0}</span>
+                      </td>
+                      <td className="px-4 md:px-6 py-3 md:py-4 text-center">
+                        <span className="font-bold text-teal-700 bg-teal-100 px-2 py-1 rounded-lg text-xs">{f.remaining ?? f.completed ?? 0}</span>
+                      </td>
+                      <td className="px-4 md:px-6 py-3 md:py-4 text-center hidden lg:table-cell">
+                        <span className="text-xs font-semibold text-gray-600 bg-gray-100 px-2 py-1 rounded-lg">
+                          {f.attendanceCompleted ?? 0} / {f.reportCompleted ?? 0}
+                        </span>
                       </td>
                       <td className="px-4 md:px-6 py-3 md:py-4 text-center">
                         <button

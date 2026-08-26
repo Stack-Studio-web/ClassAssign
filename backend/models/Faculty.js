@@ -1,20 +1,43 @@
 // Class/backend/models/Faculty.js
 const db = require("../config/db");
 const { andClause, whereClause, whereClauseForHod, andClauseForHod, insertField } = require("../utils/ownerFilter");
+const {
+  ATTENDANCE_DONE_SQL,
+  REPORT_DONE_SQL,
+  FULLY_COMPLETED_SQL,
+  ACTIVE_ALLOCATION_SQL,
+} = require("../utils/facultyAllocationStatus");
 
 // PostgreSQL returns unquoted column names in lowercase; map to camelCase for API
 function toFacultyRow(row) {
   if (!row || typeof row !== "object") return row;
   const isAvailable =
     row.is_available === false || row.isavailable === false ? false : true;
+  const maxClassrooms = Number(row.max_classrooms ?? row.maxclassrooms ?? row.maxClassrooms ?? 1) || 1;
+  const allocation = Number(row.allocation ?? 0) || 0;
+  const completed = Number(row.completed ?? 0) || 0;
+  // Remaining = released capacity from fully completed exams (idempotent; equals completed).
+  const remaining =
+    row.remaining != null ? Number(row.remaining) || 0 : completed;
   return {
     uuid: row.public_uuid ?? row.publicuuid ?? row.uuid,
     name: row.name ?? "",
     department: row.department ?? "",
     email: row.email ?? "",
-    maxClassrooms: Number(row.max_classrooms ?? row.maxclassrooms ?? row.maxClassrooms ?? 1) || 1,
-    allocation: Number(row.allocation ?? 0) || 0,
-    remaining: Number(row.remaining ?? 0) || 0,
+    maxClassrooms,
+    /** Active allocations (attendance OR report still pending). */
+    allocation,
+    /** Fully completed allocations (attendance AND report done). */
+    completed,
+    /** Released assignments (same as completed; does not increment on refresh). */
+    remaining,
+    /** Free allotment slots = maxClassrooms − active allocation. */
+    freeSlots: Math.max(0, maxClassrooms - allocation),
+    /** Assignments with attendance completed (may still be active if report pending). */
+    attendanceCompleted: Number(row.attendance_completed ?? row.attendanceCompleted ?? 0) || 0,
+    /** Assignments with report completed (may still be active if attendance pending). */
+    reportCompleted: Number(row.report_completed ?? row.reportCompleted ?? 0) || 0,
+    totalAssignments: Number(row.total_assignments ?? row.totalAssignments ?? allocation + completed) || 0,
     isAvailable
   };
 }
@@ -113,7 +136,7 @@ const Faculty = {
 
   /* =====================================
      CHECK IF FACULTY CAN BE ALLOCATED
-     ✅ FIXED: Handle case when faculty doesn't exist
+     Counts only ACTIVE allocations (not fully completed).
   ===================================== */
   canAllocate: async (facultyId, { examDate, examStartTime, examEndTime } = {}) => {
     const [rows] = await db.query(
@@ -127,6 +150,7 @@ const Faculty = {
           FROM seating_plan_venues spv
           JOIN seating_plans sp ON sp.id = spv.seating_plan_id
           WHERE spv.faculty_id = f.id
+            AND (${ACTIVE_ALLOCATION_SQL})
             AND (?::date IS NULL OR sp.exam_date = ?::date)
             AND (
               ?::time IS NULL OR ?::time IS NULL
@@ -160,14 +184,19 @@ const Faculty = {
 
   /* =====================================
      GET ALL FACULTY WITH ALLOCATION INFO
-     (Dynamically calculated from seating_plan_venues)
+     Derived from seating_plan_venues + attendance + report status.
+       Allocated  = active (attendance OR report still pending)
+       Completed  = fully completed (attendance AND report done)
+       Remaining  = fully completed / released (idempotent; equals Completed)
+       Free slots for new allotment = max_classrooms - Allocated (via canAllocate)
   ===================================== */
   getAllWithAllocation: async (opts = {}) => {
     const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
       ? whereClauseForHod(opts.department, "f.")
       : whereClause(opts.role, opts.ownerUserId, "f.");
-    const [rows] = await db.query(`
-      SELECT 
+    const [rows] = await db.query(
+      `
+      SELECT
         f.id,
         f.public_uuid,
         f.name,
@@ -175,15 +204,61 @@ const Faculty = {
         f.email,
         COALESCE(f.max_classrooms, 1) AS max_classrooms,
         COALESCE(f.is_available, true) AS is_available,
-        COUNT(spv.id) AS allocation,
-        (COALESCE(f.max_classrooms, 1) - COUNT(spv.id)) AS remaining
+        COUNT(spv.id) AS total_assignments,
+        COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${ACTIVE_ALLOCATION_SQL})) AS allocation,
+        COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${FULLY_COMPLETED_SQL})) AS completed,
+        COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${FULLY_COMPLETED_SQL})) AS remaining,
+        COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${ATTENDANCE_DONE_SQL})) AS attendance_completed,
+        COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${REPORT_DONE_SQL})) AS report_completed
       FROM faculty f
-      LEFT JOIN seating_plan_venues spv 
+      LEFT JOIN seating_plan_venues spv
         ON spv.faculty_id = f.id
+      LEFT JOIN seating_plans sp
+        ON sp.id = spv.seating_plan_id
       ${ownerSql || "WHERE 1=1"}
       GROUP BY f.id, f.public_uuid, f.name, f.department, f.email, f.max_classrooms, f.is_available
       ORDER BY f.name ASC
-    `, ownerParams);
+      `,
+      ownerParams
+    );
+    return (rows || []).map(toFacultyRow);
+  },
+
+  /**
+   * Allocation summaries for specific faculty internal IDs (derived, idempotent).
+   */
+  getAllocationSummariesByIds: async (facultyIds = []) => {
+    const ids = [...new Set((facultyIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+    if (ids.length === 0) return [];
+
+    const placeholders = ids.map(() => "?").join(", ");
+    const [rows] = await db.query(
+      `
+      SELECT
+        f.id,
+        f.public_uuid,
+        f.name,
+        f.department,
+        f.email,
+        COALESCE(f.max_classrooms, 1) AS max_classrooms,
+        COALESCE(f.is_available, true) AS is_available,
+        COUNT(spv.id) AS total_assignments,
+        COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${ACTIVE_ALLOCATION_SQL})) AS allocation,
+        COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${FULLY_COMPLETED_SQL})) AS completed,
+        COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${FULLY_COMPLETED_SQL})) AS remaining,
+        COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${ATTENDANCE_DONE_SQL})) AS attendance_completed,
+        COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${REPORT_DONE_SQL})) AS report_completed
+      FROM faculty f
+      LEFT JOIN seating_plan_venues spv
+        ON spv.faculty_id = f.id
+      LEFT JOIN seating_plans sp
+        ON sp.id = spv.seating_plan_id
+      WHERE f.id IN (${placeholders})
+      GROUP BY f.id, f.public_uuid, f.name, f.department, f.email, f.max_classrooms, f.is_available
+      ORDER BY f.name ASC
+      `,
+      ids
+    );
     return (rows || []).map(toFacultyRow);
   },
 };

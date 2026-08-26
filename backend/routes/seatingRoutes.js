@@ -16,6 +16,7 @@ const checkRole = require("../middleware/checkRole");
 const auditLogger = require("../middleware/auditLogger");
 const { resolveEntity } = require("../middleware/resolvePublicId");
 const { TABLE, getPublicUuid, resolveInternalId } = require("../utils/publicId");
+const { ACTIVE_ALLOCATION_SQL } = require("../utils/facultyAllocationStatus");
 
 const ownerOpts = (req) => ({ ownerUserId: req.user?.id, role: req.user?.role });
 
@@ -154,6 +155,7 @@ router.post(
         .filter(id => id != null);
 
       for (const fId of facultyIds) {
+          // Count only ACTIVE allocations (not fully completed: attendance + report).
           const [allocCheck] = await connection.query(
             `SELECT 
               f.id,
@@ -163,6 +165,7 @@ router.post(
                 FROM seating_plan_venues spv
                 JOIN seating_plans sp ON sp.id = spv.seating_plan_id
                 WHERE spv.faculty_id = f.id
+                  AND (${ACTIVE_ALLOCATION_SQL})
                   AND sp.exam_date = ?
                   AND NOT (sp.exam_end_time <= ? OR sp.exam_start_time >= ?)
               ), 0) AS current_allocation
@@ -423,9 +426,25 @@ router.post(
       }
 
       const updated = await SeatingPlan.markCompletedByIds(internalIds, ownerOpts(req));
+
+      // Recalculate affected faculty counts from allocation status (idempotent).
+      const planPlaceholders = internalIds.map(() => "?").join(", ");
+      const [facultyRows] = await db.query(
+        `SELECT DISTINCT faculty_id
+         FROM seating_plan_venues
+         WHERE seating_plan_id IN (${planPlaceholders})
+           AND faculty_id IS NOT NULL`,
+        internalIds
+      );
+      const facultyIds = (facultyRows || [])
+        .map((r) => r.faculty_id ?? r.facultyid)
+        .filter((id) => id != null);
+      const facultySummaries = await Faculty.getAllocationSummariesByIds(facultyIds);
+
       return Api.success(res, `Marked ${updated} report(s) as completed.`, {
         updated,
         requested: uuids.length,
+        facultySummaries,
       });
     } catch (err) {
       console.error("MARK COMPLETED ERROR:", err);
@@ -744,6 +763,7 @@ router.post("/check-faculty-availability",
 
       const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
 
+      // Active allocation only (attendance OR report still pending). Fully completed are released.
       const [allFaculty] = await db.query(
         `SELECT 
           f.id,
@@ -752,7 +772,13 @@ router.post("/check-faculty-availability",
           f.department,
           COALESCE(f.max_classrooms, 1) AS max_classrooms,
           COALESCE(f.is_available, true) AS is_available,
-          (SELECT COUNT(*) FROM seating_plan_venues spv WHERE spv.faculty_id = f.id) AS current_allocation
+          (
+            SELECT COUNT(spv.id)
+            FROM seating_plan_venues spv
+            JOIN seating_plans sp ON sp.id = spv.seating_plan_id
+            WHERE spv.faculty_id = f.id
+              AND (${ACTIVE_ALLOCATION_SQL})
+          ) AS current_allocation
          FROM faculty f`
       );
 

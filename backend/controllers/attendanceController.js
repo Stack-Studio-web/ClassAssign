@@ -264,12 +264,17 @@ const AttendanceController = {
       });
 
       const window = await AttendanceService.getWindowState(examId, venueId);
+      const Faculty = require("../models/Faculty");
+      const facultySummaries = facultyId
+        ? await Faculty.getAllocationSummariesByIds([facultyId])
+        : [];
       return Api.success(res, "Attendance locked. It can no longer be edited.", {
         ...result,
         assignmentUuid,
         isSaved: true,
         isLocked: true,
         status: window.status,
+        facultySummaries,
       });
     } catch (err) {
       if (err.statusCode === 403) {
