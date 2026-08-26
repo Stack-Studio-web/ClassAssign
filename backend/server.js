@@ -57,7 +57,12 @@ const ensureMentorSchema = require("./utils/ensureMentorSchema");
 const ensureMentorAuthSchema = require("./utils/ensureMentorAuthSchema");
 const ensureStudentIndexes = require("./utils/ensureStudentIndexes");
 const ensureTimetableSchema = require("./utils/ensureTimetableSchema");
-const ensureFacultyActiveSchema = require("./utils/ensureFacultyActiveSchema");
+let ensureFacultyActiveSchema = async () => {};
+try {
+  ensureFacultyActiveSchema = require("./utils/ensureFacultyActiveSchema");
+} catch (err) {
+  console.warn("⚠️ ensureFacultyActiveSchema not loaded:", err.message);
+}
 
 const app = express();
 const PORT = process.env.PORT || 5000;

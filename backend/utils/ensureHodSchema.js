@@ -19,6 +19,19 @@ async function ensureHodSchema() {
     await db.query(
       `ALTER TABLE faculty ADD COLUMN IF NOT EXISTS is_available BOOLEAN DEFAULT TRUE`
     );
+    // Soft-delete columns (must exist before any faculty query filters on is_active)
+    await db.query(
+      `ALTER TABLE faculty ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE`
+    );
+    await db.query(
+      `ALTER TABLE faculty ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ NULL`
+    );
+    await db.query(
+      `UPDATE faculty SET is_active = TRUE WHERE is_active IS NULL`
+    );
+    await db.query(
+      `CREATE INDEX IF NOT EXISTS idx_faculty_is_active ON faculty (is_active)`
+    );
     await db.query(
       `ALTER TABLE seating_arrangements ADD COLUMN IF NOT EXISTS seat_index INT DEFAULT 0`
     );
@@ -44,7 +57,7 @@ async function ensureHodSchema() {
       WHERE sa.id = ranked.id
         AND (sa.seat_index IS NULL OR sa.seat_index = 0)
     `);
-    console.log("✅ HoD schema OK (role + users.created_by_hod_id + faculty.is_available + seating_arrangements.seat_index + seating_plan_venues.seating_layout_json + seating_plan_venues.display_order)");
+    console.log("✅ HoD schema OK (role + users.created_by_hod_id + faculty.is_available/is_active + seating_arrangements.seat_index + seating_plan_venues.seating_layout_json + seating_plan_venues.display_order)");
   } catch (err) {
     console.error("❌ ensureHodSchema failed:", err.message);
     throw err;
