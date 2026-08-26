@@ -234,15 +234,12 @@ async function checkReplacementAvailability({
     };
   }
 
-  const canAllocate = await Faculty.canAllocate(requestedFacultyId, {
-    examDate,
-    examStartTime,
-    examEndTime,
-  });
+  const canAllocate = await Faculty.canAllocate(requestedFacultyId);
   if (!canAllocate) {
     return {
       available: false,
-      message: "Faculty has reached maximum allocation for this exam slot.",
+      message:
+        "Faculty allocation limit reached. This faculty currently has no remaining allocation capacity.",
     };
   }
 

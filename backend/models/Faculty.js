@@ -233,53 +233,62 @@ const Faculty = {
   },
 
   /* =====================================
-     CHECK IF FACULTY CAN BE ALLOCATED
-     Counts only ACTIVE allocations (not fully completed).
+     ACTIVE ALLOCATION COUNT (global)
+     Counts seating_plan_venues still active
+     (attendance OR report not both completed).
+     Completed/historical plans do NOT count.
   ===================================== */
-  canAllocate: async (facultyId, { examDate, examStartTime, examEndTime } = {}) => {
-    const [rows] = await db.query(
+  countActiveAllocations: async (facultyId, executor = db) => {
+    const [rows] = await executor.query(
+      `
+      SELECT COUNT(spv.id) AS cnt
+      FROM seating_plan_venues spv
+      JOIN seating_plans sp ON sp.id = spv.seating_plan_id
+      WHERE spv.faculty_id = ?
+        AND (${ACTIVE_ALLOCATION_SQL})
+      `,
+      [facultyId]
+    );
+    return Number(rows?.[0]?.cnt ?? rows?.[0]?.CNT ?? 0) || 0;
+  },
+
+  getCapacitySummary: async (facultyId, executor = db) => {
+    const [rows] = await executor.query(
       `
       SELECT
         f.id,
         COALESCE(f.max_classrooms, 1) AS max_classrooms,
-        COALESCE(f.is_available, true) AS is_available,
-        COALESCE(f.is_active, true) AS is_active,
-        COALESCE((
-          SELECT COUNT(spv.id)
-          FROM seating_plan_venues spv
-          JOIN seating_plans sp ON sp.id = spv.seating_plan_id
-          WHERE spv.faculty_id = f.id
-            AND (${ACTIVE_ALLOCATION_SQL})
-            AND (?::date IS NULL OR sp.exam_date = ?::date)
-            AND (
-              ?::time IS NULL OR ?::time IS NULL
-              OR NOT (sp.exam_end_time <= ?::time OR sp.exam_start_time >= ?::time)
-            )
-        ), 0) AS allocation_count
+        COALESCE(f.is_available, TRUE) AS is_available,
+        COALESCE(f.is_active, TRUE) AS is_active
       FROM faculty f
       WHERE f.id = ?
       `,
-      [
-        examDate || null,
-        examDate || null,
-        examStartTime || null,
-        examEndTime || null,
-        examStartTime || null,
-        examEndTime || null,
-        facultyId,
-      ]
+      [facultyId]
     );
-
-    if (rows.length === 0) return false;
-
+    if (!rows?.length) return null;
     const r = rows[0];
-    if (r.is_active === false || r.isactive === false) return false;
-    if (r.is_available === false || r.isavailable === false) return false;
+    const maxClassrooms = Number(r.max_classrooms ?? r.maxclassrooms ?? 1) || 1;
+    const allocation = await Faculty.countActiveAllocations(facultyId, executor);
+    return {
+      maxClassrooms,
+      allocation,
+      remaining: maxClassrooms - allocation,
+      isAvailable: !(r.is_available === false || r.isavailable === false),
+      isActive: !(r.is_active === false || r.isactive === false),
+    };
+  },
 
-    const maxAllowed = Number(r.max_classrooms ?? r.maxclassrooms ?? 1) || 1;
-    const allocationCount = Number(r.allocation_count ?? r.allocationcount ?? 0) || 0;
-
-    return allocationCount < maxAllowed;
+  /* =====================================
+     CHECK IF FACULTY CAN BE ALLOCATED
+     Capacity = global active seating assignments (not slot-scoped).
+     Time-slot conflicts are checked separately at save time.
+  ===================================== */
+  canAllocate: async (facultyId, { additionalSlots = 1 } = {}) => {
+    const summary = await Faculty.getCapacitySummary(facultyId);
+    if (!summary) return false;
+    if (!summary.isActive || !summary.isAvailable) return false;
+    const need = Math.max(1, Number(additionalSlots) || 1);
+    return summary.remaining >= need;
   },
 
   /* =====================================

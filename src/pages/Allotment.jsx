@@ -371,57 +371,47 @@ const Allotment = () => {
     fetchIneligibleStudents();
   }, [examDate, examType, timetableCourses]);
  
-  // Fetch faculty availability (runs when exam details OR faculty list changes)
+  // Refresh Allocated/Remaining from backend + time-conflict for this exam slot
   useEffect(() => {
     const checkFacultyAvailability = async () => {
-      if (!examDate || !examStartTime || !examEndTime || allFaculty.length === 0) {
-        return;
-      }
- 
-      if (!hasWriteAccess) {
-        return;
-      }
- 
+      if (!examDate || !examStartTime || !examEndTime) return;
+      if (!hasWriteAccess) return;
+
       try {
-        const facultyWithStatus = await Promise.all(
-          allFaculty.map(async (f) => {
-            try {
-              const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
-              const allocRes = await api.get(`/faculty/${f.uuid}/can-allocate`, {
-                params: {
-                  examDate: dateOnly,
-                  examStartTime,
-                  examEndTime,
-                },
-              });
-              const canAllocate = allocRes.data?.data?.allowed ?? false;
+        const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
+        const [facultyRes, availRes] = await Promise.all([
+          api.get("/faculty"),
+          api.post("/seating/check-faculty-availability", {
+            examDate: dateOnly,
+            examSession,
+            examStartTime,
+            examEndTime,
+            venueCount: 1,
+          }),
+        ]);
 
-              const availRes = await api.post("/seating/check-faculty-availability", {
-                examDate,
-                examSession,
-                examStartTime,
-                examEndTime,
-                venueCount: 1
-              });
+        const list = Array.isArray(facultyRes.data) ? facultyRes.data : [];
+        const statusList = availRes.data?.facultyStatus || [];
 
-              const facultyStatus = availRes.data.facultyStatus?.find(
-                (fs) => (fs.uuid ?? fs.id) === f.uuid
-              );
-              const hasTimeConflict = facultyStatus?.hasTimeConflict || false;
-
-              return {
-                ...f,
-                canAllocate,
-                hasTimeConflict
-              };
-            } catch (err) {
-              console.error(`Error checking faculty ${f.uuid}:`, err);
-              return { ...f, canAllocate: false, hasTimeConflict: false };
-            }
+        setAllFaculty(
+          list.map((f) => {
+            const facultyStatus = statusList.find(
+              (fs) => String(fs.uuid ?? fs.id) === String(f.uuid)
+            );
+            const remaining = Number(f.remaining ?? 0);
+            const hasTimeConflict = !!facultyStatus?.hasTimeConflict;
+            const canAllocate =
+              remaining > 0 && f.isAvailable !== false && !hasTimeConflict;
+            return {
+              ...f,
+              remaining,
+              allocation: Number(f.allocation ?? 0),
+              maxClassrooms: Number(f.maxClassrooms ?? f.max_classrooms ?? 1) || 1,
+              canAllocate,
+              hasTimeConflict,
+            };
           })
         );
- 
-        setAllFaculty(facultyWithStatus);
       } catch (err) {
         if (err.response?.status === 401) return;
         if (!err.isForbidden) {
@@ -429,9 +419,9 @@ const Allotment = () => {
         }
       }
     };
- 
+
     checkFacultyAvailability();
-  }, [examDate, examStartTime, examEndTime, examSession, hasWriteAccess, allFaculty.length]);
+  }, [examDate, examStartTime, examEndTime, examSession, hasWriteAccess]);
  
   // --- Handlers ---
  
@@ -744,40 +734,45 @@ const Allotment = () => {
       }
     }
  
-    // ✅ CRITICAL FIX: Get available faculty for AUTO mode
-    const availableFaculty = allFaculty.filter(f => f.canAllocate && !f.hasTimeConflict);
-    
+    // AUTO: only faculty with Remaining > 0 and no time conflict; consume one slot each.
+    const availableFaculty = allFaculty.filter((f) => f.canAllocate && !f.hasTimeConflict);
+    const remainingSlots = new Map(
+      availableFaculty.map((f) => [
+        String(f.uuid),
+        Math.max(0, Number(f.remaining ?? 0)),
+      ])
+    );
+
     console.log(`\n👥 ===== FACULTY ASSIGNMENT (${facultyMode} MODE) =====`);
     console.log(`Available faculty: ${availableFaculty.length}`);
     console.log(`Venues to assign: ${venuesToUse.length}`);
-    
-    // Convert grids to final format
+
     const venuesResult = [];
-    let facultyAssignmentIndex = 0; // Track faculty assignment for non-empty venues only
- 
-    venueGrids.forEach((venueData, idx) => {
+    let facultyAssignmentIndex = 0;
+
+    venueGrids.forEach((venueData) => {
       const { venue, grid, benchConfig } = venueData;
-     
-      // ✅ NEW: Check if this venue has any students seated
-      const hasStudents = grid.some(row => 
-        row.some(cell => cell && Array.isArray(cell) && cell.length > 0 && cell.some(s => s !== null))
+
+      const hasStudents = grid.some((row) =>
+        row.some(
+          (cell) =>
+            cell && Array.isArray(cell) && cell.length > 0 && cell.some((s) => s !== null)
+        )
       );
-      
-      // ✅ CRITICAL FIX: Skip completely empty venues
+
       if (!hasStudents) {
         console.log(`  ⏭️  Skipping ${venue.name} - No students seated`);
-        return; // Don't add this venue to results
+        return;
       }
-     
-      const formattedGrid = grid.map((row, rowIdx) =>
+
+      const formattedGrid = grid.map((row) =>
         row.map((cell, colIdx) => {
           if (!cell || cell.length === 0) return "Empty";
-         
+
           const seatsNeeded = benchConfig[colIdx] || 2;
-          // Normalize to fixed-length explicit slots; avoids sparse-array holes.
-          const normalizedCell = Array.from({ length: seatsNeeded }, (_, slotIdx) => (
+          const normalizedCell = Array.from({ length: seatsNeeded }, (_, slotIdx) =>
             cell[slotIdx] ?? null
-          ));
+          );
 
           return normalizedCell.map((student) =>
             student
@@ -789,18 +784,29 @@ const Allotment = () => {
           );
         })
       );
- 
-      // ✅ CRITICAL FIX: Assign faculty ID for AUTO mode (only for non-empty venues)
+
       let assignedFacultyId = null;
       let previewFacultyName = "Not Assigned";
-      
+
       if (facultyMode === "AUTO" && availableFaculty.length > 0) {
-        const faculty = availableFaculty[facultyAssignmentIndex % availableFaculty.length];
-        assignedFacultyId = faculty.uuid;
-        previewFacultyName = `${faculty.name} (${faculty.department})`;
-        
-        console.log(`  Venue ${facultyAssignmentIndex + 1} (${venue.name}): Assigned ${faculty.name} (UUID: ${faculty.uuid})`);
-        facultyAssignmentIndex++; // Increment only for venues with students
+        const faculty = availableFaculty.find((f) => {
+          const left = remainingSlots.get(String(f.uuid)) ?? 0;
+          return left > 0;
+        });
+        if (faculty) {
+          assignedFacultyId = faculty.uuid;
+          previewFacultyName = `${faculty.name} (${faculty.department})`;
+          remainingSlots.set(
+            String(faculty.uuid),
+            (remainingSlots.get(String(faculty.uuid)) ?? 0) - 1
+          );
+          console.log(
+            `  Venue ${facultyAssignmentIndex + 1} (${venue.name}): Assigned ${faculty.name} (UUID: ${faculty.uuid})`
+          );
+          facultyAssignmentIndex++;
+        } else {
+          console.log(`  ⚠️ No remaining faculty capacity for ${venue.name}`);
+        }
       }
  
       venuesResult.push({
@@ -876,15 +882,45 @@ const Allotment = () => {
       setAllottedStudents([]);
       setTimetableCourses([]);
       setStudentsByCourse({});
+      setManualFacultyAssignments({});
       setError("");
+
+      // Recalculate Allocated/Remaining from backend immediately.
+      try {
+        const facultyRes = await api.get("/faculty");
+        const list = Array.isArray(facultyRes.data) ? facultyRes.data : [];
+        setAllFaculty((prev) => {
+          const prevById = new Map(prev.map((f) => [String(f.uuid), f]));
+          return list.map((f) => {
+            const prevF = prevById.get(String(f.uuid));
+            const remaining = Number(f.remaining ?? 0);
+            const hasTimeConflict = !!prevF?.hasTimeConflict;
+            return {
+              ...f,
+              remaining,
+              allocation: Number(f.allocation ?? 0),
+              maxClassrooms: Number(f.maxClassrooms ?? f.max_classrooms ?? 1) || 1,
+              canAllocate: remaining > 0 && f.isAvailable !== false && !hasTimeConflict,
+              hasTimeConflict,
+            };
+          });
+        });
+      } catch {
+        /* keep previous faculty list */
+      }
     } catch (err) {
       if (err.response?.status === 401) return;
-     
+
       if (err.isForbidden) {
         setError("Access denied: " + err.message);
       } else {
-        const errorMsg = err.response?.data?.details || err.response?.data?.error || "Failed to save seating plan.";
+        const errorMsg =
+          err.response?.data?.message ||
+          err.response?.data?.details ||
+          err.response?.data?.error ||
+          "Failed to save seating plan.";
         setError(errorMsg);
+        toast.error(errorMsg);
       }
     } finally {
       setLoading(false);
@@ -1378,7 +1414,12 @@ const Allotment = () => {
                           value={f.uuid}
                           disabled={!f.canAllocate || f.hasTimeConflict}
                         >
-                          {f.name} {!f.canAllocate && !f.hasTimeConflict ? "(Full)" : ""}{" "}
+                          {f.name}
+                          {!f.canAllocate && !f.hasTimeConflict
+                            ? ` (Full · Rem ${f.remaining ?? 0})`
+                            : f.hasTimeConflict
+                              ? " (Time conflict)"
+                              : ` (Rem ${f.remaining ?? 0})`}{" "}
                           {f.hasTimeConflict ? "(Busy)" : ""}
                         </option>
                       ))}

@@ -149,88 +149,89 @@ router.post(
         });
       }
 
-      // Validate faculty allocation for BOTH AUTO and MANUAL modes
+      // Validate faculty allocation for BOTH AUTO and MANUAL modes.
+      // Capacity is GLOBAL active assignments (not same-slot only).
       const facultyIds = resolvedVenues
-        .map(v => v.facultyId)
-        .filter(id => id != null);
+        .map((v) => v.facultyId)
+        .filter((id) => id != null);
 
+      // Same faculty must not be assigned to multiple venues on this plan.
+      const slotsByFaculty = new Map();
       for (const fId of facultyIds) {
-          // Count only ACTIVE allocations (not fully completed: attendance + report).
-          const [allocCheck] = await connection.query(
-            `SELECT 
-              f.id,
-              COALESCE(f.max_classrooms, 1) AS max_classrooms,
-              COALESCE(f.is_active, TRUE) AS is_active,
-              COALESCE(f.is_available, TRUE) AS is_available,
-              COALESCE((
-                SELECT COUNT(spv.id)
-                FROM seating_plan_venues spv
-                JOIN seating_plans sp ON sp.id = spv.seating_plan_id
-                WHERE spv.faculty_id = f.id
-                  AND (${ACTIVE_ALLOCATION_SQL})
-                  AND sp.exam_date = ?
-                  AND NOT (sp.exam_end_time <= ? OR sp.exam_start_time >= ?)
-              ), 0) AS current_allocation
-             FROM faculty f
-             WHERE f.id = ?
-             GROUP BY f.id, f.max_classrooms, f.is_active, f.is_available`,
-            [dateOnly, examStartTime, examEndTime, fId]
-          );
-
-          if (!allocCheck.length) {
-            await connection.rollback();
-            return res.status(400).json({
-              error: "Faculty not found",
-              details: `Faculty ID ${fId} does not exist`
-            });
-          }
-
-          const r = allocCheck[0];
-          if (r.is_active === false || r.isactive === false) {
-            await connection.rollback();
-            return res.status(400).json({
-              error: "Faculty unavailable",
-              details: `Faculty ID ${fId} has been removed from active management and cannot be assigned to new exams`
-            });
-          }
-          if (r.is_available === false || r.isavailable === false) {
-            await connection.rollback();
-            return res.status(400).json({
-              error: "Faculty unavailable",
-              details: `Faculty ID ${fId} is marked unavailable`
-            });
-          }
-          const maxClassrooms = Number(r.max_classrooms ?? r.maxclassrooms ?? 1) || 1;
-          const currentAlloc = Number(r.current_allocation ?? r.currentallocation ?? 0) || 0;
-          const remaining = maxClassrooms - currentAlloc;
-
-          if (remaining <= 0) {
-            await connection.rollback();
-            return res.status(400).json({
-              error: "Faculty unavailable",
-              details: `Faculty ID ${fId} has reached allocation limit (${currentAlloc}/${maxClassrooms})`
-            });
-          }
-
-          const [conflictCheck] = await connection.query(
-            `SELECT 1
-             FROM seating_plan_venues spv
-             JOIN seating_plans sp ON spv.seating_plan_id = sp.id
-             WHERE spv.faculty_id = ?
-               AND sp.exam_date = ?
-               AND NOT (sp.exam_end_time <= ? OR sp.exam_start_time >= ?)
-             LIMIT 1`,
-            [fId, dateOnly, examStartTime, examEndTime]
-          );
-
-          if (conflictCheck.length > 0) {
-            await connection.rollback();
-            return res.status(409).json({
-              error: "Faculty time conflict",
-              details: `Faculty ID ${fId} is already assigned during this time slot`
-            });
-          }
+        slotsByFaculty.set(fId, (slotsByFaculty.get(fId) || 0) + 1);
+      }
+      for (const [fId, slotsOnThisPlan] of slotsByFaculty.entries()) {
+        if (slotsOnThisPlan > 1) {
+          await connection.rollback();
+          return res.status(400).json({
+            error: "Duplicate faculty allocation",
+            details:
+              "The same faculty cannot be assigned to more than one venue on the same seating plan.",
+            message:
+              "The same faculty cannot be assigned to more than one venue on the same seating plan.",
+          });
         }
+
+        const summary = await Faculty.getCapacitySummary(fId, connection);
+        if (!summary) {
+          await connection.rollback();
+          return res.status(400).json({
+            error: "Faculty not found",
+            details: `Faculty ID ${fId} does not exist`,
+          });
+        }
+        if (!summary.isActive) {
+          await connection.rollback();
+          return res.status(400).json({
+            error: "Faculty unavailable",
+            details:
+              "Faculty has been removed from active management and cannot be assigned to new exams",
+            message:
+              "Faculty has been removed from active management and cannot be assigned to new exams",
+          });
+        }
+        if (!summary.isAvailable) {
+          await connection.rollback();
+          return res.status(400).json({
+            error: "Faculty unavailable",
+            details: "Faculty is marked unavailable",
+            message: "Faculty is marked unavailable",
+          });
+        }
+        if (summary.remaining < slotsOnThisPlan) {
+          await connection.rollback();
+          return res.status(400).json({
+            error: "Faculty allocation limit reached",
+            details:
+              "Faculty allocation limit reached. This faculty currently has no remaining allocation capacity.",
+            message:
+              "Faculty allocation limit reached. This faculty currently has no remaining allocation capacity.",
+            currentAllocation: summary.allocation,
+            maxClassrooms: summary.maxClassrooms,
+            remaining: summary.remaining,
+          });
+        }
+
+        const [conflictCheck] = await connection.query(
+          `SELECT 1
+           FROM seating_plan_venues spv
+           JOIN seating_plans sp ON spv.seating_plan_id = sp.id
+           WHERE spv.faculty_id = ?
+             AND sp.exam_date = ?
+             AND NOT (sp.exam_end_time <= ? OR sp.exam_start_time >= ?)
+           LIMIT 1`,
+          [fId, dateOnly, examStartTime, examEndTime]
+        );
+
+        if (conflictCheck.length > 0) {
+          await connection.rollback();
+          return res.status(409).json({
+            error: "Faculty time conflict",
+            details: `Faculty is already assigned during this time slot`,
+            message: `Faculty is already assigned during this time slot`,
+          });
+        }
+      }
 
       const seatingPlanId = await SeatingPlan.createPlan({
         examDate: dateOnly,

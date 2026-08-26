@@ -184,15 +184,26 @@ router.delete("/:uuid", sessionAuth, checkRole(["admin", "faculty_incharge"]), r
 
 router.get("/:uuid/can-allocate", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), resolveEntity(TABLE.faculty, { allowLegacyNumeric: true }), async (req, res) => {
   try {
-    const { examDate, examStartTime, examEndTime } = req.query;
-    const canAllocate = await Faculty.canAllocate(req.internalId, {
-      examDate,
-      examStartTime,
-      examEndTime,
-    });
-    return Api.success(res, canAllocate ? "Faculty can be allocated" : "Faculty allocation limit reached", {
-      allowed: canAllocate,
-    });
+    const summary = await Faculty.getCapacitySummary(req.internalId);
+    if (!summary) {
+      return Api.notFound(res, "Faculty not found");
+    }
+    const allowed =
+      summary.isActive &&
+      summary.isAvailable &&
+      summary.remaining > 0;
+    return Api.success(
+      res,
+      allowed
+        ? "Faculty can be allocated"
+        : "Faculty allocation limit reached. This faculty currently has no remaining allocation capacity.",
+      {
+        allowed,
+        maxClassrooms: summary.maxClassrooms,
+        allocation: summary.allocation,
+        remaining: summary.remaining,
+      }
+    );
   } catch (err) {
     return Api.serverError(res, err, "GET /faculty/can-allocate");
   }
