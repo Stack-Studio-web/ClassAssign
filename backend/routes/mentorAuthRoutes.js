@@ -134,6 +134,7 @@ router.post("/logout", async (req, res) => {
 });
 
 router.get("/me", requireMentorSession, (req, res) => {
+  const hasAvatar = !!(req.session?.hasAvatar || req.user?.hasAvatar);
   return res.status(200).json({
     uuid: req.user.publicUuid,
     email: req.user.email,
@@ -141,6 +142,8 @@ router.get("/me", requireMentorSession, (req, res) => {
     username: req.user.username,
     department: req.user.department,
     mustChangePassword: req.session?.mustChangePassword ?? false,
+    hasAvatar,
+    avatarUrl: hasAvatar ? "/api/auth/me/avatar" : null,
   });
 });
 

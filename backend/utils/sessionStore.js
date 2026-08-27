@@ -5,6 +5,7 @@
 const Redis = require("ioredis");
 
 const SESSION_PREFIX = "sess:";
+const AVATAR_PREFIX = "avatar:";
 const OAUTH_STATE_PREFIX = "oauth:state:";
 const SESSION_TTL_SECONDS = Number(process.env.SESSION_TTL_SECONDS) || 24 * 60 * 60;
 const OAUTH_STATE_TTL_SECONDS = 600;
@@ -52,6 +53,10 @@ function sessionKey(token) {
   return `${SESSION_PREFIX}${token}`;
 }
 
+function avatarKey(token) {
+  return `${AVATAR_PREFIX}${token}`;
+}
+
 const SessionStore = {
   connect: connectSessionStore,
 
@@ -79,13 +84,48 @@ const SessionStore = {
 
   async delete(token) {
     if (!token) return;
-    await getRedis().del(sessionKey(token));
+    await getRedis().del(sessionKey(token), avatarKey(token));
   },
 
   async touch(token) {
     const session = await SessionStore.get(token);
     if (session) {
       await SessionStore.set(token, session);
+      // Keep avatar TTL aligned with session when present
+      const redis = getRedis();
+      const aKey = avatarKey(token);
+      const ttl = await redis.ttl(aKey);
+      if (ttl > 0) {
+        await redis.expire(aKey, SESSION_TTL_SECONDS);
+      }
+    }
+  },
+
+  /**
+   * Cache Microsoft profile photo bytes for this session token (not the Graph access token).
+   */
+  async setAvatar(token, { contentType, buffer }) {
+    if (!token || !buffer?.length) return;
+    const payload = JSON.stringify({
+      contentType: contentType || "image/jpeg",
+      data: Buffer.from(buffer).toString("base64"),
+    });
+    await getRedis().setex(avatarKey(token), SESSION_TTL_SECONDS, payload);
+  },
+
+  async getAvatar(token) {
+    if (!token) return null;
+    const raw = await getRedis().get(avatarKey(token));
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed?.data) return null;
+      return {
+        contentType: parsed.contentType || "image/jpeg",
+        buffer: Buffer.from(parsed.data, "base64"),
+      };
+    } catch {
+      return null;
     }
   },
 

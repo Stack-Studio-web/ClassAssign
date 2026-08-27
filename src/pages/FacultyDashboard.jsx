@@ -13,14 +13,8 @@ import {
 } from "@heroicons/react/24/outline";
 import { getWindowBadge } from "../lib/attendanceWindow";
 import TransferRequestModal from "../Components/TransferRequestModal";
+import UserAvatar from "../Components/UserAvatar";
 import { useToast } from "../context/ToastContext";
-
-function initialsFromName(name = "") {
-  const parts = String(name).trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "FA";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
-}
 
 function statusMeta(exam) {
   if (exam.isLocked || exam.lifecycleCompleted || exam.lifecycleStatus === "COMPLETED") {
@@ -109,10 +103,12 @@ export default function FacultyDashboard() {
     load();
   }, []);
 
-  const displayName = faculty?.name || sessionUser?.name || "Faculty";
+  const displayName = faculty?.name || sessionUser?.name || sessionUser?.username || "Faculty";
   const displayEmail = sessionUser?.email || faculty?.email || "";
   const displayDept = faculty?.department || "Faculty";
-  const avatarInitials = initialsFromName(displayName);
+  const avatarUrl = sessionUser?.hasAvatar
+    ? sessionUser?.avatarUrl || "/api/auth/me/avatar"
+    : null;
 
   const getTransferStatus = (examUuid) => {
     const req = transferRequests.find(
@@ -162,9 +158,12 @@ export default function FacultyDashboard() {
                 <p className="text-xs text-slate-500 leading-tight">{displayEmail}</p>
               )}
             </div>
-            <div className="h-10 w-10 rounded-full bg-[#0B1F4B] text-white flex items-center justify-center text-sm font-semibold">
-              {avatarInitials}
-            </div>
+            <UserAvatar
+              name={displayName}
+              avatarUrl={avatarUrl}
+              size="lg"
+              bgClassName="bg-[#0B1F4B]"
+            />
             <button
               type="button"
               className="p-2 rounded-full text-slate-400 hover:bg-slate-100 hover:text-slate-600"
@@ -183,9 +182,13 @@ export default function FacultyDashboard() {
           </div>
 
           {/* Mobile avatar */}
-          <div className="sm:hidden h-9 w-9 rounded-full bg-[#0B1F4B] text-white flex items-center justify-center text-xs font-semibold">
-            {avatarInitials}
-          </div>
+          <UserAvatar
+            name={displayName}
+            avatarUrl={avatarUrl}
+            size="md"
+            bgClassName="bg-[#0B1F4B]"
+            className="sm:hidden"
+          />
         </div>
 
         {/* Mobile drawer */}

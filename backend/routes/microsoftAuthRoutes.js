@@ -8,10 +8,12 @@ const SessionStore = require("../utils/sessionStore");
 const { createSession } = require("../utils/authHelpers");
 const { URLSearchParams } = require("url");
 const { loginLimiter } = require("../middleware/rateLimiters");
+const { fetchMicrosoftProfilePhoto } = require("../utils/microsoftProfilePhoto");
 
 const MICROSOFT_CLIENT_ID = process.env.MICROSOFT_CLIENT_ID;
 const MICROSOFT_CLIENT_SECRET = process.env.MICROSOFT_CLIENT_SECRET;
 const MICROSOFT_TENANT_ID = process.env.MICROSOFT_TENANT_ID;
+// profile + User.Read required for display name and /me/photo
 const MICROSOFT_SCOPES = ["openid", "profile", "email", "User.Read"];
 const FRONTEND_URL =
   process.env.FRONTEND_URL ||
@@ -32,6 +34,36 @@ const MOBILE_REDIRECT_URI = `${API_PUBLIC_URL.replace(/\/$/, "")}/api/auth/micro
 function mobileDeepLink(params) {
   const qs = new URLSearchParams(params).toString();
   return `${MOBILE_APP_SCHEME}://auth${qs ? `?${qs}` : ""}`;
+}
+
+/**
+ * Fetch Graph photo with the short-lived token and cache it against the app session.
+ * Never stores or returns the Microsoft access token.
+ */
+async function cacheProfilePhotoForSession(sessionToken, accessToken) {
+  try {
+    const photo = await fetchMicrosoftProfilePhoto(accessToken);
+    if (!photo) return false;
+    await SessionStore.setAvatar(sessionToken, photo);
+    return true;
+  } catch (err) {
+    console.warn("Profile photo cache skipped:", err.message);
+    return false;
+  }
+}
+
+function userPayloadFromSession(user, hasAvatar) {
+  return {
+    uuid: user.public_uuid ?? user.publicuuid ?? user.uuid,
+    username: user.username ?? user.name,
+    email: user.email,
+    role: user.role_name ?? user.role,
+    department: user.department ?? null,
+    mustChangePassword: !!(user.must_change_password ?? user.mustchangepassword),
+    hasAvatar: !!hasAvatar,
+    // Same-origin cookie-authenticated endpoint — no token in URL
+    avatarUrl: hasAvatar ? "/api/auth/me/avatar" : null,
+  };
 }
 
 async function completeMicrosoftAuth(req, res, redirectUri, stateData) {
@@ -99,18 +131,26 @@ async function completeMicrosoftAuth(req, res, redirectUri, stateData) {
     username: user.username,
     department: user.department,
     mustChangePassword: !!(user.must_change_password ?? user.mustchangepassword),
+    hasAvatar: false,
   });
+
+  const hasAvatar = await cacheProfilePhotoForSession(token, accessToken);
+  if (hasAvatar) {
+    await SessionStore.set(token, {
+      userId: user.id,
+      publicUuid: user.public_uuid ?? user.publicuuid,
+      email: user.email,
+      role: user.role_name,
+      username: user.username,
+      department: user.department,
+      mustChangePassword: !!(user.must_change_password ?? user.mustchangepassword),
+      hasAvatar: true,
+    });
+  }
 
   return {
     token,
-    user: {
-      uuid: user.public_uuid ?? user.publicuuid,
-      username: user.username,
-      email: user.email,
-      role: user.role_name,
-      department: user.department,
-      mustChangePassword: !!(user.must_change_password ?? user.mustchangepassword),
-    },
+    user: userPayloadFromSession(user, hasAvatar),
     platform: stateData.platform || "web",
     portal: stateData.portal || "admin",
   };
@@ -171,7 +211,22 @@ async function completeMentorMicrosoftAuth(req, res, redirectUri, stateData) {
     username: mentor.name || displayName,
     department: mentor.department ?? null,
     mustChangePassword: false,
+    hasAvatar: false,
   });
+
+  const hasAvatar = await cacheProfilePhotoForSession(token, accessToken);
+  if (hasAvatar) {
+    await SessionStore.set(token, {
+      mentorId: mentor.id,
+      publicUuid: mentor.public_uuid ?? mentor.publicuuid,
+      email: mentor.email,
+      role: mentor.role ?? "mentor",
+      username: mentor.name || displayName,
+      department: mentor.department ?? null,
+      mustChangePassword: false,
+      hasAvatar: true,
+    });
+  }
 
   return {
     token,
@@ -181,6 +236,8 @@ async function completeMentorMicrosoftAuth(req, res, redirectUri, stateData) {
       email: mentor.email,
       role: "mentor",
       department: mentor.department ?? null,
+      hasAvatar,
+      avatarUrl: hasAvatar ? "/api/auth/me/avatar" : null,
     },
     portal: "mentor",
   };

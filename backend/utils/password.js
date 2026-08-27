@@ -53,6 +53,30 @@ async function verifyPassword(plain, stored) {
   return bcrypt.compare(String(plain), String(stored));
 }
 
+/**
+ * Authenticate a submitted login password against the stored value.
+ * - bcrypt hash → bcrypt.compare
+ * - legacy plaintext → compare, then caller should upgrade to bcrypt
+ *
+ * Returns { ok, needsUpgrade }.
+ */
+async function authenticateLoginPassword(plainPassword, storedPassword) {
+  const plain = String(plainPassword ?? "");
+  const stored = String(storedPassword ?? "");
+  if (!plain || !stored) {
+    return { ok: false, needsUpgrade: false };
+  }
+
+  if (isBcryptHash(stored)) {
+    const ok = await verifyPassword(plain, stored);
+    return { ok, needsUpgrade: false };
+  }
+
+  // Legacy plaintext row (pre-bcrypt). Match once, then upgrade to bcrypt on login.
+  const ok = stored === plain;
+  return { ok, needsUpgrade: ok };
+}
+
 module.exports = {
   SALT_ROUNDS,
   passwordFromEmail,
@@ -61,4 +85,5 @@ module.exports = {
   validatePasswordStrength,
   hashPassword,
   verifyPassword,
+  authenticateLoginPassword,
 };

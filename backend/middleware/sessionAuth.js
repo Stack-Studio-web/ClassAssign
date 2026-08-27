@@ -35,6 +35,7 @@ module.exports = async function sessionAuth(req, res, next) {
       role: session.role,
       username: session.username,
       department: session.department,
+      hasAvatar: !!session.hasAvatar,
     };
 
     await SessionStore.touch(token);

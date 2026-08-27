@@ -14,6 +14,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { fetchMentorUser, mentorLogout } from "../../lib/mentorPortalApi";
 import Loader from "../Loader";
+import UserAvatar from "../UserAvatar";
 
 const NAV_ITEMS = [
   { to: "/mentor-portal/dashboard", label: "Dashboard", icon: HomeIcon },
@@ -76,12 +77,9 @@ export default function MentorLayout() {
   }, []);
 
   const pageTitle = PAGE_TITLES[location.pathname] || "Mentor Portal";
-  const initials = (mentor?.username || mentor?.email || "M")
-    .split(" ")
-    .map((p) => p[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
+  const avatarUrl = mentor?.hasAvatar
+    ? mentor?.avatarUrl || "/api/auth/me/avatar"
+    : null;
 
   const handleLogout = () => mentorLogout("/mentor-portal/login");
 
@@ -176,9 +174,12 @@ export default function MentorLayout() {
               </button>
 
               <div className="flex items-center gap-2 pl-3 border-l border-gray-200">
-                <div className="w-9 h-9 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-semibold">
-                  {initials}
-                </div>
+                <UserAvatar
+                  name={mentor?.username || mentor?.email || "Mentor"}
+                  avatarUrl={avatarUrl}
+                  size="md"
+                  bgClassName="bg-blue-600"
+                />
                 <div className="hidden md:block">
                   <p className="text-sm font-medium text-gray-900 leading-tight">
                     {mentor?.username || "Mentor"}

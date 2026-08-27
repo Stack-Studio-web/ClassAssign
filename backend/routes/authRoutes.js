@@ -4,9 +4,9 @@ const router = express.Router();
 const User = require("../models/User");
 const {
   verifyPassword,
-  hashPassword,
   isBcryptHash,
   validatePasswordStrength,
+  authenticateLoginPassword,
 } = require("../utils/password");
 const { loginLimiter } = require("../middleware/rateLimiters");
 const sessionAuth = require("../middleware/sessionAuth");
@@ -18,6 +18,7 @@ const {
   getTokenFromRequest,
 } = require("../utils/authHelpers");
 const { clearSessionCookie, isMobileClient } = require("../utils/cookieAuth");
+const SessionStore = require("../utils/sessionStore");
 
 router.post("/login", loginLimiter, async (req, res) => {
   try {
@@ -25,7 +26,11 @@ router.post("/login", loginLimiter, async (req, res) => {
     const { email: rawEmail, password } = loginBody;
 
     if (process.env.BODY_PARSER_DEBUG === "true") {
-      console.log("[LOGIN_DEBUG] content-type:", req.headers["content-type"], "body:", loginBody);
+      // Never log the password — only safe request metadata.
+      console.log("[LOGIN_DEBUG] content-type:", req.headers["content-type"], {
+        email: rawEmail ? String(rawEmail).trim().toLowerCase() : null,
+        hasPassword: Boolean(password),
+      });
     }
 
     if (!rawEmail || !password) {
@@ -54,18 +59,18 @@ router.post("/login", loginLimiter, async (req, res) => {
       });
     }
 
-    let passwordValid = false;
+    // Verify with bcrypt (or upgrade legacy plaintext → bcrypt hash on success).
+    const { ok: passwordValid, needsUpgrade } = await authenticateLoginPassword(
+      password,
+      user.password
+    );
+
     let mustChangePassword = !!(user.must_change_password ?? user.mustchangepassword);
 
-    if (isBcryptHash(user.password)) {
-      passwordValid = await verifyPassword(password, user.password);
-    } else {
-      const legacyPlain = String(user.password || "");
-      if (legacyPlain && legacyPlain === String(password)) {
-        passwordValid = true;
-        mustChangePassword = true;
-        await User.updatePassword(user.id, password, { clearMustChange: false });
-      }
+    if (passwordValid && needsUpgrade) {
+      // Hash plaintext password with bcrypt and store it — never keep plaintext.
+      await User.updatePassword(user.id, password, { clearMustChange: false });
+      mustChangePassword = true;
     }
 
     if (!passwordValid) {
@@ -102,6 +107,8 @@ router.post("/login", loginLimiter, async (req, res) => {
         role: user.role_name,
         department: user.department,
         mustChangePassword,
+        hasAvatar: false,
+        avatarUrl: null,
       },
       redirectTo,
     };
@@ -114,6 +121,7 @@ router.post("/login", loginLimiter, async (req, res) => {
       username: user.username,
       department: user.department,
       mustChangePassword,
+      hasAvatar: false,
     });
 
     return attachAuthResponse(res, req, token, body);
@@ -124,6 +132,7 @@ router.post("/login", loginLimiter, async (req, res) => {
 });
 
 router.post("/verify", sessionAuth, (req, res) => {
+  const hasAvatar = !!(req.session?.hasAvatar || req.user?.hasAvatar);
   return res.status(200).json({
     valid: true,
     user: {
@@ -132,6 +141,8 @@ router.post("/verify", sessionAuth, (req, res) => {
       role: req.user.role,
       username: req.user.username,
       department: req.user.department,
+      hasAvatar,
+      avatarUrl: hasAvatar ? "/api/auth/me/avatar" : null,
     },
   });
 });
@@ -193,6 +204,7 @@ router.post("/logout", async (req, res) => {
 });
 
 router.get("/session-info", sessionAuth, (req, res) => {
+  const hasAvatar = !!(req.session?.hasAvatar || req.user?.hasAvatar);
   return res.status(200).json({
     user: {
       uuid: req.user.publicUuid ?? req.session?.publicUuid,
@@ -201,11 +213,14 @@ router.get("/session-info", sessionAuth, (req, res) => {
       username: req.user.username,
       department: req.user.department,
       mustChangePassword: req.session?.mustChangePassword ?? false,
+      hasAvatar,
+      avatarUrl: hasAvatar ? "/api/auth/me/avatar" : null,
     },
   });
 });
 
 router.get("/me", sessionAuth, (req, res) => {
+  const hasAvatar = !!(req.session?.hasAvatar || req.user?.hasAvatar);
   return res.status(200).json({
     uuid: req.user.publicUuid ?? req.session?.publicUuid,
     email: req.user.email,
@@ -213,7 +228,30 @@ router.get("/me", sessionAuth, (req, res) => {
     username: req.user.username,
     department: req.user.department,
     mustChangePassword: req.session?.mustChangePassword ?? false,
+    hasAvatar,
+    avatarUrl: hasAvatar ? "/api/auth/me/avatar" : null,
   });
+});
+
+/**
+ * Serve cached Microsoft profile photo for the current session.
+ * Cookie/session auth only — no Microsoft token exposed.
+ */
+router.get("/me/avatar", sessionAuth, async (req, res) => {
+  try {
+    const token = req.authToken;
+    const avatar = await SessionStore.getAvatar(token);
+    if (!avatar?.buffer?.length) {
+      return res.status(404).json({ success: false, message: "No profile photo" });
+    }
+    res.setHeader("Content-Type", avatar.contentType || "image/jpeg");
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    return res.send(avatar.buffer);
+  } catch (err) {
+    console.error("Avatar serve error:", err.message);
+    return res.status(404).json({ success: false, message: "No profile photo" });
+  }
 });
 
 module.exports = router;

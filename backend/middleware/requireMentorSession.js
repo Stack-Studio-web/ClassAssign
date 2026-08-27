@@ -41,6 +41,7 @@ async function loadSession(req, res) {
       username: session.username,
       department: session.department,
       mustChangePassword: session.mustChangePassword ?? false,
+      hasAvatar: !!session.hasAvatar,
     };
   } else {
     req.user = {
@@ -50,6 +51,7 @@ async function loadSession(req, res) {
       role: session.role,
       username: session.username,
       department: session.department,
+      hasAvatar: !!session.hasAvatar,
     };
   }
 

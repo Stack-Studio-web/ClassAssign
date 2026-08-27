@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { Bars3Icon, ChevronDownIcon } from "@heroicons/react/24/outline";
 import { useSidebar } from "../context/SidebarContext";
 import Logo from "../assets/logo.png";
+import UserAvatar from "./UserAvatar";
 
 const NAVBAR_BG = "#1A202C";
 
@@ -25,6 +26,7 @@ export default function DashboardNavbar() {
   const displayName = user?.name || user?.displayName || user?.username || "User";
   const email = user?.email || "";
   const role = user?.role ? formatRole(user.role) : "";
+  const avatarUrl = user?.hasAvatar ? user?.avatarUrl || "/api/auth/me/avatar" : null;
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -70,9 +72,12 @@ export default function DashboardNavbar() {
           aria-expanded={dropdownOpen}
           aria-haspopup="true"
         >
-          <div className="h-8 w-8 rounded-full bg-indigo-500 flex items-center justify-center shrink-0 text-white text-sm font-medium">
-            {displayName.charAt(0).toUpperCase()}
-          </div>
+          <UserAvatar
+            name={displayName}
+            avatarUrl={avatarUrl}
+            size="sm"
+            bgClassName="bg-indigo-500"
+          />
           <span className="max-w-[120px] sm:max-w-[180px] truncate text-sm font-medium text-white">
             {displayName}
           </span>
