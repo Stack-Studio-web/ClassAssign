@@ -1,6 +1,7 @@
 // Allotment.jsx - FIXED: AUTO faculty assignment now saves faculty ID to database
 import React, { useState, useEffect, useMemo } from "react";
 import api from "../lib/api";
+import { logger } from "../lib/logger";
 import { useToast } from "../context/ToastContext";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
 import {
@@ -231,10 +232,10 @@ const Allotment = () => {
           ? courses.filter((c) => c.examType === effectiveExamType)
           : courses;
  
-        console.log('\n🔍 ===== FETCHING STUDENTS FOR TIMETABLE COURSES =====');
-        console.log(`Found ${courses.length} timetable entries:`);
+        logger.log('\n🔍 ===== FETCHING STUDENTS FOR TIMETABLE COURSES =====');
+        logger.log(`Found ${courses.length} timetable entries:`);
         courses.forEach(c => {
-          console.log(`  - ${c.courseCode} (${c.department})`);
+          logger.log(`  - ${c.courseCode} (${c.department})`);
         });
  
         const studentsData = {};
@@ -243,7 +244,7 @@ const Allotment = () => {
        
         for (const course of effectiveCourses) {
           try {
-            console.log(`\n📋 Fetching students for: ${course.courseCode} - ${course.department}`);
+            logger.log(`\n📋 Fetching students for: ${course.courseCode} - ${course.department}`);
 
             const courseDeptKey = `${course.courseCode}-${course.department}`;
             if (!studentsCacheByCourseDept[courseDeptKey]) {
@@ -263,7 +264,7 @@ const Allotment = () => {
                 )
               : students;
 
-            console.log(
+            logger.log(
               `✅ Loaded ${students.length} students for ${course.courseCode} - ${course.department} (batch filter: ${batchName || "all"}) => ${batchFilteredStudents.length}`
             );
 
@@ -278,8 +279,8 @@ const Allotment = () => {
           }
         }
  
-        console.log('\n✅ Total unique course-department-batch combinations:', Object.keys(studentsData).length);
-        console.log('===== STUDENT FETCH COMPLETE =====\n');
+        logger.log('\n✅ Total unique course-department-batch combinations:', Object.keys(studentsData).length);
+        logger.log('===== STUDENT FETCH COMPLETE =====\n');
  
         setTimetableCourses(effectiveCourses);
         setStudentsByCourse(studentsData);
@@ -497,7 +498,7 @@ const Allotment = () => {
     let excludedByIneligibility = 0;
     let excludedByBatch = 0;
  
-    console.log('\n📊 ===== STUDENT FILTERING PROCESS =====');
+    logger.log('\n📊 ===== STUDENT FILTERING PROCESS =====');
  
     timetableCourses.forEach(course => {
       const courseCode = course.courseCode;
@@ -505,10 +506,10 @@ const Allotment = () => {
       const batchName = String(course.batchName || "").trim().toUpperCase();
       const uniqueKey = `${courseCode}-${department}-${batchName}`;
      
-      console.log(`\n🔍 Processing: ${uniqueKey}`);
+      logger.log(`\n🔍 Processing: ${uniqueKey}`);
      
       const students = studentsByCourse[uniqueKey] || [];
-      console.log(`  📋 Total students in database: ${students.length}`);
+      logger.log(`  📋 Total students in database: ${students.length}`);
      
       const prefixes = (excludedBatches[uniqueKey] || "").split(",").map(p => p.trim().toUpperCase());
       const ineligibleSet = ineligibleStudentsByCourse[uniqueKey] || new Set();
@@ -541,9 +542,9 @@ const Allotment = () => {
  
       if (courseEligibleStudents.length > 0) {
         studentsByCourseKey[uniqueKey] = courseEligibleStudents;
-        console.log(`  ✅ Eligible students: ${courseEligibleStudents.length}`);
+        logger.log(`  ✅ Eligible students: ${courseEligibleStudents.length}`);
       } else {
-        console.log(`  ⚠️ No eligible students`);
+        logger.log(`  ⚠️ No eligible students`);
       }
     });
  
@@ -551,17 +552,17 @@ const Allotment = () => {
       .sort(([, studentsA], [, studentsB]) => studentsB.length - studentsA.length)
       .map(([key, students]) => ({ key, students }));
  
-    console.log('\n📊 ===== COURSE-DEPARTMENT PRIORITY ORDER (By Student Count) =====');
+    logger.log('\n📊 ===== COURSE-DEPARTMENT PRIORITY ORDER (By Student Count) =====');
     sortedCourses.forEach(({ key, students }, index) => {
-      console.log(`${index + 1}. ${key}: ${students.length} students`);
+      logger.log(`${index + 1}. ${key}: ${students.length} students`);
     });
  
     const totalStudents = sortedCourses.reduce((sum, { students }) => sum + students.length, 0);
  
-    console.log(`\n📊 ===== OVERALL FILTERING SUMMARY =====`);
-    console.log(`Excluded by batch prefix: ${excludedByBatch}`);
-    console.log(`Excluded by ineligibility: ${excludedByIneligibility}`);
-    console.log(`✅ FINAL ELIGIBLE FOR SEATING: ${totalStudents}\n`);
+    logger.log(`\n📊 ===== OVERALL FILTERING SUMMARY =====`);
+    logger.log(`Excluded by batch prefix: ${excludedByBatch}`);
+    logger.log(`Excluded by ineligibility: ${excludedByIneligibility}`);
+    logger.log(`✅ FINAL ELIGIBLE FOR SEATING: ${totalStudents}\n`);
  
     if (excludedByIneligibility > 0 || excludedByBatch > 0) {
       const infoMsg = `ℹ️ ${excludedByBatch} student(s) excluded by batch prefix. ${excludedByIneligibility} student(s) excluded due to ineligibility. ${totalStudents} eligible students will be seated.`;
@@ -600,13 +601,13 @@ const Allotment = () => {
       const { key, students } = courseData;
       let studentIndex = 0;
  
-      console.log(`\n🎯 PASS ${courseIdx + 1}: Filling ${key} (${students.length} students)`);
+      logger.log(`\n🎯 PASS ${courseIdx + 1}: Filling ${key} (${students.length} students)`);
  
       // ✅ CRITICAL: Fill ALL venues completely for this course before next course
       venueLoop: for (const venueData of venueGrids) {
         const { venue, grid, benchConfig } = venueData;
        
-        console.log(`  📍 Venue: ${venue.name}`);
+        logger.log(`  📍 Venue: ${venue.name}`);
         
         // ✅ VERTICAL FILLING: Column-by-column, then row-by-row, then seat-by-seat
         for (let c = 0; c < venue.benchesCol; c++) {
@@ -618,7 +619,7 @@ const Allotment = () => {
             // Go down the rows for this specific seat position
             for (let r = 0; r < venue.benchesRow; r++) {
               if (studentIndex >= students.length) {
-                console.log(`   ✅ All ${studentIndex} students placed for ${key}`);
+                logger.log(`   ✅ All ${studentIndex} students placed for ${key}`);
                 break venueLoop;
               }
               
@@ -677,18 +678,18 @@ const Allotment = () => {
                 // ❌ Cannot place due to adjacent conflict
                 const reason = hasAdjacentInSameBench ? 'same bench' : 
                               hasAdjacentInPreviousColumn ? 'previous column' : 'next column';
-                console.log(`     ⏭️  Skipping Row ${r + 1}, Col ${String.fromCharCode(65 + c)}${s + 1} - Adjacent conflict (${reason})`);
+                logger.log(`     ⏭️  Skipping Row ${r + 1}, Col ${String.fromCharCode(65 + c)}${s + 1} - Adjacent conflict (${reason})`);
               }
             }
           }
         }
       }
  
-      console.log(`   📊 Placed ${studentIndex}/${students.length} students for ${key}`);
+      logger.log(`   📊 Placed ${studentIndex}/${students.length} students for ${key}`);
       
       if (studentIndex < students.length) {
         let unplaced = students.length - studentIndex;
-        console.log(`   ⚠️  WARNING: ${unplaced} students from ${key} could not be seated`);
+        logger.log(`   ⚠️  WARNING: ${unplaced} students from ${key} could not be seated`);
 
         if (!allowAdjacentSeating) {
           setIsGenerating(false);
@@ -743,9 +744,9 @@ const Allotment = () => {
       ])
     );
 
-    console.log(`\n👥 ===== FACULTY ASSIGNMENT (${facultyMode} MODE) =====`);
-    console.log(`Available faculty: ${availableFaculty.length}`);
-    console.log(`Venues to assign: ${venuesToUse.length}`);
+    logger.log(`\n👥 ===== FACULTY ASSIGNMENT (${facultyMode} MODE) =====`);
+    logger.log(`Available faculty: ${availableFaculty.length}`);
+    logger.log(`Venues to assign: ${venuesToUse.length}`);
 
     const venuesResult = [];
     let facultyAssignmentIndex = 0;
@@ -761,7 +762,7 @@ const Allotment = () => {
       );
 
       if (!hasStudents) {
-        console.log(`  ⏭️  Skipping ${venue.name} - No students seated`);
+        logger.log(`  ⏭️  Skipping ${venue.name} - No students seated`);
         return;
       }
 
@@ -800,12 +801,12 @@ const Allotment = () => {
             String(faculty.uuid),
             (remainingSlots.get(String(faculty.uuid)) ?? 0) - 1
           );
-          console.log(
+          logger.log(
             `  Venue ${facultyAssignmentIndex + 1} (${venue.name}): Assigned ${faculty.name} (UUID: ${faculty.uuid})`
           );
           facultyAssignmentIndex++;
         } else {
-          console.log(`  ⚠️ No remaining faculty capacity for ${venue.name}`);
+          logger.log(`  ⚠️ No remaining faculty capacity for ${venue.name}`);
         }
       }
  
@@ -817,9 +818,9 @@ const Allotment = () => {
       });
     });
  
-    console.log(`\n✅ Total students seated: ${allSeatedStudents.length}/${totalStudents}`);
-    console.log(`✅ Venues used: ${venuesResult.length}/${venuesToUse.length}`);
-    console.log(`===== FACULTY ASSIGNMENT COMPLETE =====\n`);
+    logger.log(`\n✅ Total students seated: ${allSeatedStudents.length}/${totalStudents}`);
+    logger.log(`✅ Venues used: ${venuesResult.length}/${venuesToUse.length}`);
+    logger.log(`===== FACULTY ASSIGNMENT COMPLETE =====\n`);
  
     setAllottedStudents(allSeatedStudents);
     setGeneratedSeating(venuesResult);
@@ -866,13 +867,13 @@ const Allotment = () => {
       }))
     };
  
-    console.log('\n📤 ===== SAVE PAYLOAD =====');
-    console.log('Faculty Mode:', facultyMode);
-    console.log('Venues with faculty:');
+    logger.log('\n📤 ===== SAVE PAYLOAD =====');
+    logger.log('Faculty Mode:', facultyMode);
+    logger.log('Venues with faculty:');
     payload.venuesUsed.forEach(v => {
-      console.log(`  - ${v.venueName}: Faculty ID = ${v.facultyId || 'NULL'}`);
+      logger.log(`  - ${v.venueName}: Faculty ID = ${v.facultyId || 'NULL'}`);
     });
-    console.log('===========================\n');
+    logger.log('===========================\n');
  
     try {
       setLoading(true);

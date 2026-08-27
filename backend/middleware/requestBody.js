@@ -4,18 +4,18 @@
  */
 
 const express = require("express");
+const { isProductionMode, logger, redactValue } = require("../utils/logger");
 
 const BODY_DEBUG =
-  process.env.BODY_PARSER_DEBUG === "true" ||
-  (process.env.NODE_ENV !== "production" && process.env.BODY_PARSER_DEBUG !== "false");
+  process.env.BODY_PARSER_DEBUG === "true" && !isProductionMode();
 
 function logBodyDebug(phase, req) {
   if (!BODY_DEBUG) return;
   const ct = req.headers["content-type"] || "(none)";
   const len = req.headers["content-length"] || "0";
-  console.log(
+  logger.debug(
     `[BODY_DEBUG:${phase}] ${req.method} ${req.originalUrl || req.url} ` +
-      `ct=${ct} len=${len} body=${JSON.stringify(req.body)}`
+      `ct=${ct} len=${len} body=${JSON.stringify(redactValue(req.body))}`
   );
 }
 

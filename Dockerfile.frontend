@@ -3,7 +3,9 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 ARG VITE_API_URL=/api
+ARG VITE_PRODUCTION=true
 ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_PRODUCTION=$VITE_PRODUCTION
 
 # package.json and package-lock.json are at the root CLASSASSIGN/ level
 COPY package*.json ./
@@ -15,7 +17,7 @@ COPY vite.config.js .
 COPY src/ ./src/
 COPY public/ ./public/
 
-# Build for production (VITE_API_URL baked in — default /api uses container nginx proxy)
+# Build for production (VITE_* vars baked into the bundle at build time)
 RUN npm run build
 
 # ── Production stage: serve with Nginx ──────────────────────────────

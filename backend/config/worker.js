@@ -1,3 +1,6 @@
+const { installProductionConsoleSilence } = require("../utils/logger");
+installProductionConsoleSilence();
+
 const bull = require("./bullInit");
 const axios = require("axios");
 const config = require("./config");

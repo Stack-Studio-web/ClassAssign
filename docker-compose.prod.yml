@@ -25,3 +25,4 @@ services:
       dockerfile: Dockerfile.frontend
       args:
         VITE_API_URL: ${VITE_API_URL:-/api}
+        VITE_PRODUCTION: ${VITE_PRODUCTION:-true}

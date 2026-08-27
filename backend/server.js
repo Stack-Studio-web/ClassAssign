@@ -7,6 +7,9 @@ const helmet = require("helmet");
 const cookieParser = require("cookie-parser");
 require("dotenv").config();
 
+const { installProductionConsoleSilence, logger } = require("./utils/logger");
+installProductionConsoleSilence();
+
 const ensureHodSchema = require("./utils/ensureHodSchema");
 const ensureAttendanceSchema = require("./utils/ensureAttendanceSchema");
 const ensureAttendanceLifecycleSchema = require("./utils/ensureAttendanceLifecycleSchema");

@@ -27,7 +27,8 @@ router.post("/login", loginLimiter, async (req, res) => {
 
     if (process.env.BODY_PARSER_DEBUG === "true") {
       // Never log the password — only safe request metadata.
-      console.log("[LOGIN_DEBUG] content-type:", req.headers["content-type"], {
+      const { logger } = require("../utils/logger");
+      logger.debug("[LOGIN_DEBUG] content-type:", req.headers["content-type"], {
         email: rawEmail ? String(rawEmail).trim().toLowerCase() : null,
         hasPassword: Boolean(password),
       });

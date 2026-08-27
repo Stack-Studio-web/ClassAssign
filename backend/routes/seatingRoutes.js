@@ -754,8 +754,7 @@ router.get("/attendance",
         console.error("❌ Attendance API Error:", err);
         res.status(500).json({ 
           error: "Server error", 
-          details: err.message,
-          stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+          details: err.message
         });
     }
 });

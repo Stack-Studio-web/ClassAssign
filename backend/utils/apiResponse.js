@@ -25,8 +25,9 @@ function forbidden(res, message, details) {
 }
 
 function serverError(res, err, logLabel = "Server error") {
+  const { isProductionMode } = require("./logger");
   console.error(logLabel + ":", err?.message || err);
-  if (process.env.NODE_ENV !== "production" && err?.stack) {
+  if (!isProductionMode() && err?.stack) {
     console.error(err.stack);
   }
   return fail(res, 500, "SERVER_ERROR", "Unexpected error occurred.");

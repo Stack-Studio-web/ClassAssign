@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import api from "../lib/api";
+import { logger } from "../lib/logger";
 import { TrashIcon, FunnelIcon, XMarkIcon, CalendarDaysIcon } from "@heroicons/react/24/outline";
 import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
@@ -76,7 +77,7 @@ const Timetable = () => {
       try {
         const res = await api.get("/students/courses");
         setAvailableCourses(res.data);
-        console.log('✅ Loaded courses from students table:', res.data.length);
+        logger.log('✅ Loaded courses from students table:', res.data.length);
       } catch (err) {
         console.error("Failed to fetch courses:", err);
         setMessage("⚠️ Failed to load course list");
@@ -289,7 +290,7 @@ const Timetable = () => {
       courseName: selectedCourse?.courseName || ''
     });
 
-    console.log('📚 Selected course:', {
+    logger.log('📚 Selected course:', {
       code: courseCode,
       name: selectedCourse?.courseName
     });
