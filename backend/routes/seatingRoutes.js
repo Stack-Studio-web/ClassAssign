@@ -31,20 +31,59 @@ async function resolveVenuesUsedIds(venuesUsed) {
       err.statusCode = 404;
       throw err;
     }
-    let facultyId = null;
-    if (v.facultyId != null && v.facultyId !== "") {
-      facultyId = await resolveInternalId(TABLE.faculty, v.facultyId, {
+
+    const rawIds = Array.isArray(v.facultyIds)
+      ? v.facultyIds
+      : v.facultyId != null && v.facultyId !== ""
+        ? [v.facultyId]
+        : [];
+
+    const facultyIds = [];
+    for (const rawFacultyId of rawIds) {
+      if (rawFacultyId == null || rawFacultyId === "") continue;
+      const facultyId = await resolveInternalId(TABLE.faculty, rawFacultyId, {
         allowLegacyNumeric: true,
       });
       if (!facultyId) {
-        const err = new Error(`Unknown faculty: ${v.facultyId}`);
+        const err = new Error(`Unknown faculty: ${rawFacultyId}`);
         err.statusCode = 404;
         throw err;
       }
+      if (!facultyIds.includes(facultyId)) {
+        facultyIds.push(facultyId);
+      }
     }
-    resolved.push({ ...v, venueId, facultyId });
+
+    resolved.push({
+      ...v,
+      venueId,
+      facultyId: facultyIds[0] ?? null,
+      facultyIds,
+    });
   }
   return resolved;
+}
+
+function collectFacultySlotsFromVenues(resolvedVenues) {
+  const slotsByFaculty = new Map();
+  const venuesByFaculty = new Map();
+
+  for (const venue of resolvedVenues || []) {
+    const ids =
+      venue.facultyIds?.length > 0
+        ? venue.facultyIds
+        : venue.facultyId != null
+          ? [venue.facultyId]
+          : [];
+
+    for (const fId of ids) {
+      slotsByFaculty.set(fId, (slotsByFaculty.get(fId) || 0) + 1);
+      if (!venuesByFaculty.has(fId)) venuesByFaculty.set(fId, new Set());
+      venuesByFaculty.get(fId).add(venue.venueId);
+    }
+  }
+
+  return { slotsByFaculty, venuesByFaculty };
 }
 
 function normalizeTimeParam(value) {
@@ -150,18 +189,31 @@ router.post(
       }
 
       // Validate faculty allocation for BOTH AUTO and MANUAL modes.
-      // Capacity is GLOBAL active assignments (not same-slot only).
-      const facultyIds = resolvedVenues
-        .map((v) => v.facultyId)
-        .filter((id) => id != null);
+      const { slotsByFaculty, venuesByFaculty } =
+        collectFacultySlotsFromVenues(resolvedVenues);
 
-      // Same faculty must not be assigned to multiple venues on this plan.
-      const slotsByFaculty = new Map();
-      for (const fId of facultyIds) {
-        slotsByFaculty.set(fId, (slotsByFaculty.get(fId) || 0) + 1);
+      if (String(facultyMode || "").toUpperCase() === "MANUAL") {
+        const missingFaculty = resolvedVenues.filter((venue) => {
+          const ids =
+            venue.facultyIds?.length > 0
+              ? venue.facultyIds
+              : venue.facultyId
+                ? [venue.facultyId]
+                : [];
+          return ids.length === 0;
+        });
+        if (missingFaculty.length > 0) {
+          await connection.rollback();
+          return res.status(400).json({
+            error: "Faculty required",
+            details: "Assign at least one faculty member to each room.",
+            message: "Assign at least one faculty member to each room.",
+          });
+        }
       }
-      for (const [fId, slotsOnThisPlan] of slotsByFaculty.entries()) {
-        if (slotsOnThisPlan > 1) {
+
+      for (const [, venueSet] of venuesByFaculty.entries()) {
+        if (venueSet.size > 1) {
           await connection.rollback();
           return res.status(400).json({
             error: "Duplicate faculty allocation",
@@ -171,64 +223,38 @@ router.post(
               "The same faculty cannot be assigned to more than one venue on the same seating plan.",
           });
         }
+      }
 
-        const summary = await Faculty.getCapacitySummary(fId, connection);
-        if (!summary) {
-          await connection.rollback();
-          return res.status(400).json({
-            error: "Faculty not found",
-            details: `Faculty ID ${fId} does not exist`,
-          });
-        }
-        if (!summary.isActive) {
-          await connection.rollback();
-          return res.status(400).json({
-            error: "Faculty unavailable",
-            details:
-              "Faculty has been removed from active management and cannot be assigned to new exams",
-            message:
-              "Faculty has been removed from active management and cannot be assigned to new exams",
-          });
-        }
-        if (!summary.isAvailable) {
-          await connection.rollback();
-          return res.status(400).json({
-            error: "Faculty unavailable",
-            details: "Faculty is marked unavailable",
-            message: "Faculty is marked unavailable",
-          });
-        }
-        if (summary.remaining < slotsOnThisPlan) {
-          await connection.rollback();
-          return res.status(400).json({
-            error: "Faculty allocation limit reached",
-            details:
-              "Faculty allocation limit reached. This faculty currently has no remaining allocation capacity.",
-            message:
-              "Faculty allocation limit reached. This faculty currently has no remaining allocation capacity.",
-            currentAllocation: summary.allocation,
-            maxClassrooms: summary.maxClassrooms,
-            remaining: summary.remaining,
-          });
-        }
-
-        const [conflictCheck] = await connection.query(
-          `SELECT 1
-           FROM seating_plan_venues spv
-           JOIN seating_plans sp ON spv.seating_plan_id = sp.id
-           WHERE spv.faculty_id = ?
-             AND sp.exam_date = ?
-             AND NOT (sp.exam_end_time <= ? OR sp.exam_start_time >= ?)
-           LIMIT 1`,
-          [fId, dateOnly, examStartTime, examEndTime]
+      for (const [fId, slotsOnThisPlan] of slotsByFaculty.entries()) {
+        const validation = await Faculty.validateFacultyForAllocation(
+          fId,
+          {
+            examDate: dateOnly,
+            examStartTime,
+            examEndTime,
+            additionalSlots: slotsOnThisPlan,
+          },
+          connection
         );
 
-        if (conflictCheck.length > 0) {
+        if (!validation.allowed) {
           await connection.rollback();
-          return res.status(409).json({
-            error: "Faculty time conflict",
-            details: `Faculty is already assigned during this time slot`,
-            message: `Faculty is already assigned during this time slot`,
+          const statusCode =
+            validation.code === "TIME_CONFLICT" ? 409 : 400;
+          return res.status(statusCode).json({
+            error:
+              validation.code === "TIME_CONFLICT"
+                ? "Faculty time conflict"
+                : validation.code === "CAPACITY"
+                  ? "Faculty allocation limit reached"
+                  : "Faculty unavailable",
+            details: validation.message,
+            message: validation.message,
+            code: validation.code,
+            conflict: validation.conflict || null,
+            currentAllocation: validation.currentAllocation,
+            maxClassrooms: validation.maxClassrooms,
+            remaining: validation.remaining,
           });
         }
       }
@@ -645,11 +671,26 @@ router.get("/attendance",
           }
 
           const [spvRows] = await db.query(
-            `SELECT faculty_id FROM seating_plan_venues WHERE id = ?`,
+            `SELECT spv.id, spv.faculty_id
+             FROM seating_plan_venues spv
+             WHERE spv.id = ?`,
             [matchedVenue.id]
           );
-          const assignedFacultyId = spvRows[0]?.faculty_id ?? spvRows[0]?.facultyid;
-          if (Number(assignedFacultyId) !== Number(facultyProfile.id)) {
+          const spvRow = spvRows[0];
+          const [assignedFacultyRows] = await db.query(
+            `SELECT faculty_id FROM seating_plan_venue_faculty
+             WHERE seating_plan_venue_id = ?
+             ORDER BY display_order, id`,
+            [matchedVenue.id]
+          );
+          const assignedFacultyIds = (assignedFacultyRows || [])
+            .map((r) => Number(r.faculty_id ?? r.facultyid))
+            .filter((id) => id > 0);
+          if (assignedFacultyIds.length === 0 && spvRow) {
+            const legacyId = Number(spvRow.faculty_id ?? spvRow.facultyid);
+            if (legacyId > 0) assignedFacultyIds.push(legacyId);
+          }
+          if (!assignedFacultyIds.includes(Number(facultyProfile.id))) {
             return res.status(403).json({
               error: "You are not assigned as invigilator for this hall",
             });
@@ -789,10 +830,11 @@ router.post("/check-faculty-availability",
           COALESCE(f.max_classrooms, 1) AS max_classrooms,
           COALESCE(f.is_available, true) AS is_available,
           (
-            SELECT COUNT(spv.id)
-            FROM seating_plan_venues spv
+            SELECT COUNT(spvf.id)
+            FROM seating_plan_venue_faculty spvf
+            JOIN seating_plan_venues spv ON spv.id = spvf.seating_plan_venue_id
             JOIN seating_plans sp ON sp.id = spv.seating_plan_id
-            WHERE spv.faculty_id = f.id
+            WHERE spvf.faculty_id = f.id
               AND (${ACTIVE_ALLOCATION_SQL})
           ) AS current_allocation
          FROM faculty f
@@ -801,16 +843,12 @@ router.post("/check-faculty-availability",
 
       const facultyStatus = await Promise.all(
         allFaculty.map(async (f) => {
-          const [conflicts] = await db.query(
-            `SELECT 1
-             FROM seating_plan_venues spv
-             JOIN seating_plans sp ON spv.seating_plan_id = sp.id
-             WHERE spv.faculty_id = ?
-               AND sp.exam_date = ?
-               AND NOT (sp.exam_end_time <= ? OR sp.exam_start_time >= ?)
-             LIMIT 1`,
-            [f.id, dateOnly, examStartTime, examEndTime]
-          );
+          const conflict = await Faculty.findActiveTimeConflict({
+            facultyId: f.id,
+            examDate: dateOnly,
+            examStartTime,
+            examEndTime,
+          });
 
           const maxClassrooms = Number(f.max_classrooms ?? f.maxclassrooms ?? 1) || 1;
           const currentAlloc = Number(f.current_allocation ?? f.currentallocation ?? 0) || 0;
@@ -823,7 +861,9 @@ router.post("/check-faculty-availability",
             name: f.name,
             department: f.department,
             canAllocate: remaining > 0 && facultyMarkedAvailable,
-            hasTimeConflict: conflicts.length > 0,
+            hasTimeConflict: !!conflict,
+            conflictInfo: conflict,
+            conflictMessage: conflict?.message || null,
             allocationsRemaining: remaining,
             maxClassrooms,
             currentAllocation: currentAlloc

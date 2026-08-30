@@ -43,6 +43,84 @@ const getSessionDurationHours = (start, end) => {
   return mins <= 0 ? null : (mins / 60).toFixed(1);
 };
 
+// Merge faculty list with availability API status (capacity + time conflict)
+const mergeFacultyWithAvailability = (list, statusList) =>
+  list.map((f) => {
+    const facultyStatus = statusList.find(
+      (fs) => String(fs.uuid ?? fs.id) === String(f.uuid)
+    );
+    const remaining = Number(
+      f.remaining ?? facultyStatus?.allocationsRemaining ?? 0
+    );
+    const hasTimeConflict = !!facultyStatus?.hasTimeConflict;
+    const conflictMessage = facultyStatus?.conflictMessage ?? null;
+    const conflictInfo = facultyStatus?.conflictInfo ?? null;
+    const canAllocate =
+      remaining > 0 && f.isAvailable !== false && !hasTimeConflict;
+    return {
+      ...f,
+      remaining,
+      allocation: Number(f.allocation ?? facultyStatus?.currentAllocation ?? 0),
+      maxClassrooms:
+        Number(f.maxClassrooms ?? f.max_classrooms ?? 1) ||
+        facultyStatus?.maxClassrooms ||
+        1,
+      canAllocate,
+      hasTimeConflict,
+      conflictMessage,
+      conflictInfo,
+    };
+  });
+
+const getVenueFacultyIds = (assignments, venueUuid) => {
+  const value = assignments?.[venueUuid];
+  if (Array.isArray(value)) return value.filter(Boolean);
+  if (value) return [value];
+  return [];
+};
+
+const countFacultyUsesInForm = (facultyUuid, assignments, excludeVenueUuid = null) => {
+  let count = 0;
+  for (const [venueUuid, ids] of Object.entries(assignments || {})) {
+    if (excludeVenueUuid && venueUuid === excludeVenueUuid) continue;
+    count += getVenueFacultyIds(assignments, venueUuid).filter(
+      (id) => String(id) === String(facultyUuid)
+    ).length;
+  }
+  return count;
+};
+
+const isFacultyUsedInOtherVenues = (facultyUuid, assignments, currentVenueUuid) =>
+  Object.entries(assignments || {}).some(([venueUuid, ids]) => {
+    if (venueUuid === currentVenueUuid) return false;
+    return getVenueFacultyIds(assignments, venueUuid).some(
+      (id) => String(id) === String(facultyUuid)
+    );
+  });
+
+const getEffectiveRemaining = (faculty, assignments) => {
+  const used = countFacultyUsesInForm(faculty.uuid, assignments);
+  return Number(faculty.remaining ?? 0) - used;
+};
+
+const canSelectFacultyForVenue = (faculty, assignments, venueUuid) => {
+  const selectedIds = getVenueFacultyIds(assignments, venueUuid);
+  const isSelected = selectedIds.some((id) => String(id) === String(faculty.uuid));
+  if (isSelected) return true;
+  if (faculty.isAvailable === false || faculty.hasTimeConflict) return false;
+  if (isFacultyUsedInOtherVenues(faculty.uuid, assignments, venueUuid)) return false;
+  return getEffectiveRemaining(faculty, assignments) > 0;
+};
+
+const toggleVenueFaculty = (assignments, venueUuid, facultyUuid) => {
+  const current = getVenueFacultyIds(assignments, venueUuid);
+  const exists = current.some((id) => String(id) === String(facultyUuid));
+  const next = exists
+    ? current.filter((id) => String(id) !== String(facultyUuid))
+    : [...current, facultyUuid];
+  return { ...assignments, [venueUuid]: next };
+};
+
 // Get calendar month grid for a given date (YYYY-MM-DD)
 const getCalendarMonth = (dateStr) => {
   const d = dateStr ? new Date(dateStr + "T12:00:00") : new Date();
@@ -394,25 +472,7 @@ const Allotment = () => {
         const list = Array.isArray(facultyRes.data) ? facultyRes.data : [];
         const statusList = availRes.data?.facultyStatus || [];
 
-        setAllFaculty(
-          list.map((f) => {
-            const facultyStatus = statusList.find(
-              (fs) => String(fs.uuid ?? fs.id) === String(f.uuid)
-            );
-            const remaining = Number(f.remaining ?? 0);
-            const hasTimeConflict = !!facultyStatus?.hasTimeConflict;
-            const canAllocate =
-              remaining > 0 && f.isAvailable !== false && !hasTimeConflict;
-            return {
-              ...f,
-              remaining,
-              allocation: Number(f.allocation ?? 0),
-              maxClassrooms: Number(f.maxClassrooms ?? f.max_classrooms ?? 1) || 1,
-              canAllocate,
-              hasTimeConflict,
-            };
-          })
-        );
+        setAllFaculty(mergeFacultyWithAvailability(list, statusList));
       } catch (err) {
         if (err.response?.status === 401) return;
         if (!err.isForbidden) {
@@ -831,18 +891,59 @@ const Allotment = () => {
     if (!hasWriteAccess) {
       return setError("Access denied: Only Admin and Faculty Incharge can save seating plans.");
     }
- 
-    if (facultyMode === "MANUAL" && generatedSeating.some(v => !manualFacultyAssignments[v.venue.uuid])) {
-      return setError("Assign faculty to all rooms.");
+
+    if (
+      facultyMode === "MANUAL" &&
+      generatedSeating.some(
+        (v) => getVenueFacultyIds(manualFacultyAssignments, v.venue.uuid).length === 0
+      )
+    ) {
+      return setError("Assign at least one faculty member to each room.");
     }
- 
-    const invalidFaculty = Object.values(manualFacultyAssignments).some(fid => {
-      const faculty = allFaculty.find(f => String(f.uuid) === String(fid));
-      return faculty && (!faculty.canAllocate || faculty.hasTimeConflict);
+
+    if (facultyMode === "AUTO" && generatedSeating.some((v) => !v.facultyId)) {
+      return setError("Not enough available faculty for all venues. Regenerate seating or switch to manual assignment.");
+    }
+
+    const assignedFacultyIds =
+      facultyMode === "MANUAL"
+        ? generatedSeating.flatMap((v) =>
+            getVenueFacultyIds(manualFacultyAssignments, v.venue.uuid)
+          )
+        : generatedSeating.map((v) => v.facultyId).filter(Boolean);
+
+    const facultyUsage = new Map();
+    for (const fid of assignedFacultyIds) {
+      facultyUsage.set(fid, (facultyUsage.get(fid) || 0) + 1);
+    }
+
+    for (const [fid, uses] of facultyUsage.entries()) {
+      const faculty = allFaculty.find((f) => String(f.uuid) === String(fid));
+      if (!faculty || faculty.isAvailable === false || faculty.hasTimeConflict) {
+        const msg =
+          faculty?.conflictMessage ||
+          (faculty?.hasTimeConflict
+            ? `${faculty.name} is unavailable for this exam time slot.`
+            : "One or more selected faculty are unavailable.");
+        return setError(msg);
+      }
+      if (uses > Number(faculty.remaining ?? 0)) {
+        return setError(
+          `${faculty.name} has only ${faculty.remaining ?? 0} remaining allocation slot(s), but ${uses} were selected.`
+        );
+      }
+    }
+
+    const duplicateAcrossVenues = generatedSeating.some((v) => {
+      const ids = getVenueFacultyIds(manualFacultyAssignments, v.venue.uuid);
+      return ids.some((fid) =>
+        isFacultyUsedInOtherVenues(fid, manualFacultyAssignments, v.venue.uuid)
+      );
     });
- 
-    if (invalidFaculty) {
-      return setError("One or more selected faculty are unavailable.");
+    if (facultyMode === "MANUAL" && duplicateAcrossVenues) {
+      return setError(
+        "The same faculty cannot be assigned to more than one room on the same seating plan."
+      );
     }
  
     const selectedCourses = [...new Set(timetableCourses.map(c => c.courseCode))];
@@ -856,22 +957,24 @@ const Allotment = () => {
       selectedCourses,
       students: allottedStudents,
       facultyMode,
-      venuesUsed: generatedSeating.map(v => ({
-        venueId: v.venue.uuid,
-        venueName: v.venue.name,
-        seatingArrangement: v.seats,
-        benchConfig: v.venue.benchConfig || Array(v.venue.benchesCol).fill(2),
-        facultyId: facultyMode === "MANUAL" 
-          ? manualFacultyAssignments[v.venue.uuid] 
-          : v.facultyId
-      }))
+      venuesUsed: generatedSeating.map(v => {
+        const manualIds = getVenueFacultyIds(manualFacultyAssignments, v.venue.uuid);
+        return {
+          venueId: v.venue.uuid,
+          venueName: v.venue.name,
+          seatingArrangement: v.seats,
+          benchConfig: v.venue.benchConfig || Array(v.venue.benchesCol).fill(2),
+          facultyId: facultyMode === "MANUAL" ? manualIds[0] || null : v.facultyId,
+          facultyIds: facultyMode === "MANUAL" ? manualIds : v.facultyId ? [v.facultyId] : [],
+        };
+      })
     };
- 
+
     logger.log('\n📤 ===== SAVE PAYLOAD =====');
     logger.log('Faculty Mode:', facultyMode);
     logger.log('Venues with faculty:');
     payload.venuesUsed.forEach(v => {
-      logger.log(`  - ${v.venueName}: Faculty ID = ${v.facultyId || 'NULL'}`);
+      logger.log(`  - ${v.venueName}: Faculty IDs = ${(v.facultyIds || []).join(", ") || "NULL"}`);
     });
     logger.log('===========================\n');
  
@@ -886,26 +989,24 @@ const Allotment = () => {
       setManualFacultyAssignments({});
       setError("");
 
-      // Recalculate Allocated/Remaining from backend immediately.
+      // Recalculate Allocated/Remaining and time conflicts from backend.
       try {
-        const facultyRes = await api.get("/faculty");
+        const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
+        const [facultyRes, availRes] = await Promise.all([
+          api.get("/faculty"),
+          examDate && examStartTime && examEndTime
+            ? api.post("/seating/check-faculty-availability", {
+                examDate: dateOnly,
+                examSession,
+                examStartTime,
+                examEndTime,
+                venueCount: 1,
+              })
+            : Promise.resolve({ data: { facultyStatus: [] } }),
+        ]);
         const list = Array.isArray(facultyRes.data) ? facultyRes.data : [];
-        setAllFaculty((prev) => {
-          const prevById = new Map(prev.map((f) => [String(f.uuid), f]));
-          return list.map((f) => {
-            const prevF = prevById.get(String(f.uuid));
-            const remaining = Number(f.remaining ?? 0);
-            const hasTimeConflict = !!prevF?.hasTimeConflict;
-            return {
-              ...f,
-              remaining,
-              allocation: Number(f.allocation ?? 0),
-              maxClassrooms: Number(f.maxClassrooms ?? f.max_classrooms ?? 1) || 1,
-              canAllocate: remaining > 0 && f.isAvailable !== false && !hasTimeConflict,
-              hasTimeConflict,
-            };
-          });
-        });
+        const statusList = availRes.data?.facultyStatus || [];
+        setAllFaculty(mergeFacultyWithAvailability(list, statusList));
       } catch {
         /* keep previous faculty list */
       }
@@ -1319,7 +1420,9 @@ const Allotment = () => {
                   <p className="text-sm font-medium text-gray-600">Faculty are assigned automatically per venue after generation.</p>
                 )}
                 {facultyMode === "MANUAL" && generatedSeating && (
-                  <p className="text-xs font-medium text-gray-600">Assign faculty to each venue in the Seating Layout Preview below.</p>
+                  <p className="text-xs font-medium text-gray-600">
+                    Select one or more invigilators for each room in the Seating Layout Preview below.
+                  </p>
                 )}
               </div>
 
@@ -1390,43 +1493,113 @@ const Allotment = () => {
  
             {facultyMode === "MANUAL" && (
               <div className="bg-indigo-50 p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-indigo-200 grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4">
-                {generatedSeating.map(item => (
+                {generatedSeating.map(item => {
+                  const venueUuid = item.venue.uuid;
+                  const selectedIds = getVenueFacultyIds(manualFacultyAssignments, venueUuid);
+                  return (
                   <div
-                    key={item.venue.uuid}
-                    className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 bg-white px-3 py-2 rounded-xl border border-gray-200 shadow-sm"
+                    key={venueUuid}
+                    className="flex flex-col gap-2 bg-white px-3 py-3 rounded-xl border border-gray-200 shadow-sm"
                   >
-                    <span className="text-sm font-medium text-gray-800 truncate">
-                      {item.venue.name}
-                    </span>
-                    <select
-                      className="text-xs sm:text-sm min-h-[44px] sm:min-h-0 h-9 px-2 rounded-lg border border-gray-200 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none w-full sm:w-auto"
-                      onChange={e =>
-                        setManualFacultyAssignments(prev => ({
-                          ...prev,
-                          [item.venue.uuid]: e.target.value,
-                        }))
-                      }
-                      value={manualFacultyAssignments[item.venue.uuid] || ""}
-                    >
-                      <option value="">Assign Faculty</option>
-                      {allFaculty.map(f => (
-                        <option
-                          key={f.uuid}
-                          value={f.uuid}
-                          disabled={!f.canAllocate || f.hasTimeConflict}
-                        >
-                          {f.name}
-                          {!f.canAllocate && !f.hasTimeConflict
-                            ? ` (Full · Rem ${f.remaining ?? 0})`
-                            : f.hasTimeConflict
-                              ? " (Time conflict)"
-                              : ` (Rem ${f.remaining ?? 0})`}{" "}
-                          {f.hasTimeConflict ? "(Busy)" : ""}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium text-gray-800 truncate">
+                        {item.venue.name}
+                      </span>
+                      <span className="text-[10px] uppercase font-semibold text-indigo-600 shrink-0">
+                        {selectedIds.length} selected
+                      </span>
+                    </div>
+                    <div className="max-h-44 overflow-y-auto rounded-lg border border-gray-200 divide-y divide-gray-100">
+                      {allFaculty.map((f) => {
+                        const isSelected = selectedIds.some(
+                          (id) => String(id) === String(f.uuid)
+                        );
+                        const selectable = canSelectFacultyForVenue(
+                          f,
+                          manualFacultyAssignments,
+                          venueUuid
+                        );
+                        return (
+                          <label
+                            key={`${venueUuid}-${f.uuid}`}
+                            className={`flex items-start gap-2 px-2 py-2 text-xs sm:text-sm ${
+                              selectable || isSelected
+                                ? "cursor-pointer hover:bg-indigo-50"
+                                : "cursor-not-allowed opacity-60"
+                            }`}
+                            title={f.conflictMessage || undefined}
+                          >
+                            <input
+                              type="checkbox"
+                              className="mt-0.5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                              checked={isSelected}
+                              disabled={!selectable && !isSelected}
+                              onChange={() => {
+                                if (!selectable && !isSelected) return;
+                                setManualFacultyAssignments((prev) =>
+                                  toggleVenueFaculty(prev, venueUuid, f.uuid)
+                                );
+                              }}
+                            />
+                            <span className="min-w-0">
+                              <span className="font-medium text-gray-800">{f.name}</span>
+                              <span className="block text-[11px] text-gray-500">
+                                {f.hasTimeConflict
+                                  ? "Time conflict"
+                                  : f.isAvailable === false
+                                    ? "Unavailable"
+                                    : isFacultyUsedInOtherVenues(
+                                          f.uuid,
+                                          manualFacultyAssignments,
+                                          venueUuid
+                                        )
+                                      ? "Already assigned to another room"
+                                      : `Rem ${Math.max(
+                                          0,
+                                          getEffectiveRemaining(
+                                            f,
+                                            manualFacultyAssignments
+                                          )
+                                        )}`}
+                              </span>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    {selectedIds.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {selectedIds.map((fid) => {
+                          const faculty = allFaculty.find(
+                            (f) => String(f.uuid) === String(fid)
+                          );
+                          if (!faculty) return null;
+                          return (
+                            <span
+                              key={`${venueUuid}-chip-${fid}`}
+                              className="inline-flex items-center gap-1 rounded-full bg-indigo-100 px-2 py-0.5 text-[11px] font-medium text-indigo-800"
+                            >
+                              {faculty.name}
+                              <button
+                                type="button"
+                                className="text-indigo-500 hover:text-indigo-800"
+                                onClick={() =>
+                                  setManualFacultyAssignments((prev) =>
+                                    toggleVenueFaculty(prev, venueUuid, fid)
+                                  )
+                                }
+                                aria-label={`Remove ${faculty.name}`}
+                              >
+                                ×
+                              </button>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
  
@@ -1457,11 +1630,18 @@ const Allotment = () => {
                       <p className="text-sm font-semibold text-indigo-700">
                         {facultyMode === "AUTO"
                           ? item.previewFacultyName
-                          : allFaculty.find(
-                              f =>
-                                String(f.uuid) ===
-                                String(manualFacultyAssignments[item.venue.uuid])
-                            )?.name || "Unassigned"}
+                          : getVenueFacultyIds(
+                              manualFacultyAssignments,
+                              item.venue.uuid
+                            )
+                              .map(
+                                (fid) =>
+                                  allFaculty.find(
+                                    (f) => String(f.uuid) === String(fid)
+                                  )?.name
+                              )
+                              .filter(Boolean)
+                              .join(", ") || "Unassigned"}
                       </p>
                     </div>
                   </div>

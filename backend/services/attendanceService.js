@@ -175,30 +175,53 @@ const AttendanceService = {
 
     const venues = await runQuery(
       executor,
-      `SELECT venue_id, faculty_id FROM seating_plan_venues WHERE seating_plan_id = ?`,
+      `SELECT spv.id AS seating_plan_venue_id, spv.venue_id, spv.faculty_id
+       FROM seating_plan_venues spv
+       WHERE spv.seating_plan_id = ?`,
       [seatingPlanId]
     );
 
     let synced = 0;
     for (const v of venues) {
       const venueId = v.venue_id ?? v.venueid;
-      const facultyId = v.faculty_id ?? v.facultyid;
-      if (!venueId || !facultyId) continue;
+      const spvId = v.seating_plan_venue_id ?? v.seatingplanvenueid ?? v.id;
+      if (!venueId || !spvId) continue;
 
-      // Invigilator changed → remove previous faculty for this exam + venue
+      const facultyRows = await runQuery(
+        executor,
+        `SELECT faculty_id FROM seating_plan_venue_faculty
+         WHERE seating_plan_venue_id = ?
+         ORDER BY display_order, id`,
+        [spvId]
+      );
+
+      const facultyIds = (facultyRows || [])
+        .map((row) => row.faculty_id ?? row.facultyid)
+        .filter(Boolean);
+
+      if (facultyIds.length === 0) {
+        const legacyFacultyId = v.faculty_id ?? v.facultyid;
+        if (legacyFacultyId) facultyIds.push(legacyFacultyId);
+      }
+
+      if (facultyIds.length === 0) continue;
+
       await executor.query(
         `DELETE FROM faculty_assignments
-         WHERE exam_id = ? AND venue_id = ? AND faculty_id != ?`,
-        [examId, venueId, facultyId]
+         WHERE exam_id = ? AND venue_id = ? AND faculty_id NOT IN (${facultyIds.map(() => "?").join(", ")})`,
+        [examId, venueId, ...facultyIds]
       );
 
-      await executor.query(
-        `INSERT INTO faculty_assignments (faculty_id, exam_id, venue_id, assigned_date)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT (faculty_id, exam_id, venue_id)
-         DO UPDATE SET assigned_date = EXCLUDED.assigned_date`,
-        [facultyId, examId, venueId, examDate]
-      );
+      for (const facultyId of facultyIds) {
+        await executor.query(
+          `INSERT INTO faculty_assignments (faculty_id, exam_id, venue_id, assigned_date)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT (faculty_id, exam_id, venue_id)
+           DO UPDATE SET assigned_date = EXCLUDED.assigned_date`,
+          [facultyId, examId, venueId, examDate]
+        );
+        synced += 1;
+      }
 
       const examStartTime = plan.exam_start_time ?? plan.examstarttime;
       const examEndTime = plan.exam_end_time ?? plan.examendtime;
@@ -210,8 +233,6 @@ const AttendanceService = {
         endTime: examEndTime,
         executor,
       });
-
-      synced += 1;
     }
 
     return { synced, examId };

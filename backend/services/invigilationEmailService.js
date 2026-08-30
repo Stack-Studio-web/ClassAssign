@@ -58,9 +58,10 @@ async function fetchAllotmentsForPlans(seatingPlanIds) {
       e.id AS exam_id,
       e.exam_name,
       e.exam_code
-    FROM seating_plan_venues spv
+    FROM seating_plan_venue_faculty spvf
+    JOIN seating_plan_venues spv ON spv.id = spvf.seating_plan_venue_id
     JOIN seating_plans sp ON sp.id = spv.seating_plan_id
-    JOIN faculty f ON f.id = spv.faculty_id
+    JOIN faculty f ON f.id = spvf.faculty_id
     LEFT JOIN venues v ON v.id = spv.venue_id
     LEFT JOIN faculty_assignments fa
       ON fa.faculty_id = f.id
@@ -68,7 +69,6 @@ async function fetchAllotmentsForPlans(seatingPlanIds) {
      AND fa.assigned_date = sp.exam_date
     LEFT JOIN exams e ON e.id = fa.exam_id
     WHERE sp.id IN (${placeholders})
-      AND spv.faculty_id IS NOT NULL
     ORDER BY sp.exam_date, sp.exam_session, f.name
     `,
     seatingPlanIds

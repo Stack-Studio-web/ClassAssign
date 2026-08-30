@@ -20,6 +20,31 @@ function toClientSafeLayout(layout) {
   });
 }
 
+async function attachVenueFacultyMembers(venues, executor = db) {
+  for (const v of venues || []) {
+    const internalId = v.internalId ?? v.internalid ?? v.id;
+    if (!internalId) continue;
+    const [facultyRows] = await executor.query(
+      `SELECT f.name, f.department, f.public_uuid
+       FROM seating_plan_venue_faculty spvf
+       JOIN faculty f ON f.id = spvf.faculty_id
+       WHERE spvf.seating_plan_venue_id = ?
+       ORDER BY spvf.display_order, spvf.id`,
+      [internalId]
+    );
+    const members = (facultyRows || []).map((r) => ({
+      name: r.name,
+      department: r.department ?? "",
+      uuid: r.public_uuid ?? r.publicuuid ?? null,
+    }));
+    v.facultyMembers = members;
+    if (members.length > 0) {
+      v.facultyName = members.map((m) => m.name).join(", ");
+      v.facultyDepartment = members[0].department;
+    }
+  }
+}
+
 const SeatingPlan = {
 
   /* ===============================
@@ -107,6 +132,25 @@ const SeatingPlan = {
         const seatingPlanVenueId = venueRes.insertId ?? venueRes.insertid;
         if (seatingPlanVenueId == null) {
           throw new Error(`Failed to get venue ID for ${venue.venueName || venue.venueId}`);
+        }
+
+        const facultyIds =
+          Array.isArray(venue.facultyIds) && venue.facultyIds.length > 0
+            ? venue.facultyIds
+            : venue.facultyId
+              ? [venue.facultyId]
+              : [];
+
+        for (let facultyIdx = 0; facultyIdx < facultyIds.length; facultyIdx += 1) {
+          const facultyId = facultyIds[facultyIdx];
+          if (!facultyId) continue;
+          await conn.query(
+            `INSERT INTO seating_plan_venue_faculty
+             (seating_plan_venue_id, faculty_id, display_order)
+             VALUES (?, ?, ?)
+             ON CONFLICT (seating_plan_venue_id, faculty_id) DO NOTHING`,
+            [seatingPlanVenueId, facultyId, facultyIdx]
+          );
         }
 
         // Insert seating grid (2D arrangement)
@@ -232,6 +276,8 @@ const SeatingPlan = {
         WHERE spv.seating_plan_id = ?
         ORDER BY COALESCE(spv.display_order, 0), spv.id
       `, [planId]);
+
+      await attachVenueFacultyMembers(venues);
 
       // ✅ Build a course lookup map from seating_plan_students for this plan
       const [planStudents] = await db.query(`
@@ -372,6 +418,8 @@ const SeatingPlan = {
       WHERE spv.seating_plan_id = ?
       ORDER BY COALESCE(spv.display_order, 0), spv.id
     `, [planId]);
+
+    await attachVenueFacultyMembers(venues);
 
     const [planStudents] = await db.query(`
       SELECT regn_no, course_description

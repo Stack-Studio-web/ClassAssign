@@ -7,6 +7,10 @@ const {
   FULLY_COMPLETED_SQL,
   ACTIVE_ALLOCATION_SQL,
 } = require("../utils/facultyAllocationStatus");
+const {
+  findActiveTimeConflict,
+  buildTimeConflictMessage,
+} = require("../utils/facultyTimeConflict");
 
 // PostgreSQL returns unquoted column names in lowercase; map to camelCase for API
 function toFacultyRow(row) {
@@ -239,16 +243,17 @@ const Faculty = {
      Completed/historical plans do NOT count.
   ===================================== */
   countActiveAllocations: async (facultyId, executor = db) => {
-    const [rows] = await executor.query(
-      `
-      SELECT COUNT(spv.id) AS cnt
-      FROM seating_plan_venues spv
-      JOIN seating_plans sp ON sp.id = spv.seating_plan_id
-      WHERE spv.faculty_id = ?
-        AND (${ACTIVE_ALLOCATION_SQL})
-      `,
-      [facultyId]
-    );
+  const [rows] = await executor.query(
+    `
+    SELECT COUNT(spvf.id) AS cnt
+    FROM seating_plan_venue_faculty spvf
+    JOIN seating_plan_venues spv ON spv.id = spvf.seating_plan_venue_id
+    JOIN seating_plans sp ON sp.id = spv.seating_plan_id
+    WHERE spvf.faculty_id = ?
+      AND (${ACTIVE_ALLOCATION_SQL})
+    `,
+    [facultyId]
+  );
     return Number(rows?.[0]?.cnt ?? rows?.[0]?.CNT ?? 0) || 0;
   },
 
@@ -291,6 +296,84 @@ const Faculty = {
     return summary.remaining >= need;
   },
 
+  findActiveTimeConflict: async (opts, executor = db) =>
+    findActiveTimeConflict(executor, opts),
+
+  /**
+   * Validate capacity and time availability before assigning faculty.
+   * Capacity and time conflict are checked separately.
+   */
+  validateFacultyForAllocation: async (
+    facultyId,
+    {
+      examDate,
+      examStartTime,
+      examEndTime,
+      additionalSlots = 1,
+      excludeSeatingPlanId = null,
+      excludeSpvId = null,
+    } = {},
+    executor = db
+  ) => {
+    const summary = await Faculty.getCapacitySummary(facultyId, executor);
+    if (!summary) {
+      return {
+        allowed: false,
+        code: "NOT_FOUND",
+        message: "Faculty not found",
+      };
+    }
+    if (!summary.isActive) {
+      return {
+        allowed: false,
+        code: "INACTIVE",
+        message:
+          "Faculty has been removed from active management and cannot be assigned to new exams",
+      };
+    }
+    if (!summary.isAvailable) {
+      return {
+        allowed: false,
+        code: "UNAVAILABLE",
+        message: "Faculty is marked unavailable",
+      };
+    }
+
+    const slots = Math.max(1, Number(additionalSlots) || 1);
+    if (summary.remaining < slots) {
+      return {
+        allowed: false,
+        code: "CAPACITY",
+        message:
+          "Faculty allocation limit reached. This faculty currently has no remaining allocation capacity.",
+        currentAllocation: summary.allocation,
+        maxClassrooms: summary.maxClassrooms,
+        remaining: summary.remaining,
+      };
+    }
+
+    if (examDate && examStartTime && examEndTime) {
+      const conflict = await findActiveTimeConflict(executor, {
+        facultyId,
+        examDate,
+        examStartTime,
+        examEndTime,
+        excludeSeatingPlanId,
+        excludeSpvId,
+      });
+      if (conflict) {
+        return {
+          allowed: false,
+          code: "TIME_CONFLICT",
+          message: conflict.message || buildTimeConflictMessage(conflict),
+          conflict,
+        };
+      }
+    }
+
+    return { allowed: true };
+  },
+
   /* =====================================
      GET ALL FACULTY WITH ALLOCATION INFO
      Derived from seating_plan_venues + attendance + report status.
@@ -313,18 +396,20 @@ const Faculty = {
         f.email,
         COALESCE(f.max_classrooms, 1) AS max_classrooms,
         COALESCE(f.is_available, true) AS is_available,
-        COUNT(spv.id) AS total_assignments,
-        COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${ACTIVE_ALLOCATION_SQL})) AS allocation,
-        COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${FULLY_COMPLETED_SQL})) AS completed,
+        COUNT(spvf.id) AS total_assignments,
+        COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${ACTIVE_ALLOCATION_SQL})) AS allocation,
+        COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${FULLY_COMPLETED_SQL})) AS completed,
         (
           COALESCE(f.max_classrooms, 1)
-          - COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${ACTIVE_ALLOCATION_SQL}))
+          - COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${ACTIVE_ALLOCATION_SQL}))
         ) AS remaining,
-        COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${ATTENDANCE_DONE_SQL})) AS attendance_completed,
-        COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${REPORT_DONE_SQL})) AS report_completed
+        COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${ATTENDANCE_DONE_SQL})) AS attendance_completed,
+        COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${REPORT_DONE_SQL})) AS report_completed
       FROM faculty f
+      LEFT JOIN seating_plan_venue_faculty spvf
+        ON spvf.faculty_id = f.id
       LEFT JOIN seating_plan_venues spv
-        ON spv.faculty_id = f.id
+        ON spv.id = spvf.seating_plan_venue_id
       LEFT JOIN seating_plans sp
         ON sp.id = spv.seating_plan_id
       ${ownerSql || "WHERE 1=1"}
@@ -355,18 +440,20 @@ const Faculty = {
         f.email,
         COALESCE(f.max_classrooms, 1) AS max_classrooms,
         COALESCE(f.is_available, true) AS is_available,
-        COUNT(spv.id) AS total_assignments,
-        COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${ACTIVE_ALLOCATION_SQL})) AS allocation,
-        COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${FULLY_COMPLETED_SQL})) AS completed,
+        COUNT(spvf.id) AS total_assignments,
+        COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${ACTIVE_ALLOCATION_SQL})) AS allocation,
+        COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${FULLY_COMPLETED_SQL})) AS completed,
         (
           COALESCE(f.max_classrooms, 1)
-          - COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${ACTIVE_ALLOCATION_SQL}))
+          - COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${ACTIVE_ALLOCATION_SQL}))
         ) AS remaining,
-        COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${ATTENDANCE_DONE_SQL})) AS attendance_completed,
-        COUNT(spv.id) FILTER (WHERE spv.id IS NOT NULL AND (${REPORT_DONE_SQL})) AS report_completed
+        COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${ATTENDANCE_DONE_SQL})) AS attendance_completed,
+        COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${REPORT_DONE_SQL})) AS report_completed
       FROM faculty f
+      LEFT JOIN seating_plan_venue_faculty spvf
+        ON spvf.faculty_id = f.id
       LEFT JOIN seating_plan_venues spv
-        ON spv.faculty_id = f.id
+        ON spv.id = spvf.seating_plan_venue_id
       LEFT JOIN seating_plans sp
         ON sp.id = spv.seating_plan_id
       WHERE f.id IN (${placeholders})

@@ -222,6 +222,7 @@ async function checkReplacementAvailability({
   examStartTime,
   examEndTime,
   excludeFacultyId,
+  excludeSpvId = null,
 }) {
   if (!requestedFacultyId) {
     return { available: true, message: "Faculty is available for assignment." };
@@ -234,40 +235,20 @@ async function checkReplacementAvailability({
     };
   }
 
-  const canAllocate = await Faculty.canAllocate(requestedFacultyId);
-  if (!canAllocate) {
+  const validation = await Faculty.validateFacultyForAllocation(requestedFacultyId, {
+    examDate,
+    examStartTime: examStartTime || "00:00",
+    examEndTime: examEndTime || "23:59",
+    additionalSlots: 1,
+    excludeSpvId,
+  });
+
+  if (!validation.allowed) {
     return {
       available: false,
-      message:
-        "Faculty allocation limit reached. This faculty currently has no remaining allocation capacity.",
-    };
-  }
-
-  const [conflicts] = await db.query(
-    `SELECT spv.id, v.name AS venue_name
-     FROM seating_plan_venues spv
-     JOIN seating_plans sp ON sp.id = spv.seating_plan_id
-     JOIN venues v ON v.id = spv.venue_id
-     WHERE spv.faculty_id = ?
-       AND sp.exam_date = ?
-       AND NOT (sp.exam_end_time <= ? OR sp.exam_start_time >= ?)
-       AND NOT (spv.venue_id = ? AND spv.faculty_id = ?)
-     LIMIT 1`,
-    [
-      requestedFacultyId,
-      examDate,
-      examStartTime || "00:00",
-      examEndTime || "23:59",
-      venueId,
-      requestedFacultyId,
-    ]
-  );
-
-  if (conflicts.length > 0) {
-    const vName = conflicts[0].venue_name ?? conflicts[0].venuename ?? "another venue";
-    return {
-      available: false,
-      message: `Faculty is already assigned for ${vName} during this session.`,
+      message: validation.message,
+      code: validation.code,
+      conflict: validation.conflict || null,
     };
   }
 
@@ -406,6 +387,7 @@ const FacultyTransferService = {
       examStartTime: ctx.examStartTime,
       examEndTime: ctx.examEndTime,
       excludeFacultyId: currentFacultyId,
+      excludeSpvId: ctx.seatingPlanVenueId,
     });
 
     return {
@@ -492,6 +474,7 @@ const FacultyTransferService = {
         examStartTime: ctx.examStartTime,
         examEndTime: ctx.examEndTime,
         excludeFacultyId: currentFacultyId,
+        excludeSpvId: ctx.seatingPlanVenueId,
       });
       if (!availability.available) {
         const err = new Error(availability.message);
@@ -709,6 +692,7 @@ const FacultyTransferService = {
       examStartTime: assign.exam_start_time ?? assign.examstarttime ?? timeRange.start,
       examEndTime: assign.exam_end_time ?? assign.examendtime ?? timeRange.end,
       excludeFacultyId: currentFacultyId,
+      excludeSpvId: req.seating_plan_venue_id ?? req.seatingplanvenueid ?? null,
     });
     if (!availability.available) {
       const err = new Error(availability.message);
