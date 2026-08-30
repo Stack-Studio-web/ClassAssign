@@ -118,10 +118,20 @@ async function findActiveTimeConflict(
   return mapConflictRow(rows?.[0]);
 }
 
+function examTimesOverlap(existingStart, existingEnd, newStart, newEnd) {
+  const es = normalizeExamTime(existingStart);
+  const ee = normalizeExamTime(existingEnd);
+  const ns = normalizeExamTime(newStart);
+  const ne = normalizeExamTime(newEnd);
+  if (!es || !ee || !ns || !ne) return false;
+  return es < ne && ee > ns;
+}
+
 module.exports = {
   normalizeExamTime,
   normalizeExamDate,
   formatTime12h,
   buildTimeConflictMessage,
   findActiveTimeConflict,
+  examTimesOverlap,
 };

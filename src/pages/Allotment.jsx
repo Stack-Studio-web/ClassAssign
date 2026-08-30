@@ -2,6 +2,13 @@
 import React, { useState, useEffect, useMemo } from "react";
 import api from "../lib/api";
 import { logger } from "../lib/logger";
+import {
+  normalizeExamDateOnly,
+  runAutoFacultyAllocation,
+  validateAndRepairAutoFacultyPlan,
+  validateAutoFacultyPlan,
+  formatExamTimeRange,
+} from "../lib/autoFacultyAllocation";
 import { useToast } from "../context/ToastContext";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
 import {
@@ -169,6 +176,7 @@ const Allotment = () => {
   const [manualFacultyAssignments, setManualFacultyAssignments] = useState({});
   const [allowAdjacentSeating, setAllowAdjacentSeating] = useState(false);
   const [adjacencyOverrideUsed, setAdjacencyOverrideUsed] = useState(false);
+  const [autoPlanValidation, setAutoPlanValidation] = useState(null);
  
   const [ineligibleStudentsByCourse, setIneligibleStudentsByCourse] = useState({});
   const [ineligibilityStats, setIneligibilityStats] = useState({
@@ -198,6 +206,11 @@ const Allotment = () => {
     new Date(examDate + "T12:00:00").getMonth() === calendarView.month
       ? new Date(examDate + "T12:00:00").getDate()
       : null;
+
+  const canSubmitAutoPlan = useMemo(() => {
+    if (facultyMode !== "AUTO" || !generatedSeating) return true;
+    return autoPlanValidation?.canSubmit === true;
+  }, [facultyMode, generatedSeating, autoPlanValidation]);
 
   const handleCalendarDay = (day) => {
     if (!day || !hasWriteAccess) return;
@@ -526,6 +539,7 @@ const Allotment = () => {
   const handleGenerate = async () => {
     setError("");
     setAdjacencyOverrideUsed(false);
+    setAutoPlanValidation(null);
  
     if (!hasWriteAccess) {
       return setError("Access denied: Only Admin and Faculty Incharge can generate seating plans.");
@@ -795,21 +809,36 @@ const Allotment = () => {
       }
     }
  
-    // AUTO: only faculty with Remaining > 0 and no time conflict; consume one slot each.
-    const availableFaculty = allFaculty.filter((f) => f.canAllocate && !f.hasTimeConflict);
-    const remainingSlots = new Map(
-      availableFaculty.map((f) => [
-        String(f.uuid),
-        Math.max(0, Number(f.remaining ?? 0)),
-      ])
-    );
+    // AUTO faculty: load fresh availability, allocate intelligently, validate, repair, revalidate.
+    let facultyPool = allFaculty;
+    const examContext = { examDate, examStartTime, examEndTime };
+
+    if (facultyMode === "AUTO") {
+      try {
+        const dateOnly = normalizeExamDateOnly(examDate);
+        const [facultyRes, availRes] = await Promise.all([
+          api.get("/faculty"),
+          api.post("/seating/check-faculty-availability", {
+            examDate: dateOnly,
+            examSession,
+            examStartTime,
+            examEndTime,
+            venueCount: venuesToUse.length,
+          }),
+        ]);
+        facultyPool = mergeFacultyWithAvailability(
+          Array.isArray(facultyRes.data) ? facultyRes.data : [],
+          availRes.data?.facultyStatus || []
+        );
+        setAllFaculty(facultyPool);
+      } catch (err) {
+        logger.log("Faculty availability refresh failed; using cached faculty list.", err);
+      }
+    }
 
     logger.log(`\n👥 ===== FACULTY ASSIGNMENT (${facultyMode} MODE) =====`);
-    logger.log(`Available faculty: ${availableFaculty.length}`);
-    logger.log(`Venues to assign: ${venuesToUse.length}`);
 
     const venuesResult = [];
-    let facultyAssignmentIndex = 0;
 
     venueGrids.forEach((venueData) => {
       const { venue, grid, benchConfig } = venueData;
@@ -847,43 +876,69 @@ const Allotment = () => {
       );
 
       let assignedFacultyId = null;
-      let previewFacultyName = "Not Assigned";
+      let previewFacultyName =
+        facultyMode === "AUTO" ? "Not Assigned" : "Not Assigned";
 
-      if (facultyMode === "AUTO" && availableFaculty.length > 0) {
-        const faculty = availableFaculty.find((f) => {
-          const left = remainingSlots.get(String(f.uuid)) ?? 0;
-          return left > 0;
-        });
-        if (faculty) {
-          assignedFacultyId = faculty.uuid;
-          previewFacultyName = `${faculty.name} (${faculty.department})`;
-          remainingSlots.set(
-            String(faculty.uuid),
-            (remainingSlots.get(String(faculty.uuid)) ?? 0) - 1
-          );
-          logger.log(
-            `  Venue ${facultyAssignmentIndex + 1} (${venue.name}): Assigned ${faculty.name} (UUID: ${faculty.uuid})`
-          );
-          facultyAssignmentIndex++;
-        } else {
-          logger.log(`  ⚠️ No remaining faculty capacity for ${venue.name}`);
-        }
+      if (facultyMode !== "AUTO") {
+        // Manual mode: faculty picked in preview UI after generation.
+        previewFacultyName = "Assign in preview";
       }
- 
+
       venuesResult.push({
         venue,
         seats: formattedGrid,
-        facultyId: assignedFacultyId,  // ✅ NEW: Store faculty ID
-        previewFacultyName: previewFacultyName
+        facultyId: assignedFacultyId,
+        previewFacultyName,
       });
     });
+
+    let finalVenues = venuesResult;
+
+    if (facultyMode === "AUTO") {
+      const allocated = runAutoFacultyAllocation(venuesResult, facultyPool, examContext);
+      const { items, validation } = validateAndRepairAutoFacultyPlan(
+        allocated,
+        facultyPool,
+        examContext
+      );
+      finalVenues = items;
+      setAutoPlanValidation(validation);
+
+      finalVenues.forEach((item) => {
+        if (item.facultyId) {
+          logger.log(
+            `  ${item.venue.name}: ${item.previewFacultyName} (UUID: ${item.facultyId})`
+          );
+        } else if (item.needsFaculty) {
+          logger.log(`  ${item.venue.name}: Not Assigned (no eligible faculty)`);
+        }
+      });
+
+      if (!validation.canSubmit) {
+        const lines = validation.summaryMessages.slice(0, 5);
+        const more =
+          validation.summaryMessages.length > 5
+            ? `\n…and ${validation.summaryMessages.length - 5} more issue(s).`
+            : "";
+        setError(
+          `⚠️ Auto faculty allotment could not be fully completed for ${formatExamTimeRange(examContext)}.\n` +
+            lines.map((m) => `• ${m}`).join("\n") +
+            more +
+            "\n\nResolve conflicts or switch to Manual mode. Submit is disabled until all rooms have valid faculty."
+        );
+      } else {
+        setError("");
+      }
+    } else {
+      setAutoPlanValidation(null);
+    }
  
     logger.log(`\n✅ Total students seated: ${allSeatedStudents.length}/${totalStudents}`);
-    logger.log(`✅ Venues used: ${venuesResult.length}/${venuesToUse.length}`);
+    logger.log(`✅ Venues used: ${finalVenues.length}/${venuesToUse.length}`);
     logger.log(`===== FACULTY ASSIGNMENT COMPLETE =====\n`);
- 
+
     setAllottedStudents(allSeatedStudents);
-    setGeneratedSeating(venuesResult);
+    setGeneratedSeating(finalVenues);
     setIsGenerating(false);
   };
  
@@ -901,8 +956,25 @@ const Allotment = () => {
       return setError("Assign at least one faculty member to each room.");
     }
 
-    if (facultyMode === "AUTO" && generatedSeating.some((v) => !v.facultyId)) {
-      return setError("Not enough available faculty for all venues. Regenerate seating or switch to manual assignment.");
+    if (facultyMode === "AUTO") {
+      if (!autoPlanValidation?.canSubmit) {
+        return setError(
+          "Cannot submit: auto faculty allotment has unresolved conflicts or rooms without faculty. Regenerate or switch to Manual mode."
+        );
+      }
+
+      const preSubmitValidation = validateAutoFacultyPlan(
+        generatedSeating,
+        allFaculty,
+        { examDate, examStartTime, examEndTime }
+      );
+      if (!preSubmitValidation.canSubmit) {
+        setAutoPlanValidation(preSubmitValidation);
+        const msg =
+          preSubmitValidation.summaryMessages.join("\n") ||
+          "Auto faculty validation failed. Regenerate the seating plan.";
+        return setError(msg);
+      }
     }
 
     const assignedFacultyIds =
@@ -912,38 +984,40 @@ const Allotment = () => {
           )
         : generatedSeating.map((v) => v.facultyId).filter(Boolean);
 
-    const facultyUsage = new Map();
-    for (const fid of assignedFacultyIds) {
-      facultyUsage.set(fid, (facultyUsage.get(fid) || 0) + 1);
-    }
-
-    for (const [fid, uses] of facultyUsage.entries()) {
-      const faculty = allFaculty.find((f) => String(f.uuid) === String(fid));
-      if (!faculty || faculty.isAvailable === false || faculty.hasTimeConflict) {
-        const msg =
-          faculty?.conflictMessage ||
-          (faculty?.hasTimeConflict
-            ? `${faculty.name} is unavailable for this exam time slot.`
-            : "One or more selected faculty are unavailable.");
-        return setError(msg);
+    if (facultyMode === "MANUAL") {
+      const facultyUsage = new Map();
+      for (const fid of assignedFacultyIds) {
+        facultyUsage.set(fid, (facultyUsage.get(fid) || 0) + 1);
       }
-      if (uses > Number(faculty.remaining ?? 0)) {
+
+      for (const [fid, uses] of facultyUsage.entries()) {
+        const faculty = allFaculty.find((f) => String(f.uuid) === String(fid));
+        if (!faculty || faculty.isAvailable === false || faculty.hasTimeConflict) {
+          const msg =
+            faculty?.conflictMessage ||
+            (faculty?.hasTimeConflict
+              ? `${faculty.name} is unavailable for this exam time slot.`
+              : "One or more selected faculty are unavailable.");
+          return setError(msg);
+        }
+        if (uses > Number(faculty.remaining ?? 0)) {
+          return setError(
+            `${faculty.name} has only ${faculty.remaining ?? 0} remaining allocation slot(s), but ${uses} were selected.`
+          );
+        }
+      }
+
+      const duplicateAcrossVenues = generatedSeating.some((v) => {
+        const ids = getVenueFacultyIds(manualFacultyAssignments, v.venue.uuid);
+        return ids.some((fid) =>
+          isFacultyUsedInOtherVenues(fid, manualFacultyAssignments, v.venue.uuid)
+        );
+      });
+      if (duplicateAcrossVenues) {
         return setError(
-          `${faculty.name} has only ${faculty.remaining ?? 0} remaining allocation slot(s), but ${uses} were selected.`
+          "The same faculty cannot be assigned to more than one room on the same seating plan."
         );
       }
-    }
-
-    const duplicateAcrossVenues = generatedSeating.some((v) => {
-      const ids = getVenueFacultyIds(manualFacultyAssignments, v.venue.uuid);
-      return ids.some((fid) =>
-        isFacultyUsedInOtherVenues(fid, manualFacultyAssignments, v.venue.uuid)
-      );
-    });
-    if (facultyMode === "MANUAL" && duplicateAcrossVenues) {
-      return setError(
-        "The same faculty cannot be assigned to more than one room on the same seating plan."
-      );
     }
  
     const selectedCourses = [...new Set(timetableCourses.map(c => c.courseCode))];
@@ -987,6 +1061,7 @@ const Allotment = () => {
       setTimetableCourses([]);
       setStudentsByCourse({});
       setManualFacultyAssignments({});
+      setAutoPlanValidation(null);
       setError("");
 
       // Recalculate Allocated/Remaining and time conflicts from backend.
@@ -1393,7 +1468,11 @@ const Allotment = () => {
                 <div className="inline-flex w-full sm:w-auto rounded-full bg-gray-100 p-1 text-xs font-medium">
                   <button
                     type="button"
-                    onClick={() => hasWriteAccess && setFacultyMode("AUTO")}
+                    onClick={() => {
+                      if (!hasWriteAccess) return;
+                      setFacultyMode("AUTO");
+                      setAutoPlanValidation(null);
+                    }}
                     className={`flex-1 min-h-[40px] sm:min-h-0 sm:py-2 px-4 py-2.5 rounded-full transition-all ${
                       facultyMode === "AUTO"
                         ? "bg-white shadow-sm text-blue-600"
@@ -1405,7 +1484,11 @@ const Allotment = () => {
                   </button>
                   <button
                     type="button"
-                    onClick={() => hasWriteAccess && setFacultyMode("MANUAL")}
+                    onClick={() => {
+                      if (!hasWriteAccess) return;
+                      setFacultyMode("MANUAL");
+                      setAutoPlanValidation(null);
+                    }}
                     className={`flex-1 min-h-[40px] sm:min-h-0 sm:py-2 px-4 py-2.5 rounded-full transition-all ${
                       facultyMode === "MANUAL"
                         ? "bg-white shadow-sm text-blue-600"
@@ -1417,7 +1500,9 @@ const Allotment = () => {
                   </button>
                 </div>
                 {facultyMode === "AUTO" && (
-                  <p className="text-sm font-medium text-gray-600">Faculty are assigned automatically per venue after generation.</p>
+                  <p className="text-sm font-medium text-gray-600">
+                    Faculty are assigned using capacity and time availability during generation. The plan is validated before submit; rooms without eligible faculty are marked Needs Faculty.
+                  </p>
                 )}
                 {facultyMode === "MANUAL" && generatedSeating && (
                   <p className="text-xs font-medium text-gray-600">
@@ -1463,7 +1548,12 @@ const Allotment = () => {
                 {generatedSeating && hasWriteAccess && (
                   <button
                     onClick={handleSave}
-                    disabled={loading}
+                    disabled={loading || !canSubmitAutoPlan}
+                    title={
+                      facultyMode === "AUTO" && !canSubmitAutoPlan
+                        ? "Resolve all faculty conflicts and unassigned rooms before submitting"
+                        : ""
+                    }
                     className="inline-flex items-center justify-center px-4 py-2.5 rounded-xl text-sm font-semibold shadow-sm transition-all duration-200 min-h-[40px] bg-indigo-600 text-white hover:bg-indigo-700 hover:shadow-md active:scale-[0.99] disabled:bg-gray-300 disabled:text-gray-600 disabled:cursor-not-allowed"
                   >
                     {loading ? "Saving..." : "Save & Finalize"}
@@ -1488,6 +1578,29 @@ const Allotment = () => {
             {adjacencyOverrideUsed && (
               <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900">
                 ⚠️ Adjacency override was used while generating this layout.
+              </div>
+            )}
+
+            {facultyMode === "AUTO" && autoPlanValidation && (
+              <div
+                className={`rounded-xl border px-3 py-3 text-sm ${
+                  autoPlanValidation.canSubmit
+                    ? "border-green-200 bg-green-50 text-green-900"
+                    : "border-red-200 bg-red-50 text-red-900"
+                }`}
+              >
+                <p className="font-semibold">
+                  {autoPlanValidation.canSubmit
+                    ? "✓ Auto faculty allotment validated — ready to submit"
+                    : "Auto faculty allotment needs attention before submit"}
+                </p>
+                {!autoPlanValidation.canSubmit && (
+                  <ul className="mt-2 space-y-1 list-disc list-inside text-xs sm:text-sm">
+                    {autoPlanValidation.summaryMessages.map((msg, i) => (
+                      <li key={`auto-val-${i}`}>{msg}</li>
+                    ))}
+                  </ul>
+                )}
               </div>
             )}
  
@@ -1627,9 +1740,17 @@ const Allotment = () => {
                       <p className="text-[10px] uppercase font-semibold text-gray-400">
                         Invigilator
                       </p>
-                      <p className="text-sm font-semibold text-indigo-700">
+                      <p
+                        className={`text-sm font-semibold ${
+                          facultyMode === "AUTO" && item.needsFaculty
+                            ? "text-amber-700"
+                            : "text-indigo-700"
+                        }`}
+                      >
                         {facultyMode === "AUTO"
-                          ? item.previewFacultyName
+                          ? item.needsFaculty
+                            ? "Needs Faculty"
+                            : item.previewFacultyName
                           : getVenueFacultyIds(
                               manualFacultyAssignments,
                               item.venue.uuid
