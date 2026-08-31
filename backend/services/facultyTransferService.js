@@ -749,11 +749,16 @@ const FacultyTransferService = {
 
     await executor.query(
       `UPDATE faculty_assignments
-       SET faculty_id = ?, assigned_date = COALESCE(assigned_date, ?::date)
+       SET faculty_id = ?,
+           assigned_date = COALESCE(assigned_date, ?::date),
+           start_time = COALESCE(start_time, ?::time),
+           end_time = COALESCE(end_time, ?::time)
        WHERE exam_id = ? AND venue_id = ? AND faculty_id = ?`,
       [
         newFacultyId,
         assign.exam_date ?? assign.examdate ?? assign.assigned_date,
+        assign.exam_start_time ?? assign.examstarttime ?? assign.start_time ?? null,
+        assign.exam_end_time ?? assign.examendtime ?? assign.end_time ?? null,
         examId,
         venueId,
         currentFacultyId,

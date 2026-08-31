@@ -17,6 +17,7 @@ const auditLogger = require("../middleware/auditLogger");
 const { resolveEntity } = require("../middleware/resolvePublicId");
 const { TABLE, getPublicUuid, resolveInternalId } = require("../utils/publicId");
 const { ACTIVE_ALLOCATION_SQL } = require("../utils/facultyAllocationStatus");
+const { resolveOccupancyWindow } = require("../utils/facultyTimeConflict");
 
 const ownerOpts = (req) => ({ ownerUserId: req.user?.id, role: req.user?.role });
 
@@ -819,6 +820,11 @@ router.post("/check-faculty-availability",
       }
 
       const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
+      const occupancy = await resolveOccupancyWindow(db, {
+        examDate: dateOnly,
+        examStartTime,
+        examEndTime,
+      });
 
       // Active faculty only — soft-deleted faculty stay in DB for history but cannot be assigned.
       const [allFaculty] = await db.query(
@@ -880,6 +886,9 @@ router.post("/check-faculty-availability",
         availableFaculty: availableFaculty.length,
         requiredFaculty: venueCount || 0,
         sufficient: availableFaculty.length >= (venueCount || 0),
+        occupancyEndTime: occupancy.occupancyEndTime,
+        examStartTime: occupancy.examStartTime,
+        examEndTime: occupancy.examEndTime,
         facultyStatus
       });
 

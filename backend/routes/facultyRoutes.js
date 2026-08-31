@@ -15,6 +15,7 @@ const {
   isValidKctEmail,
   hashPassword,
 } = require("../utils/password");
+const FacultyScheduleService = require("../services/facultyScheduleService");
 
 const ownerOpts = (req) => ({
   ownerUserId: req.user?.id,
@@ -37,6 +38,31 @@ router.get("/stats", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]
     res.json(stats);
   } catch (err) {
     return Api.serverError(res, err, "GET /faculty/stats");
+  }
+});
+
+/**
+ * GET /faculty/schedule?date=&startTime=&endTime=
+ * Returns faculty duties grouped by examDate + startTime + endTime.
+ */
+router.get("/schedule", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), async (req, res) => {
+  try {
+    const { date, startTime, endTime } = req.query;
+    if (startTime && endTime) {
+      const start = FacultyScheduleService.normalizeTime(startTime);
+      const end = FacultyScheduleService.normalizeTime(endTime);
+      if (!start || !end || start >= end) {
+        return Api.validationError(res, "startTime must be earlier than endTime");
+      }
+    }
+    const data = await FacultyScheduleService.getFacultySchedule({
+      date: date || null,
+      startTime: startTime || null,
+      endTime: endTime || null,
+    });
+    return res.json(data);
+  } catch (err) {
+    return Api.serverError(res, err, "GET /faculty/schedule");
   }
 });
 

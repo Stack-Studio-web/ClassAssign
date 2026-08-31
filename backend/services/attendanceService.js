@@ -5,8 +5,42 @@ const PublicId = require("../utils/publicId");
 
 const VALID_STATUSES = new Set(["Present", "Absent"]);
 
+function formatTimePart(value) {
+  if (!value) return "";
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return `${String(value.getHours()).padStart(2, "0")}:${String(
+      value.getMinutes()
+    ).padStart(2, "0")}`;
+  }
+  const s = String(value).trim();
+  const match = s.match(/(\d{1,2}):(\d{2})/);
+  if (match) return `${match[1].padStart(2, "0")}:${match[2]}`;
+  return s.length >= 5 ? s.slice(0, 5) : s;
+}
+
+function parseExamTimeRangeString(examTime) {
+  if (!examTime) return { startTime: "", endTime: "" };
+  const parts = String(examTime).split("-").map((p) => p.trim());
+  if (parts.length < 2) return { startTime: "", endTime: "" };
+  return {
+    startTime: formatTimePart(parts[0]),
+    endTime: formatTimePart(parts[1]),
+  };
+}
+
 function toAssignmentRow(row) {
   if (!row) return null;
+  const parsed = parseExamTimeRangeString(row.exam_time ?? row.examtime);
+  const startTime =
+    formatTimePart(row.start_time ?? row.starttime) ||
+    formatTimePart(row.exam_start_time ?? row.examstarttime) ||
+    parsed.startTime ||
+    "";
+  const endTime =
+    formatTimePart(row.end_time ?? row.endtime) ||
+    formatTimePart(row.exam_end_time ?? row.examendtime) ||
+    parsed.endTime ||
+    "";
   return {
     uuid: row.public_uuid ?? row.publicuuid,
     sessionUuid: row.session_public_uuid ?? row.sessionpublicuuid ?? null,
@@ -21,6 +55,8 @@ function toAssignmentRow(row) {
     examTime: row.exam_time ?? row.examtime ?? "",
     examSession: row.exam_session ?? row.examsession ?? "",
     examDate: row.exam_date ?? row.examdate ?? "",
+    startTime,
+    endTime,
     venueName: row.venue_name ?? row.venuename ?? "",
     venueCapacity: row.venue_capacity ?? row.venuecapacity ?? null,
     studentCount: Number(row.student_count ?? row.studentcount ?? 0) || 0,
@@ -72,12 +108,6 @@ const STUDENT_COUNT_SUBQUERY = `
     AND TRIM(sa.regn_no) <> ''
     AND sa.regn_no <> '-'
 `;
-
-function formatTimePart(value) {
-  if (!value) return "";
-  const s = String(value);
-  return s.length >= 5 ? s.slice(0, 5) : s;
-}
 
 function formatExamTimeRange(startTime, endTime) {
   return `${formatTimePart(startTime)} - ${formatTimePart(endTime)}`;
@@ -172,6 +202,26 @@ const AttendanceService = {
     const plan = plans[0];
     const examId = await AttendanceService.resolveExamIdFromPlan(plan, executor);
     const examDate = plan.exam_date ?? plan.examdate;
+    const examStartTime = plan.exam_start_time ?? plan.examstarttime;
+    const examEndTime = plan.exam_end_time ?? plan.examendtime;
+
+    if (!examStartTime || !examEndTime) {
+      const err = new Error(
+        "Exam start time and end time are required for faculty assignment"
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const startNorm = formatTimePart(examStartTime);
+    const endNorm = formatTimePart(examEndTime);
+    if (!startNorm || !endNorm || startNorm >= endNorm) {
+      const err = new Error(
+        "Invalid exam time range: startTime must be earlier than endTime"
+      );
+      err.statusCode = 400;
+      throw err;
+    }
 
     const venues = await runQuery(
       executor,
@@ -214,17 +264,19 @@ const AttendanceService = {
 
       for (const facultyId of facultyIds) {
         await executor.query(
-          `INSERT INTO faculty_assignments (faculty_id, exam_id, venue_id, assigned_date)
-           VALUES (?, ?, ?, ?)
+          `INSERT INTO faculty_assignments
+             (faculty_id, exam_id, venue_id, assigned_date, start_time, end_time)
+           VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT (faculty_id, exam_id, venue_id)
-           DO UPDATE SET assigned_date = EXCLUDED.assigned_date`,
-          [facultyId, examId, venueId, examDate]
+           DO UPDATE SET
+             assigned_date = EXCLUDED.assigned_date,
+             start_time = EXCLUDED.start_time,
+             end_time = EXCLUDED.end_time`,
+          [facultyId, examId, venueId, examDate, startNorm, endNorm]
         );
         synced += 1;
       }
 
-      const examStartTime = plan.exam_start_time ?? plan.examstarttime;
-      const examEndTime = plan.exam_end_time ?? plan.examendtime;
       await AttendanceWindow.upsertSessionFromExam({
         examId,
         venueId,
@@ -332,7 +384,7 @@ const AttendanceService = {
       JOIN exams e ON e.id = fa.exam_id
       JOIN venues v ON v.id = fa.venue_id
       ${SESSION_JOIN}
-      ORDER BY e.exam_date DESC, e.exam_time ASC, v.name ASC
+      ORDER BY e.exam_date DESC, COALESCE(fa.start_time::text, e.exam_time) ASC, v.name ASC
     `);
     return AttendanceService.enrichAssignmentsWithWindow(rows || []);
   },
@@ -398,7 +450,7 @@ const AttendanceService = {
       JOIN venues v ON v.id = fa.venue_id
       ${SESSION_JOIN}
       WHERE fa.faculty_id = ?
-      ORDER BY e.exam_date DESC, e.exam_time ASC
+      ORDER BY e.exam_date DESC, COALESCE(fa.start_time::text, e.exam_time) ASC
       `,
       [facultyId]
     );
@@ -406,11 +458,29 @@ const AttendanceService = {
     return enriched.filter((a) => a.lifecycleStatus !== "COMPLETED");
   },
 
-  createAssignment: async ({ facultyId, examId, venueId, assignedDate }) => {
+  createAssignment: async ({ facultyId, examId, venueId, assignedDate, startTime, endTime }) => {
+    const startNorm = formatTimePart(startTime);
+    const endNorm = formatTimePart(endTime);
+    if (!startNorm || !endNorm) {
+      const err = new Error("startTime and endTime are required for faculty assignment");
+      err.statusCode = 400;
+      throw err;
+    }
+    if (startNorm >= endNorm) {
+      const err = new Error("startTime must be earlier than endTime");
+      err.statusCode = 400;
+      throw err;
+    }
     const [result] = await db.query(
-      `INSERT INTO faculty_assignments (faculty_id, exam_id, venue_id, assigned_date)
-       VALUES (?, ?, ?, COALESCE(?, CURRENT_DATE))`,
-      [facultyId, examId, venueId, assignedDate || null]
+      `INSERT INTO faculty_assignments
+         (faculty_id, exam_id, venue_id, assigned_date, start_time, end_time)
+       VALUES (?, ?, ?, COALESCE(?, CURRENT_DATE), ?, ?)
+       ON CONFLICT (faculty_id, exam_id, venue_id)
+       DO UPDATE SET
+         assigned_date = EXCLUDED.assigned_date,
+         start_time = EXCLUDED.start_time,
+         end_time = EXCLUDED.end_time`,
+      [facultyId, examId, venueId, assignedDate || null, startNorm, endNorm]
     );
     return result.insertId;
   },

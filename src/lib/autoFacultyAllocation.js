@@ -5,6 +5,11 @@
 
 export function normalizeExamTime(value) {
   if (value == null || value === "") return null;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const hours = String(value.getHours()).padStart(2, "0");
+    const minutes = String(value.getMinutes()).padStart(2, "0");
+    return `${hours}:${minutes}`;
+  }
   const match = String(value).trim().match(/(\d{1,2}):(\d{2})/);
   if (!match) return null;
   return `${match[1].padStart(2, "0")}:${match[2]}`;
@@ -37,23 +42,59 @@ function formatTime12h(value) {
   return `${hour}:${mStr} ${ampm}`;
 }
 
+export function laterTime(a, b) {
+  const left = normalizeExamTime(a);
+  const right = normalizeExamTime(b);
+  if (!left) return right;
+  if (!right) return left;
+  return left >= right ? left : right;
+}
+
+export function occupancyEndForGroup(examStartTime, examEndTime, groupMaxByStart) {
+  const start = normalizeExamTime(examStartTime);
+  const ownEnd = normalizeExamTime(examEndTime);
+  const groupEnd = start && groupMaxByStart ? groupMaxByStart[start] : null;
+  return laterTime(ownEnd, groupEnd) || ownEnd;
+}
+
+export function buildStartTimeGroupMaxMap(examWindows = []) {
+  const map = {};
+  for (const window of examWindows) {
+    const start = normalizeExamTime(window.startTime ?? window.examStartTime);
+    const end = normalizeExamTime(window.endTime ?? window.examEndTime);
+    if (!start || !end) continue;
+    map[start] = laterTime(map[start], end);
+  }
+  return map;
+}
+
+function occupancyEndFromContext(examContext) {
+  return (
+    normalizeExamTime(examContext?.occupancyEndTime) ||
+    occupancyEndForGroup(
+      examContext?.examStartTime,
+      examContext?.examEndTime,
+      examContext?.groupMaxByStart
+    ) ||
+    normalizeExamTime(examContext?.examEndTime)
+  );
+}
+
 export function formatExamTimeRange(examContext) {
   const start = formatTime12h(examContext?.examStartTime);
-  const end = formatTime12h(examContext?.examEndTime);
+  const occupancyEnd = occupancyEndFromContext(examContext);
+  const end = formatTime12h(occupancyEnd || examContext?.examEndTime);
   return `${start}–${end}`;
 }
 
 function hasInMemoryExamConflict(busySlots, examContext) {
   const dateOnly = normalizeExamDateOnly(examContext.examDate);
+  const newStart = examContext.examStartTime;
+  const newOccupancyEnd = occupancyEndFromContext(examContext);
   return (busySlots || []).some(
     (slot) =>
       slot.date === dateOnly &&
-      examTimesOverlap(
-        slot.start,
-        slot.end,
-        examContext.examStartTime,
-        examContext.examEndTime
-      )
+      examTimesOverlap(slot.start, slot.end, newStart, newOccupancyEnd)
   );
 }
 
@@ -92,7 +133,7 @@ export function recordAutoFacultyAssignment(runtime, faculty, item, examContext)
   runtime.busySlotsByFaculty.get(uuid).push({
     date: normalizeExamDateOnly(examContext.examDate),
     start: examContext.examStartTime,
-    end: examContext.examEndTime,
+    end: occupancyEndFromContext(examContext),
     venueName: item.venue.name,
     venueUuid: item.venue.uuid,
   });
@@ -245,7 +286,7 @@ export function validateAutoFacultyPlan(venueItems, facultyPool, examContext) {
           slot.start,
           slot.end,
           examContext.examStartTime,
-          examContext.examEndTime
+          occupancyEndFromContext(examContext)
         )
       ) {
         addConflict({
@@ -262,7 +303,7 @@ export function validateAutoFacultyPlan(venueItems, facultyPool, examContext) {
       venueName,
       date: normalizeExamDateOnly(examContext.examDate),
       start: examContext.examStartTime,
-      end: examContext.examEndTime,
+      end: occupancyEndFromContext(examContext),
     });
     inPlanSchedules.set(uuid, schedule);
   }

@@ -169,6 +169,7 @@ const Allotment = () => {
   const [examType, setExamType] = useState("");
   const [examStartTime, setExamStartTime] = useState("");
   const [examEndTime, setExamEndTime] = useState("");
+  const [occupancyEndTime, setOccupancyEndTime] = useState("");
  
   const [excludedBatches, setExcludedBatches] = useState({});
   const [facultyMode, setFacultyMode] = useState("AUTO");
@@ -486,6 +487,9 @@ const Allotment = () => {
         const statusList = availRes.data?.facultyStatus || [];
 
         setAllFaculty(mergeFacultyWithAvailability(list, statusList));
+        if (availRes.data?.occupancyEndTime) {
+          setOccupancyEndTime(availRes.data.occupancyEndTime);
+        }
       } catch (err) {
         if (err.response?.status === 401) return;
         if (!err.isForbidden) {
@@ -811,7 +815,12 @@ const Allotment = () => {
  
     // AUTO faculty: load fresh availability, allocate intelligently, validate, repair, revalidate.
     let facultyPool = allFaculty;
-    const examContext = { examDate, examStartTime, examEndTime };
+    const examContext = {
+      examDate,
+      examStartTime,
+      examEndTime,
+      occupancyEndTime: occupancyEndTime || examEndTime,
+    };
 
     if (facultyMode === "AUTO") {
       try {
@@ -831,6 +840,10 @@ const Allotment = () => {
           availRes.data?.facultyStatus || []
         );
         setAllFaculty(facultyPool);
+        if (availRes.data?.occupancyEndTime) {
+          examContext.occupancyEndTime = availRes.data.occupancyEndTime;
+          setOccupancyEndTime(availRes.data.occupancyEndTime);
+        }
       } catch (err) {
         logger.log("Faculty availability refresh failed; using cached faculty list.", err);
       }
@@ -966,7 +979,12 @@ const Allotment = () => {
       const preSubmitValidation = validateAutoFacultyPlan(
         generatedSeating,
         allFaculty,
-        { examDate, examStartTime, examEndTime }
+        {
+          examDate,
+          examStartTime,
+          examEndTime,
+          occupancyEndTime: occupancyEndTime || examEndTime,
+        }
       );
       if (!preSubmitValidation.canSubmit) {
         setAutoPlanValidation(preSubmitValidation);
@@ -1082,6 +1100,9 @@ const Allotment = () => {
         const list = Array.isArray(facultyRes.data) ? facultyRes.data : [];
         const statusList = availRes.data?.facultyStatus || [];
         setAllFaculty(mergeFacultyWithAvailability(list, statusList));
+        if (availRes.data?.occupancyEndTime) {
+          setOccupancyEndTime(availRes.data.occupancyEndTime);
+        }
       } catch {
         /* keep previous faculty list */
       }
@@ -1501,7 +1522,7 @@ const Allotment = () => {
                 </div>
                 {facultyMode === "AUTO" && (
                   <p className="text-sm font-medium text-gray-600">
-                    Faculty are assigned using capacity and time availability during generation. The plan is validated before submit; rooms without eligible faculty are marked Needs Faculty.
+                    Faculty are assigned using capacity and the start-time occupancy window (latest end time among exams that share this date and start time). Rooms without eligible faculty are marked Needs Faculty.
                   </p>
                 )}
                 {facultyMode === "MANUAL" && generatedSeating && (
