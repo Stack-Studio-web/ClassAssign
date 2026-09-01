@@ -38,6 +38,20 @@ function formatDateLong(dateValue) {
   });
 }
 
+function formatDateShort(dateValue) {
+  const d = new Date(
+    typeof dateValue === "string" && !dateValue.includes("T")
+      ? `${dateValue}T12:00:00`
+      : dateValue
+  );
+  if (Number.isNaN(d.getTime())) return String(dateValue || "");
+  return d.toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+}
+
 function dateSortKey(dateValue) {
   const d = new Date(
     typeof dateValue === "string" && !dateValue.includes("T")
@@ -477,165 +491,146 @@ const FacultySchedule = ({ plans, onClose }) => {
             </div>
           </div>
 
-          {scheduleByDate.map((day) => (
-            <div key={day.examDate} style={{ marginBottom: "36px" }}>
-              <div
-                style={{
-                  fontWeight: "bold",
-                  marginBottom: "12px",
-                  fontSize: "12pt",
-                }}
-              >
-                Date: {formatDateLong(day.examDate)}
-              </div>
+          {scheduleByDate.map((day) =>
+            day.sessions.map((session, sessionIdx) => {
+              const timeLabel = `${formatTime12h(session.startTime)} - ${formatTime12h(session.endTime)}`;
+              const sessionLabel =
+                session.examSession === "AN"
+                  ? "AN"
+                  : session.examSession === "FN"
+                    ? "FN"
+                    : `Session ${sessionIdx + 1}`;
 
-              {day.sessions.map((session, sessionIdx) => {
-                const timeLabel = `${formatTime12h(session.startTime)} – ${formatTime12h(session.endTime)}`;
-                const sessionLabel =
-                  session.examSession === "AN"
-                    ? "AN"
-                    : session.examSession === "FN"
-                      ? "FN"
-                      : `Session ${sessionIdx + 1}`;
-
-                return (
+              return (
+                <div
+                  key={`${day.examDate}-${session.startTime}-${session.endTime}`}
+                  style={{ marginBottom: "30px" }}
+                >
                   <div
-                    key={`${day.examDate}-${session.startTime}-${session.endTime}`}
-                    style={{ marginBottom: "22px" }}
+                    style={{
+                      fontWeight: "bold",
+                      marginBottom: "5px",
+                      fontSize: "11pt",
+                      display: "flex",
+                      justifyContent: "space-between",
+                    }}
                   >
-                    <div
-                      style={{
-                        fontWeight: "bold",
-                        marginBottom: "6px",
-                        fontSize: "11pt",
-                        display: "flex",
-                        justifyContent: "space-between",
-                        borderBottom: "1px solid #333",
-                        paddingBottom: "4px",
-                      }}
-                    >
-                      <span>
-                        {sessionLabel}: {timeLabel}
-                      </span>
-                      <span>
-                        {session.entries.length} facult
-                        {session.entries.length === 1 ? "y" : "ies"}
-                      </span>
-                    </div>
-
-                    <table
-                      style={{
-                        width: "100%",
-                        borderCollapse: "collapse",
-                        marginBottom: "8px",
-                      }}
-                    >
-                      <thead>
-                        <tr style={{ backgroundColor: "#f0f0f0" }}>
-                          <th
-                            style={{
-                              border: "1px solid black",
-                              padding: "6px",
-                              textAlign: "center",
-                              width: "60px",
-                              fontSize: "11pt",
-                              fontWeight: "bold",
-                            }}
-                          >
-                            S. No.
-                          </th>
-                          <th
-                            style={{
-                              border: "1px solid black",
-                              padding: "6px",
-                              textAlign: "center",
-                              width: "160px",
-                              fontSize: "11pt",
-                              fontWeight: "bold",
-                            }}
-                          >
-                            Date &amp; Time
-                          </th>
-                          <th
-                            style={{
-                              border: "1px solid black",
-                              padding: "6px",
-                              textAlign: "center",
-                              width: "100px",
-                              fontSize: "11pt",
-                              fontWeight: "bold",
-                            }}
-                          >
-                            Room No.
-                          </th>
-                          <th
-                            style={{
-                              border: "1px solid black",
-                              padding: "6px",
-                              textAlign: "center",
-                              fontSize: "11pt",
-                              fontWeight: "bold",
-                            }}
-                          >
-                            Name of the Faculty with Designation
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {session.entries.map((entry, idx) => (
-                          <tr key={`${entry.roomNo}-${entry.facultyName}-${idx}`}>
-                            <td
-                              style={{
-                                border: "1px solid black",
-                                padding: "6px",
-                                textAlign: "center",
-                                fontSize: "11pt",
-                              }}
-                            >
-                              {idx + 1}
-                            </td>
-                            <td
-                              style={{
-                                border: "1px solid black",
-                                padding: "6px",
-                                textAlign: "center",
-                                fontSize: "10pt",
-                              }}
-                            >
-                              {formatDateLong(entry.examDate)}
-                              <br />
-                              {timeLabel}
-                            </td>
-                            <td
-                              style={{
-                                border: "1px solid black",
-                                padding: "6px",
-                                textAlign: "center",
-                                fontSize: "11pt",
-                              }}
-                            >
-                              {entry.roomNo}
-                            </td>
-                            <td
-                              style={{
-                                border: "1px solid black",
-                                padding: "6px",
-                                textAlign: "left",
-                                fontSize: "11pt",
-                              }}
-                            >
-                              {entry.facultyName}
-                              {entry.department ? ` (${entry.department})` : ""}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                    <span>Date: {formatDateLong(day.examDate)}</span>
+                    <span>
+                      {sessionLabel}: {timeLabel}
+                    </span>
                   </div>
-                );
-              })}
-            </div>
-          ))}
+
+                  <table
+                    style={{
+                      width: "100%",
+                      borderCollapse: "collapse",
+                      marginBottom: "20px",
+                    }}
+                  >
+                    <thead>
+                      <tr style={{ backgroundColor: "#f0f0f0" }}>
+                        <th
+                          style={{
+                            border: "1px solid black",
+                            padding: "6px",
+                            textAlign: "center",
+                            width: "60px",
+                            fontSize: "11pt",
+                            fontWeight: "bold",
+                          }}
+                        >
+                          S. No.
+                        </th>
+                        <th
+                          style={{
+                            border: "1px solid black",
+                            padding: "6px",
+                            textAlign: "center",
+                            width: "140px",
+                            fontSize: "11pt",
+                            fontWeight: "bold",
+                          }}
+                        >
+                          Date &amp; Session
+                        </th>
+                        <th
+                          style={{
+                            border: "1px solid black",
+                            padding: "6px",
+                            textAlign: "center",
+                            width: "100px",
+                            fontSize: "11pt",
+                            fontWeight: "bold",
+                          }}
+                        >
+                          Room No.
+                        </th>
+                        <th
+                          style={{
+                            border: "1px solid black",
+                            padding: "6px",
+                            textAlign: "center",
+                            fontSize: "11pt",
+                            fontWeight: "bold",
+                          }}
+                        >
+                          Name of the Faculty with Designation
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {session.entries.map((entry, idx) => (
+                        <tr key={`${entry.roomNo}-${entry.facultyName}-${idx}`}>
+                          <td
+                            style={{
+                              border: "1px solid black",
+                              padding: "6px",
+                              textAlign: "center",
+                              fontSize: "11pt",
+                            }}
+                          >
+                            {idx + 1}
+                          </td>
+                          <td
+                            style={{
+                              border: "1px solid black",
+                              padding: "6px",
+                              textAlign: "center",
+                              fontSize: "11pt",
+                            }}
+                          >
+                            {formatDateShort(entry.examDate)} - {sessionLabel}
+                          </td>
+                          <td
+                            style={{
+                              border: "1px solid black",
+                              padding: "6px",
+                              textAlign: "center",
+                              fontSize: "11pt",
+                            }}
+                          >
+                            {entry.roomNo}
+                          </td>
+                          <td
+                            style={{
+                              border: "1px solid black",
+                              padding: "6px",
+                              textAlign: "left",
+                              fontSize: "11pt",
+                            }}
+                          >
+                            {entry.facultyName}
+                            {entry.department ? ` (${entry.department})` : ""}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
     </div>
