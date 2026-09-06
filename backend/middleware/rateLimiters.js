@@ -14,10 +14,14 @@ const loginLimiter = rateLimit({
   keyGenerator: (req) => `${ipKeyGenerator(req)}:login`,
 });
 
-/** Mild limiter for OAuth authorize-URL generation (not credential verification). */
+/** OAuth authorize-URL generation (not credential verification).
+ * IP-keyed: college NAT may share one public IP across many faculty.
+ * max 100 gives headroom for ~50 concurrent starts + retries/double-clicks.
+ * Callback routes must NOT use this limiter.
+ */
 const oauthStartLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 30,
+  max: 100,
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: "Too many login attempts. Try again later." },
