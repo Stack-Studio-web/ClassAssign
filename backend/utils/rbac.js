@@ -86,9 +86,12 @@ function isHod(role) {
   return role === ROLES.HOD;
 }
 
-function canMutateOwnedRecord(role, ownerUserId, currentUserId) {
+function canMutateOwnedRecord(role, ownerUserId, currentUserId, ownerIds = null) {
   if (isAdmin(role)) return true;
   if (isHod(role)) return false;
+  if (ownerIds && Array.isArray(ownerIds) && ownerIds.length > 0) {
+    return ownerIds.map(Number).includes(Number(ownerUserId));
+  }
   if (!ownerUserId || !currentUserId) return false;
   return Number(ownerUserId) === Number(currentUserId);
 }
@@ -98,15 +101,59 @@ function requestScope(req) {
     role: req.user?.role,
     userId: req.user?.id ?? null,
     department: req.user?.department ?? null,
+    ownerIds: req.ownerIds ?? null,
+    workspaceId: req.workspaceId ?? req.user?.workspaceId ?? null,
   };
 }
 
+/** Sync snapshot — prefer resolveOwnerOpts when ownerIds needed. */
 function ownerOpts(req) {
   return {
     role: req.user?.role,
     ownerUserId: req.user?.id,
     department: req.user?.department ?? null,
+    ownerIds: req.ownerIds ?? null,
+    workspaceId: req.workspaceId ?? req.user?.workspaceId ?? null,
   };
+}
+
+/**
+ * Resolve shared HOD workspace owner IDs for the request (cached on req).
+ */
+async function resolveOwnerOpts(req) {
+  if (req._ownerOptsResolved) return ownerOpts(req);
+
+  const User = require("../models/User");
+  const role = req.user?.role;
+  const userId = req.user?.id;
+
+  let workspaceId = req.session?.workspaceId ?? req.user?.workspaceId ?? null;
+  let ownerIds = null;
+
+  if (role === "admin") {
+    ownerIds = null;
+  } else if (role === "hod" || role === "faculty_incharge") {
+    ownerIds = await User.getWorkspaceOwnerIds({
+      id: userId,
+      role,
+      created_by_hod_id: req.session?.createdByHodId ?? null,
+    });
+    if (!workspaceId) {
+      workspaceId = await User.getWorkspacePublicUuid({
+        id: userId,
+        role,
+        created_by_hod_id: req.session?.createdByHodId ?? null,
+      });
+    }
+  } else {
+    ownerIds = userId ? [userId] : [];
+  }
+
+  req.ownerIds = ownerIds;
+  req.workspaceId = workspaceId;
+  if (req.user) req.user.workspaceId = workspaceId;
+  req._ownerOptsResolved = true;
+  return ownerOpts(req);
 }
 
 module.exports = {
@@ -120,4 +167,5 @@ module.exports = {
   canMutateOwnedRecord,
   requestScope,
   ownerOpts,
+  resolveOwnerOpts,
 };

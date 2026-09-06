@@ -1,4 +1,5 @@
 const express = require("express");
+const { resolveOwnerOpts } = require("../utils/rbac");
 const router = express.Router();
 const Faculty = require("../models/Faculty");
 const User = require("../models/User");
@@ -17,15 +18,9 @@ const {
 } = require("../utils/password");
 const FacultyScheduleService = require("../services/facultyScheduleService");
 
-const ownerOpts = (req) => ({
-  ownerUserId: req.user?.id,
-  role: req.user?.role,
-  department: req.user?.department,
-});
-
 router.get("/", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), async (req, res) => {
   try {
-    const data = await Faculty.getAllWithAllocation(ownerOpts(req));
+    const data = await Faculty.getAllWithAllocation(await resolveOwnerOpts(req));
     res.json(data);
   } catch (err) {
     return Api.serverError(res, err, "GET /faculty");
@@ -34,7 +29,7 @@ router.get("/", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), as
 
 router.get("/stats", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), async (req, res) => {
   try {
-    const stats = await Faculty.count(ownerOpts(req));
+    const stats = await Faculty.count(await resolveOwnerOpts(req));
     res.json(stats);
   } catch (err) {
     return Api.serverError(res, err, "GET /faculty/stats");
@@ -81,8 +76,7 @@ router.post("/", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (r
 
     const existingFaculty = await Faculty.findByEmail(email);
     if (existingFaculty) {
-      const inactive =
-        existingFaculty.is_active === false || existingFaculty.isactive === false;
+      const inactive = existingFaculty.is_active === false;
       if (inactive) {
         await Faculty.reactivateById(existingFaculty.id, {
           name: name.trim(),
@@ -92,7 +86,7 @@ router.post("/", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (r
         return Api.success(
           res,
           "Faculty restored to active management (was previously removed).",
-          { email, restored: true, generatedPassword: plainPassword },
+          { email, restored: true, facultyId: existingFaculty.id, generatedPassword: plainPassword },
           200
         );
       }
@@ -117,7 +111,7 @@ router.post("/", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (r
     }
 
     const hashedPassword = await hashPassword(plainPassword);
-    const opts = ownerOpts(req);
+    const opts = await resolveOwnerOpts(req);
     const { col, val } = insertField(opts.role, opts.ownerUserId);
     const facultyVals = [name.trim(), department?.trim() || null, email];
     if (val != null) facultyVals.push(val);
@@ -161,7 +155,7 @@ router.put("/:uuid/max-classrooms", sessionAuth, checkRole(["admin", "faculty_in
     if (!Number.isFinite(max) || max < 1 || max > 20) {
       return Api.validationError(res, "max_classrooms must be between 1 and 20");
     }
-    const updated = await Faculty.updateMaxClassrooms(req.internalId, max, ownerOpts(req));
+    const updated = await Faculty.updateMaxClassrooms(req.internalId, max, await resolveOwnerOpts(req));
     if (!updated) {
       return Api.notFound(res, "Faculty not found or not allowed");
     }
@@ -177,7 +171,7 @@ router.put("/:uuid/availability", sessionAuth, checkRole(["admin", "faculty_inch
     if (typeof isAvailable !== "boolean") {
       return Api.validationError(res, "isAvailable (boolean) is required");
     }
-    const updated = await Faculty.updateAvailability(req.internalId, isAvailable, ownerOpts(req));
+    const updated = await Faculty.updateAvailability(req.internalId, isAvailable, await resolveOwnerOpts(req));
     if (!updated) {
       return Api.notFound(res, "Faculty not found or not allowed");
     }
@@ -193,7 +187,7 @@ router.delete("/:uuid", sessionAuth, checkRole(["admin", "faculty_incharge"]), r
 
     // Soft-delete only — never block on seating/attendance assignments.
     // Historical plans keep faculty_id; faculty row stays with is_active=false.
-    const deleted = await Faculty.softDeleteById(facultyId, ownerOpts(req));
+    const deleted = await Faculty.softDeleteById(facultyId, await resolveOwnerOpts(req));
     if (!deleted) {
       return Api.notFound(res, "Faculty not found or already removed");
     }

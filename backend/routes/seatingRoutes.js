@@ -1,12 +1,12 @@
 // Class/backend/routes/seatingRoutes.js - FIXED ROUTE ORDER
 const express = require("express");
+const { resolveOwnerOpts } = require("../utils/rbac");
 const router = express.Router();
 const SeatingPlan = require("../models/SeatingPlan");
 const AttendanceService = require("../services/attendanceService");
 const HallNotificationService = require("../services/hallNotificationService");
 const Venue = require("../models/venue");
 const Faculty = require("../models/Faculty");
-const User = require("../models/User");
 const db = require("../config/db");
 const DependencyChecks = require("../utils/dependencyChecks");
 const Api = require("../utils/apiResponse");
@@ -18,8 +18,6 @@ const { resolveEntity } = require("../middleware/resolvePublicId");
 const { TABLE, getPublicUuid, resolveInternalId } = require("../utils/publicId");
 const { ACTIVE_ALLOCATION_SQL } = require("../utils/facultyAllocationStatus");
 const { resolveOccupancyWindow } = require("../utils/facultyTimeConflict");
-
-const ownerOpts = (req) => ({ ownerUserId: req.user?.id, role: req.user?.role });
 
 async function resolveVenuesUsedIds(venuesUsed) {
   const resolved = [];
@@ -96,20 +94,18 @@ function normalizeTimeParam(value) {
   return String(value).substring(0, 5);
 }
 
-function buildOwnerFilterForAttendance(user) {
+async function buildOwnerFilterForAttendance(req) {
+  const user = req.user;
   if (user?.role === "faculty") {
     // Invigilators don't own seating plans — lookup by date/session/time only.
     return { ownerSql: "", ownerParams: [], isFacultyInvigilator: true };
   }
-  if (user?.role === "hod") {
-    return { ownerSql: "", ownerParams: [], isFacultyInvigilator: false, isHod: true };
-  }
-  const clause = andClause(user?.role, user?.id);
+  const opts = await resolveOwnerOpts(req);
+  const clause = andClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
   return {
     ownerSql: clause.sql,
     ownerParams: clause.params,
     isFacultyInvigilator: false,
-    isHod: false,
   };
 }
 
@@ -270,7 +266,7 @@ router.post(
         students,
         venuesUsed: resolvedVenues,
         facultyMode
-      }, ownerOpts(req), connection);
+      }, await resolveOwnerOpts(req), connection);
 
       const attendanceSync = await AttendanceService.syncAssignmentsFromSeatingPlan(seatingPlanId, connection);
 
@@ -342,11 +338,7 @@ router.delete(
         return Api.notFound(res, "Seating plan not found");
       }
 
-      let opts = ownerOpts(req);
-      if (req.user?.role === "hod") {
-        const hodAllowedOwnerIds = await User.getOwnerIdsForHod(req.user.id);
-        opts = { ...opts, hodAllowedOwnerIds };
-      }
+      let opts = await resolveOwnerOpts(req);
       const plan = await SeatingPlan.getPlanById(planId, opts);
       if (!plan) {
         await connection.rollback();
@@ -418,11 +410,7 @@ router.get("/",
   checkRole(['admin', 'faculty_incharge', 'hod']),
   async (req, res) => {
     try {
-      let opts = ownerOpts(req);
-      if (req.user?.role === "hod") {
-        const hodAllowedOwnerIds = await User.getOwnerIdsForHod(req.user.id);
-        opts = { ...opts, hodAllowedOwnerIds };
-      }
+      let opts = await resolveOwnerOpts(req);
       const status = String(req.query.status || "all").toLowerCase();
       if (["active", "completed", "all"].includes(status)) {
         opts.status = status;
@@ -469,7 +457,7 @@ router.post(
         return Api.notFound(res, "No matching seating plans found.");
       }
 
-      const updated = await SeatingPlan.markCompletedByIds(internalIds, ownerOpts(req));
+      const updated = await SeatingPlan.markCompletedByIds(internalIds, await resolveOwnerOpts(req));
 
       // Recalculate affected faculty counts from allocation status (idempotent).
       const planPlaceholders = internalIds.map(() => "?").join(", ");
@@ -523,18 +511,9 @@ router.get("/attendance",
         const reqEnd = normalizeTimeParam(endTime);
         console.log("🗓️  Normalized date:", dateOnly);
 
-        const ownerFilter = buildOwnerFilterForAttendance(req.user);
+        const ownerFilter = await buildOwnerFilterForAttendance(req);
         let ownerSql = ownerFilter.ownerSql;
         let ownerParams = ownerFilter.ownerParams;
-
-        if (ownerFilter.isHod) {
-          const hodAllowedOwnerIds = await User.getOwnerIdsForHod(req.user.id);
-          if (hodAllowedOwnerIds.length > 0) {
-            const placeholders = hodAllowedOwnerIds.map(() => "?").join(",");
-            ownerSql = ` AND owner_user_id IN (${placeholders})`;
-            ownerParams = hodAllowedOwnerIds;
-          }
-        }
 
         const [plans] = await db.query(
             `SELECT id, exam_type, exam_date, exam_session, exam_start_time, exam_end_time 
@@ -555,15 +534,13 @@ router.get("/attendance",
         if (plans.length === 0) {
             let fallbackWhere = "";
             let fallbackParams = [];
-            if (ownerFilter.isHod) {
-              const hodAllowedOwnerIds = await User.getOwnerIdsForHod(req.user.id);
-              if (hodAllowedOwnerIds.length > 0) {
-                const placeholders = hodAllowedOwnerIds.map(() => "?").join(",");
-                fallbackWhere = ` WHERE owner_user_id IN (${placeholders})`;
-                fallbackParams = hodAllowedOwnerIds;
-              }
-            } else if (!ownerFilter.isFacultyInvigilator) {
-              const clause = whereClause(req.user?.role, req.user?.id);
+            if (!ownerFilter.isFacultyInvigilator) {
+              const clause = whereClause(
+                req.user?.role,
+                req.user?.id,
+                "",
+                (await resolveOwnerOpts(req)).ownerIds
+              );
               fallbackWhere = clause.sql;
               fallbackParams = clause.params;
             }
@@ -913,7 +890,7 @@ router.get("/:uuid",
   resolveEntity(TABLE.seatingPlans, { allowLegacyNumeric: true }),
   async (req, res) => {
     try {
-      const plan = await SeatingPlan.getPlanById(req.internalId, ownerOpts(req));
+      const plan = await SeatingPlan.getPlanById(req.internalId, await resolveOwnerOpts(req));
       if (!plan) {
         return res.status(404).json({ error: "Seating plan not found" });
       }

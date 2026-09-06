@@ -13,7 +13,7 @@ const { importLimiter } = require("../middleware/rateLimiters");
 const { MAX_UPLOAD_BYTES, validateUploadedFile } = require("../utils/uploadValidation");
 const { resolveInternalId } = require("../utils/publicId");
 const Api = require("../utils/apiResponse");
-const { PERMISSIONS, ownerOpts } = require("../utils/rbac");
+const { PERMISSIONS, resolveOwnerOpts } = require("../utils/rbac");
 const {
   assertSemesterMutableByBatchInternalId,
 } = require("../utils/semesterGuards");
@@ -52,7 +52,7 @@ async function assertBatchAccess(batchInternalId, req, res) {
     res.status(404).json({ message: "Batch not found" });
     return false;
   }
-  if (!Batch.canAccess(batchRow, ownerOpts(req))) {
+  if (!Batch.canAccess(batchRow, await resolveOwnerOpts(req))) {
     res.status(403).json({ message: "You do not have access to this batch." });
     return false;
   }
@@ -60,7 +60,7 @@ async function assertBatchAccess(batchInternalId, req, res) {
 }
 
 async function processMentorImportRows(rows, batchInternalId, req) {
-  const opts = ownerOpts(req);
+  const opts = await resolveOwnerOpts(req);
   const errors = [];
   const duplicateRegn = detectDuplicateRegnInFile(rows);
   const duplicateRowSet = new Set(duplicateRegn.map((d) => d.rowNumber));
@@ -202,7 +202,7 @@ router.get(
   requirePermission(PERMISSIONS.MENTOR_VIEW),
   async (req, res) => {
     try {
-      const result = await Mentor.list(ownerOpts(req), {
+      const result = await Mentor.list(await resolveOwnerOpts(req), {
         page: req.query.page,
         limit: req.query.limit,
         search: req.query.search,
@@ -226,7 +226,7 @@ router.get(
         batchInternalId = await resolveBatchId(req.query.batchId);
         if (!batchInternalId) return Api.notFound(res, "Batch not found");
       }
-      const result = await Mentor.listMappings(ownerOpts(req), {
+      const result = await Mentor.listMappings(await resolveOwnerOpts(req), {
         page: req.query.page,
         limit: req.query.limit,
         search: req.query.search,
@@ -248,7 +248,7 @@ router.get(
     try {
       const mentor = await Mentor.getByUuid(req.params.uuid);
       if (!mentor) return Api.notFound(res, "Mentor not found");
-      const result = await Mentor.listStudentsForMentor(mentor.id, ownerOpts(req), {
+      const result = await Mentor.listStudentsForMentor(mentor.id, await resolveOwnerOpts(req), {
         page: req.query.page,
         limit: req.query.limit,
       });
@@ -289,7 +289,7 @@ router.post(
       const rows = parseMentorImportRows(xlsx.utils.sheet_to_json(sheet));
       const duplicateRegn = detectDuplicateRegnInFile(rows);
       const duplicateRowSet = new Set(duplicateRegn.map((d) => d.rowNumber));
-      const opts = ownerOpts(req);
+      const opts = await resolveOwnerOpts(req);
 
       const preview = [];
       const rowErrors = [];

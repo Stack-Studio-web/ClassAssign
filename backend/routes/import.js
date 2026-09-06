@@ -21,7 +21,7 @@ const {
 } = require("../utils/semesterGuards");
 
 const router = express.Router();
-const { ownerOpts } = require("../utils/rbac");
+const { resolveOwnerOpts } = require("../utils/rbac");
 const upload = multer({
   dest: "uploads/",
   limits: { fileSize: MAX_UPLOAD_BYTES },
@@ -92,7 +92,7 @@ async function assertBatchAccess(batchInternalId, req, res) {
     res.status(404).json({ message: "Batch not found" });
     return false;
   }
-  if (!Batch.canAccess(batchRow, ownerOpts(req))) {
+  if (!Batch.canAccess(batchRow, await resolveOwnerOpts(req))) {
     res.status(403).json({ message: "You do not have access to this batch." });
     return false;
   }
@@ -127,14 +127,14 @@ router.delete("/delete-all-students", sessionAuth, checkRole(["admin", "faculty_
     }
     if (!(await assertBatchAccess(batchInternalId, req, res))) return;
     if (!(await assertSemesterMutableByBatchInternalId(batchInternalId, res))) return;
-    const ids = await Student.getIdsInBatch(batchInternalId, ownerOpts(req));
+    const ids = await Student.getIdsInBatch(batchInternalId, await resolveOwnerOpts(req));
     const blocked = await DependencyChecks.studentIdsWithBlockers(ids);
     if (blocked.length > 0) {
       return res.status(409).json({
         message: `${blocked.length} student(s) in this batch have seating or attendance dependencies.`,
       });
     }
-    const deletedCount = await Student.deleteAll(ownerOpts(req), batchInternalId);
+    const deletedCount = await Student.deleteAll(await resolveOwnerOpts(req), batchInternalId);
     res.json({ message: `Deleted ${deletedCount} student(s) in batch.`, deletedCount });
   } catch (error) {
     res.status(500).json({
@@ -167,7 +167,7 @@ router.post(
       const workbook = xlsx.readFile(req.file.path);
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       const { valid, skipped } = parseStudentRows(sheet);
-      const existing = await Student.getBatchDuplicateKeys(batchInternalId, ownerOpts(req));
+      const existing = await Student.getBatchDuplicateKeys(batchInternalId, await resolveOwnerOpts(req));
       const duplicates = [];
       const toInsert = [];
 
@@ -183,7 +183,7 @@ router.post(
       const batch = await Batch.getByInternalId(batchInternalId);
       return res.json({
         batch,
-        existingCount: await Student.countInBatch(batchInternalId, ownerOpts(req)),
+        existingCount: await Student.countInBatch(batchInternalId, await resolveOwnerOpts(req)),
         validCount: toInsert.length,
         duplicateCount: duplicates.length,
         skippedCount: skipped.length,
@@ -226,7 +226,7 @@ router.post("/import-students", sessionAuth, checkRole(["admin", "faculty_inchar
       return res.status(400).json({ message: "importMode must be append or replace." });
     }
 
-    const existingCount = await Student.countInBatch(batchInternalId, ownerOpts(req));
+    const existingCount = await Student.countInBatch(batchInternalId, await resolveOwnerOpts(req));
     if (existingCount > 0 && importMode === "append" && req.body?.confirmAppend !== "true") {
       return res.status(409).json({
         code: "BATCH_NOT_EMPTY",
@@ -247,18 +247,18 @@ router.post("/import-students", sessionAuth, checkRole(["admin", "faculty_inchar
     }
 
     if (importMode === "replace" && existingCount > 0) {
-      const ids = await Student.getIdsInBatch(batchInternalId, ownerOpts(req));
+      const ids = await Student.getIdsInBatch(batchInternalId, await resolveOwnerOpts(req));
       const blocked = await DependencyChecks.studentIdsWithBlockers(ids);
       if (blocked.length > 0) {
         return res.status(409).json({
           message: `Cannot replace batch: ${blocked.length} student(s) have seating or attendance dependencies.`,
         });
       }
-      await Student.deleteAll(ownerOpts(req), batchInternalId);
+      await Student.deleteAll(await resolveOwnerOpts(req), batchInternalId);
     }
 
     const existing = importMode === "append"
-      ? await Student.getBatchDuplicateKeys(batchInternalId, ownerOpts(req))
+      ? await Student.getBatchDuplicateKeys(batchInternalId, await resolveOwnerOpts(req))
       : new Set();
     const insertedIds = [];
     const duplicates = [];
@@ -266,7 +266,7 @@ router.post("/import-students", sessionAuth, checkRole(["admin", "faculty_inchar
     const batchCtx = await getBatchAcademicContext(batchInternalId);
     const batchAccess = await Batch.getAccessRowByInternalId(batchInternalId);
     const scopedOpts = {
-      ...ownerOpts(req),
+      ...await resolveOwnerOpts(req),
       department: req.user?.department ?? batchAccess?.department ?? null,
       academicYearId: batchCtx?.academic_year_id ?? null,
       semesterId: batchCtx?.semester_id ?? null,
@@ -359,7 +359,7 @@ router.post("/import-students", sessionAuth, checkRole(["admin", "faculty_inchar
 ===================================================== */
 router.delete("/delete-all-faculty", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
   try {
-    await Faculty.deleteAll(ownerOpts(req));
+    await Faculty.deleteAll(await resolveOwnerOpts(req));
     res.json({ message: "Successfully deleted all faculty records." });
   } catch (error) {
     res.status(500).json({
@@ -401,7 +401,25 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
 
     for (const f of formattedData) {
       try {
-        const [result] = await Faculty.create(f, ownerOpts(req));
+        const email = String(f.email || "").trim().toLowerCase();
+        const name = f.name?.trim();
+        const department = f.department?.trim() || null;
+        const existing = await Faculty.findByEmail(email);
+
+        if (existing) {
+          if (existing.is_active === false) {
+            await Faculty.reactivateById(existing.id, { name, department });
+            // Restored existing id — do not treat as a fresh insert for undo.
+          } else {
+            lastFacultyImport.skippedEmails.push(email);
+          }
+          continue;
+        }
+
+        const [result] = await Faculty.create(
+          { name, department, email },
+          await resolveOwnerOpts(req)
+        );
         const id = result?.insertId ?? result?.insertid;
         if (id != null) lastFacultyImport.insertedIds.push(id);
       } catch (err) {
@@ -411,7 +429,16 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
           err.original?.code === "23505" ||
           err.parent?.code === "23505";
         if (isDuplicate) {
-          lastFacultyImport.skippedEmails.push(f.email);
+          const email = String(f.email || "").trim().toLowerCase();
+          const existing = await Faculty.findByEmail(email);
+          if (existing && existing.is_active === false) {
+            await Faculty.reactivateById(existing.id, {
+              name: f.name?.trim(),
+              department: f.department?.trim() || null,
+            });
+          } else {
+            lastFacultyImport.skippedEmails.push(email || f.email);
+          }
         } else {
           throw err;
         }
@@ -569,7 +596,7 @@ router.post("/import-venues", sessionAuth, checkRole(["admin", "faculty_incharge
 
     for (const venue of formattedData) {
       try {
-        const venueId = await Venue.create(venue, ownerOpts(req));
+        const venueId = await Venue.create(venue, await resolveOwnerOpts(req));
         lastVenueImport.insertedIds.push(venueId);
         insertedCount++;
         
@@ -626,7 +653,7 @@ router.post("/undo-faculty-import", sessionAuth, checkRole(["admin", "faculty_in
       );
     }
 
-    await Faculty.deleteByIds(lastFacultyImport.insertedIds, ownerOpts(req));
+    await Faculty.deleteByIds(lastFacultyImport.insertedIds, await resolveOwnerOpts(req));
 
     const deletedCount = lastFacultyImport.insertedIds.length;
     lastFacultyImport = { insertedIds: [], skippedEmails: [] };
@@ -658,7 +685,7 @@ router.post("/undo-student-import", sessionAuth, checkRole(["admin", "faculty_in
       return;
     }
 
-    await Student.deleteByIds(lastStudentImport.insertedIds, ownerOpts(req));
+    await Student.deleteByIds(lastStudentImport.insertedIds, await resolveOwnerOpts(req));
 
     const count = lastStudentImport.insertedIds.length;
     lastStudentImport = { batchId: null, insertedIds: [], sessionId: null };
@@ -687,7 +714,7 @@ router.post("/undo-venue-import", sessionAuth, checkRole(["admin", "faculty_inch
       });
     }
 
-    await Venue.deleteByIds(lastVenueImport.insertedIds, ownerOpts(req));
+    await Venue.deleteByIds(lastVenueImport.insertedIds, await resolveOwnerOpts(req));
 
     const count = lastVenueImport.insertedIds.length;
     lastVenueImport = { insertedIds: [] };

@@ -11,6 +11,8 @@ const { installProductionConsoleSilence, logger } = require("./utils/logger");
 installProductionConsoleSilence();
 
 const ensureHodSchema = require("./utils/ensureHodSchema");
+const ensureHodWorkspaceScope = require("./utils/ensureHodWorkspaceScope");
+const ensureFacultyEmailIdentity = require("./utils/ensureFacultyEmailIdentity");
 const ensureAttendanceSchema = require("./utils/ensureAttendanceSchema");
 const ensureAttendanceLifecycleSchema = require("./utils/ensureAttendanceLifecycleSchema");
 const ensureHallNotificationSchema = require("./utils/ensureHallNotificationSchema");
@@ -138,6 +140,7 @@ async function start() {
       await connectWithRetry();
       await SessionStore.connect();
       await ensureHodSchema();
+      await ensureHodWorkspaceScope();
       await ensureAttendanceSchema();
       await ensureAttendanceLifecycleSchema();
       await ensureSeatingReportSchema();
@@ -154,6 +157,7 @@ async function start() {
       await ensureUuidSchema();
       await ensureTimetableSchema();
       await ensureFacultyActiveSchema();
+      await ensureFacultyEmailIdentity();
       break;
     } catch (e) {
       const isLast = attempt === STARTUP_MAX_ATTEMPTS;

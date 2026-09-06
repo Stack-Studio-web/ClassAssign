@@ -73,7 +73,8 @@ function buildStudentListQuery(filters = {}, opts = {}) {
     opts.role,
     opts.ownerUserId,
     opts.department,
-    "st."
+    "st.",
+    opts.ownerIds
   );
 
   const conditions = [];
@@ -200,7 +201,7 @@ const Student = {
       GET ALL
   =============================== */
   getAll: async (opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
     const [rows] = await db.query(`
       SELECT
         id,
@@ -225,7 +226,8 @@ const Student = {
       opts.role,
       opts.ownerUserId,
       opts.department,
-      "st."
+      "st.",
+      opts.ownerIds
     );
     const [rows] = await db.query(
       `SELECT COUNT(*) AS total FROM students st${ownerSql || " WHERE 1=1"}`,
@@ -401,7 +403,7 @@ const Student = {
       DELETE ONE
   =============================== */
   deleteById: async (id, opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
     const [result] = await db.query(
       `DELETE FROM students WHERE id = ?${ownerSql}`,
       [id, ...ownerParams]
@@ -423,7 +425,8 @@ const Student = {
     const { sql: ownerSql, params: ownerParams } = andClause(
       opts.role,
       opts.ownerUserId,
-      "st."
+      "st.",
+      opts.ownerIds
     );
 
     const escapedDept = dept.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -447,7 +450,7 @@ const Student = {
   },
 
   getCourses: async (opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
     const [rows] = await db.query(`
       SELECT DISTINCT 
         course_description AS courseDescription,
@@ -465,7 +468,7 @@ const Student = {
       GET BY COURSE
   =============================== */
   getByCourse: async (courseDescription, opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
     const [rows] = await db.query(`
       SELECT
         id,
@@ -489,7 +492,7 @@ const Student = {
       Example: department = "BCS" matches "23BCS090", "24BCS045"
   =============================== */
   getByDepartment: async (department, opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
     const [rows] = await db.query(`
       SELECT
         id,
@@ -512,7 +515,7 @@ const Student = {
       Gets students for a specific course that match department
   =============================== */
   getByCourseAndDepartment: async (courseCode, department, opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
     const [rows] = await db.query(`
       SELECT
         id,
@@ -536,7 +539,7 @@ const Student = {
   =============================== */
   deleteByIds: async (ids, opts = {}) => {
     if (!Array.isArray(ids) || ids.length === 0) return;
-    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
     await db.query(
       `DELETE FROM students WHERE id IN (?)${ownerSql}`,
       [ids, ...ownerParams]
@@ -547,7 +550,7 @@ const Student = {
       DELETE ALL (returns deleted count)
   =============================== */
   deleteAll: async (opts = {}, batchId = null) => {
-    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
     let sql = `DELETE FROM students${ownerSql || " WHERE 1=1"}`;
     const params = [...ownerParams];
     if (batchId != null) {
@@ -572,7 +575,9 @@ const Student = {
     const { sql: scopeSql, params: scopeParams } = studentScopeAnd(
       opts.role,
       opts.ownerUserId,
-      opts.department
+      opts.department,
+      "",
+      opts.ownerIds
     );
     const [rows] = await db.query(
       `SELECT LOWER(regn_no) AS regn, LOWER(course_description) AS course
@@ -587,7 +592,7 @@ const Student = {
   },
 
   getIdsInBatch: async (batchId, opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
     const [rows] = await db.query(
       `SELECT id FROM students WHERE batch_id = ?${ownerSql}`,
       [batchId, ...ownerParams]
@@ -600,7 +605,7 @@ const Student = {
   =============================== */
   deleteByCourseCode: async (courseCode, opts = {}, batchId = null) => {
     if (!courseCode || !String(courseCode).trim()) return 0;
-    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
     let sql = `DELETE FROM students WHERE course_description = ?${ownerSql}`;
     const params = [String(courseCode).trim(), ...ownerParams];
     if (batchId != null) {

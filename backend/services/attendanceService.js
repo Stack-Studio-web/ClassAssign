@@ -130,11 +130,8 @@ async function runQuery(executor, sql, params) {
 
 const AttendanceService = {
   findFacultyByUserEmail: async (email) => {
-    const [rows] = await db.query(
-      `SELECT id, name, email, department FROM faculty WHERE LOWER(email) = ?`,
-      [String(email || "").trim().toLowerCase()]
-    );
-    return rows[0] || null;
+    const Faculty = require("../models/Faculty");
+    return Faculty.findForLoginByEmail(email);
   },
 
   /**

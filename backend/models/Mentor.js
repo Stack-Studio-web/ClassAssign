@@ -342,7 +342,8 @@ const Mentor = {
       opts.role,
       opts.ownerUserId,
       opts.department,
-      "st."
+      "st.",
+      opts.ownerIds
     );
     const [rows] = await q(
       `SELECT st.id
@@ -445,7 +446,8 @@ const Mentor = {
       opts.role,
       opts.ownerUserId,
       opts.department,
-      "st."
+      "st.",
+      opts.ownerIds
     );
 
     const [countRows] = await db.query(
@@ -507,7 +509,8 @@ const Mentor = {
       opts.role,
       opts.ownerUserId,
       opts.department,
-      "st."
+      "st.",
+      opts.ownerIds
     );
 
     const [countRows] = await db.query(
@@ -562,7 +565,8 @@ const Mentor = {
       opts.role,
       opts.ownerUserId,
       opts.department,
-      "st."
+      "st.",
+      opts.ownerIds
     );
 
     const conditions = [];

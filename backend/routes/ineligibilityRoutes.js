@@ -1,4 +1,5 @@
 const express = require("express");
+const { resolveOwnerOpts } = require("../utils/rbac");
 const router = express.Router();
 const IneligibleStudent = require("../models/IneligibleStudent");
 const sessionAuth = require("../middleware/sessionAuth");
@@ -7,7 +8,6 @@ const auditLogger = require("../middleware/auditLogger");
 const { resolveEntity } = require("../middleware/resolvePublicId");
 const { TABLE } = require("../utils/publicId");
 
-const ownerOpts = (req) => ({ ownerUserId: req.user?.id, role: req.user?.role });
 const READ_ROLES = ["admin", "faculty_incharge", "hod"];
 
 router.get(
@@ -67,7 +67,7 @@ router.get(
         examType,
         decodeURIComponent(courseCode),
         dateOnly,
-        ownerOpts(req)
+        await resolveOwnerOpts(req)
       );
       res.json(ineligible);
     } catch (err) {
@@ -115,7 +115,7 @@ router.post(
         dateOnly,
         ineligibleStudents,
         req.user.id,
-        ownerOpts(req)
+        await resolveOwnerOpts(req)
       );
 
       res.json({
@@ -142,7 +142,7 @@ router.delete(
   auditLogger("REMOVE_INELIGIBILITY", "IneligibleStudent"),
   async (req, res) => {
     try {
-      const deleted = await IneligibleStudent.deleteById(req.internalId, ownerOpts(req));
+      const deleted = await IneligibleStudent.deleteById(req.internalId, await resolveOwnerOpts(req));
 
       if (!deleted) {
         return res.status(404).json({ error: "Record not found" });

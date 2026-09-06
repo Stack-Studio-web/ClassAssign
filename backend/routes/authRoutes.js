@@ -19,6 +19,7 @@ const {
 } = require("../utils/authHelpers");
 const { clearSessionCookie, isMobileClient } = require("../utils/cookieAuth");
 const SessionStore = require("../utils/sessionStore");
+const { resolveWorkspaceSessionFields } = require("../utils/workspaceScope");
 
 router.post("/login", loginLimiter, async (req, res) => {
   try {
@@ -97,6 +98,8 @@ router.post("/login", loginLimiter, async (req, res) => {
           ? "/users"
           : "/allotment";
 
+    const workspace = await resolveWorkspaceSessionFields(user);
+
     const body = {
       success: true,
       message: "Login successful",
@@ -110,6 +113,7 @@ router.post("/login", loginLimiter, async (req, res) => {
         mustChangePassword,
         hasAvatar: false,
         avatarUrl: null,
+        workspaceId: workspace.workspaceId,
       },
       redirectTo,
     };
@@ -123,6 +127,8 @@ router.post("/login", loginLimiter, async (req, res) => {
       department: user.department,
       mustChangePassword,
       hasAvatar: false,
+      workspaceId: workspace.workspaceId,
+      createdByHodId: workspace.createdByHodId,
     });
 
     return attachAuthResponse(res, req, token, body);
@@ -144,6 +150,7 @@ router.post("/verify", sessionAuth, (req, res) => {
       department: req.user.department,
       hasAvatar,
       avatarUrl: hasAvatar ? "/api/auth/me/avatar" : null,
+      workspaceId: req.user.workspaceId ?? req.session?.workspaceId ?? null,
     },
   });
 });
@@ -216,6 +223,7 @@ router.get("/session-info", sessionAuth, (req, res) => {
       mustChangePassword: req.session?.mustChangePassword ?? false,
       hasAvatar,
       avatarUrl: hasAvatar ? "/api/auth/me/avatar" : null,
+      workspaceId: req.user.workspaceId ?? req.session?.workspaceId ?? null,
     },
   });
 });
@@ -231,6 +239,7 @@ router.get("/me", sessionAuth, (req, res) => {
     mustChangePassword: req.session?.mustChangePassword ?? false,
     hasAvatar,
     avatarUrl: hasAvatar ? "/api/auth/me/avatar" : null,
+    workspaceId: req.user.workspaceId ?? req.session?.workspaceId ?? null,
   });
 });
 

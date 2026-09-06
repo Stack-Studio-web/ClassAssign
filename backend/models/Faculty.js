@@ -1,6 +1,11 @@
 // Class/backend/models/Faculty.js
 const db = require("../config/db");
-const { andClause, whereClause, whereClauseForHod, andClauseForHod, insertField } = require("../utils/ownerFilter");
+const { ownerWhereFromOpts, ownerAndFromOpts, insertField } = require("../utils/ownerFilter");
+const {
+  normalizeFacultyEmail,
+  pickCanonicalFaculty,
+  pickFacultyForLogin,
+} = require("../utils/facultyIdentity");
 const {
   ATTENDANCE_DONE_SQL,
   REPORT_DONE_SQL,
@@ -55,27 +60,80 @@ const ACTIVE_ONLY_SQL = `COALESCE(is_active, TRUE) = TRUE`;
 const ACTIVE_ONLY_F_SQL = `COALESCE(f.is_active, TRUE) = TRUE`;
 
 const Faculty = {
-  findByEmail: async (email) => {
+  /**
+   * All faculty rows matching email (case-insensitive), with allotment/seating counts.
+   * Used to pick a stable canonical id when soft-delete + re-add created duplicates.
+   */
+  findAllByEmail: async (email) => {
+    const normalized = normalizeFacultyEmail(email);
+    if (!normalized) return [];
     const [rows] = await db.query(
-      `SELECT id, email, COALESCE(is_active, TRUE) AS is_active
-       FROM faculty WHERE LOWER(email) = ?`,
-      [email.trim().toLowerCase()]
+      `SELECT
+         f.id,
+         f.public_uuid,
+         f.name,
+         f.email,
+         f.department,
+         COALESCE(f.is_active, TRUE) AS is_active,
+         f.deleted_at,
+         (
+           SELECT COUNT(*)::int FROM faculty_assignments fa WHERE fa.faculty_id = f.id
+         ) AS assign_count,
+         (
+           SELECT COUNT(*)::int FROM seating_plan_venue_faculty spvf WHERE spvf.faculty_id = f.id
+         ) AS seating_count
+       FROM faculty f
+       WHERE LOWER(TRIM(f.email)) = ?
+       ORDER BY f.id ASC`,
+      [normalized]
     );
-    return rows[0];
+    return rows || [];
+  },
+
+  /** Canonical row for an email (active+history preferred). Includes inactive. */
+  findByEmail: async (email) => {
+    const rows = await Faculty.findAllByEmail(email);
+    return pickCanonicalFaculty(rows);
+  },
+
+  /** Prefer active row with allotment history — for faculty portal / MS login binding. */
+  findForLoginByEmail: async (email) => {
+    const rows = await Faculty.findAllByEmail(email);
+    return pickFacultyForLogin(rows);
+  },
+
+  /**
+   * Ensure an active faculty exists for this email without creating a second identity.
+   * Reactivates the canonical (history-rich) row when inactive.
+   */
+  ensureActiveByEmail: async (email, { name, department } = {}) => {
+    const existing = await Faculty.findByEmail(email);
+    if (!existing) return null;
+    if (!existing.is_active) {
+      await Faculty.reactivateById(existing.id, { name, department });
+    } else if (name || department != null) {
+      await db.query(
+        `UPDATE faculty
+         SET name = COALESCE(?, name),
+             department = COALESCE(?, department)
+         WHERE id = ?`,
+        [name || null, department ?? null, existing.id]
+      );
+    }
+    return Faculty.findByEmail(email);
   },
 
   create: async ({ name, department, email }, opts = {}) => {
     const { col, val } = insertField(opts.role, opts.ownerUserId);
-    const vals = [name, department, email];
+    const normalizedEmail = normalizeFacultyEmail(email);
+    const vals = [name, department, normalizedEmail];
     if (val != null) vals.push(val);
     const sql = `INSERT INTO faculty (name, department, email${col}) VALUES (?, ?, ?${val != null ? ", ?" : ""})`;
     return db.query(sql, vals);
   },
 
   getAll: async (opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
-      ? whereClauseForHod(opts.department)
-      : whereClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = ownerWhereFromOpts(opts);
     const [rows] = await db.query(
       `SELECT * FROM faculty
        ${ownerSql || "WHERE 1=1"}
@@ -87,9 +145,7 @@ const Faculty = {
   },
 
   count: async (opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
-      ? whereClauseForHod(opts.department)
-      : whereClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = ownerWhereFromOpts(opts);
     const [rows] = await db.query(
       `SELECT COUNT(*) AS totalFaculty FROM faculty
        ${ownerSql || "WHERE 1=1"}
@@ -103,9 +159,7 @@ const Faculty = {
   },
 
   updateMaxClassrooms: async (id, max, opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
-      ? andClauseForHod(opts.department)
-      : andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = ownerAndFromOpts(opts);
     const [result] = await db.query(
       `UPDATE faculty SET max_classrooms = ? WHERE id = ? AND ${ACTIVE_ONLY_SQL}${ownerSql}`,
       [max, id, ...ownerParams]
@@ -114,9 +168,7 @@ const Faculty = {
   },
 
   updateAvailability: async (id, isAvailable, opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
-      ? andClauseForHod(opts.department)
-      : andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = ownerAndFromOpts(opts);
     const [match] = await db.query(
       `SELECT id FROM faculty WHERE id = ? AND ${ACTIVE_ONLY_SQL}${ownerSql}`,
       [id, ...ownerParams]
@@ -146,9 +198,7 @@ const Faculty = {
       /* ignore if concurrent / permission — UPDATE below will surface real errors */
     }
 
-    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
-      ? andClauseForHod(opts.department)
-      : andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = ownerAndFromOpts(opts);
 
     const [match] = await db.query(
       `SELECT id, email FROM faculty
@@ -192,7 +242,7 @@ const Faculty = {
     }
   },
 
-  /** Reactivate a soft-deleted faculty (e.g. re-add same email). */
+  /** Reactivate a soft-deleted faculty (e.g. re-add same email). Preserves faculty.id. */
   reactivateById: async (id, { name, department } = {}) => {
     await db.query(
       `UPDATE faculty
@@ -200,7 +250,8 @@ const Faculty = {
            is_available = TRUE,
            deleted_at = NULL,
            name = COALESCE(?, name),
-           department = COALESCE(?, department)
+           department = COALESCE(?, department),
+           email = LOWER(TRIM(email))
        WHERE id = ?`,
       [name || null, department ?? null, id]
     );
@@ -225,9 +276,7 @@ const Faculty = {
   },
 
   deleteAll: async (opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
-      ? whereClauseForHod(opts.department)
-      : whereClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = ownerWhereFromOpts(opts);
     // Soft-delete all in scope (preserve history)
     return db.query(
       `UPDATE faculty
@@ -407,9 +456,7 @@ const Faculty = {
        Invariant  = max_classrooms = Allocated + Remaining (when Allocated ≤ max)
   ===================================== */
   getAllWithAllocation: async (opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
-      ? whereClauseForHod(opts.department, "f.")
-      : whereClause(opts.role, opts.ownerUserId, "f.");
+    const { sql: ownerSql, params: ownerParams } = ownerWhereFromOpts(opts, "f.");
     const [rows] = await db.query(
       `
       SELECT

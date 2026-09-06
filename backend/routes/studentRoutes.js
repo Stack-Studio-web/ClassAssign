@@ -14,7 +14,7 @@ const { resolveEntity } = require("../middleware/resolvePublicId");
 const { resolveInternalId } = require("../utils/publicId");
 const { TABLE } = require("../utils/publicId");
 
-const { ownerOpts } = require("../utils/rbac");
+const { resolveOwnerOpts } = require("../utils/rbac");
 const {
   assertSemesterMutableByBatchInternalId,
   assertSemesterMutableByStudentInternalId,
@@ -27,7 +27,7 @@ async function resolveAccessibleBatchId(batchUuid, req, res) {
     Api.notFound(res, "Batch not found");
     return null;
   }
-  if (!Batch.canAccess(batchRow, ownerOpts(req))) {
+  if (!Batch.canAccess(batchRow, await resolveOwnerOpts(req))) {
     Api.forbidden(res, "You do not have access to this batch.");
     return null;
   }
@@ -75,7 +75,7 @@ router.get("/", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), as
       filters.createdByUserId = ownerUserId;
     }
 
-    const result = await Student.listPaginated(filters, ownerOpts(req));
+    const result = await Student.listPaginated(filters, await resolveOwnerOpts(req));
     return Api.success(res, "Students", result);
   } catch (error) {
     console.error("❌ Error fetching students:", error);
@@ -93,7 +93,7 @@ router.get("/filter-options", sessionAuth, checkRole(["admin", "faculty_incharge
       if (!batchInternalId) return Api.notFound(res, "Batch not found");
       filters.batchId = batchInternalId;
     }
-    const options = await Student.getFilterOptions(ownerOpts(req), filters);
+    const options = await Student.getFilterOptions(await resolveOwnerOpts(req), filters);
     return Api.success(res, "Student filter options", options);
   } catch (error) {
     return Api.fromError(res, error, "Failed to load filter options.");
@@ -110,7 +110,7 @@ router.get("/course-stats", sessionAuth, checkRole(["admin", "faculty_incharge",
       if (!batchInternalId) return Api.notFound(res, "Batch not found");
       listFilters.batchId = batchInternalId;
     }
-    const result = await Student.getCourseStats(ownerOpts(req), {
+    const result = await Student.getCourseStats(await resolveOwnerOpts(req), {
       page: req.query.page,
       limit: req.query.limit,
     }, listFilters);
@@ -131,8 +131,8 @@ router.get("/stats", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]
       filters.batchId = batchInternalId;
     }
     const totalStudents = filters.batchId
-      ? await Student.countInBatch(filters.batchId, ownerOpts(req))
-      : await Student.count(ownerOpts(req));
+      ? await Student.countInBatch(filters.batchId, await resolveOwnerOpts(req))
+      : await Student.count(await resolveOwnerOpts(req));
     res.status(200).json({ totalStudents });
   } catch (error) {
     console.error("❌ Error fetching student stats:", error);
@@ -154,7 +154,7 @@ router.get(
       if (!department) {
         return Api.validationError(res, "Department is required");
       }
-      const batches = await Student.listBatchesByDepartment(department, ownerOpts(req));
+      const batches = await Student.listBatchesByDepartment(department, await resolveOwnerOpts(req));
       return Api.success(res, "Batches", { batches });
     } catch (err) {
       return Api.fromError(res, err, "Failed to load batches.");
@@ -166,7 +166,7 @@ router.get(
 router.get("/courses", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), async (req, res) => {
   try {
     console.log('📚 GET /api/students/courses - Fetching courses...');
-    const courses = await Student.getCourses(ownerOpts(req));
+    const courses = await Student.getCourses(await resolveOwnerOpts(req));
     console.log(`✅ Found ${courses.length} unique courses`);
     res.status(200).json(courses);
   } catch (err) {
@@ -184,7 +184,7 @@ router.get("/course/:courseCode", sessionAuth, checkRole(["admin", "faculty_inch
     const courseCode = decodeURIComponent(req.params.courseCode);
     console.log(`📚 GET /api/students/course/${courseCode}`);
     
-    const students = await Student.getByCourse(courseCode, ownerOpts(req));
+    const students = await Student.getByCourse(courseCode, await resolveOwnerOpts(req));
     console.log(`✅ Found ${students.length} students for course ${courseCode}`);
     
     res.status(200).json(students);
@@ -203,7 +203,7 @@ router.get("/department/:dept", sessionAuth, checkRole(["admin", "faculty_inchar
     const department = req.params.dept.toUpperCase();
     console.log(`🏢 GET /api/students/department/${department}`);
     
-    const students = await Student.getByDepartment(department, ownerOpts(req));
+    const students = await Student.getByDepartment(department, await resolveOwnerOpts(req));
     console.log(`✅ Found ${students.length} students for department ${department}`);
     
     res.status(200).json(students);
@@ -224,7 +224,7 @@ router.get("/course-dept/:courseCode/:dept", sessionAuth, checkRole(["admin", "f
     
     console.log(`📋 GET /api/students/course-dept/${courseCode}/${department}`);
     
-    const students = await Student.getByCourseAndDepartment(courseCode, department, ownerOpts(req));
+    const students = await Student.getByCourseAndDepartment(courseCode, department, await resolveOwnerOpts(req));
     console.log(`✅ Found ${students.length} students`);
     
     res.status(200).json(students);
@@ -240,7 +240,7 @@ router.get("/course-dept/:courseCode/:dept", sessionAuth, checkRole(["admin", "f
 // ✅ DELETE all students
 router.delete("/all", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
   try {
-    const opts = ownerOpts(req);
+    const opts = await resolveOwnerOpts(req);
     const batchInternalId = req.query.batchId
       ? await resolveAccessibleBatchId(req.query.batchId, req, res)
       : null;
@@ -285,8 +285,13 @@ router.delete("/by-course/:courseCode", sessionAuth, checkRole(["admin", "facult
       });
     }
     if (!(await assertSemesterMutableByBatchInternalId(batchInternalId, res))) return;
-    const opts = ownerOpts(req);
-    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    const opts = await resolveOwnerOpts(req);
+    const { sql: ownerSql, params: ownerParams } = andClause(
+      opts.role,
+      opts.ownerUserId,
+      "",
+      opts.ownerIds
+    );
     const [rows] = await db.query(
       `SELECT id FROM students WHERE course_description = ? AND batch_id = ?${ownerSql}`,
       [String(courseCode).trim(), batchInternalId, ...ownerParams]
@@ -324,7 +329,7 @@ router.delete("/:uuid", sessionAuth, checkRole(["admin", "faculty_incharge"]), r
       return Api.notFound(res, "Student not found");
     }
 
-    const deleted = await Student.deleteById(studentId, ownerOpts(req));
+    const deleted = await Student.deleteById(studentId, await resolveOwnerOpts(req));
     if (!deleted) {
       return Api.notFound(res, "Student not found or not allowed");
     }

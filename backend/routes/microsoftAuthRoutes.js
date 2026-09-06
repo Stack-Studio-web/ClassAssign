@@ -52,7 +52,7 @@ async function cacheProfilePhotoForSession(sessionToken, accessToken) {
   }
 }
 
-function userPayloadFromSession(user, hasAvatar) {
+function userPayloadFromSession(user, hasAvatar, workspaceId = null) {
   return {
     uuid: user.public_uuid ?? user.publicuuid ?? user.uuid,
     username: user.username ?? user.name,
@@ -63,6 +63,7 @@ function userPayloadFromSession(user, hasAvatar) {
     hasAvatar: !!hasAvatar,
     // Same-origin cookie-authenticated endpoint — no token in URL
     avatarUrl: hasAvatar ? "/api/auth/me/avatar" : null,
+    workspaceId: workspaceId || null,
   };
 }
 
@@ -127,6 +128,9 @@ async function completeMicrosoftAuth(req, res, redirectUri, stateData) {
     };
   }
 
+  const { resolveWorkspaceSessionFields } = require("../utils/workspaceScope");
+  const workspace = await resolveWorkspaceSessionFields(user);
+
   const token = await createSession(res, req, {
     userId: user.id,
     publicUuid: user.public_uuid ?? user.publicuuid,
@@ -136,6 +140,8 @@ async function completeMicrosoftAuth(req, res, redirectUri, stateData) {
     department: user.department,
     mustChangePassword: !!(user.must_change_password ?? user.mustchangepassword),
     hasAvatar: false,
+    workspaceId: workspace.workspaceId,
+    createdByHodId: workspace.createdByHodId,
   });
 
   const hasAvatar = await cacheProfilePhotoForSession(token, accessToken);
@@ -149,12 +155,14 @@ async function completeMicrosoftAuth(req, res, redirectUri, stateData) {
       department: user.department,
       mustChangePassword: !!(user.must_change_password ?? user.mustchangepassword),
       hasAvatar: true,
+      workspaceId: workspace.workspaceId,
+      createdByHodId: workspace.createdByHodId,
     });
   }
 
   return {
     token,
-    user: userPayloadFromSession(user, hasAvatar),
+    user: userPayloadFromSession(user, hasAvatar, workspace.workspaceId),
     platform,
     portal: stateData.portal || "admin",
   };

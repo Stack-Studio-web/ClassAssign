@@ -72,13 +72,16 @@ const Batch = {
     const { sql: scopeSql, params: scopeParams } = batchScopeAnd(
       opts.role,
       opts.ownerUserId,
-      opts.department
+      opts.department,
+      "b.",
+      opts.ownerIds
     );
     const countExpr = studentCountInBatchExpr(
       opts.role,
       opts.ownerUserId,
       opts.department,
-      "b.id"
+      "b.id",
+      opts.ownerIds
     );
 
     const [rows] = await db.query(
@@ -226,6 +229,9 @@ const Batch = {
   canAccess: (batchRow, opts = {}) => {
     if (!batchRow) return false;
     if (opts.role === "admin") return true;
+    if (opts.ownerIds && Array.isArray(opts.ownerIds) && opts.ownerIds.length > 0) {
+      return opts.ownerIds.map(Number).includes(Number(batchRow.owner_user_id));
+    }
     if (opts.role === "hod") {
       if (!opts.department) return false;
       if (!batchRow.department) return false;
@@ -243,7 +249,8 @@ const Batch = {
       opts?.role ?? "admin",
       opts?.ownerUserId,
       opts?.department,
-      "b.id"
+      "b.id",
+      opts?.ownerIds
     );
     const [rows] = await db.query(
       `SELECT b.id, b.public_uuid, b.name, b.code, b.description, b.status, b.created_at,
@@ -268,7 +275,9 @@ const Batch = {
     const { sql: scopeSql, params: scopeParams } = studentScopeAnd(
       opts.role,
       opts.ownerUserId,
-      opts.department
+      opts.department,
+      "",
+      opts.ownerIds
     );
     const [rows] = await db.query(
       `SELECT COUNT(*)::int AS total FROM students WHERE batch_id = ?${scopeSql}`,
@@ -293,7 +302,12 @@ const Batch = {
 
   deleteStudentsInBatch: async (batchId, opts = {}) => {
     const { andClause } = require("../utils/ownerFilter");
-    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = andClause(
+      opts.role,
+      opts.ownerUserId,
+      "",
+      opts.ownerIds
+    );
     const [result] = await db.query(
       `DELETE FROM students WHERE batch_id = ?${ownerSql}`,
       [batchId, ...ownerParams]

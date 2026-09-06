@@ -95,16 +95,9 @@ const User = {
     }
 
     // Active faculty authorized in faculty table but missing users login row.
-    const [facultyRows] = await db.query(
-      `SELECT id, name, email, department
-       FROM faculty
-       WHERE LOWER(TRIM(email)) = ?
-         AND COALESCE(is_active, TRUE) = TRUE
-       LIMIT 1`,
-      [normalizedEmail]
-    );
-    const faculty = facultyRows[0];
-    if (!faculty) return null;
+    const Faculty = require("./Faculty");
+    const faculty = await Faculty.findForLoginByEmail(normalizedEmail);
+    if (!faculty || faculty.is_active === false) return null;
 
     const facultyRole = await Role.getByName("faculty");
     if (!facultyRole) return null;
@@ -276,11 +269,69 @@ const User = {
 
   /** For HoD: return [hodUserId, ...user ids of faculty incharge created by this HoD] for scoping seating/report */
   getOwnerIdsForHod: async (hodUserId) => {
+    if (!hodUserId) return [];
     const [rows] = await db.query(
       `SELECT id FROM users WHERE id = ? OR created_by_hod_id = ?`,
       [hodUserId, hodUserId]
     );
     return (rows || []).map((r) => r.id);
+  },
+
+  /**
+   * Resolve HOD internal id that owns the shared workspace.
+   * HOD → self; faculty_incharge → created_by_hod_id; otherwise null.
+   */
+  getWorkspaceHodId: async (userLike = {}) => {
+    const role = userLike.role || userLike.role_name || userLike.rolename || null;
+    const userId = userLike.id ?? userLike.userId ?? null;
+    if (!userId) return null;
+    if (role === "hod") return Number(userId);
+
+    if (role === "faculty_incharge") {
+      let hodId = userLike.created_by_hod_id ?? userLike.createdByHodId ?? null;
+      if (hodId == null) {
+        const [rows] = await db.query(
+          `SELECT created_by_hod_id FROM users WHERE id = ?`,
+          [userId]
+        );
+        hodId = rows[0]?.created_by_hod_id ?? rows[0]?.createdbyhodid ?? null;
+      }
+      return hodId != null ? Number(hodId) : null;
+    }
+    return null;
+  },
+
+  /**
+   * Owner user ids that share application data for this user.
+   * admin → null (no owner filter)
+   * hod / FI under HOD → getOwnerIdsForHod(hodId)
+   * FI without HOD → [self]
+   */
+  getWorkspaceOwnerIds: async (userLike = {}) => {
+    const role = userLike.role || userLike.role_name || userLike.rolename || null;
+    const userId = userLike.id ?? userLike.userId ?? null;
+    if (role === "admin") return null;
+    if (!userId) return [];
+
+    const hodId = await User.getWorkspaceHodId(userLike);
+    if (hodId) {
+      return User.getOwnerIdsForHod(hodId);
+    }
+    if (role === "faculty_incharge") {
+      return [Number(userId)];
+    }
+    return [];
+  },
+
+  /** Public UUID of the workspace HOD (for session /auth/me). */
+  getWorkspacePublicUuid: async (userLike = {}) => {
+    const hodId = await User.getWorkspaceHodId(userLike);
+    if (!hodId) return null;
+    const [rows] = await db.query(
+      `SELECT public_uuid FROM users WHERE id = ?`,
+      [hodId]
+    );
+    return rows[0]?.public_uuid ?? rows[0]?.publicuuid ?? null;
   },
 
   /* Get all HoDs (admin only) - users with role hod */

@@ -1,5 +1,6 @@
 // backend/routes/timetableRoutes.js - ✅ FIXED DATE TIMEZONE ISSUE
 const express = require("express");
+const { resolveOwnerOpts } = require("../utils/rbac");
 const router = express.Router();
 const multer = require("multer");
 const xlsx = require("xlsx");
@@ -14,12 +15,6 @@ const checkRole = require("../middleware/checkRole");
 const auditLogger = require("../middleware/auditLogger");
 
 const upload = multer({ dest: "uploads/" });
-const ownerOpts = (req) => ({
-  ownerUserId: req.user?.id,
-  role: req.user?.role,
-  department: req.user?.department,
-});
-
 /* =====================================================
     GET: ALL TIMETABLE SCHEDULES
     Roles: admin, faculty_incharge, hod (hod sees own department only)
@@ -29,7 +24,7 @@ router.get("/",
   checkRole(['admin', 'faculty_incharge', 'hod']),
   async (req, res) => {
     try {
-      const schedules = await Timetable.getAll(ownerOpts(req));
+      const schedules = await Timetable.getAll(await resolveOwnerOpts(req));
       res.json(schedules);
     } catch (err) {
       console.error("FETCH SCHEDULES ERROR:", err);
@@ -67,7 +62,7 @@ router.get("/by-exam-details",
         startTime,
         endTime,
         session
-      }, ownerOpts(req));
+      }, await resolveOwnerOpts(req));
 
       console.log(`✅ Found ${courses.length} course(s) matching exam details`);
 
@@ -141,7 +136,7 @@ router.post("/",
         examType,
         batch: batchCode,
         batchId: resolvedBatchId
-      }, ownerOpts(req));
+      }, await resolveOwnerOpts(req));
 
       if (exists) {
         return res.status(409).json({
@@ -161,7 +156,7 @@ router.post("/",
         examType,
         batch: batchCode || null,
         batchId: resolvedBatchId
-      }, ownerOpts(req));
+      }, await resolveOwnerOpts(req));
 
       const uuid = await getPublicUuid(TABLE.timetable, id);
 
@@ -327,7 +322,7 @@ router.post("/bulk-import",
             department: schedule.department,
             examType: schedule.examType,
             batchId: null
-          }, ownerOpts(req));
+          }, await resolveOwnerOpts(req));
 
           if (exists) {
             skipped++;
@@ -335,7 +330,7 @@ router.post("/bulk-import",
             continue;
           }
 
-          await Timetable.create(schedule, ownerOpts(req));
+          await Timetable.create(schedule, await resolveOwnerOpts(req));
           inserted++;
 
         } catch (err) {
@@ -386,7 +381,7 @@ router.delete("/:uuid",
         return Api.notFound(res, "Schedule not found");
       }
 
-      const deleted = await Timetable.deleteById(req.internalId, ownerOpts(req));
+      const deleted = await Timetable.deleteById(req.internalId, await resolveOwnerOpts(req));
       if (!deleted) {
         return Api.notFound(res, "Schedule not found");
       }
@@ -425,7 +420,7 @@ router.post("/bulk-delete",
         internalIds.push(internalId);
       }
 
-      const deleted = await Timetable.deleteByIds(internalIds, ownerOpts(req));
+      const deleted = await Timetable.deleteByIds(internalIds, await resolveOwnerOpts(req));
 
       res.json({
         message: `Deleted ${deleted} schedule(s)`,

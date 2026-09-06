@@ -90,7 +90,7 @@ const Venue = {
   },
 
   getAll: async (opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
     const [rawVenues] = await db.query(`
       SELECT
         id,
@@ -179,7 +179,7 @@ const Venue = {
 
   // ✅ NEW: DELETE BY IDS (For Undo Import)
   setAvailability: async (id, isAvailable, opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
     const [match] = await db.query(
       `SELECT id FROM venues WHERE id = ?${ownerSql}`,
       [id, ...ownerParams]
@@ -194,7 +194,7 @@ const Venue = {
 
   deleteByIds: async (ids, opts = {}) => {
     if (!Array.isArray(ids) || ids.length === 0) return;
-    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
     
     const conn = await db.getConnection();
     try {

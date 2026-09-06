@@ -84,7 +84,7 @@ const IneligibleStudent = {
       GET INELIGIBLE STUDENTS BY EXAM/COURSE/DATE
   =============================== */
   getIneligibleStudents: async (examType, courseCode, examDate, opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
     const [rows] = await db.query(`
       SELECT
         id,
@@ -111,7 +111,7 @@ const IneligibleStudent = {
       GET ALL INELIGIBLE STUDENTS
   =============================== */
   getAllIneligible: async (opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId, "i.");
+    const { sql: ownerSql, params: ownerParams } = whereClause(opts.role, opts.ownerUserId, "i.", opts.ownerIds);
     const [rows] = await db.query(`
       SELECT
         i.id,
@@ -142,7 +142,7 @@ const IneligibleStudent = {
       await conn.beginTransaction();
 
       const ownerId = opts.ownerUserId ?? markedBy;
-      const { sql: ownerDelSql, params: ownerDelParams } = andClause(opts.role, opts.ownerUserId);
+      const { sql: ownerDelSql, params: ownerDelParams } = andClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
 
       // Remove existing entries for this exam/course/date (scoped by owner)
       await conn.query(
@@ -203,7 +203,7 @@ const IneligibleStudent = {
       DELETE BY ID
   =============================== */
   deleteById: async (id, opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
     const [result] = await db.query(
       `DELETE FROM ineligible_students WHERE id = ?${ownerSql}`,
       [id, ...ownerParams]

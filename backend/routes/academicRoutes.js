@@ -7,7 +7,7 @@ const checkRole = require("../middleware/checkRole");
 const requirePermission = require("../middleware/requirePermission");
 const Api = require("../utils/apiResponse");
 const { resolveInternalId } = require("../utils/publicId");
-const { PERMISSIONS, ownerOpts, canMutateOwnedRecord } = require("../utils/rbac");
+const { PERMISSIONS, resolveOwnerOpts } = require("../utils/rbac");
 const {
   assertSemesterMutableBySemesterInternalId,
   assertSemesterMutableByBatchInternalId,
@@ -39,7 +39,7 @@ router.get(
   requirePermission(PERMISSIONS.ACADEMIC_YEAR_VIEW),
   async (req, res) => {
     try {
-      const years = await AcademicYear.list(ownerOpts(req));
+      const years = await AcademicYear.list(await resolveOwnerOpts(req));
       return Api.success(res, "Academic years", { years });
     } catch (err) {
       return Api.fromError(res, err, "Failed to load academic years.");
@@ -62,7 +62,7 @@ router.post(
           startYear: startYear ?? parsed.startYear,
           endYear: endYear ?? parsed.endYear,
         },
-        ownerOpts(req)
+        await resolveOwnerOpts(req)
       );
       return Api.success(res, "Academic year created", { year });
     } catch (err) {
@@ -240,7 +240,7 @@ router.get(
     try {
       const sem = await Semester.getInternalIdByUuid(req.params.semesterUuid);
       if (!sem) return Api.notFound(res, "Semester not found");
-      const batches = await Batch.listBySemesterId(sem.id, ownerOpts(req));
+      const batches = await Batch.listBySemesterId(sem.id, await resolveOwnerOpts(req));
       return Api.success(res, "Batches", { batches });
     } catch (err) {
       return Api.fromError(res, err, "Failed to load batches.");
@@ -258,7 +258,7 @@ router.post(
       const sem = await Semester.getInternalIdByUuid(req.params.semesterUuid);
       if (!sem) return Api.notFound(res, "Semester not found");
       if (!(await assertSemesterMutableBySemesterInternalId(sem.id, res))) return;
-      const opts = ownerOpts(req);
+      const opts = await resolveOwnerOpts(req);
       const batch = await Batch.create(
         {
           semesterId: sem.id,
@@ -287,7 +287,7 @@ router.patch(
     try {
       const row = await Batch.getInternalIdByUuid(req.params.uuid);
       if (!row) return Api.notFound(res, "Batch not found");
-      const opts = ownerOpts(req);
+      const opts = await resolveOwnerOpts(req);
       if (!Batch.canAccess(row, opts)) {
         return Api.forbidden(res, "You can only update your own batches.");
       }
@@ -341,7 +341,7 @@ router.get(
         return Api.forbidden(res, "You can only view your own department batches.");
       }
 
-      const batches = await Batch.listByDepartment(department, ownerOpts(req));
+      const batches = await Batch.listByDepartment(department, await resolveOwnerOpts(req));
       return Api.success(res, "Batches", { batches });
     } catch (err) {
       return Api.fromError(res, err, "Failed to load batches.");
@@ -358,7 +358,7 @@ router.get(
     try {
       const row = await Batch.getInternalIdByUuid(req.params.uuid);
       if (!row) return Api.notFound(res, "Batch not found");
-      const opts = ownerOpts(req);
+      const opts = await resolveOwnerOpts(req);
       if (!Batch.canAccess(row, opts)) {
         return Api.forbidden(res, "You do not have access to this batch.");
       }
@@ -379,7 +379,7 @@ router.delete(
     try {
       const row = await Batch.getInternalIdByUuid(req.params.uuid);
       if (!row) return Api.notFound(res, "Batch not found");
-      const opts = ownerOpts(req);
+      const opts = await resolveOwnerOpts(req);
       if (!Batch.canAccess(row, opts)) {
         return Api.forbidden(res, "You can only delete your own batches.");
       }

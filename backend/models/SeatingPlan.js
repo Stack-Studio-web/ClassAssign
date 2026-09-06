@@ -1,6 +1,24 @@
 // Class/backend/models/SeatingPlan.js
 const db = require("../config/db");
 const { andClause, whereClause, insertField } = require("../utils/ownerFilter");
+
+function resolveSeatingOwnerScope(opts = {}, lead = "WHERE") {
+  const ids =
+    (opts.ownerIds && opts.ownerIds.length > 0 && opts.ownerIds) ||
+    (opts.hodAllowedOwnerIds && opts.hodAllowedOwnerIds.length > 0 && opts.hodAllowedOwnerIds) ||
+    null;
+  if (ids) {
+    const placeholders = ids.map(() => "?").join(",");
+    const sql =
+      lead === "WHERE"
+        ? ` WHERE owner_user_id IN (${placeholders})`
+        : ` AND owner_user_id IN (${placeholders})`;
+    return { sql, params: ids };
+  }
+  return lead === "WHERE"
+    ? whereClause(opts.role, opts.ownerUserId, "", opts.ownerIds)
+    : andClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
+}
 const {
   normalizeBenchConfig,
   flattenArrangementForStorage,
@@ -196,17 +214,7 @@ const SeatingPlan = {
       GET ALL SEATING PLANS
   =============================== */
   getAllPlans: async (opts = {}) => {
-    let ownerSql = "";
-    let ownerParams = [];
-    if (opts.hodAllowedOwnerIds && opts.hodAllowedOwnerIds.length > 0) {
-      const placeholders = opts.hodAllowedOwnerIds.map(() => "?").join(",");
-      ownerSql = ` WHERE owner_user_id IN (${placeholders})`;
-      ownerParams = opts.hodAllowedOwnerIds;
-    } else {
-      const clause = whereClause(opts.role, opts.ownerUserId);
-      ownerSql = clause.sql;
-      ownerParams = clause.params;
-    }
+    const { sql: ownerSql, params: ownerParams } = resolveSeatingOwnerScope(opts, "WHERE");
 
     // Always start with a WHERE (admins have empty ownerSql), then AND status filters.
     const baseWhere = ownerSql || " WHERE 1=1";
@@ -354,17 +362,7 @@ const SeatingPlan = {
       GET SINGLE PLAN BY ID
   =============================== */
   getPlanById: async (planId, opts = {}) => {
-    let ownerSql = "";
-    let ownerParams = [];
-    if (opts.hodAllowedOwnerIds && opts.hodAllowedOwnerIds.length > 0) {
-      const placeholders = opts.hodAllowedOwnerIds.map(() => "?").join(",");
-      ownerSql = ` AND owner_user_id IN (${placeholders})`;
-      ownerParams = opts.hodAllowedOwnerIds;
-    } else {
-      const clause = andClause(opts.role, opts.ownerUserId);
-      ownerSql = clause.sql;
-      ownerParams = clause.params;
-    }
+    const { sql: ownerSql, params: ownerParams } = resolveSeatingOwnerScope(opts, "AND");
     const [plans] = await db.query(
       `SELECT 
         id AS _id,
@@ -492,17 +490,7 @@ const SeatingPlan = {
     const ids = (planIds || []).map(Number).filter((id) => Number.isFinite(id) && id > 0);
     if (ids.length === 0) return 0;
 
-    let ownerSql = "";
-    let ownerParams = [];
-    if (opts.hodAllowedOwnerIds && opts.hodAllowedOwnerIds.length > 0) {
-      const placeholders = opts.hodAllowedOwnerIds.map(() => "?").join(",");
-      ownerSql = ` AND owner_user_id IN (${placeholders})`;
-      ownerParams = opts.hodAllowedOwnerIds;
-    } else {
-      const clause = andClause(opts.role, opts.ownerUserId);
-      ownerSql = clause.sql;
-      ownerParams = clause.params;
-    }
+    const { sql: ownerSql, params: ownerParams } = resolveSeatingOwnerScope(opts, "AND");
 
     const idPlaceholders = ids.map(() => "?").join(",");
     const [result] = await db.query(
@@ -520,17 +508,7 @@ const SeatingPlan = {
       DELETE SEATING PLAN
   =============================== */
   deletePlan: async (planId, opts = {}, externalConn = null) => {
-    let ownerSql = "";
-    let ownerParams = [];
-    if (opts.hodAllowedOwnerIds && opts.hodAllowedOwnerIds.length > 0) {
-      const placeholders = opts.hodAllowedOwnerIds.map(() => "?").join(",");
-      ownerSql = ` AND owner_user_id IN (${placeholders})`;
-      ownerParams = opts.hodAllowedOwnerIds;
-    } else {
-      const clause = andClause(opts.role, opts.ownerUserId);
-      ownerSql = clause.sql;
-      ownerParams = clause.params;
-    }
+    const { sql: ownerSql, params: ownerParams } = resolveSeatingOwnerScope(opts, "AND");
 
     const conn = externalConn || (await db.getConnection());
     const ownsTxn = !externalConn;

@@ -195,23 +195,21 @@ async function resolveSeatingPlanVenueId({ facultyId, examId, venueId, examDate,
 }
 
 async function findFacultyByEmail(email) {
-  const normalized = String(email || "").trim().toLowerCase();
-  const [rows] = await db.query(
-    `SELECT id, public_uuid, name, email, department
-     FROM faculty
-     WHERE LOWER(email) = ?
-       AND COALESCE(is_active, TRUE) = TRUE`,
-    [normalized]
-  );
-  const r = rows[0];
-  if (!r) return null;
+  const Faculty = require("../models/Faculty");
+  const r = await Faculty.findForLoginByEmail(email);
+  if (!r || r.is_active === false) return null;
   return {
     id: r.id,
-    uuid: r.public_uuid ?? r.publicuuid,
+    uuid: r.public_uuid ?? r.publicuuid ?? r.uuid,
     name: r.name,
     email: r.email,
     department: r.department ?? "",
   };
+}
+
+async function findFacultyByEmailAny(email) {
+  const Faculty = require("../models/Faculty");
+  return Faculty.findByEmail(email);
 }
 
 async function checkReplacementAvailability({
@@ -289,18 +287,26 @@ async function checkReplacementAvailability({
 }
 
 async function createFacultyWithUser({ name, email }) {
+  const Faculty = require("../models/Faculty");
   const normalizedEmail = String(email || "").trim().toLowerCase();
   if (!name?.trim()) {
     throw new Error("Faculty name is required to create a new faculty record");
   }
 
-  const existingFaculty = await findFacultyByEmail(normalizedEmail);
-  if (existingFaculty) {
+  const existingAny = await findFacultyByEmailAny(normalizedEmail);
+  if (existingAny) {
+    if (existingAny.is_active === false) {
+      await Faculty.reactivateById(existingAny.id, {
+        name: name.trim(),
+        department: existingAny.department || "General",
+      });
+    }
     return {
-      facultyId: existingFaculty.id,
+      facultyId: existingAny.id,
       generatedPassword: null,
       userExists: true,
       existingFaculty: true,
+      restored: existingAny.is_active === false,
     };
   }
 
@@ -333,6 +339,8 @@ async function createFacultyWithUser({ name, email }) {
         [username, normalizedEmail, hashedPassword, facultyRole.id]
       );
       generatedPassword = plainPassword;
+    } else if (!existingUser.is_active) {
+      await conn.query(`UPDATE users SET is_active = TRUE WHERE id = ?`, [existingUser.id]);
     }
 
     await conn.commit();
@@ -345,13 +353,17 @@ async function createFacultyWithUser({ name, email }) {
   } catch (err) {
     await conn.rollback();
     if (err?.code === "23505") {
-      const again = await findFacultyByEmail(normalizedEmail);
+      const again = await findFacultyByEmailAny(normalizedEmail);
       if (again) {
+        if (again.is_active === false) {
+          await Faculty.reactivateById(again.id, { name: name.trim() });
+        }
         return {
           facultyId: again.id,
           generatedPassword: null,
           userExists: !!existingUser,
           existingFaculty: true,
+          restored: again.is_active === false,
         };
       }
     }

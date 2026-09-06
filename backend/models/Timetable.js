@@ -1,6 +1,6 @@
 // backend/models/Timetable.js - UPDATED WITH EXAM DETAILS QUERY
 const db = require("../config/db");
-const { andClause, whereClause, whereClauseForHod, andClauseForHod, insertField } = require("../utils/ownerFilter");
+const { ownerWhereFromOpts, ownerAndFromOpts, andClause, insertField } = require("../utils/ownerFilter");
 
 // PostgreSQL returns unquoted column names in lowercase; map to camelCase for API
 function toTimetableRow(row) {
@@ -29,9 +29,7 @@ const Timetable = {
       GET ALL SCHEDULES
   =============================== */
   getAll: async (opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
-      ? whereClauseForHod(opts.department)
-      : whereClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = ownerWhereFromOpts(opts);
     const [rows] = await db.query(
       `SELECT 
         id,
@@ -59,9 +57,7 @@ const Timetable = {
       Returns courses matching date, time, and session
   =============================== */
   getByExamDetails: async ({ date, startTime, endTime, session }, opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
-      ? andClauseForHod(opts.department, "t.")
-      : andClause(opts.role, opts.ownerUserId, "t.");
+    const { sql: ownerSql, params: ownerParams } = ownerAndFromOpts(opts, "t.");
     const [rows] = await db.query(
       `SELECT
         t.id,
@@ -136,9 +132,7 @@ const Timetable = {
       CHECK FOR DUPLICATE
   =============================== */
   checkDuplicate: async ({ date, session, courseCode, department, examType, batch, batchId }, opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
-      ? andClauseForHod(opts.department)
-      : andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = ownerAndFromOpts(opts);
     const batchCode = String(batch || "").toUpperCase().trim() || null;
     const [rows] = await db.query(
       `SELECT id FROM timetable 
@@ -160,9 +154,7 @@ const Timetable = {
       DELETE BY ID
   =============================== */
   deleteById: async (id, opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
-      ? andClauseForHod(opts.department)
-      : andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = ownerAndFromOpts(opts);
     const [result] = await db.query(
       `DELETE FROM timetable WHERE id = ?${ownerSql}`,
       [id, ...ownerParams]
@@ -177,9 +169,7 @@ const Timetable = {
   deleteByIds: async (ids, opts = {}) => {
     if (ids.length === 0) return 0;
 
-    const { sql: ownerSql, params: ownerParams } = opts.role === "hod" && opts.department
-      ? andClauseForHod(opts.department)
-      : andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = ownerAndFromOpts(opts);
     const [result] = await db.query(
       `DELETE FROM timetable WHERE id IN (?)${ownerSql}`,
       [ids, ...ownerParams]
@@ -192,7 +182,7 @@ const Timetable = {
       GET BY DATE RANGE
   =============================== */
   getByDateRange: async (startDate, endDate, opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
     const [rows] = await db.query(
       `SELECT 
         id,
@@ -220,7 +210,7 @@ const Timetable = {
       GET BY FILTERS
   =============================== */
   getByFilters: async (filters, opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId);
+    const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
     let query = `
       SELECT 
         id,
