@@ -726,25 +726,40 @@ const FacultyTransferService = {
   },
 
   _replaceVenueFaculty: async (executor, { spvId, venueId, examId, currentFacultyId, newFacultyId }) => {
-    if (spvId) {
-      await executor.query(`UPDATE seating_plan_venues SET faculty_id = ? WHERE id = ? AND faculty_id = ?`, [
-        newFacultyId,
-        spvId,
-        currentFacultyId,
-      ]);
+    const replaceOnVenue = async (id) => {
+      await executor.query(
+        `UPDATE seating_plan_venues SET faculty_id = ? WHERE id = ? AND faculty_id = ?`,
+        [newFacultyId, id, currentFacultyId]
+      );
+
+      // Prefer update-in-place; if new faculty already mapped, drop the old row.
       const [updated] = await executor.query(
         `UPDATE seating_plan_venue_faculty SET faculty_id = ?
-         WHERE seating_plan_venue_id = ? AND faculty_id = ?`,
-        [newFacultyId, spvId, currentFacultyId]
+         WHERE seating_plan_venue_id = ? AND faculty_id = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM seating_plan_venue_faculty x
+             WHERE x.seating_plan_venue_id = ? AND x.faculty_id = ?
+           )`,
+        [newFacultyId, id, currentFacultyId, id, newFacultyId]
       );
+
       if ((updated?.affectedRows ?? 0) === 0) {
+        await executor.query(
+          `DELETE FROM seating_plan_venue_faculty
+           WHERE seating_plan_venue_id = ? AND faculty_id = ?`,
+          [id, currentFacultyId]
+        );
         await executor.query(
           `INSERT INTO seating_plan_venue_faculty (seating_plan_venue_id, faculty_id, display_order)
            VALUES (?, ?, 0)
            ON CONFLICT (seating_plan_venue_id, faculty_id) DO NOTHING`,
-          [spvId, newFacultyId]
+          [id, newFacultyId]
         );
       }
+    };
+
+    if (spvId) {
+      await replaceOnVenue(spvId);
       return;
     }
 
@@ -766,24 +781,7 @@ const FacultyTransferService = {
     );
 
     for (const row of spvRows || []) {
-      const id = row.id;
-      await executor.query(
-        `UPDATE seating_plan_venues SET faculty_id = ? WHERE id = ? AND faculty_id = ?`,
-        [newFacultyId, id, currentFacultyId]
-      );
-      const [updated] = await executor.query(
-        `UPDATE seating_plan_venue_faculty SET faculty_id = ?
-         WHERE seating_plan_venue_id = ? AND faculty_id = ?`,
-        [newFacultyId, id, currentFacultyId]
-      );
-      if ((updated?.affectedRows ?? 0) === 0) {
-        await executor.query(
-          `INSERT INTO seating_plan_venue_faculty (seating_plan_venue_id, faculty_id, display_order)
-           VALUES (?, ?, 0)
-           ON CONFLICT (seating_plan_venue_id, faculty_id) DO NOTHING`,
-          [id, newFacultyId]
-        );
-      }
+      await replaceOnVenue(row.id);
     }
   },
 
@@ -800,6 +798,22 @@ const FacultyTransferService = {
       newFacultyId,
     });
 
+    const assignedDate = (() => {
+      const value = assign.exam_date ?? assign.examdate ?? assign.assigned_date;
+      if (!value) return null;
+      if (value instanceof Date && !Number.isNaN(value.getTime())) {
+        return value.toISOString().slice(0, 10);
+      }
+      const s = String(value).trim();
+      return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : null;
+    })();
+    const startTime = normalizeTime(
+      assign.exam_start_time ?? assign.examstarttime ?? assign.start_time ?? assign.starttime
+    );
+    const endTime = normalizeTime(
+      assign.exam_end_time ?? assign.examendtime ?? assign.end_time ?? assign.endtime
+    );
+
     await executor.query(
       `UPDATE faculty_assignments
        SET faculty_id = ?,
@@ -809,9 +823,9 @@ const FacultyTransferService = {
        WHERE exam_id = ? AND venue_id = ? AND faculty_id = ?`,
       [
         newFacultyId,
-        assign.exam_date ?? assign.examdate ?? assign.assigned_date,
-        assign.exam_start_time ?? assign.examstarttime ?? assign.start_time ?? null,
-        assign.exam_end_time ?? assign.examendtime ?? assign.end_time ?? null,
+        assignedDate,
+        startTime ? `${startTime}:00` : null,
+        endTime ? `${endTime}:00` : null,
         examId,
         venueId,
         currentFacultyId,
@@ -838,22 +852,26 @@ const FacultyTransferService = {
       [adminUserId, req.id]
     );
 
-    await AuditLog.create({
-      userId: adminUserId,
-      action: "FACULTY_TRANSFER_APPROVED",
-      entityType: "FacultyTransferRequest",
-      entityId: req.id,
-      changes: {
-        requestUuid: req.public_uuid ?? req.publicuuid,
-        fromFacultyId: currentFacultyId,
-        toFacultyId: newFacultyId,
-        examId,
-        venueId,
-        timestamp: new Date().toISOString(),
-      },
-      ipAddress,
-      userAgent,
-    });
+    try {
+      await AuditLog.create({
+        userId: adminUserId,
+        action: "FACULTY_TRANSFER_APPROVED",
+        entityType: "FacultyTransferRequest",
+        entityId: req.id,
+        changes: {
+          requestUuid: req.public_uuid ?? req.publicuuid,
+          fromFacultyId: currentFacultyId,
+          toFacultyId: newFacultyId,
+          examId,
+          venueId,
+          timestamp: new Date().toISOString(),
+        },
+        ipAddress,
+        userAgent,
+      });
+    } catch (auditErr) {
+      console.error("Audit log failed after faculty transfer:", auditErr?.message || auditErr);
+    }
   },
 
   rejectRequest: async (requestUuid, adminUserId, rejectionReason, { ipAddress, userAgent } = {}) => {
@@ -1100,12 +1118,39 @@ const FacultyTransferService = {
         ]
       );
 
-      const requestId = insertResult.insertId;
+      // db wrapper returns row array when RETURNING has multiple columns (no insertId).
+      const insertedRow = Array.isArray(insertResult) ? insertResult[0] : insertResult;
+      const requestId = insertedRow?.id ?? insertedRow?.insertId ?? null;
+      if (!requestId) {
+        const err = new Error("Failed to create faculty change record");
+        err.statusCode = 500;
+        throw err;
+      }
+
       const [reqRows] = await conn.query(
         `SELECT * FROM faculty_transfer_requests WHERE id = ?`,
         [requestId]
       );
       const req = reqRows[0];
+      if (!req) {
+        const err = new Error("Failed to load faculty change record");
+        err.statusCode = 500;
+        throw err;
+      }
+
+      const toSqlDate = (value) => {
+        if (!value) return null;
+        if (value instanceof Date && !Number.isNaN(value.getTime())) {
+          return value.toISOString().slice(0, 10);
+        }
+        const s = String(value).trim();
+        if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+        return null;
+      };
+      const toSqlTime = (value) => {
+        const n = normalizeTime(value);
+        return n && /^\d{2}:\d{2}$/.test(n) ? `${n}:00` : null;
+      };
 
       await FacultyTransferService._applyTransfer(conn, {
         req,
@@ -1115,9 +1160,11 @@ const FacultyTransferService = {
         currentFacultyId: ctx.facultyId,
         assign: {
           ...ctx.row,
-          exam_date: ctx.examDate,
-          exam_start_time: ctx.examStartTime,
-          exam_end_time: ctx.examEndTime,
+          exam_date: toSqlDate(ctx.examDate) || ctx.examDate,
+          exam_start_time: toSqlTime(ctx.examStartTime),
+          exam_end_time: toSqlTime(ctx.examEndTime),
+          start_time: toSqlTime(ctx.row.start_time ?? ctx.row.starttime),
+          end_time: toSqlTime(ctx.row.end_time ?? ctx.row.endtime),
         },
         adminUserId,
         ipAddress,
