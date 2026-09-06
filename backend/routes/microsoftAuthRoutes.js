@@ -7,7 +7,7 @@ const Mentor = require("../models/Mentor");
 const SessionStore = require("../utils/sessionStore");
 const { createSession } = require("../utils/authHelpers");
 const { URLSearchParams } = require("url");
-const { loginLimiter } = require("../middleware/rateLimiters");
+const { oauthStartLimiter } = require("../middleware/rateLimiters");
 const { fetchMicrosoftProfilePhoto } = require("../utils/microsoftProfilePhoto");
 
 const MICROSOFT_CLIENT_ID = process.env.MICROSOFT_CLIENT_ID;
@@ -96,7 +96,9 @@ async function completeMicrosoftAuth(req, res, redirectUri, stateData) {
   });
 
   const userInfo = userResponse.data;
-  const email = userInfo.mail || userInfo.userPrincipalName;
+  const email = String(userInfo.mail || userInfo.userPrincipalName || "")
+    .trim()
+    .toLowerCase();
   const microsoftId = userInfo.id;
   const username = userInfo.displayName || email.split("@")[0];
 
@@ -117,7 +119,9 @@ async function completeMicrosoftAuth(req, res, redirectUri, stateData) {
     };
   }
 
-  if (user.role_name !== "faculty") {
+  // Mobile Hallora app is faculty-only; web SSO allows all authorized roles.
+  const platform = stateData.platform || "web";
+  if (platform === "mobile" && user.role_name !== "faculty") {
     return {
       error: "Hallora Mobile is for faculty attendance only.",
     };
@@ -151,7 +155,7 @@ async function completeMicrosoftAuth(req, res, redirectUri, stateData) {
   return {
     token,
     user: userPayloadFromSession(user, hasAvatar),
-    platform: stateData.platform || "web",
+    platform,
     portal: stateData.portal || "admin",
   };
 }
@@ -243,7 +247,7 @@ async function completeMentorMicrosoftAuth(req, res, redirectUri, stateData) {
   };
 }
 
-router.get("/login", loginLimiter, async (req, res) => {
+router.get("/login", oauthStartLimiter, async (req, res) => {
   try {
     if (!MICROSOFT_CLIENT_ID || !MICROSOFT_TENANT_ID) {
       return res.status(503).json({ message: "Microsoft SSO is not configured" });
@@ -272,7 +276,7 @@ router.get("/login", loginLimiter, async (req, res) => {
   }
 });
 
-router.get("/callback", loginLimiter, async (req, res) => {
+router.get("/callback", async (req, res) => {
   try {
     const { code, error, error_description, state } = req.query;
     const stateData = state ? await SessionStore.consumeOAuthState(state) : null;
@@ -328,7 +332,7 @@ router.get("/callback", loginLimiter, async (req, res) => {
   }
 });
 
-router.get("/mobile-callback", loginLimiter, async (req, res) => {
+router.get("/mobile-callback", async (req, res) => {
   try {
     const { state } = req.query;
     const stateData = state ? await SessionStore.consumeOAuthState(state) : null;

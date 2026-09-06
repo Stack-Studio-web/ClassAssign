@@ -1,7 +1,7 @@
 // Class/backend/models/User.js
 const db = require("../config/db");
 const Role = require("./Role");
-const { hashPassword } = require("../utils/password");
+const { hashPassword, passwordFromEmail } = require("../utils/password");
 
 function toPublicUser(row) {
   if (!row || typeof row !== "object") return row;
@@ -59,38 +59,94 @@ const User = {
 
   /* ===============================
       CREATE / FIND MICROSOFT USER
-      ✅ Only allows login if email exists in users table
+      Allow SSO for emails already in users, or active faculty
+      profiles (Excel import creates faculty without users rows).
   =============================== */
   createOrFindMicrosoft: async ({ microsoft_id, email, username }) => {
-    // Check if email exists in users table first
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    if (!normalizedEmail) return null;
+
+    if (microsoft_id) {
+      const byMs = await User.findByMicrosoftId(microsoft_id);
+      if (byMs) return byMs;
+    }
+
     const [existingByEmail] = await db.query(
       `SELECT u.*, r.name as role_name
        FROM users u
        LEFT JOIN roles r ON u.role_id = r.id
-       WHERE u.email = ? AND u.is_active = TRUE`,
-      [email.toLowerCase()]
+       WHERE LOWER(TRIM(u.email)) = ? AND u.is_active = TRUE`,
+      [normalizedEmail]
     );
 
-    // If email exists, link Microsoft ID and return
     if (existingByEmail.length) {
       const user = existingByEmail[0];
-      
-      // Link Microsoft ID if not already linked
-      if (!user.microsoft_id) {
-        await db.query(
-          "UPDATE users SET microsoft_id = ? WHERE id = ?",
-          [microsoft_id, user.id]
-        );
+      if (microsoft_id && !(user.microsoft_id ?? user.microsoftid)) {
+        await db.query("UPDATE users SET microsoft_id = ? WHERE id = ?", [
+          microsoft_id,
+          user.id,
+        ]);
       }
-      
       return {
         ...user,
-        microsoft_id
+        microsoft_id: microsoft_id || user.microsoft_id || user.microsoftid,
+        role_name: user.role_name ?? user.rolename,
       };
     }
 
-    // ❌ Email not in users table - reject login
-    return null;
+    // Active faculty authorized in faculty table but missing users login row.
+    const [facultyRows] = await db.query(
+      `SELECT id, name, email, department
+       FROM faculty
+       WHERE LOWER(TRIM(email)) = ?
+         AND COALESCE(is_active, TRUE) = TRUE
+       LIMIT 1`,
+      [normalizedEmail]
+    );
+    const faculty = facultyRows[0];
+    if (!faculty) return null;
+
+    const facultyRole = await Role.getByName("faculty");
+    if (!facultyRole) return null;
+
+    const existingAny = await User.findByEmailAny(normalizedEmail);
+    if (existingAny) {
+      if (!existingAny.is_active) {
+        await db.query(`UPDATE users SET is_active = TRUE WHERE id = ?`, [existingAny.id]);
+      }
+      if (microsoft_id) {
+        await db.query(`UPDATE users SET microsoft_id = ? WHERE id = ?`, [
+          microsoft_id,
+          existingAny.id,
+        ]);
+      }
+      return User.getUserWithRole(existingAny.id);
+    }
+
+    const plainPassword = passwordFromEmail(normalizedEmail);
+    const hashed = await hashPassword(plainPassword);
+    const displayName =
+      String(username || faculty.name || normalizedEmail.split("@")[0]).trim() ||
+      plainPassword;
+
+    const [insertResult] = await db.query(
+      `INSERT INTO users
+         (username, email, password, role_id, department, microsoft_id, is_active, must_change_password)
+       VALUES (?, ?, ?, ?, ?, ?, TRUE, FALSE)
+       RETURNING id`,
+      [
+        displayName.slice(0, 100),
+        normalizedEmail,
+        hashed,
+        facultyRole.id,
+        faculty.department || null,
+        microsoft_id || null,
+      ]
+    );
+
+    const userId = insertResult?.insertId ?? insertResult?.[0]?.id ?? null;
+    if (!userId) return null;
+    return User.getUserWithRole(userId);
   },
 
   /* ===============================
