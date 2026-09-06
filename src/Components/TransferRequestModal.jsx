@@ -189,6 +189,11 @@ export default function TransferRequestModal({ exam, onClose, onSuccess }) {
             </div>
           )}
 
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            Faculty transfers ignore the normal allocation limit. Replacement faculty is only
+            blocked if they already have an overlapping exam at this date/time.
+          </div>
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Reason for Transfer <span className="text-red-500">*</span>

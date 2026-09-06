@@ -466,6 +466,7 @@ export default function Faculty() {
                     <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide" title="Active exams (attendance or report still pending)">Alloc</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide" title="Fully completed (attendance + report)">Done</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide" title="Free slots available now (Max − Alloc). Returns when an exam is fully completed.">Rem</th>
+                    <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide" title="Faculty transfer requests (independent of allocation limit)">Transfers</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide">Available</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Actions</th>
                   </tr>
@@ -487,6 +488,9 @@ export default function Faculty() {
                       </td>
                       <td className="px-4 md:px-6 py-3 md:py-4 text-center">
                         <span className={`font-bold px-2 py-1 rounded-lg text-xs ${(f.remaining ?? 0) > 0 ? "text-green-700 bg-green-100" : "text-red-700 bg-red-100"}`}>{f.remaining ?? 0}</span>
+                      </td>
+                      <td className="px-4 md:px-6 py-3 md:py-4 text-center">
+                        <span className="font-bold text-violet-700 bg-violet-100 px-2 py-1 rounded-lg text-xs">{f.transferCount ?? 0}</span>
                       </td>
                       <td className="px-4 md:px-6 py-3 md:py-4 text-center">
                         <button

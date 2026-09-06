@@ -28,7 +28,16 @@ async function ensureFacultyActiveSchema() {
     await db.query(
       `CREATE INDEX IF NOT EXISTS idx_faculty_is_active ON faculty (is_active)`
     );
-    console.log("✅ Faculty soft-delete schema OK (is_active + deleted_at)");
+
+    // Independent of max_classrooms / allocation capacity — used by transfer flow only.
+    await db.query(
+      `ALTER TABLE faculty ADD COLUMN IF NOT EXISTS transfer_count INT DEFAULT 0`
+    );
+    await db.query(
+      `UPDATE faculty SET transfer_count = 0 WHERE transfer_count IS NULL`
+    );
+
+    console.log("✅ Faculty soft-delete schema OK (is_active + deleted_at + transfer_count)");
   } catch (err) {
     // Never abort API startup for this heal step.
     console.error("❌ ensureFacultyActiveSchema failed:", err.message);

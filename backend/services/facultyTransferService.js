@@ -235,15 +235,26 @@ async function checkReplacementAvailability({
     };
   }
 
+  // Transfer flow: ignore normal allocation capacity; only block on time overlap / status.
   const validation = await Faculty.validateFacultyForAllocation(requestedFacultyId, {
     examDate,
     examStartTime: examStartTime || "00:00",
     examEndTime: examEndTime || "23:59",
     additionalSlots: 1,
     excludeSpvId,
+    ignoreCapacity: true,
   });
 
   if (!validation.allowed) {
+    if (validation.code === "TIME_CONFLICT") {
+      return {
+        available: false,
+        message:
+          "Transfer unavailable. This faculty is already allocated during this time.",
+        code: validation.code,
+        conflict: validation.conflict || null,
+      };
+    }
     return {
       available: false,
       message: validation.message,
@@ -268,7 +279,9 @@ async function checkReplacementAvailability({
   if (assignConflicts.length > 0) {
     return {
       available: false,
-      message: "Faculty is already assigned for another venue during this session.",
+      message:
+        "Transfer unavailable. This faculty is already assigned for another venue during this session.",
+      code: "TIME_CONFLICT",
     };
   }
 
@@ -507,7 +520,17 @@ const FacultyTransferService = {
       ]
     );
 
-    const requestId = result.insertId;
+    const insertedRow = Array.isArray(result) ? result[0] : result;
+    const requestId = insertedRow?.id ?? result?.insertId ?? null;
+    if (!requestId) {
+      const err = new Error("Failed to create transfer request");
+      err.statusCode = 500;
+      throw err;
+    }
+
+    // Transfer counter is independent of normal allocation capacity.
+    await Faculty.incrementTransferCount(currentFacultyId);
+
     const [created] = await db.query(
       `SELECT public_uuid FROM faculty_transfer_requests WHERE id = ?`,
       [requestId]
@@ -1170,6 +1193,8 @@ const FacultyTransferService = {
         ipAddress,
         userAgent,
       });
+
+      await Faculty.incrementTransferCount(ctx.facultyId, conn);
 
       await conn.commit();
 

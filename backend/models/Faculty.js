@@ -39,6 +39,8 @@ function toFacultyRow(row) {
     remaining,
     /** Alias of remaining (free allotment slots). */
     freeSlots: remaining,
+    /** Independent of allocation limit — successful transfer requests initiated/received. */
+    transferCount: Number(row.transfer_count ?? row.transfercount ?? row.transferCount ?? 0) || 0,
     /** Assignments with attendance completed (may still be active if report pending). */
     attendanceCompleted: Number(row.attendance_completed ?? row.attendanceCompleted ?? 0) || 0,
     /** Assignments with report completed (may still be active if attendance pending). */
@@ -302,6 +304,9 @@ const Faculty = {
   /**
    * Validate capacity and time availability before assigning faculty.
    * Capacity and time conflict are checked separately.
+   * @param {object} opts
+   * @param {boolean} [opts.ignoreCapacity=false] - When true (faculty transfer),
+   *   skip normal allocation-limit check; still enforce time overlap / active status.
    */
   validateFacultyForAllocation: async (
     facultyId,
@@ -312,6 +317,7 @@ const Faculty = {
       additionalSlots = 1,
       excludeSeatingPlanId = null,
       excludeSpvId = null,
+      ignoreCapacity = false,
     } = {},
     executor = db
   ) => {
@@ -339,17 +345,19 @@ const Faculty = {
       };
     }
 
-    const slots = Math.max(1, Number(additionalSlots) || 1);
-    if (summary.remaining < slots) {
-      return {
-        allowed: false,
-        code: "CAPACITY",
-        message:
-          "Faculty allocation limit reached. This faculty currently has no remaining allocation capacity.",
-        currentAllocation: summary.allocation,
-        maxClassrooms: summary.maxClassrooms,
-        remaining: summary.remaining,
-      };
+    if (!ignoreCapacity) {
+      const slots = Math.max(1, Number(additionalSlots) || 1);
+      if (summary.remaining < slots) {
+        return {
+          allowed: false,
+          code: "CAPACITY",
+          message:
+            "Faculty allocation limit reached. This faculty currently has no remaining allocation capacity.",
+          currentAllocation: summary.allocation,
+          maxClassrooms: summary.maxClassrooms,
+          remaining: summary.remaining,
+        };
+      }
     }
 
     if (examDate && examStartTime && examEndTime) {
@@ -371,7 +379,23 @@ const Faculty = {
       }
     }
 
-    return { allowed: true };
+    return {
+      allowed: true,
+      maxClassrooms: summary.maxClassrooms,
+      currentAllocation: summary.allocation,
+      remaining: summary.remaining,
+    };
+  },
+
+  /** Increment independent transfer counter (does not affect allocation capacity). */
+  incrementTransferCount: async (facultyId, executor = db) => {
+    if (!facultyId) return;
+    await executor.query(
+      `UPDATE faculty
+       SET transfer_count = COALESCE(transfer_count, 0) + 1
+       WHERE id = ?`,
+      [facultyId]
+    );
   },
 
   /* =====================================
@@ -396,6 +420,7 @@ const Faculty = {
         f.email,
         COALESCE(f.max_classrooms, 1) AS max_classrooms,
         COALESCE(f.is_available, true) AS is_available,
+        COALESCE(f.transfer_count, 0) AS transfer_count,
         COUNT(spvf.id) AS total_assignments,
         COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${ACTIVE_ALLOCATION_SQL})) AS allocation,
         COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${FULLY_COMPLETED_SQL})) AS completed,
@@ -414,7 +439,7 @@ const Faculty = {
         ON sp.id = spv.seating_plan_id
       ${ownerSql || "WHERE 1=1"}
         AND ${ACTIVE_ONLY_F_SQL}
-      GROUP BY f.id, f.public_uuid, f.name, f.department, f.email, f.max_classrooms, f.is_available
+      GROUP BY f.id, f.public_uuid, f.name, f.department, f.email, f.max_classrooms, f.is_available, f.transfer_count
       ORDER BY f.name ASC
       `,
       ownerParams
