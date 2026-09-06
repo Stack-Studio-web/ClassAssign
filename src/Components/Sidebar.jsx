@@ -51,16 +51,13 @@ const FACULTY_NAV = [
   { to: "/student/academic", label: "Academic Context", icon: AcademicCapIcon },
   { to: "/student/batches", label: "Batch Management", icon: RectangleStackIcon },
   { to: "/mentor/import", label: "Mentor Management", icon: UsersIcon },
+  { to: "/faculty", label: "Faculty Management", icon: UserPlusIcon },
   { to: "/report", label: "Reports", icon: NewspaperIcon },
-  { to: "/report/completed", label: "Completed Reports", icon: CheckCircleIcon },
   { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
   { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
-  { to: "/Hall", label: "Hall Allotment", icon: BuildingOfficeIcon },
   { to: "/admin/notifications", label: "Hall Notifications", icon: BellAlertIcon },
   { to: "/admin/attendance/transfers", label: "Faculty Change Requests", icon: ArrowsRightLeftIcon },
-  { to: "/change", label: "Change Faculty", icon: UserPlusIcon },
   { to: "/attendance", label: "Active Attendance", icon: UserGroupIcon },
-  { to: "/attendance/completed", label: "Completed Attendance", icon: CheckCircleIcon },
   { to: "/ineligibility/view", label: "Ineligibility", icon: ExclamationTriangleIcon },
 ];
 
