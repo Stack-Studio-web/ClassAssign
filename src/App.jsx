@@ -32,6 +32,7 @@ import ActiveAttendance from './pages/ActiveAttendance';
 import CompletedAttendance from './pages/CompletedAttendance';
 import NotificationManagement from './pages/NotificationManagement';
 import FacultyTransferRequests from './pages/FacultyTransferRequests';
+import FacultyChange from './pages/FacultyChange';
 import Loader from './Components/Loader';
 import MentorLogin from './pages/mentor-portal/MentorLogin';
 import MentorAccessDenied from './pages/mentor-portal/MentorAccessDenied';
@@ -156,6 +157,15 @@ function App() {
         element={
           <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod']}>
             <Layout><FacultyTransferRequests /></Layout>
+          </AuthGuard>
+        }
+      />
+
+      <Route
+        path="/change"
+        element={
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod']}>
+            <Layout><FacultyChange /></Layout>
           </AuthGuard>
         }
       />

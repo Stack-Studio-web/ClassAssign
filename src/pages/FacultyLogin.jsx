@@ -22,9 +22,35 @@ function MicrosoftIcon({ className = "h-5 w-5" }) {
 function FacultyLogin() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [flashMessage, setFlashMessage] = useState("");
   const [loading, setLoading] = useState(false);
+
+  const redirectFacultyUser = async (user) => {
+    if (!user) {
+      setFlashMessage("");
+      setError("Login completed but session could not be loaded. Please try again.");
+      return;
+    }
+    if (user.role !== "faculty") {
+      setFlashMessage("");
+      try {
+        await api.post("/auth/logout");
+      } catch {
+        /* best effort */
+      }
+      sessionStorage.removeItem("user");
+      setError("This portal is for faculty attendance only. Use the main portal for admin access.");
+      return;
+    }
+    if (user.mustChangePassword) {
+      navigate("/change-password", { replace: true });
+      return;
+    }
+    navigate("/faculty/dashboard", { replace: true });
+  };
 
   useEffect(() => {
     const ssoError = searchParams.get("error");
@@ -41,27 +67,60 @@ function FacultyLogin() {
       setFlashMessage("Signing you in…");
       const user = await fetchCurrentUser();
       if (cancelled) return;
-      if (!user) {
-        setFlashMessage("");
-        setError("Microsoft login completed but session could not be loaded. Please try again.");
-        return;
-      }
-      if (user.role !== "faculty") {
-        setFlashMessage("");
-        setError("This portal is for faculty attendance only. Use the main portal for admin access.");
-        return;
-      }
-      if (user.mustChangePassword) {
-        navigate("/change-password", { replace: true });
-        return;
-      }
-      navigate("/faculty/dashboard", { replace: true });
+      await redirectFacultyUser(user);
     })();
 
     return () => {
       cancelled = true;
     };
   }, [searchParams, navigate]);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setFlashMessage("");
+    setLoading(true);
+
+    try {
+      const { data } = await api.post("/auth/login", { email, password });
+
+      if (!data.success) {
+        setError(data.message || "Login failed. Please check your credentials.");
+        return;
+      }
+
+      if (data.user) {
+        sessionStorage.setItem("user", JSON.stringify(data.user));
+      }
+
+      if (data.user?.role && data.user.role !== "faculty") {
+        try {
+          await api.post("/auth/logout");
+        } catch {
+          /* best effort */
+        }
+        sessionStorage.removeItem("user");
+        setError("This portal is for faculty attendance only. Use the main portal for admin access.");
+        return;
+      }
+
+      if (data.mustChangePassword || data.user?.mustChangePassword) {
+        setFlashMessage("Please set a new password to continue…");
+        setTimeout(() => navigate("/change-password", { replace: true }), 800);
+        return;
+      }
+
+      setFlashMessage("Successfully logged in! Redirecting…");
+      setTimeout(() => navigate("/faculty/dashboard", { replace: true }), 800);
+    } catch (err) {
+      setError(
+        err.response?.data?.message ||
+          "Could not connect to the server. Please try again later."
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleMicrosoftLogin = async () => {
     setError("");
@@ -129,7 +188,7 @@ function FacultyLogin() {
           <div className="bg-white rounded-2xl shadow-[0_12px_40px_rgba(15,23,42,0.12)] border border-slate-100 px-6 sm:px-8 py-7 sm:py-8">
             <h1 className="text-2xl font-bold text-[#0B1F4B]">Faculty Login</h1>
             <p className="mt-1 text-sm text-slate-500">
-              Sign in with your KCT Microsoft account to mark exam attendance.
+              Sign in with your email and password, or with your KCT Microsoft account.
             </p>
 
             {error && (
@@ -143,18 +202,62 @@ function FacultyLogin() {
               </div>
             )}
 
+            <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Email
+                </label>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="name@kct.ac.in"
+                  className="w-full px-4 py-2.5 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white text-sm"
+                  required
+                  autoComplete="username"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Password
+                </label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Password"
+                  className="w-full px-4 py-2.5 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white text-sm"
+                  required
+                  autoComplete="current-password"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={loading || !!flashMessage}
+                className="w-full bg-[#0B1F4B] text-white py-3 rounded-xl hover:bg-[#122a5c] disabled:opacity-60 font-semibold text-sm transition-colors"
+              >
+                {loading || flashMessage ? "Please wait…" : "Login"}
+              </button>
+            </form>
+
+            <div className="my-5 flex items-center gap-3">
+              <div className="flex-1 h-px bg-slate-200" />
+              <span className="text-xs text-slate-400 uppercase tracking-wide">or</span>
+              <div className="flex-1 h-px bg-slate-200" />
+            </div>
+
             <button
               type="button"
               onClick={handleMicrosoftLogin}
               disabled={loading || !!flashMessage}
-              className="mt-8 w-full flex items-center justify-center gap-3 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-60 text-slate-800 py-3.5 text-sm font-semibold shadow-sm transition-colors"
+              className="w-full flex items-center justify-center gap-3 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-60 text-slate-800 py-3.5 text-sm font-semibold shadow-sm transition-colors"
             >
               <MicrosoftIcon />
               {loading || flashMessage ? "Please wait…" : "Login with Microsoft"}
             </button>
 
             <p className="mt-5 text-center text-xs text-slate-500">
-              Use your college Microsoft account (@kct.ac.in). Password login is not available on this portal.
+              Use the credentials shared by your Faculty Incharge, or your college Microsoft account (@kct.ac.in).
             </p>
 
             <p className="mt-5 text-center text-sm text-slate-500">

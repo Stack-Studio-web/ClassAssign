@@ -42,20 +42,74 @@ router.get(
 router.get(
   "/check-availability",
   sessionAuth,
-  checkRole(["faculty"]),
-  requireFacultyProfile,
+  checkRole(["faculty", "admin", "faculty_incharge", "hod"]),
   async (req, res) => {
     try {
       const { assignmentUuid, email } = req.query;
       if (!assignmentUuid || !email) {
         return Api.validationError(res, "assignmentUuid and email are required");
       }
+
+      const isFaculty = req.user.role === "faculty";
+      let currentFacultyId = null;
+      if (isFaculty) {
+        currentFacultyId = req.facultyId || (await resolveFacultyId(req));
+        if (!currentFacultyId) {
+          return Api.forbidden(res, "Faculty profile not found");
+        }
+      }
+
       const result = await FacultyTransferService.checkAvailabilityForAssignment({
         assignmentUuid,
         requestedEmail: email,
-        currentFacultyId: req.facultyId,
+        currentFacultyId,
+        adminMode: !isFaculty,
       });
       return Api.success(res, result.message, result);
+    } catch (err) {
+      return Api.fromError(res, err);
+    }
+  }
+);
+
+router.get(
+  "/assignments",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge", "hod"]),
+  async (req, res) => {
+    try {
+      const assignments = await FacultyTransferService.listChangeableAssignments({
+        examDate: req.query.examDate || "",
+        session: req.query.session || "",
+        search: req.query.search || "",
+      });
+      return Api.success(res, "Changeable assignments", { assignments });
+    } catch (err) {
+      return Api.fromError(res, err);
+    }
+  }
+);
+
+router.post(
+  "/admin-change",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge", "hod"]),
+  auditLogger("FACULTY_ADMIN_CHANGED", "FacultyAssignment"),
+  async (req, res) => {
+    try {
+      const { assignmentUuid, requestedEmail, requestedName, reason } = req.body || {};
+      if (!assignmentUuid || !requestedEmail) {
+        return Api.validationError(res, "assignmentUuid and requestedEmail are required");
+      }
+      const result = await FacultyTransferService.adminDirectChange({
+        assignmentUuid,
+        requestedEmail,
+        requestedName,
+        reason,
+        adminUserId: req.user.id,
+        ...getClientMeta(req),
+      });
+      return Api.success(res, "Faculty assignment updated.", result);
     } catch (err) {
       return Api.fromError(res, err);
     }

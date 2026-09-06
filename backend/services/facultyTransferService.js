@@ -364,6 +364,7 @@ const FacultyTransferService = {
     assignmentUuid,
     requestedEmail,
     currentFacultyId,
+    adminMode = false,
   }) => {
     const ctx = await getAssignmentContext(assignmentUuid);
     if (!ctx) {
@@ -372,7 +373,7 @@ const FacultyTransferService = {
       throw err;
     }
 
-    if (ctx.facultyId !== currentFacultyId) {
+    if (!adminMode && ctx.facultyId !== currentFacultyId) {
       const err = new Error("You can only request transfer for your own assignments");
       err.statusCode = 403;
       throw err;
@@ -386,7 +387,7 @@ const FacultyTransferService = {
       examDate: ctx.examDate,
       examStartTime: ctx.examStartTime,
       examEndTime: ctx.examEndTime,
-      excludeFacultyId: currentFacultyId,
+      excludeFacultyId: adminMode ? ctx.facultyId : currentFacultyId,
       excludeSpvId: ctx.seatingPlanVenueId,
     });
 
@@ -724,28 +725,80 @@ const FacultyTransferService = {
     }
   },
 
+  _replaceVenueFaculty: async (executor, { spvId, venueId, examId, currentFacultyId, newFacultyId }) => {
+    if (spvId) {
+      await executor.query(`UPDATE seating_plan_venues SET faculty_id = ? WHERE id = ? AND faculty_id = ?`, [
+        newFacultyId,
+        spvId,
+        currentFacultyId,
+      ]);
+      const [updated] = await executor.query(
+        `UPDATE seating_plan_venue_faculty SET faculty_id = ?
+         WHERE seating_plan_venue_id = ? AND faculty_id = ?`,
+        [newFacultyId, spvId, currentFacultyId]
+      );
+      if ((updated?.affectedRows ?? 0) === 0) {
+        await executor.query(
+          `INSERT INTO seating_plan_venue_faculty (seating_plan_venue_id, faculty_id, display_order)
+           VALUES (?, ?, 0)
+           ON CONFLICT (seating_plan_venue_id, faculty_id) DO NOTHING`,
+          [spvId, newFacultyId]
+        );
+      }
+      return;
+    }
+
+    const [spvRows] = await executor.query(
+      `SELECT spv.id
+       FROM seating_plan_venues spv
+       JOIN seating_plans sp ON sp.id = spv.seating_plan_id
+       JOIN exams e ON e.id = ?
+       WHERE spv.venue_id = ?
+         AND sp.exam_date = e.exam_date
+         AND (
+           spv.faculty_id = ?
+           OR EXISTS (
+             SELECT 1 FROM seating_plan_venue_faculty spvf
+             WHERE spvf.seating_plan_venue_id = spv.id AND spvf.faculty_id = ?
+           )
+         )`,
+      [examId, venueId, currentFacultyId, currentFacultyId]
+    );
+
+    for (const row of spvRows || []) {
+      const id = row.id;
+      await executor.query(
+        `UPDATE seating_plan_venues SET faculty_id = ? WHERE id = ? AND faculty_id = ?`,
+        [newFacultyId, id, currentFacultyId]
+      );
+      const [updated] = await executor.query(
+        `UPDATE seating_plan_venue_faculty SET faculty_id = ?
+         WHERE seating_plan_venue_id = ? AND faculty_id = ?`,
+        [newFacultyId, id, currentFacultyId]
+      );
+      if ((updated?.affectedRows ?? 0) === 0) {
+        await executor.query(
+          `INSERT INTO seating_plan_venue_faculty (seating_plan_venue_id, faculty_id, display_order)
+           VALUES (?, ?, 0)
+           ON CONFLICT (seating_plan_venue_id, faculty_id) DO NOTHING`,
+          [id, newFacultyId]
+        );
+      }
+    }
+  },
+
   _applyTransfer: async (
     executor,
     { req, newFacultyId, examId, venueId, currentFacultyId, assign, adminUserId, ipAddress, userAgent }
   ) => {
     const spvId = req.seating_plan_venue_id ?? req.seatingplanvenueid;
-    if (spvId) {
-      await executor.query(`UPDATE seating_plan_venues SET faculty_id = ? WHERE id = ?`, [
-        newFacultyId,
-        spvId,
-      ]);
-    } else {
-      await executor.query(
-        `UPDATE seating_plan_venues SET faculty_id = ?
-         WHERE venue_id = ? AND faculty_id = ?
-           AND seating_plan_id IN (
-             SELECT sp.id FROM seating_plans sp
-             JOIN exams e ON e.id = ?
-             WHERE sp.exam_date = e.exam_date
-           )`,
-        [newFacultyId, venueId, currentFacultyId, examId]
-      );
-    }
+    await FacultyTransferService._replaceVenueFaculty(executor, {
+      spvId,
+      venueId,
+      examId,
+      currentFacultyId,
+      newFacultyId,
+    });
 
     await executor.query(
       `UPDATE faculty_assignments
@@ -854,6 +907,244 @@ const FacultyTransferService = {
     });
 
     return { status: "Rejected" };
+  },
+
+  listChangeableAssignments: async ({ examDate = "", session = "", search = "" } = {}) => {
+    let sql = `
+      SELECT
+        fa.public_uuid,
+        fa.assigned_date,
+        fa.start_time,
+        fa.end_time,
+        f.name AS faculty_name,
+        f.email AS faculty_email,
+        f.public_uuid AS faculty_uuid,
+        f.department AS faculty_department,
+        e.exam_name,
+        e.exam_code,
+        e.exam_time,
+        e.exam_session,
+        e.exam_date,
+        v.name AS venue_name,
+        EXISTS (
+          SELECT 1 FROM attendance att
+          WHERE att.exam_id = fa.exam_id AND att.venue_id = fa.venue_id AND att.is_locked = TRUE
+          LIMIT 1
+        ) AS is_locked
+      FROM faculty_assignments fa
+      JOIN faculty f ON f.id = fa.faculty_id
+      JOIN exams e ON e.id = fa.exam_id
+      JOIN venues v ON v.id = fa.venue_id
+      WHERE 1=1
+    `;
+    const params = [];
+
+    if (examDate) {
+      sql += ` AND e.exam_date = ?`;
+      params.push(examDate);
+    }
+    if (session) {
+      sql += ` AND e.exam_session = ?`;
+      params.push(session);
+    }
+    if (search?.trim()) {
+      sql += ` AND (
+        LOWER(f.name) LIKE ? OR LOWER(f.email) LIKE ?
+        OR LOWER(v.name) LIKE ? OR LOWER(e.exam_name) LIKE ?
+      )`;
+      const like = `%${search.trim().toLowerCase()}%`;
+      params.push(like, like, like, like);
+    }
+
+    sql += ` ORDER BY e.exam_date DESC, COALESCE(fa.start_time::text, e.exam_time) ASC, v.name ASC`;
+
+    const [rows] = await db.query(sql, params);
+    return (rows || [])
+      .filter((row) => !(row.is_locked ?? row.islocked))
+      .map((row) => {
+        const timeRange = parseExamTimeRange(row.exam_time ?? row.examtime);
+        return {
+          uuid: row.public_uuid ?? row.publicuuid,
+          facultyName: row.faculty_name ?? row.facultyname ?? "",
+          facultyEmail: row.faculty_email ?? row.facultyemail ?? "",
+          facultyUuid: row.faculty_uuid ?? row.facultyuuid ?? null,
+          facultyDepartment: row.faculty_department ?? row.facultydepartment ?? "",
+          examName: row.exam_name ?? row.examname ?? "",
+          examCode: row.exam_code ?? row.examcode ?? "",
+          examTime: row.exam_time ?? row.examtime ?? "",
+          examSession: row.exam_session ?? row.examsession ?? "",
+          examDate: row.exam_date ?? row.examdate ?? "",
+          startTime: normalizeTime(row.start_time ?? row.starttime) || timeRange.start || "",
+          endTime: normalizeTime(row.end_time ?? row.endtime) || timeRange.end || "",
+          venueName: row.venue_name ?? row.venuename ?? "",
+          isLocked: false,
+        };
+      });
+  },
+
+  adminDirectChange: async ({
+    assignmentUuid,
+    requestedEmail,
+    requestedName,
+    reason,
+    adminUserId,
+    ipAddress,
+    userAgent,
+  }) => {
+    const email = String(requestedEmail || "").trim().toLowerCase();
+    if (!isValidKctEmail(email)) {
+      const err = new Error("Only @kct.ac.in email addresses are accepted");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const ctx = await getAssignmentContext(assignmentUuid);
+    if (!ctx) {
+      const err = new Error("Assignment not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    if (ctx.isLocked) {
+      const err = new Error("Cannot change faculty for completed attendance");
+      err.statusCode = 409;
+      throw err;
+    }
+
+    const currentEmail = String(ctx.row.faculty_email ?? ctx.row.facultyemail ?? "")
+      .trim()
+      .toLowerCase();
+    if (email === currentEmail) {
+      const err = new Error("Replacement faculty must be different from the current faculty");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    let requestedFaculty = await findFacultyByEmail(email);
+    let generatedPassword = null;
+    let newFacultyCreated = false;
+    let userAlreadyExisted = false;
+
+    if (!requestedFaculty) {
+      const name = String(requestedName || "").trim();
+      if (name.length < 2) {
+        const err = new Error("Faculty name is required when the email is not in the system");
+        err.statusCode = 400;
+        throw err;
+      }
+      const created = await createFacultyWithUser({ name, email });
+      requestedFaculty = await findFacultyByEmail(email);
+      if (!requestedFaculty) {
+        const err = new Error("Failed to create faculty profile");
+        err.statusCode = 500;
+        throw err;
+      }
+      generatedPassword = created.generatedPassword;
+      newFacultyCreated = !created.existingFaculty;
+      userAlreadyExisted = !!created.userExists;
+    }
+
+    const availability = await checkReplacementAvailability({
+      requestedFacultyId: requestedFaculty.id,
+      examId: ctx.examId,
+      venueId: ctx.venueId,
+      examDate: ctx.examDate,
+      examStartTime: ctx.examStartTime,
+      examEndTime: ctx.examEndTime,
+      excludeFacultyId: ctx.facultyId,
+      excludeSpvId: ctx.seatingPlanVenueId,
+    });
+    if (!availability.available) {
+      const err = new Error(availability.message);
+      err.statusCode = 409;
+      throw err;
+    }
+
+    const note = reason?.trim() || "Admin direct faculty change";
+    const conn = await db.getConnection();
+    try {
+      await conn.beginTransaction();
+
+      await conn.query(
+        `UPDATE faculty_transfer_requests
+         SET status = 'Rejected',
+             rejected_by = ?,
+             rejected_at = CURRENT_TIMESTAMP,
+             rejection_reason = 'Superseded by admin direct faculty change',
+             updated_at = CURRENT_TIMESTAMP
+         WHERE attendance_assignment_id = ? AND status = 'Pending'`,
+        [adminUserId, ctx.assignment.internalId]
+      );
+
+      const [insertResult] = await conn.query(
+        `INSERT INTO faculty_transfer_requests (
+          attendance_assignment_id, seating_plan_venue_id, current_faculty_id,
+          requested_faculty_id, requested_faculty_name, requested_faculty_email,
+          exam_id, venue_id, exam_date, session, reason, requested_by_user_id,
+          status, approved_by, approved_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Approved', ?, CURRENT_TIMESTAMP)
+        RETURNING id, public_uuid`,
+        [
+          ctx.assignment.internalId,
+          ctx.seatingPlanVenueId,
+          ctx.facultyId,
+          requestedFaculty.id,
+          requestedFaculty.name,
+          email,
+          ctx.examId,
+          ctx.venueId,
+          ctx.examDate,
+          ctx.examSession,
+          note,
+          adminUserId,
+          adminUserId,
+        ]
+      );
+
+      const requestId = insertResult.insertId;
+      const [reqRows] = await conn.query(
+        `SELECT * FROM faculty_transfer_requests WHERE id = ?`,
+        [requestId]
+      );
+      const req = reqRows[0];
+
+      await FacultyTransferService._applyTransfer(conn, {
+        req,
+        newFacultyId: requestedFaculty.id,
+        examId: ctx.examId,
+        venueId: ctx.venueId,
+        currentFacultyId: ctx.facultyId,
+        assign: {
+          ...ctx.row,
+          exam_date: ctx.examDate,
+          exam_start_time: ctx.examStartTime,
+          exam_end_time: ctx.examEndTime,
+        },
+        adminUserId,
+        ipAddress,
+        userAgent,
+      });
+
+      await conn.commit();
+
+      return {
+        status: "Changed",
+        requestUuid: req?.public_uuid ?? req?.publicuuid,
+        generatedPassword,
+        newFacultyCreated,
+        userAlreadyExisted,
+        faculty: {
+          uuid: requestedFaculty.uuid,
+          name: requestedFaculty.name,
+          email: requestedFaculty.email,
+          department: requestedFaculty.department,
+        },
+      };
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
   },
 };
 

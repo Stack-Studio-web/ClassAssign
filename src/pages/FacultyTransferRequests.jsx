@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import api from "../lib/api";
 import {
   MagnifyingGlassIcon,
@@ -7,6 +8,7 @@ import {
   CheckIcon,
   XMarkIcon,
   ArrowsRightLeftIcon,
+  UserPlusIcon,
 } from "@heroicons/react/24/outline";
 import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
@@ -148,16 +150,25 @@ export default function FacultyTransferRequests() {
   return (
     <div className="min-h-screen bg-gray-50 font-[Inter,sans-serif]">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        <div className="flex items-start gap-3">
-          <div className="p-2.5 bg-indigo-100 text-indigo-600 rounded-xl">
-            <ArrowsRightLeftIcon className="h-7 w-7" />
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className="p-2.5 bg-indigo-100 text-indigo-600 rounded-xl">
+              <ArrowsRightLeftIcon className="h-7 w-7" />
+            </div>
+            <div>
+              <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Faculty Change Requests</h1>
+              <p className="text-sm text-gray-500 mt-1">
+                Review and approve faculty attendance transfer requests.
+              </p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Faculty Change Requests</h1>
-            <p className="text-sm text-gray-500 mt-1">
-              Review and approve faculty attendance transfer requests.
-            </p>
-          </div>
+          <Link
+            to="/change"
+            className="inline-flex items-center gap-2 px-4 py-2.5 bg-indigo-600 text-white text-sm font-semibold rounded-xl hover:bg-indigo-700 shrink-0"
+          >
+            <UserPlusIcon className="h-4 w-4" />
+            Change Faculty
+          </Link>
         </div>
 
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
