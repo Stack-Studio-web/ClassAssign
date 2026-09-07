@@ -4,6 +4,7 @@ const User = require("../models/User");
 const Role = require("../models/Role");
 const AuditLog = require("../models/AuditLog");
 const AttendanceService = require("./attendanceService");
+const { notifyTransferApproved } = require("./transferApprovalNotification");
 const { isValidKctEmail, passwordFromEmail, hashPassword } = require("../utils/password");
 
 function toRequestRow(row) {
@@ -751,13 +752,125 @@ const FacultyTransferService = {
         userAgent,
       });
       await conn.commit();
-      return { status: "Approved", generatedPassword, newFacultyCreated, userAlreadyExisted };
     } catch (err) {
       await conn.rollback();
       throw err;
     } finally {
       conn.release();
     }
+
+    // Email only after successful commit. Failures must not undo approval.
+    let notification = { sent: false, queued: false, recipients: [], errors: [] };
+    try {
+      const examTime = assign.exam_time ?? assign.examtime ?? "";
+      const timeParts = String(examTime)
+        .split("-")
+        .map((p) => p.trim());
+      const startTime =
+        normalizeTime(
+          assign.exam_start_time ?? assign.examstarttime ?? assign.start_time ?? assign.starttime
+        ) || timeParts[0] || "";
+      const endTime =
+        normalizeTime(
+          assign.exam_end_time ?? assign.examendtime ?? assign.end_time ?? assign.endtime
+        ) || timeParts[1] || "";
+
+      const [examRows] = await db.query(
+        `SELECT exam_name, exam_code, exam_date, exam_session FROM exams WHERE id = ? LIMIT 1`,
+        [examId]
+      );
+      const [venueRows] = await db.query(
+        `SELECT name FROM venues WHERE id = ? LIMIT 1`,
+        [venueId]
+      );
+      const [prevFacRows] = await db.query(
+        `SELECT name, department FROM faculty WHERE id = ? LIMIT 1`,
+        [currentFacultyId]
+      );
+      const [newFacRows] = await db.query(
+        `SELECT name, department FROM faculty WHERE id = ? LIMIT 1`,
+        [newFacultyId]
+      );
+
+      notification = await notifyTransferApproved({
+        currentFacultyId,
+        newFacultyId,
+        adminUserId,
+        transferDuty: {
+          previousFacultyName: prevFacRows?.[0]?.name,
+          newFacultyName: newFacRows?.[0]?.name,
+          examName:
+            examRows?.[0]?.exam_name ??
+            examRows?.[0]?.examname ??
+            examRows?.[0]?.exam_code ??
+            "Examination",
+          examDate:
+            examRows?.[0]?.exam_date ??
+            examRows?.[0]?.examdate ??
+            assign.exam_date ??
+            assign.examdate,
+          session:
+            examRows?.[0]?.exam_session ??
+            examRows?.[0]?.examsession ??
+            req.session ??
+            assign.exam_session ??
+            assign.examsession,
+          venueName: venueRows?.[0]?.name ?? "",
+          startTime,
+          endTime,
+        },
+      });
+
+      try {
+        await AuditLog.create({
+          userId: adminUserId,
+          action: "FACULTY_TRANSFER_EMAIL_NOTIFICATION",
+          entityType: "FacultyTransferRequest",
+          entityId: req.id,
+          changes: {
+            requestUuid: req.public_uuid ?? req.publicuuid,
+            fromFacultyId: currentFacultyId,
+            toFacultyId: newFacultyId,
+            notification,
+            timestamp: new Date().toISOString(),
+          },
+          ipAddress,
+          userAgent,
+        });
+      } catch (auditErr) {
+        console.error(
+          "Audit log failed after transfer email notify:",
+          auditErr?.message || auditErr
+        );
+      }
+    } catch (notifyErr) {
+      console.error(
+        "Transfer approval email notify failed (approval retained):",
+        notifyErr?.message || notifyErr
+      );
+      notification = {
+        sent: false,
+        queued: false,
+        recipients: [],
+        errors: [{ role: "pipeline", message: notifyErr?.message || String(notifyErr) }],
+      };
+    }
+
+    return {
+      status: "Approved",
+      transferStatus: "Approved",
+      generatedPassword,
+      newFacultyCreated,
+      userAlreadyExisted,
+      facultyId: newFacultyId,
+      previousFacultyId: currentFacultyId,
+      notification: {
+        sent: !!notification.sent,
+        queued: !!notification.queued,
+        recipients: notification.recipients || [],
+        errors: notification.errors || [],
+      },
+    };
   },
 
   _replaceVenueFaculty: async (executor, { spvId, venueId, examId, currentFacultyId, newFacultyId }) => {

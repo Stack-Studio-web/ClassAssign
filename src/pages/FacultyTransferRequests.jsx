@@ -104,20 +104,25 @@ export default function FacultyTransferRequests() {
     try {
       const res = await api.post(`/faculty-transfers/${uuid}/approve`);
       const data = res.data?.data ?? res.data;
+      const emailNote = data?.notification?.sent
+        ? " Email notification sent."
+        : data?.notification?.errors?.length
+          ? " Transfer saved; email notification could not be sent."
+          : "";
       if (data?.generatedPassword) {
         toast.success(
-          `Approved. New faculty login password: ${data.generatedPassword}`,
+          `Approved. New faculty login password: ${data.generatedPassword}${emailNote}`,
           "Transfer approved"
         );
       } else if (data?.userAlreadyExisted) {
         toast.success(
-          "Transfer approved. Existing user account was linked to a new faculty profile.",
+          `Transfer approved. Existing user account was linked.${emailNote}`,
           "Transfer approved"
         );
       } else if (data?.newFacultyCreated) {
-        toast.success("Transfer approved. New faculty profile created.", "Transfer approved");
+        toast.success(`Transfer approved. New faculty profile created.${emailNote}`, "Transfer approved");
       } else {
-        toast.success("Transfer request approved.");
+        toast.success(`Transfer request approved.${emailNote}`);
       }
       setSelected(null);
       load();
