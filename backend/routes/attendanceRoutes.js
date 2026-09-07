@@ -40,6 +40,22 @@ router.get(
 );
 
 router.get(
+  "/export/absentees/options",
+  sessionAuth,
+  checkRole(VIEW_ATTENDANCE_ROLES),
+  requireFacultyProfile,
+  AttendanceController.getAbsenteeExportOptions
+);
+
+router.get(
+  "/export/absentees",
+  sessionAuth,
+  checkRole(VIEW_ATTENDANCE_ROLES),
+  requireFacultyProfile,
+  AttendanceController.exportAbsentees
+);
+
+router.get(
   "/completed/:sessionUuid",
   sessionAuth,
   checkRole(VIEW_ATTENDANCE_ROLES),

@@ -48,4 +48,51 @@ export async function downloadCompletedExport(params = {}) {
   URL.revokeObjectURL(url);
 }
 
+export async function fetchAbsenteeExportOptions(params = {}) {
+  const res = await api.get("/attendance/export/absentees/options", { params });
+  return res.data;
+}
+
+export async function downloadAbsenteesExport(params = {}) {
+  const res = await api.get("/attendance/export/absentees", {
+    params,
+    responseType: "blob",
+  });
+  const contentType = res.headers["content-type"] || "";
+  if (
+    contentType.includes("application/json") ||
+    (typeof Blob !== "undefined" &&
+      res.data instanceof Blob &&
+      res.data.type &&
+      res.data.type.includes("json"))
+  ) {
+    const text = await res.data.text();
+    let message = "Failed to export absentees";
+    try {
+      const parsed = JSON.parse(text);
+      message = parsed.message || parsed.error || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  const blob = new Blob([res.data], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  const cd = res.headers["content-disposition"];
+  const match = cd?.match(/filename="(.+)"/);
+  const safeDate = String(params.date || "date").replace(/[^0-9-]/g, "");
+  const safeSession = String(params.session || "session").replace(/[^A-Za-z0-9]/g, "");
+  const safeTime = String(params.startTime || params.examTime || "time")
+    .replace(/[^0-9A-Za-z]+/g, "-")
+    .replace(/-+/g, "-");
+  a.download =
+    match?.[1] || `attendance_absentees_${safeDate}_${safeSession}_${safeTime}.xlsx`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export const EXAM_TYPES = ["CAT 1", "CAT 2", "Model", "Semester", "Retest"];

@@ -590,6 +590,49 @@ const AttendanceController = {
     }
   },
 
+  getAbsenteeExportOptions: async (req, res) => {
+    try {
+      const options = await AttendanceLifecycleService.getAbsenteeExportOptions(
+        req.user,
+        req.user.role,
+        {
+          date: req.query.date || null,
+          session: req.query.session || null,
+        }
+      );
+      return res.json({ success: true, ...options });
+    } catch (err) {
+      return Api.fromError(res, err, "Failed to load export options");
+    }
+  },
+
+  exportAbsentees: async (req, res) => {
+    try {
+      const { buffer, filename } = await AttendanceLifecycleService.exportAbsenteesExcel(
+        req.user,
+        req.user.role,
+        {
+          date: req.query.date || null,
+          session: req.query.session || null,
+          startTime: req.query.startTime || req.query.start_time || null,
+          endTime: req.query.endTime || req.query.end_time || null,
+          examTime: req.query.examTime || req.query.exam_time || null,
+        }
+      );
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      return res.send(buffer);
+    } catch (err) {
+      if (err.statusCode === 400) {
+        return Api.validationError(res, err.message);
+      }
+      return Api.fromError(res, err, "Failed to export absentees");
+    }
+  },
+
   getCompletedDetail: async (req, res) => {
     try {
       const detail = await AttendanceLifecycleService.getCompletedSessionDetail(

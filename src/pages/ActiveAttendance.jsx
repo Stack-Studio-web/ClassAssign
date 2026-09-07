@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
+  ArrowDownTrayIcon,
   CalendarDaysIcon,
   CheckCircleIcon,
   ClockIcon,
@@ -8,7 +9,12 @@ import {
   MagnifyingGlassIcon,
   UserGroupIcon,
 } from "@heroicons/react/24/outline";
-import { fetchActiveAttendance, fetchAttendanceCounts } from "../lib/attendanceApi";
+import {
+  downloadAbsenteesExport,
+  fetchAbsenteeExportOptions,
+  fetchActiveAttendance,
+  fetchAttendanceCounts,
+} from "../lib/attendanceApi";
 import { getWindowBadge } from "../lib/attendanceWindow";
 
 function formatDisplayDate(dateStr) {
@@ -55,6 +61,15 @@ export default function ActiveAttendance() {
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState({ total: 0, totalPages: 1, limit: 25 });
 
+  const [exportDate, setExportDate] = useState("");
+  const [exportSession, setExportSession] = useState("");
+  const [exportTimeLabel, setExportTimeLabel] = useState("");
+  const [exportDates, setExportDates] = useState([]);
+  const [exportSessions, setExportSessions] = useState([]);
+  const [exportTimes, setExportTimes] = useState([]);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
+
   const userRole = useMemo(() => {
     try {
       return JSON.parse(sessionStorage.getItem("user") || "{}")?.role;
@@ -92,6 +107,93 @@ export default function ActiveAttendance() {
     const timer = setInterval(load, 60000);
     return () => clearInterval(timer);
   }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchAbsenteeExportOptions({});
+        if (!cancelled) setExportDates(data.dates || []);
+      } catch {
+        if (!cancelled) setExportDates([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!exportDate) {
+      setExportSessions([]);
+      setExportSession("");
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchAbsenteeExportOptions({ date: exportDate });
+        if (cancelled) return;
+        setExportSessions(data.sessions || []);
+        setExportSession("");
+        setExportTimeLabel("");
+        setExportTimes([]);
+      } catch {
+        if (!cancelled) setExportSessions([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [exportDate]);
+
+  useEffect(() => {
+    if (!exportDate || !exportSession) {
+      setExportTimes([]);
+      setExportTimeLabel("");
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchAbsenteeExportOptions({
+          date: exportDate,
+          session: exportSession,
+        });
+        if (cancelled) return;
+        setExportTimes(data.examTimes || []);
+        setExportTimeLabel("");
+      } catch {
+        if (!cancelled) setExportTimes([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [exportDate, exportSession]);
+
+  const handleAbsenteeExport = async () => {
+    setExportError("");
+    if (!exportDate || !exportSession || !exportTimeLabel) {
+      setExportError("Select day, session, and exam time before exporting.");
+      return;
+    }
+    const time = exportTimes.find((t) => t.label === exportTimeLabel);
+    setExporting(true);
+    try {
+      await downloadAbsenteesExport({
+        date: exportDate,
+        session: exportSession,
+        startTime: time?.startTime || undefined,
+        endTime: time?.endTime || undefined,
+        examTime: time?.examTime || exportTimeLabel,
+      });
+    } catch (err) {
+      setExportError(err.message || "Failed to export absentees Excel");
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const isAdmin = userRole === "admin" || userRole === "faculty_incharge";
 
@@ -154,6 +256,88 @@ export default function ActiveAttendance() {
             subtext="Past exam end time"
           />
         </div>
+
+        <section className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                <ArrowDownTrayIcon className="h-5 w-5 text-indigo-500" />
+                Export Absentees (Excel)
+              </h2>
+              <p className="text-sm text-gray-500 mt-1">
+                Absent students only — all classrooms for the selected day, session, and exam time.
+              </p>
+            </div>
+          </div>
+          {exportError && (
+            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
+              {exportError}
+            </div>
+          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <label className="text-sm text-gray-600 space-y-1">
+              <span className="font-medium">Day</span>
+              <select
+                value={exportDate}
+                onChange={(e) => setExportDate(e.target.value)}
+                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
+              >
+                <option value="">Select Day</option>
+                {exportDates.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-sm text-gray-600 space-y-1">
+              <span className="font-medium">Session</span>
+              <select
+                value={exportSession}
+                onChange={(e) => setExportSession(e.target.value)}
+                disabled={!exportDate}
+                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl bg-white focus:ring-2 focus:ring-indigo-500 outline-none disabled:bg-gray-50"
+              >
+                <option value="">Select Session</option>
+                {(exportSessions.length ? exportSessions : ["FN", "AN"]).map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-sm text-gray-600 space-y-1">
+              <span className="font-medium">Exam Time</span>
+              <select
+                value={exportTimeLabel}
+                onChange={(e) => setExportTimeLabel(e.target.value)}
+                disabled={!exportDate || !exportSession}
+                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl bg-white focus:ring-2 focus:ring-indigo-500 outline-none disabled:bg-gray-50"
+              >
+                <option value="">Select Exam Time</option>
+                {exportTimes.map((t) => (
+                  <option key={t.label} value={t.label}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="flex items-end">
+              <button
+                type="button"
+                onClick={handleAbsenteeExport}
+                disabled={exporting || !exportDate || !exportSession || !exportTimeLabel}
+                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 text-white text-sm font-semibold rounded-xl hover:bg-indigo-700 disabled:opacity-50"
+              >
+                <ArrowDownTrayIcon className="h-4 w-4" />
+                {exporting ? "Exporting…" : "Export Excel"}
+              </button>
+            </div>
+          </div>
+          <p className="text-xs text-gray-400">
+            Classrooms: all halls for the selected exam window (no per-room selection).
+          </p>
+        </section>
 
         <section className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
           <div className="p-5 border-b border-gray-100 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">

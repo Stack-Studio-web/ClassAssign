@@ -676,94 +676,93 @@ router.get("/attendance",
         }
         
         const venueId = matchedVenue.id;
+        const {
+          resolveVenueStudentsWithCourses,
+          groupStudentsByCourse,
+        } = require("../utils/venueAttendanceCourses");
 
-        // ✅ Step 5+6: Single query - get students directly from seating_arrangements for this venue
-        // JOIN with seating_plan_students (same plan) - avoids dual-query regn_no matching issues
-        const [venueStudentsRaw] = await db.query(
-            `SELECT DISTINCT
-               sps.regn_no, 
-               sps.student_name, 
-               sps.course_description,
-               COALESCE(t.course_name, sps.course_description) as course_name
-             FROM seating_arrangements sa
-             INNER JOIN seating_plan_students sps 
-               ON sps.seating_plan_id = ? AND sps.regn_no = sa.regn_no
-             LEFT JOIN timetable t ON t.course_code = sps.course_description
-             WHERE sa.seating_plan_venue_id = ?
-             ORDER BY sps.course_description, sps.regn_no`,
-            [planId, venueId]
+        const [venueMetaRows] = await db.query(
+          `SELECT seating_layout_json FROM seating_plan_venues WHERE id = ?`,
+          [venueId]
+        );
+        const layoutJson =
+          venueMetaRows?.[0]?.seating_layout_json ??
+          venueMetaRows?.[0]?.seatinglayoutjson ??
+          null;
+
+        const [arrangementRows] = await db.query(
+          `SELECT regn_no, seat_row, seat_col, seat_index
+           FROM seating_arrangements
+           WHERE seating_plan_venue_id = ?
+             AND regn_no IS NOT NULL
+             AND TRIM(regn_no) <> ''
+             AND regn_no <> '-'`,
+          [venueId]
         );
 
-        // Normalize to camelCase (PostgreSQL returns lowercase)
-        const venueStudents = (venueStudentsRaw || []).map(r => ({
-            regNo: r.regn_no ?? r.regnno ?? "",
-            name: r.student_name ?? r.studentname ?? "",
-            courseCode: r.course_description ?? r.coursedescription ?? "",
-            courseName: r.course_name ?? r.coursename ?? ""
+        const [planStudentRows] = await db.query(
+          `SELECT regn_no, student_name, course_description
+           FROM seating_plan_students
+           WHERE seating_plan_id = ?
+           ORDER BY id ASC`,
+          [planId]
+        );
+
+        let venueStudents = resolveVenueStudentsWithCourses({
+          layoutJson,
+          arrangementRows: arrangementRows || [],
+          planStudentRows: planStudentRows || [],
+        });
+
+        // Enrich names from seating_plan_students when layout omitted them
+        const nameByRegn = new Map();
+        for (const r of planStudentRows || []) {
+          const regn = String(r.regn_no ?? r.regnno ?? "").trim();
+          const name = String(r.student_name ?? r.studentname ?? "").trim();
+          if (regn && name && !nameByRegn.has(regn)) nameByRegn.set(regn, name);
+        }
+        venueStudents = venueStudents.map((s) => ({
+          ...s,
+          name: s.name || nameByRegn.get(s.regNo) || s.regNo,
         }));
 
         console.log(`🪑 Found ${venueStudents.length} students seated in venue ${venue}`);
 
-        // ✅ Step 7: Create a map of courseCode -> courseName from actual student data
+        // Course names from timetable when available (venue courses only — not full plan list)
+        const venueCourseCodes = [...new Set(venueStudents.map((s) => s.courseCode).filter(Boolean))];
         const courseNameMap = {};
-        venueStudents.forEach(s => {
-            const cc = s.courseCode ?? s.coursecode;
-            const cn = s.courseName ?? s.coursename;
-            if (cc && cn) courseNameMap[cc] = cn;
+        venueStudents.forEach((s) => {
+          if (s.courseCode) courseNameMap[s.courseCode] = s.courseCode;
         });
+        if (venueCourseCodes.length > 0) {
+          const placeholders = venueCourseCodes.map(() => "?").join(",");
+          const [ttRows] = await db.query(
+            `SELECT course_code, course_name FROM timetable
+             WHERE course_code IN (${placeholders})`,
+            venueCourseCodes
+          );
+          for (const t of ttRows || []) {
+            const code = t.course_code ?? t.coursecode;
+            const name = t.course_name ?? t.coursename;
+            if (code && name) courseNameMap[code] = name;
+          }
+        }
 
-        // Fallback to selectedCourses if courseName not in student records
-        selectedCourseCodes.forEach(cc => {
-            if (!courseNameMap[cc]) courseNameMap[cc] = cc;
-        });
+        // Only keep courses actually present in this venue.
+        // Do NOT seed empty cards from plan-wide selected_courses.
+        const courses = groupStudentsByCourse(venueStudents, courseNameMap);
 
-        console.log("📚 Course name mapping:", courseNameMap);
+        console.log(`📋 Venue-scoped courses: ${courses.map((c) => c.courseCode).join(", ")}`);
 
-        // ✅ Step 8: Group by courses (use selectedCourseCodes if non-empty, else ALL venue students)
-        const courseMap = {};
-        venueStudents.forEach(s => {
-            const courseCode = (s.courseCode ?? s.coursecode ?? "").trim();
-            const regNo = String(s.regNo ?? s.regnno ?? s.regn_no ?? "").trim();
-            const name = (s.name ?? s.student_name ?? "").trim();
-            if (!courseCode || !regNo) return;
-
-            // Include if: selectedCourseCodes is empty (show all) OR course is in selected
-            const isSelected = selectedCourseCodes.size === 0 || 
-                selectedCourseCodes.has(courseCode) ||
-                [...selectedCourseCodes].some(cc => String(cc || "").trim().toUpperCase() === courseCode.toUpperCase());
-
-            if (isSelected) {
-                if (!courseMap[courseCode]) {
-                    courseMap[courseCode] = { 
-                        courseCode, 
-                        courseName: courseNameMap[courseCode] || courseCode,
-                        students: [],
-                        studentRegNos: new Set()
-                    };
-                }
-                if (!courseMap[courseCode].studentRegNos.has(regNo)) {
-                    courseMap[courseCode].students.push({ regNo, name });
-                    courseMap[courseCode].studentRegNos.add(regNo);
-                }
-            }
-        });
-
-        console.log(`📋 Filtered to ${Object.keys(courseMap).length} selected courses`);
-
-        // ✅ Remove the studentRegNos Set before sending to client
         const result = {
             examDate: plan.exam_date,
             examSession: plan.exam_session,
             hallNo: venue,
-            courses: Object.values(courseMap).map(course => ({
-                courseCode: course.courseCode,
-                courseName: course.courseName,
-                students: course.students
-            }))
+            courses,
         };
 
         console.log("✅ SUCCESS! Sending attendance data:");
-        console.log(`  - ${result.courses.length} selected courses`);
+        console.log(`  - ${result.courses.length} venue courses`);
         console.log(`  - ${venueStudents.length} total students in venue`);
         console.log("==========================================\n");
 

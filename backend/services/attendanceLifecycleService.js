@@ -374,6 +374,326 @@ const AttendanceLifecycleService = {
     };
   },
 
+  /**
+   * Distinct exam dates / sessions / times available for absentee Excel export.
+   */
+  getAbsenteeExportOptions: async (user, role, filters = {}) => {
+    const roleScope = await buildRoleScope(user, role);
+    const date = filters.date || null;
+    const session = filters.session || null;
+
+    const [dateRows] = await db.query(
+      `SELECT DISTINCT e.exam_date
+       FROM attendance att
+       JOIN exams e ON e.id = att.exam_id
+       JOIN faculty_assignments fa ON fa.exam_id = att.exam_id AND fa.venue_id = att.venue_id
+       JOIN faculty f ON f.id = fa.faculty_id
+       WHERE att.status = 'Absent'${roleScope.sql}
+       ORDER BY e.exam_date DESC`,
+      roleScope.params
+    );
+
+    const dates = (dateRows || [])
+      .map((r) => {
+        const d = r.exam_date ?? r.examdate;
+        if (!d) return null;
+        if (d instanceof Date) return d.toISOString().slice(0, 10);
+        return String(d).includes("T") ? String(d).split("T")[0] : String(d).slice(0, 10);
+      })
+      .filter(Boolean);
+
+    let sessions = [];
+    if (date) {
+      const [sessRows] = await db.query(
+        `SELECT DISTINCT e.exam_session
+         FROM attendance att
+         JOIN exams e ON e.id = att.exam_id
+         JOIN faculty_assignments fa ON fa.exam_id = att.exam_id AND fa.venue_id = att.venue_id
+         JOIN faculty f ON f.id = fa.faculty_id
+         WHERE att.status = 'Absent'
+           AND e.exam_date = ?${roleScope.sql}
+         ORDER BY e.exam_session`,
+        [date, ...roleScope.params]
+      );
+      sessions = [
+        ...new Set(
+          (sessRows || [])
+            .map((r) => normalizeSessionLabel(r.exam_session ?? r.examsession))
+            .filter((s) => s && s !== "—")
+        ),
+      ];
+    }
+
+    let examTimes = [];
+    if (date && session) {
+      const sessionClause =
+        String(session).toUpperCase() === "FN"
+          ? "(UPPER(e.exam_session) LIKE '%FN%' OR UPPER(e.exam_session) LIKE '%MORNING%')"
+          : String(session).toUpperCase() === "AN"
+            ? "(UPPER(e.exam_session) LIKE '%AN%' OR UPPER(e.exam_session) LIKE '%AFTERNOON%')"
+            : "e.exam_session ILIKE ?";
+      const sessParams =
+        String(session).toUpperCase() === "FN" || String(session).toUpperCase() === "AN"
+          ? []
+          : [`%${session}%`];
+
+      const [timeRows] = await db.query(
+        `SELECT DISTINCT
+           COALESCE(fa.start_time::text, split_part(e.exam_time, '-', 1)) AS start_time,
+           COALESCE(fa.end_time::text, split_part(e.exam_time, '-', 2)) AS end_time,
+           e.exam_time
+         FROM attendance att
+         JOIN exams e ON e.id = att.exam_id
+         JOIN faculty_assignments fa ON fa.exam_id = att.exam_id AND fa.venue_id = att.venue_id
+         JOIN faculty f ON f.id = fa.faculty_id
+         WHERE att.status = 'Absent'
+           AND e.exam_date = ?
+           AND ${sessionClause}${roleScope.sql}
+         ORDER BY 1, 2`,
+        [date, ...sessParams, ...roleScope.params]
+      );
+
+      const seen = new Set();
+      for (const r of timeRows || []) {
+        const start = String(r.start_time ?? r.starttime ?? "")
+          .trim()
+          .slice(0, 5);
+        const end = String(r.end_time ?? r.endtime ?? "")
+          .trim()
+          .slice(0, 5);
+        const label =
+          start && end
+            ? `${start} - ${end}`
+            : String(r.exam_time ?? r.examtime ?? "").trim();
+        if (!label || seen.has(label)) continue;
+        seen.add(label);
+        examTimes.push({
+          label,
+          startTime: start || null,
+          endTime: end || null,
+          examTime: r.exam_time ?? r.examtime ?? label,
+        });
+      }
+    }
+
+    return { dates, sessions, examTimes };
+  },
+
+  /**
+   * Excel of ABSENT students only across ALL classrooms for day+session+exam time.
+   */
+  exportAbsenteesExcel: async (user, role, filters = {}) => {
+    const date = filters.date;
+    const session = filters.session;
+    const startTime = filters.startTime ? String(filters.startTime).slice(0, 5) : null;
+    const endTime = filters.endTime ? String(filters.endTime).slice(0, 5) : null;
+    const examTime = filters.examTime || null;
+
+    if (!date || !session) {
+      const err = new Error("date and session are required");
+      err.statusCode = 400;
+      throw err;
+    }
+    if (!startTime && !endTime && !examTime) {
+      const err = new Error("exam time is required");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const roleScope = await buildRoleScope(user, role);
+    const sessionClause =
+      String(session).toUpperCase() === "FN"
+        ? "(UPPER(e.exam_session) LIKE '%FN%' OR UPPER(e.exam_session) LIKE '%MORNING%')"
+        : String(session).toUpperCase() === "AN"
+          ? "(UPPER(e.exam_session) LIKE '%AN%' OR UPPER(e.exam_session) LIKE '%AFTERNOON%')"
+          : "e.exam_session ILIKE ?";
+    const sessParams =
+      String(session).toUpperCase() === "FN" || String(session).toUpperCase() === "AN"
+        ? []
+        : [`%${session}%`];
+
+    const timeClauses = [];
+    const timeParams = [];
+    if (startTime && endTime) {
+      timeClauses.push(`(
+        (fa.start_time IS NOT NULL AND fa.end_time IS NOT NULL
+          AND to_char(fa.start_time, 'HH24:MI') = ?
+          AND to_char(fa.end_time, 'HH24:MI') = ?)
+        OR (fa.start_time IS NULL AND e.exam_time ILIKE ?)
+      )`);
+      timeParams.push(startTime, endTime, `%${startTime}%`);
+    } else if (examTime) {
+      timeClauses.push("e.exam_time ILIKE ?");
+      timeParams.push(`%${String(examTime).trim()}%`);
+    }
+
+    const { resolveVenueStudentsWithCourses } = require("../utils/venueAttendanceCourses");
+
+    const [rows] = await db.query(
+      `SELECT
+         att.id AS attendance_id,
+         att.status,
+         st.regn_no,
+         st.student_name,
+         st.course_description AS student_course,
+         e.exam_date,
+         e.exam_session,
+         e.exam_time,
+         e.id AS exam_id,
+         v.id AS venue_id,
+         v.name AS venue_name,
+         fa.start_time,
+         fa.end_time,
+         spv.id AS spv_id,
+         spv.seating_layout_json,
+         spv.seating_plan_id,
+         sa.seat_row,
+         sa.seat_col,
+         sa.seat_index
+       FROM attendance att
+       JOIN students st ON st.id = att.student_id
+       JOIN exams e ON e.id = att.exam_id
+       JOIN venues v ON v.id = att.venue_id
+       JOIN faculty_assignments fa
+         ON fa.exam_id = att.exam_id AND fa.venue_id = att.venue_id
+       JOIN faculty f ON f.id = fa.faculty_id
+       LEFT JOIN seating_plans sp
+         ON sp.exam_date = e.exam_date
+        AND (e.exam_session IS NULL OR sp.exam_session = e.exam_session)
+       LEFT JOIN seating_plan_venues spv
+         ON spv.seating_plan_id = sp.id AND spv.venue_id = v.id
+       LEFT JOIN seating_arrangements sa
+         ON sa.seating_plan_venue_id = spv.id
+        AND sa.regn_no = st.regn_no
+       WHERE att.status = 'Absent'
+         AND e.exam_date = ?
+         AND ${sessionClause}
+         ${timeClauses.length ? `AND ${timeClauses.join(" AND ")}` : ""}
+         ${roleScope.sql}
+       ORDER BY v.name ASC, st.regn_no ASC, att.id ASC`,
+      [date, ...sessParams, ...timeParams, ...roleScope.params]
+    );
+
+    // Deduplicate by student+venue (joins can multiply via seating plans)
+    const seen = new Set();
+    const absentees = [];
+    const courseCache = new Map();
+
+    for (const r of rows || []) {
+      const regn = String(r.regn_no ?? r.regnno ?? "").trim();
+      const venueName = r.venue_name ?? r.venuename ?? "";
+      const key = `${regn}::${r.venue_id ?? r.venueid}`;
+      if (!regn || seen.has(key)) continue;
+      seen.add(key);
+
+      let courseCode = "";
+      const spvId = r.spv_id ?? r.spvid;
+      const cacheKey = String(spvId || "");
+      if (spvId && !courseCache.has(cacheKey)) {
+        const [planStudents] = await db.query(
+          `SELECT regn_no, student_name, course_description
+           FROM seating_plan_students WHERE seating_plan_id = ? ORDER BY id ASC`,
+          [r.seating_plan_id ?? r.seatingplanid]
+        );
+        const [arr] = await db.query(
+          `SELECT regn_no, seat_row, seat_col, seat_index
+           FROM seating_arrangements WHERE seating_plan_venue_id = ?`,
+          [spvId]
+        );
+        const students = resolveVenueStudentsWithCourses({
+          layoutJson: r.seating_layout_json ?? r.seatinglayoutjson,
+          arrangementRows: arr || [],
+          planStudentRows: planStudents || [],
+        });
+        const map = new Map(students.map((s) => [s.regNo, s.courseCode]));
+        courseCache.set(cacheKey, map);
+      }
+      if (spvId && courseCache.has(cacheKey)) {
+        courseCode = courseCache.get(cacheKey).get(regn) || "";
+      }
+      if (!courseCode) {
+        courseCode = String(r.student_course ?? r.studentcourse ?? "").trim();
+      }
+
+      const start =
+        String(r.start_time ?? r.starttime ?? "")
+          .trim()
+          .slice(0, 5) ||
+        String(r.exam_time ?? r.examtime ?? "")
+          .split("-")[0]
+          ?.trim()
+          .slice(0, 5) ||
+        "";
+      const end =
+        String(r.end_time ?? r.endtime ?? "")
+          .trim()
+          .slice(0, 5) ||
+        String(r.exam_time ?? r.examtime ?? "")
+          .split("-")[1]
+          ?.trim()
+          .slice(0, 5) ||
+        "";
+
+      absentees.push({
+        regnNo: regn,
+        studentName: r.student_name ?? r.studentname ?? "",
+        courseCode,
+        examDate: r.exam_date ?? r.examdate,
+        session: normalizeSessionLabel(r.exam_session ?? r.examsession),
+        examTime: start && end ? `${start} - ${end}` : r.exam_time ?? r.examtime ?? "",
+        classroom: venueName,
+        seat:
+          r.seat_row != null
+            ? `R${Number(r.seat_row) + 1}-C${Number(r.seat_col ?? 0) + 1}`
+            : "",
+        status: "Absent",
+      });
+    }
+
+    const sheetRows = absentees.map((s, idx) => ({
+      "S.No": idx + 1,
+      "Register Number": s.regnNo,
+      "Student Name": s.studentName,
+      "Course Code": s.courseCode,
+      "Exam Date": s.examDate,
+      Session: s.session,
+      "Exam Time": s.examTime,
+      Classroom: s.classroom,
+      Seat: s.seat,
+      "Attendance Status": s.status,
+    }));
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(
+      sheetRows.length
+        ? sheetRows
+        : [
+            {
+              "S.No": "",
+              "Register Number": "",
+              "Student Name": "",
+              "Course Code": "",
+              "Exam Date": "",
+              Session: "",
+              "Exam Time": "",
+              Classroom: "",
+              Seat: "",
+              "Attendance Status": "",
+            },
+          ]
+    );
+    XLSX.utils.book_append_sheet(wb, ws, "Absentees");
+    const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+
+    const safeTime = String(startTime || examTime || "time")
+      .replace(/[^0-9A-Za-z]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+    const safeSession = String(session).toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const filename = `attendance_absentees_${date}_${safeSession}_${safeTime || "exam"}.xlsx`;
+    return { buffer, filename, count: absentees.length };
+  },
+
   EXAM_TYPE_VALUES,
 };
 
