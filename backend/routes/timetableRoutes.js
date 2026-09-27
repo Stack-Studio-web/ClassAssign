@@ -176,8 +176,43 @@ router.post("/",
 );
 
 /* =====================================================
+    POST: BULK IMPORT PREVIEW (validate only)
+===================================================== */
+router.post("/bulk-import/preview",
+  sessionAuth,
+  checkRole(['admin', 'faculty_incharge', 'hod']),
+  upload.single("file"),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No file uploaded" });
+      }
+
+      const workbook = xlsx.readFile(req.file.path);
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const data = xlsx.utils.sheet_to_json(sheet);
+      const ownerOpts = await resolveOwnerOpts(req);
+      const result = await runTimetableValidation(data, ownerOpts);
+
+      return res.json({
+        message: result.message,
+        ...result,
+      });
+    } catch (err) {
+      console.error("BULK IMPORT PREVIEW ERROR:", err);
+      return res.status(500).json({
+        error: "Failed to validate timetable file",
+        details: err.message,
+      });
+    } finally {
+      if (req.file) fs.unlink(req.file.path, () => {});
+    }
+  }
+);
+
+/* =====================================================
     POST: BULK IMPORT FROM EXCEL
-    ✅ FIXED: Date parsing now uses UTC to prevent timezone shifts
+    Atomic: blocked when any row has validation errors.
     Roles: admin, faculty_incharge, hod
 ===================================================== */
 router.post("/bulk-import",
@@ -193,146 +228,59 @@ router.post("/bulk-import",
         });
       }
 
-      // Read Excel file
       const workbook = xlsx.readFile(req.file.path);
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       const data = xlsx.utils.sheet_to_json(sheet);
+      const ownerOpts = await resolveOwnerOpts(req);
+      const result = await runTimetableValidation(data, ownerOpts);
 
-      // Validate and format data
-      const schedules = [];
-      const errors = [];
-
-      for (let i = 0; i < data.length; i++) {
-        const row = data[i];
-        const rowNum = i + 2; // Excel row number (header is row 1)
-
-        try {
-          // Extract and validate fields
-          const date = row["Date"] || row["date"];
-          const startTime = row["Start Time"] || row["startTime"] || row["start_time"];
-          const endTime = row["End Time"] || row["endTime"] || row["end_time"];
-          const session = (row["Session"] || row["session"] || "").toUpperCase();
-          const courseCode = (row["Course Code"] || row["courseCode"] || row["course_code"] || "").trim();
-          const courseName = (row["Course Name"] || row["courseName"] || row["course_name"] || "").trim();
-          const department = (row["Department"] || row["department"] || "").toUpperCase().trim();
-          const examType = (row["Exam Type"] || row["examType"] || row["exam_type"] || "").toUpperCase().replace(/\s+/g, '');
-
-          // Validation
-          if (!date || !startTime || !endTime || !courseCode || !courseName || !department) {
-            errors.push(`Row ${rowNum}: Missing required fields`);
-            continue;
-          }
-
-          if (!["FN", "AN"].includes(session)) {
-            errors.push(`Row ${rowNum}: Session must be FN or AN`);
-            continue;
-          }
-
-          if (!["CAT1", "CAT2", "SEM"].includes(examType)) {
-            errors.push(`Row ${rowNum}: Exam Type must be CAT1, CAT2, or SEM`);
-            continue;
-          }
-
-          // ✅ FIXED: Parse date with UTC to avoid timezone shifts
-          let formattedDate;
-          
-          if (typeof date === 'number') {
-            // Excel serial date - use UTC to prevent timezone shift
-            console.log(`Row ${rowNum}: Excel date number = ${date}`);
-            
-            const EXCEL_EPOCH = new Date(Date.UTC(1899, 11, 30)); // Dec 30, 1899 UTC
-            const parsedDate = new Date(EXCEL_EPOCH.getTime() + date * 86400000);
-            
-            const year = parsedDate.getUTCFullYear();
-            const month = String(parsedDate.getUTCMonth() + 1).padStart(2, '0');
-            const day = String(parsedDate.getUTCDate()).padStart(2, '0');
-            formattedDate = `${year}-${month}-${day}`;
-            
-            console.log(`Row ${rowNum}: Converted to ${formattedDate}`);
-            
-          } else if (typeof date === 'string') {
-            // String date - parse carefully
-            const parsedDate = new Date(date);
-            if (isNaN(parsedDate.getTime())) {
-              errors.push(`Row ${rowNum}: Invalid date format`);
-              continue;
-            }
-            
-            // For string dates, use local time (they're already in correct timezone)
-            const year = parsedDate.getFullYear();
-            const month = String(parsedDate.getMonth() + 1).padStart(2, '0');
-            const day = String(parsedDate.getDate()).padStart(2, '0');
-            formattedDate = `${year}-${month}-${day}`;
-            
-          } else if (date instanceof Date) {
-            // Date object
-            const year = date.getFullYear();
-            const month = String(date.getMonth() + 1).padStart(2, '0');
-            const day = String(date.getDate()).padStart(2, '0');
-            formattedDate = `${year}-${month}-${day}`;
-            
-          } else {
-            errors.push(`Row ${rowNum}: Invalid date format (unknown type)`);
-            continue;
-          }
-
-          schedules.push({
-            date: formattedDate,
-            startTime,
-            endTime,
-            session,
-            courseCode,
-            courseName,
-            department,
-            examType
-          });
-
-        } catch (err) {
-          errors.push(`Row ${rowNum}: ${err.message}`);
-        }
-      }
-
-      let schedulesToInsert = schedules;
-      if (req.user?.role === "hod" && req.user?.department) {
-        const hodDept = req.user.department.toUpperCase().trim();
-        schedulesToInsert = schedules.filter((s) => (s.department || "").toUpperCase().trim() === hodDept);
-        const removed = schedules.length - schedulesToInsert.length;
-        if (removed > 0) errors.push(`${removed} row(s) skipped: HoD can only import for department ${req.user.department}.`);
-      }
-
-      if (schedulesToInsert.length === 0) {
+      if (!result.canImport) {
         return res.status(400).json({
-          error: "No valid schedules found in file (or none for your department)",
-          details: errors
+          error: result.message || "Import blocked. Please correct the errors before importing.",
+          message: result.message,
+          rows: result.rows,
+          validCount: result.validCount,
+          errorCount: result.errorCount,
+          total: result.total,
+          canImport: false,
         });
       }
 
-      // Insert schedules
       let inserted = 0;
       let skipped = 0;
       const skippedDetails = [];
 
-      for (const schedule of schedulesToInsert) {
+      for (const schedule of result.rows) {
         try {
-          // Check for duplicates
           const exists = await Timetable.checkDuplicate({
             date: schedule.date,
             session: schedule.session,
             courseCode: schedule.courseCode,
             department: schedule.department,
             examType: schedule.examType,
-            batchId: null
-          }, await resolveOwnerOpts(req));
+            batch: schedule.batch,
+            batchId: schedule.batchId ?? null,
+          }, ownerOpts);
 
           if (exists) {
             skipped++;
-            skippedDetails.push(`${schedule.courseCode} on ${schedule.date} ${schedule.session}`);
+            skippedDetails.push(`${schedule.courseCode} / ${schedule.batch} on ${schedule.date} ${schedule.session}`);
             continue;
           }
 
-          await Timetable.create(schedule, await resolveOwnerOpts(req));
+          await Timetable.create({
+            date: schedule.date,
+            startTime: schedule.startTime,
+            endTime: schedule.endTime,
+            session: schedule.session,
+            courseCode: schedule.courseCode,
+            courseName: schedule.courseName,
+            department: schedule.department,
+            examType: schedule.examType,
+            batch: schedule.batch,
+            batchId: schedule.batchId ?? null,
+          }, ownerOpts);
           inserted++;
-
         } catch (err) {
           skipped++;
           skippedDetails.push(`${schedule.courseCode}: ${err.message}`);
@@ -344,7 +292,9 @@ router.post("/bulk-import",
         inserted,
         skipped,
         skippedDetails: skippedDetails.length > 0 ? skippedDetails : undefined,
-        errors: errors.length > 0 ? errors : undefined
+        validCount: result.validCount,
+        errorCount: 0,
+        canImport: true,
       });
 
     } catch (err) {
@@ -354,13 +304,69 @@ router.post("/bulk-import",
         details: err.message
       });
     } finally {
-      // Clean up uploaded file
       if (req.file) {
         fs.unlink(req.file.path, () => {});
       }
     }
   }
 );
+
+async function runTimetableValidation(data, ownerOpts) {
+  const Student = require("../models/Student");
+  const Batch = require("../models/Batch");
+  const { validateTimetableRows } = require("../utils/timetableBulkImport");
+
+  let knownDepartments = [];
+  try {
+    const options = await Student.getFilterOptions(ownerOpts);
+    knownDepartments = options?.departments ?? [];
+  } catch {
+    knownDepartments = [];
+  }
+
+  return validateTimetableRows(data, ownerOpts, {
+    knownDepartments,
+    findBatchByName: async (batchName, department) => {
+      const formal = await Batch.findByNameInScope(batchName, ownerOpts);
+      if (formal) return formal;
+
+      // Fall back to student-derived batch codes in this Academic Context (same as Manual Entry)
+      const derived = await Student.listBatchesByDepartment(department, ownerOpts);
+      const hit = (derived || []).find(
+        (b) => String(b.name || "").toUpperCase() === String(batchName).toUpperCase()
+      );
+      if (!hit) return null;
+      return { id: hit.batchId ?? null, name: hit.name, uuid: hit.uuid ?? hit.name };
+    },
+    courseExistsForDeptBatch: async (courseCode, department, batch) => {
+      const students = await Student.getByCourseAndDepartment(courseCode, department, ownerOpts);
+      if (!students?.length) {
+        return {
+          ok: false,
+          message: `Course Code ${courseCode} was not found for Department ${department} in the selected academic context.`,
+        };
+      }
+      const batchUpper = String(batch).toUpperCase();
+      const inBatch = students.some((s) =>
+        String(s.regnNo || s.regn_no || "").toUpperCase().startsWith(batchUpper)
+      );
+      if (!inBatch) {
+        return {
+          ok: false,
+          message: `Course Code ${courseCode} is not linked to Batch ${batch} for Department ${department}.`,
+        };
+      }
+      return {
+        ok: true,
+        courseName: students[0]?.courseName || students[0]?.course_name || null,
+      };
+    },
+    departmentExists: async (department) => {
+      if (!knownDepartments.length) return true;
+      return knownDepartments.map((d) => String(d).toUpperCase()).includes(department);
+    },
+  });
+}
 
 /* =====================================================
     DELETE: SINGLE SCHEDULE

@@ -137,6 +137,47 @@ const Batch = {
    * List batches by department (for UI dropdown dependency).
    * This does not require a semester context; it uses the batches table directly.
    */
+  /**
+   * Find a batch by display name within Academic Context / owner scope.
+   * Searches formal batches table first (returns batch_id); does not create.
+   */
+  findByNameInScope: async (name, opts = {}) => {
+    const batchName = String(name || "").trim().toUpperCase();
+    if (!batchName) return null;
+
+    const { sql: scopeSql, params: scopeParams } = batchScopeAnd(
+      opts.role,
+      opts.ownerUserId,
+      opts.department,
+      "b.",
+      opts.ownerIds
+    );
+
+    const params = [batchName];
+    let sql = `SELECT b.id, b.public_uuid, b.name, b.department, b.owner_user_id, b.academic_context_id
+               FROM batches b
+               WHERE UPPER(TRIM(b.name)) = ?`;
+
+    // Prefer context match when stamped; still allow legacy rows with null context
+    if (opts.academicContextId) {
+      sql += " AND (b.academic_context_id = ? OR b.academic_context_id IS NULL)";
+      params.push(Number(opts.academicContextId));
+    }
+
+    sql += `${scopeSql} ORDER BY CASE WHEN b.academic_context_id IS NULL THEN 1 ELSE 0 END, b.id DESC LIMIT 1`;
+    params.push(...scopeParams);
+
+    const [rows] = await db.query(sql, params);
+    const row = rows?.[0];
+    if (!row) return null;
+    return {
+      id: row.id,
+      uuid: row.public_uuid ?? row.publicuuid,
+      name: String(row.name || "").toUpperCase(),
+      department: row.department ?? null,
+    };
+  },
+
   listByDepartment: async (department, opts = {}) => {
     const dept = String(department || "").toUpperCase().trim();
     if (!dept) return [];

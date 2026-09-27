@@ -1,6 +1,6 @@
 // backend/models/Timetable.js - UPDATED WITH EXAM DETAILS QUERY
 const db = require("../config/db");
-const { ownerWhereFromOpts, ownerAndFromOpts, andClause, insertField } = require("../utils/ownerFilter");
+const { ownerWhereFromOpts, ownerAndFromOpts, andClause } = require("../utils/ownerFilter");
 
 // PostgreSQL returns unquoted column names in lowercase; map to camelCase for API
 function toTimetableRow(row) {
@@ -103,7 +103,20 @@ const Timetable = {
       batchId = null
     } = data;
 
-    const { col, val } = insertField(opts.role, opts.ownerUserId);
+    const { insertOwnership } = require("../utils/ownerFilter");
+    const ownership = insertOwnership(opts);
+    const cols = [
+      "date",
+      "start_time",
+      "end_time",
+      "session",
+      "course_code",
+      "course_name",
+      "department",
+      "exam_type",
+      "batch",
+      "batch_id",
+    ];
     const vals = [
       date,
       startTime,
@@ -116,12 +129,14 @@ const Timetable = {
       batch,
       batchId,
     ];
-    if (val != null) vals.push(val);
+    if (ownership.col) {
+      cols.push(...ownership.col.replace(/^,\s*/, "").split(",").map((c) => c.trim()).filter(Boolean));
+      vals.push(...ownership.params);
+    }
 
     const [result] = await db.query(
-      `INSERT INTO timetable 
-       (date, start_time, end_time, session, course_code, course_name, department, exam_type, batch, batch_id${col})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?${val != null ? ", ?" : ""})`,
+      `INSERT INTO timetable (${cols.join(", ")})
+       VALUES (${cols.map(() => "?").join(", ")})`,
       vals
     );
 

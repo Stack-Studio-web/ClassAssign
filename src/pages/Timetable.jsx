@@ -17,6 +17,8 @@ const Timetable = () => {
   const [message, setMessage] = useState("");
   const [selectedFile, setSelectedFile] = useState(null);
   const [selectedSchedules, setSelectedSchedules] = useState([]);
+  const [importPreview, setImportPreview] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   // ✅ NEW: Available courses from students table
   const [availableCourses, setAvailableCourses] = useState([]);
@@ -228,19 +230,46 @@ const Timetable = () => {
     setFilteredSchedules(filtered);
   }, [filters, schedules]);
 
-  // Handle file change
-  const handleFileChange = (e) => {
+  // Handle file change → validate preview
+  const handleFileChange = async (e) => {
     const file = e.target.files[0];
+    setImportPreview(null);
     if (file && (file.name.endsWith(".xlsx") || file.name.endsWith(".xls"))) {
       setSelectedFile(file);
       setMessage("");
+      if (!hasWriteAccess) return;
+
+      setPreviewLoading(true);
+      setMessage("⏳ Validating timetable…");
+      const formData = new FormData();
+      formData.append("file", file);
+      try {
+        const res = await api.post("/timetable/bulk-import/preview", formData, {
+          headers: { "Content-Type": "multipart/form-data" },
+        });
+        setImportPreview(res.data);
+        setMessage(
+          res.data.canImport
+            ? `✅ ${res.data.message}`
+            : `⚠️ ${res.data.message}`
+        );
+      } catch (err) {
+        setImportPreview(null);
+        setMessage(
+          err.response?.data?.error ||
+            err.response?.data?.details ||
+            "❌ Validation failed. Check file format."
+        );
+      } finally {
+        setPreviewLoading(false);
+      }
     } else {
       setMessage("⚠️ Please select a valid Excel (.xlsx) file");
       setSelectedFile(null);
     }
   };
 
-  // Bulk import
+  // Bulk import (only after successful validation)
   const handleBulkImport = async () => {
     if (!selectedFile) {
       setMessage("⚠️ Please select a file first");
@@ -252,8 +281,13 @@ const Timetable = () => {
       return;
     }
 
+    if (!importPreview?.canImport) {
+      setMessage("❌ Import blocked. Please correct the errors before importing.");
+      return;
+    }
+
     setLoading(true);
-    setMessage("⏳ Uploading timetable...");
+    setMessage("⏳ Importing timetable...");
 
     const formData = new FormData();
     formData.append("file", selectedFile);
@@ -263,15 +297,22 @@ const Timetable = () => {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
-      setMessage(`✅ Successfully imported ${res.data.inserted} schedule(s)`);
+      const skippedNote =
+        res.data.skipped > 0 ? ` (${res.data.skipped} duplicate(s) skipped)` : "";
+      setMessage(`✅ Successfully imported ${res.data.inserted} schedule(s)${skippedNote}`);
       setSelectedFile(null);
+      setImportPreview(null);
       if (document.getElementById("fileInput")) {
         document.getElementById("fileInput").value = "";
       }
       fetchSchedules();
     } catch (err) {
+      const data = err.response?.data;
+      if (data?.rows) {
+        setImportPreview(data);
+      }
       setMessage(
-        err.response?.data?.error || "❌ Import failed. Check file format."
+        data?.error || data?.message || "❌ Import failed. Check file format."
       );
     } finally {
       setLoading(false);
@@ -645,8 +686,9 @@ const Timetable = () => {
             <div className="mb-4 p-4 bg-blue-50 border border-blue-100 rounded-xl text-sm text-blue-800">
               <p className="font-semibold mb-1">Excel format</p>
               <ul className="list-disc ml-5 space-y-1 mb-3">
-                <li>Date, Start/End Time, Session (FN/AN)</li>
-                <li>Course Code, Course Name, Department, Exam Type</li>
+                <li>Date, Start Time, End Time, Session (FN/AN)</li>
+                <li>Course Code, Course Name, Department, Batch, Exam Type</li>
+                <li>Batch format: YY + Department Code (e.g. 24BCS, 24BAD) — required</li>
               </ul>
               <button
                 type="button"
@@ -668,16 +710,98 @@ const Timetable = () => {
                     className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer border border-gray-200 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                 </div>
+
+                {importPreview?.rows?.length > 0 && (
+                  <div className="rounded-xl border border-gray-200 overflow-hidden">
+                    <div className="flex flex-wrap items-center justify-between gap-2 bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-600">
+                      <span>
+                        Preview — {importPreview.validCount} valid, {importPreview.errorCount} error(s)
+                      </span>
+                      <span className={importPreview.canImport ? "text-green-700" : "text-red-700"}>
+                        {importPreview.canImport
+                          ? "Ready to import"
+                          : "Import blocked until errors are fixed"}
+                      </span>
+                    </div>
+                    <div className="max-h-72 overflow-auto">
+                      <table className="min-w-full text-xs">
+                        <thead className="sticky top-0 bg-white border-b border-gray-100 text-left text-gray-500">
+                          <tr>
+                            <th className="px-2 py-2">Date</th>
+                            <th className="px-2 py-2">Time</th>
+                            <th className="px-2 py-2">Session</th>
+                            <th className="px-2 py-2">Course</th>
+                            <th className="px-2 py-2">Dept</th>
+                            <th className="px-2 py-2">Batch</th>
+                            <th className="px-2 py-2">Exam</th>
+                            <th className="px-2 py-2">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {importPreview.rows.map((row) => (
+                            <tr
+                              key={`preview-${row.rowNum}`}
+                              className={
+                                row.status === "ERROR"
+                                  ? "bg-red-50/70 border-b border-red-100"
+                                  : "border-b border-gray-50"
+                              }
+                            >
+                              <td className="px-2 py-2 whitespace-nowrap">{row.date || "—"}</td>
+                              <td className="px-2 py-2 whitespace-nowrap">
+                                {row.startTime && row.endTime
+                                  ? `${row.startTime}-${row.endTime}`
+                                  : "—"}
+                              </td>
+                              <td className="px-2 py-2">{row.session || "—"}</td>
+                              <td className="px-2 py-2">{row.courseCode || "—"}</td>
+                              <td className="px-2 py-2">{row.department || "—"}</td>
+                              <td className="px-2 py-2 font-semibold">{row.batch || "—"}</td>
+                              <td className="px-2 py-2">{row.examType || "—"}</td>
+                              <td className="px-2 py-2">
+                                {row.status === "VALID" ? (
+                                  <span className="font-semibold text-green-700">VALID</span>
+                                ) : (
+                                  <div>
+                                    <span className="font-semibold text-red-700">ERROR</span>
+                                    <p className="mt-0.5 text-red-700 font-normal max-w-[220px]">
+                                      Row {row.rowNum}: {row.error || row.errors?.[0]}
+                                    </p>
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
                 <button
                   onClick={handleBulkImport}
-                  disabled={loading || !selectedFile || !hasWriteAccess}
+                  disabled={
+                    loading ||
+                    previewLoading ||
+                    !selectedFile ||
+                    !hasWriteAccess ||
+                    !importPreview?.canImport
+                  }
                   className={`w-full h-12 rounded-xl font-semibold transition-all duration-200 ${
-                    loading || !selectedFile || !hasWriteAccess
+                    loading ||
+                    previewLoading ||
+                    !selectedFile ||
+                    !hasWriteAccess ||
+                    !importPreview?.canImport
                       ? "bg-gray-300 cursor-not-allowed text-gray-500"
                       : "bg-blue-600 hover:bg-blue-700 text-white shadow-sm hover:shadow-md"
                   }`}
                 >
-                  {loading ? "Processing..." : "Import Timetable"}
+                  {loading
+                    ? "Importing…"
+                    : previewLoading
+                      ? "Validating…"
+                      : "Import Timetable"}
                 </button>
               </div>
             </div>
@@ -811,6 +935,7 @@ const Timetable = () => {
                     <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Course</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide hidden md:table-cell">Course Name</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Dept</th>
+                    <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide hidden lg:table-cell">Batch</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide hidden sm:table-cell">Exam</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Actions</th>
                   </tr>
@@ -818,7 +943,7 @@ const Timetable = () => {
                 <tbody className="divide-y divide-gray-100">
                   {filteredSchedules.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="px-4 md:px-6 py-8 text-center text-gray-500 text-sm">
+                      <td colSpan={10} className="px-4 md:px-6 py-8 text-center text-gray-500 text-sm">
                         No schedules found
                       </td>
                     </tr>
@@ -848,6 +973,11 @@ const Timetable = () => {
                         <td className="px-4 md:px-6 py-3 md:py-4 text-gray-600 text-sm hidden md:table-cell">{schedule.courseName}</td>
                         <td className="px-4 md:px-6 py-3 md:py-4">
                           <span className="px-2 py-1 bg-purple-100 text-purple-800 rounded-lg text-xs font-semibold">{schedule.department}</span>
+                        </td>
+                        <td className="px-4 md:px-6 py-3 md:py-4 hidden lg:table-cell">
+                          <span className="px-2 py-1 bg-indigo-100 text-indigo-800 rounded-lg text-xs font-semibold">
+                            {schedule.batch || schedule.batchName || "—"}
+                          </span>
                         </td>
                         <td className="px-4 md:px-6 py-3 md:py-4 hidden sm:table-cell">
                           <span className="px-2 py-1 bg-green-100 text-green-800 rounded-lg text-xs font-semibold">{schedule.examType}</span>
