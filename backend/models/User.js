@@ -302,9 +302,10 @@ const User = {
   },
 
   /**
-   * Owner user ids that share application data for this user.
-   * admin → null (no owner filter)
-   * hod / FI under HOD → getOwnerIdsForHod(hodId)
+   * Owner user ids used for read scoping.
+   * admin → null (no filter)
+   * faculty_incharge → [self] only (strict isolation from other FIs)
+   * hod → getOwnerIdsForHod(self) (HOD + all FIs under them)
    * FI without HOD → [self]
    */
   getWorkspaceOwnerIds: async (userLike = {}) => {
@@ -313,14 +314,16 @@ const User = {
     if (role === "admin") return null;
     if (!userId) return [];
 
-    const hodId = await User.getWorkspaceHodId(userLike);
-    if (hodId) {
-      return User.getOwnerIdsForHod(hodId);
-    }
+    // Strict Faculty Incharge isolation — never include sibling FIs.
     if (role === "faculty_incharge") {
       return [Number(userId)];
     }
-    return [];
+
+    if (role === "hod") {
+      return User.getOwnerIdsForHod(Number(userId));
+    }
+
+    return [Number(userId)];
   },
 
   /** Public UUID of the workspace HOD (for session /auth/me). */

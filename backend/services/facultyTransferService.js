@@ -290,7 +290,7 @@ async function checkReplacementAvailability({
   return { available: true, message: "Faculty is available for assignment." };
 }
 
-async function createFacultyWithUser({ name, email }) {
+async function createFacultyWithUser({ name, email, ownerUserId = null }) {
   const Faculty = require("../models/Faculty");
   const normalizedEmail = String(email || "").trim().toLowerCase();
   if (!name?.trim()) {
@@ -323,8 +323,9 @@ async function createFacultyWithUser({ name, email }) {
     await conn.beginTransaction();
 
     const [facResult] = await conn.query(
-      `INSERT INTO faculty (name, department, email) VALUES (?, ?, ?) RETURNING id`,
-      [name.trim(), "General", normalizedEmail]
+      `INSERT INTO faculty (name, department, email, owner_user_id)
+       VALUES (?, ?, ?, ?) RETURNING id`,
+      [name.trim(), "General", normalizedEmail, ownerUserId || null]
     );
     const facultyId = facResult?.insertId ?? null;
 
@@ -512,12 +513,19 @@ const FacultyTransferService = {
       throw err;
     }
 
+    const [examOwnerRows] = await db.query(
+      `SELECT owner_user_id FROM exams WHERE id = ? LIMIT 1`,
+      [ctx.examId]
+    );
+    const examOwnerId =
+      examOwnerRows?.[0]?.owner_user_id ?? examOwnerRows?.[0]?.owneruserid ?? null;
+
     const [result] = await db.query(
       `INSERT INTO faculty_transfer_requests (
         attendance_assignment_id, seating_plan_venue_id, current_faculty_id,
         requested_faculty_id, requested_faculty_name, requested_faculty_email,
-        exam_id, venue_id, exam_date, session, reason, requested_by_user_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        exam_id, venue_id, exam_date, session, reason, requested_by_user_id, owner_user_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       RETURNING id, public_uuid`,
       [
         ctx.assignment.internalId,
@@ -532,6 +540,7 @@ const FacultyTransferService = {
         ctx.examSession,
         reason.trim(),
         userId,
+        examOwnerId,
       ]
     );
 
@@ -557,7 +566,7 @@ const FacultyTransferService = {
     };
   },
 
-  listRequests: async ({ role, facultyId, department, filters = {} }) => {
+  listRequests: async ({ role, facultyId, department, filters = {}, ownerIds = null, ownerUserId = null } = {}) => {
     let sql = `
       SELECT r.*,
         fa.public_uuid AS assignment_uuid,
@@ -593,10 +602,29 @@ const FacultyTransferService = {
         sql += ` AND (r.current_faculty_id = ? OR r.requested_faculty_id = ?)`;
         params.push(facultyId, facultyId);
       }
+    } else if (role === "faculty_incharge") {
+      const ids =
+        ownerIds && ownerIds.length
+          ? ownerIds
+          : ownerUserId
+            ? [ownerUserId]
+            : [];
+      if (ids.length === 0) {
+        sql += ` AND 1=0`;
+      } else {
+        const placeholders = ids.map(() => "?").join(", ");
+        sql += ` AND (
+          e.owner_user_id IN (${placeholders})
+          OR v.owner_user_id IN (${placeholders})
+          OR cf.owner_user_id IN (${placeholders})
+        )`;
+        params.push(...ids, ...ids, ...ids);
+      }
     } else if (role === "hod" && department) {
       sql += ` AND (cf.department = ? OR rf.department = ?)`;
       params.push(department, department);
     }
+    // admin: no ownership filter
 
     if (filters.status) {
       sql += ` AND r.status = ?`;
@@ -1231,7 +1259,14 @@ const FacultyTransferService = {
     return eligible;
   },
 
-  listChangeableAssignments: async ({ examDate = "", session = "", search = "" } = {}) => {
+  listChangeableAssignments: async ({
+    examDate = "",
+    session = "",
+    search = "",
+    ownerIds = null,
+    ownerUserId = null,
+    role = null,
+  } = {}) => {
     let sql = `
       SELECT
         fa.public_uuid,
@@ -1260,6 +1295,26 @@ const FacultyTransferService = {
       WHERE 1=1
     `;
     const params = [];
+
+    if (role && role !== "admin") {
+      const ids =
+        ownerIds && ownerIds.length
+          ? ownerIds
+          : ownerUserId
+            ? [ownerUserId]
+            : [];
+      if (ids.length === 0) {
+        sql += ` AND 1=0`;
+      } else {
+        const placeholders = ids.map(() => "?").join(", ");
+        sql += ` AND (
+          e.owner_user_id IN (${placeholders})
+          OR v.owner_user_id IN (${placeholders})
+          OR f.owner_user_id IN (${placeholders})
+        )`;
+        params.push(...ids, ...ids, ...ids);
+      }
+    }
 
     if (examDate) {
       sql += ` AND e.exam_date = ?`;
@@ -1353,7 +1408,20 @@ const FacultyTransferService = {
         err.statusCode = 400;
         throw err;
       }
-      const created = await createFacultyWithUser({ name, email });
+      const [examOwnerRows] = await db.query(
+        `SELECT owner_user_id FROM exams WHERE id = ? LIMIT 1`,
+        [ctx.examId]
+      );
+      const stampOwner =
+        examOwnerRows?.[0]?.owner_user_id ??
+        examOwnerRows?.[0]?.owneruserid ??
+        adminUserId ??
+        null;
+      const created = await createFacultyWithUser({
+        name,
+        email,
+        ownerUserId: stampOwner,
+      });
       requestedFaculty = await findFacultyByEmail(email);
       if (!requestedFaculty) {
         const err = new Error("Failed to create faculty profile");

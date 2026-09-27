@@ -97,7 +97,8 @@ function parseLifecycleFilters(query) {
 const AttendanceController = {
   listAssignments: async (req, res) => {
     try {
-      const data = await AttendanceService.getAssignments();
+      const { resolveOwnerOpts } = require("../utils/rbac");
+      const data = await AttendanceService.getAssignments(await resolveOwnerOpts(req));
       return res.json({ success: true, assignments: data });
     } catch (err) {
       return Api.fromError(res, err, "Failed to fetch assignments");

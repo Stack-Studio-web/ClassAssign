@@ -89,6 +89,11 @@ function isHod(role) {
 function canMutateOwnedRecord(role, ownerUserId, currentUserId, ownerIds = null) {
   if (isAdmin(role)) return true;
   if (isHod(role)) return false;
+  // Faculty Incharge may only mutate their own rows — never sibling FI data.
+  if (isFacultyIncharge(role)) {
+    if (!ownerUserId || !currentUserId) return false;
+    return Number(ownerUserId) === Number(currentUserId);
+  }
   if (ownerIds && Array.isArray(ownerIds) && ownerIds.length > 0) {
     return ownerIds.map(Number).includes(Number(ownerUserId));
   }
@@ -118,7 +123,15 @@ function ownerOpts(req) {
 }
 
 /**
- * Resolve shared HOD workspace owner IDs for the request (cached on req).
+ * Resolve data-owner IDs for the request (cached on req).
+ *
+ * Strict Faculty Incharge isolation:
+ *   admin              → null (no owner filter; sees all)
+ *   faculty_incharge   → [self] only (never sibling FIs)
+ *   hod                → all users in HOD workspace (self + FIs)
+ *   other              → [self]
+ *
+ * Never trust client-supplied owner ids — always derived from session user.
  */
 async function resolveOwnerOpts(req) {
   if (req._ownerOptsResolved) return ownerOpts(req);
@@ -132,7 +145,7 @@ async function resolveOwnerOpts(req) {
 
   if (role === "admin") {
     ownerIds = null;
-  } else if (role === "hod" || role === "faculty_incharge") {
+  } else if (role === "hod") {
     ownerIds = await User.getWorkspaceOwnerIds({
       id: userId,
       role,
@@ -145,8 +158,18 @@ async function resolveOwnerOpts(req) {
         created_by_hod_id: req.session?.createdByHodId ?? null,
       });
     }
+  } else if (role === "faculty_incharge") {
+    // Strict isolation — never expand to sibling Faculty Incharges.
+    ownerIds = userId ? [Number(userId)] : [];
+    if (!workspaceId) {
+      workspaceId = await User.getWorkspacePublicUuid({
+        id: userId,
+        role,
+        created_by_hod_id: req.session?.createdByHodId ?? null,
+      });
+    }
   } else {
-    ownerIds = userId ? [userId] : [];
+    ownerIds = userId ? [Number(userId)] : [];
   }
 
   req.ownerIds = ownerIds;

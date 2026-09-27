@@ -18,6 +18,7 @@ import {
   TableCellsIcon,
   BellAlertIcon,
   CheckCircleIcon,
+  ShieldCheckIcon,
 } from "@heroicons/react/24/outline";
 import { NavLink } from "react-router-dom";
 import { useSidebar } from "../context/SidebarContext";
@@ -43,6 +44,7 @@ const ADMIN_NAV = [
   { to: "/attendance/completed", label: "Completed Attendance", icon: CheckCircleIcon },
   { to: "/ineligibility/view", label: "Ineligibility", icon: ExclamationTriangleIcon },
   { to: "/users", label: "User Management", icon: UsersIcon },
+  { to: "/admin/ownership", label: "Ownership Mapping", icon: ShieldCheckIcon },
   { to: "/logs", label: "Logs", icon: NewspaperIcon },
 ];
 

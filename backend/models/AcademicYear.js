@@ -14,11 +14,19 @@ function mapYear(row) {
 }
 
 const AcademicYear = {
-  list: async (_opts = {}) => {
+  list: async (opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = whereClause(
+      opts.role,
+      opts.ownerUserId,
+      "",
+      opts.ownerIds
+    );
     const [rows] = await db.query(
       `SELECT id, public_uuid, label, start_year, end_year, is_archived, created_at
        FROM academic_years
-       ORDER BY is_archived ASC, label DESC`
+       ${ownerSql || "WHERE 1=1"}
+       ORDER BY is_archived ASC, label DESC`,
+      ownerParams
     );
     return (rows || []).map(mapYear);
   },

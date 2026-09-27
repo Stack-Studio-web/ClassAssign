@@ -25,14 +25,12 @@ function testOwnerIn() {
 }
 
 function testSharedReadFilter() {
-  const fi = whereClause("faculty_incharge", 2, "", [1, 2, 3]);
-  assert.ok(fi.sql.includes("IN ("));
-  assert.deepStrictEqual(fi.params, [1, 2, 3]);
-
+  // Faculty Incharge self-only (strict isolation)
   const alone = whereClause("faculty_incharge", 2);
   assert.ok(alone.sql.includes("="));
   assert.deepStrictEqual(alone.params, [2]);
 
+  // HOD may still read workspace owner IN list
   const hod = ownerWhereFromOpts({
     role: "hod",
     ownerUserId: 1,
@@ -52,9 +50,10 @@ function testSharedReadFilter() {
 }
 
 function testStudentBatchScope() {
-  const st = studentScopeWhere("faculty_incharge", 2, "CSE", "st.", [2, 9]);
-  assert.ok(st.sql.includes("IN ("));
-  assert.deepStrictEqual(st.params, [2, 9]);
+  // FI without ownerIds → self
+  const st = studentScopeWhere("faculty_incharge", 2, "CSE", "st.");
+  assert.ok(st.sql.includes("st.owner_user_id = ?"));
+  assert.deepStrictEqual(st.params, [2]);
 
   const bat = batchScopeAnd("hod", 1, "CSE", "b.", [1, 2]);
   assert.ok(bat.sql.includes("IN ("));
@@ -62,8 +61,9 @@ function testStudentBatchScope() {
 }
 
 function testMutateWithinWorkspace() {
-  assert.strictEqual(canMutateOwnedRecord("faculty_incharge", 9, 2, [2, 9]), true);
-  assert.strictEqual(canMutateOwnedRecord("faculty_incharge", 9, 2, [2, 3]), false);
+  // FI cannot mutate sibling records even if a shared ownerIds list is supplied
+  assert.strictEqual(canMutateOwnedRecord("faculty_incharge", 9, 2, [2, 9]), false);
+  assert.strictEqual(canMutateOwnedRecord("faculty_incharge", 2, 2, [2]), true);
   assert.strictEqual(canMutateOwnedRecord("hod", 9, 1, [1, 9]), false);
   assert.strictEqual(canMutateOwnedRecord("admin", 9, 1, null), true);
 }
@@ -100,5 +100,5 @@ require("../routes/ineligibilityRoutes");
 require("../routes/microsoftAuthRoutes");
 require("../routes/authRoutes");
 
-console.log("✅ Shared HOD workspace helper + module load validation passed");
+console.log("✅ HOD workspace + strict FI isolation helper validation passed");
 process.exit(0);

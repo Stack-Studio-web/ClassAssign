@@ -73,12 +73,35 @@ async function buildRoleScope(user, role) {
     return scope;
   }
 
-  if (role === "hod") {
-    const dept = user.department || user.session?.department;
-    if (dept) {
-      scope.sql = " AND f.department = ?";
-      scope.params.push(dept);
+  if (role === "admin") {
+    return scope;
+  }
+
+  if (role === "faculty_incharge" || role === "hod") {
+    const User = require("../models/User");
+    const ownerIds = await User.getWorkspaceOwnerIds({
+      id: user?.id,
+      role,
+      created_by_hod_id: user?.createdByHodId ?? user?.created_by_hod_id ?? null,
+    });
+    if (!ownerIds || ownerIds.length === 0) {
+      scope.sql = " AND 1=0";
+      return scope;
     }
+    const placeholders = ownerIds.map(() => "?").join(", ");
+    // Prefer exam owner; fall back to seating plan owner for legacy exams without stamp.
+    scope.sql = ` AND (
+      e.owner_user_id IN (${placeholders})
+      OR EXISTS (
+        SELECT 1
+        FROM seating_plan_venues spv_own
+        JOIN seating_plans sp_own ON sp_own.id = spv_own.seating_plan_id
+        WHERE spv_own.venue_id = fa.venue_id
+          AND sp_own.exam_date = e.exam_date
+          AND sp_own.owner_user_id IN (${placeholders})
+      )
+    )`;
+    scope.params.push(...ownerIds, ...ownerIds);
     return scope;
   }
 

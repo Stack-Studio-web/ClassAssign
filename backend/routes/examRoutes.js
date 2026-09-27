@@ -5,6 +5,7 @@ const Exam = require("../models/Exam");
 const { getPublicUuid, TABLE } = require("../utils/publicId");
 const sessionAuth = require("../middleware/sessionAuth");
 const checkRole = require("../middleware/checkRole");
+const { resolveOwnerOpts } = require("../utils/rbac");
 
 const READ_ROLES = ["admin", "faculty_incharge", "hod", "faculty"];
 const WRITE_ROLES = ["admin", "faculty_incharge"];
@@ -20,13 +21,17 @@ router.post("/", sessionAuth, checkRole(WRITE_ROLES), async (req, res) => {
       });
     }
 
-    const examId = await Exam.create({
-      examName,
-      examCode,
-      examTime,
-      examSession,
-      examDate,
-    });
+    const opts = await resolveOwnerOpts(req);
+    const examId = await Exam.create(
+      {
+        examName,
+        examCode,
+        examTime,
+        examSession,
+        examDate,
+      },
+      opts
+    );
 
     const uuid = await getPublicUuid(TABLE.exams, examId);
 
@@ -55,7 +60,10 @@ router.post("/", sessionAuth, checkRole(WRITE_ROLES), async (req, res) => {
 
 router.get("/", sessionAuth, checkRole(READ_ROLES), async (req, res) => {
   try {
-    const exams = await Exam.getAll();
+    const opts = await resolveOwnerOpts(req);
+    // Invigilators see exams via their assignments; keep unscoped for faculty role.
+    const exams =
+      req.user.role === "faculty" ? await Exam.getAll({ role: "admin" }) : await Exam.getAll(opts);
     res.status(200).json(exams);
   } catch (err) {
     console.error("Error fetching exams:", err.message);

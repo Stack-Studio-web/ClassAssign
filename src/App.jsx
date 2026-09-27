@@ -20,6 +20,7 @@ import BatchManagementPage from './pages/BatchManagement';
 import StudentManagementPage from './pages/StudentManagement';
 import Faculty from './pages/Faculty';
 import UserManagement from './pages/UserManagement';
+import OwnershipMapping from './pages/OwnershipMapping';
 import Logs from './pages/Logs'; 
 import Timetable from './pages/Timetable'; // ✅ NEW
 import { StudentAttendance } from './Components/StudentAttendance';
@@ -450,6 +451,15 @@ function App() {
         element={
           <AuthGuard allowedRoles={['admin', 'hod']}>
             <Layout><UserManagement /></Layout>
+          </AuthGuard>
+        }
+      />
+
+      <Route
+        path="/admin/ownership"
+        element={
+          <AuthGuard allowedRoles={['admin']}>
+            <Layout><OwnershipMapping /></Layout>
           </AuthGuard>
         }
       />

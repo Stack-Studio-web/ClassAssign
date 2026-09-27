@@ -1,8 +1,13 @@
 /**
  * Role-based data access.
- * owner_user_id = Faculty Incharge who created the row.
- * Shared HOD workspace: faculty_incharge under the same created_by_hod_id
- * (and the HOD) share reads via ownerIds IN (...). Writes still stamp the creator.
+ * owner_user_id = Faculty Incharge who created the row (session user id).
+ *
+ * Reads:
+ *   admin            → unfiltered
+ *   faculty_incharge → owner_user_id = self only (strict isolation)
+ *   hod              → owner_user_id IN workspace (HOD + FIs under HOD)
+ *
+ * Writes always stamp the authenticated creator; never trust client owner ids.
  */
 function ownerColumn(prefix = "") {
   return prefix ? `${prefix}owner_user_id` : "owner_user_id";
@@ -107,7 +112,8 @@ module.exports = {
   andClause: (role, userId, prefix = "", ownerIds = null) => {
     if (role === "admin") return { sql: "", params: [] };
     if (ownerIds) return ownerInClause(ownerIds, prefix, "AND");
-    if (role === "hod" || !userId) return { sql: "", params: [] };
+    // Fail closed for HOD without resolved workspace ownerIds
+    if (role === "hod" || !userId) return { sql: " AND 1=0", params: [] };
     const col = ownerColumn(prefix);
     return { sql: ` AND ${col} = ?`, params: [userId] };
   },
@@ -115,7 +121,8 @@ module.exports = {
   whereClause: (role, userId, prefix = "", ownerIds = null) => {
     if (role === "admin") return { sql: "", params: [] };
     if (ownerIds) return ownerInClause(ownerIds, prefix, "WHERE");
-    if (role === "hod" || !userId) return { sql: "", params: [] };
+    // Fail closed for HOD without resolved workspace ownerIds
+    if (role === "hod" || !userId) return { sql: " WHERE 1=0", params: [] };
     const col = ownerColumn(prefix);
     return { sql: ` WHERE ${col} = ?`, params: [userId] };
   },
@@ -133,6 +140,7 @@ module.exports = {
   },
 
   insertField: (role, userId) => {
+    // Ownership always comes from authenticated session userId — never from the client.
     if (!userId || role === "hod") return { col: "", val: null };
     return { col: ", owner_user_id", val: userId };
   },

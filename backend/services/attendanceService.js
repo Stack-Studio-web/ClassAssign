@@ -149,6 +149,16 @@ const AttendanceService = {
     const endTime = plan.exam_end_time ?? plan.examendtime;
     const selectedCourses = parseSelectedCourses(plan.selected_courses ?? plan.selectedcourses);
     const examTimeStr = formatExamTimeRange(startTime, endTime);
+    const planOwnerId = plan.owner_user_id ?? plan.owneruserid ?? null;
+
+    const stampOwnerIfNeeded = async (examId) => {
+      if (!examId || !planOwnerId) return examId;
+      await executor.query(
+        `UPDATE exams SET owner_user_id = COALESCE(owner_user_id, ?) WHERE id = ?`,
+        [planOwnerId, examId]
+      );
+      return examId;
+    };
 
     let rows = await runQuery(
       executor,
@@ -157,7 +167,7 @@ const AttendanceService = {
        LIMIT 1`,
       [examDate, examSession, examTimeStr]
     );
-    if (rows[0]?.id) return rows[0].id;
+    if (rows[0]?.id) return stampOwnerIfNeeded(rows[0].id);
 
     for (const courseCode of selectedCourses) {
       rows = await runQuery(
@@ -165,7 +175,7 @@ const AttendanceService = {
         `SELECT id FROM exams WHERE exam_code = ? AND exam_date = ? LIMIT 1`,
         [courseCode, examDate]
       );
-      if (rows[0]?.id) return rows[0].id;
+      if (rows[0]?.id) return stampOwnerIfNeeded(rows[0].id);
     }
 
     const courseLabel = selectedCourses.length
@@ -177,12 +187,12 @@ const AttendanceService = {
       .slice(0, 100);
 
     rows = await runQuery(executor, `SELECT id FROM exams WHERE exam_code = ? LIMIT 1`, [examCode]);
-    if (rows[0]?.id) return rows[0].id;
+    if (rows[0]?.id) return stampOwnerIfNeeded(rows[0].id);
 
     const [result] = await executor.query(
-      `INSERT INTO exams (exam_name, exam_code, exam_time, exam_session, exam_date)
-       VALUES (?, ?, ?, ?, ?)`,
-      [examName, examCode, examTimeStr, examSession, examDate]
+      `INSERT INTO exams (exam_name, exam_code, exam_time, exam_session, exam_date, owner_user_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [examName, examCode, examTimeStr, examSession, examDate, planOwnerId]
     );
     return result.insertId;
   },
@@ -343,8 +353,37 @@ const AttendanceService = {
     return { removed, attendanceRemoved, examId };
   },
 
-  getAssignments: async () => {
-    const [rows] = await db.query(`
+  getAssignments: async (opts = {}) => {
+    // Scope via exam owner, with seating-plan owner fallback for legacy unstamped exams.
+    let seatingOwnerSql = "";
+    const seatingOwnerParams = [];
+    if (opts.role && opts.role !== "admin") {
+      const ids =
+        opts.ownerIds && opts.ownerIds.length
+          ? opts.ownerIds
+          : opts.ownerUserId
+            ? [opts.ownerUserId]
+            : [];
+      if (ids.length === 0) {
+        return [];
+      }
+      const placeholders = ids.map(() => "?").join(", ");
+      seatingOwnerSql = ` AND (
+        e.owner_user_id IN (${placeholders})
+        OR EXISTS (
+          SELECT 1
+          FROM seating_plan_venues spv_own
+          JOIN seating_plans sp_own ON sp_own.id = spv_own.seating_plan_id
+          WHERE spv_own.venue_id = fa.venue_id
+            AND sp_own.exam_date = e.exam_date
+            AND sp_own.owner_user_id IN (${placeholders})
+        )
+      )`;
+      seatingOwnerParams.push(...ids, ...ids);
+    }
+
+    const [rows] = await db.query(
+      `
       SELECT
         fa.*,
         sess.public_uuid AS session_public_uuid,
@@ -384,8 +423,11 @@ const AttendanceService = {
       JOIN exams e ON e.id = fa.exam_id
       JOIN venues v ON v.id = fa.venue_id
       ${SESSION_JOIN}
+      WHERE 1=1${seatingOwnerSql}
       ORDER BY e.exam_date DESC, COALESCE(fa.start_time::text, e.exam_time) ASC, v.name ASC
-    `);
+    `,
+      seatingOwnerParams
+    );
     return AttendanceService.enrichAssignmentsWithWindow(rows || []);
   },
 

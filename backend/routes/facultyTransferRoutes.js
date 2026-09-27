@@ -110,10 +110,15 @@ router.get(
   checkRole(["admin", "faculty_incharge", "hod"]),
   async (req, res) => {
     try {
+      const { resolveOwnerOpts } = require("../utils/rbac");
+      const opts = await resolveOwnerOpts(req);
       const assignments = await FacultyTransferService.listChangeableAssignments({
         examDate: req.query.examDate || "",
         session: req.query.session || "",
         search: req.query.search || "",
+        role: req.user.role,
+        ownerIds: opts.ownerIds,
+        ownerUserId: opts.ownerUserId,
       });
       return Api.success(res, "Changeable assignments", { assignments });
     } catch (err) {
@@ -186,6 +191,7 @@ router.get(
   checkRole(["faculty", "admin", "faculty_incharge", "hod"]),
   async (req, res) => {
     try {
+      const { resolveOwnerOpts } = require("../utils/rbac");
       const filters = {
         status: req.query.status || "",
         examDate: req.query.examDate || "",
@@ -203,11 +209,18 @@ router.get(
         }
       }
 
+      const ownerOpts =
+        req.user.role === "faculty_incharge" || req.user.role === "hod"
+          ? await resolveOwnerOpts(req)
+          : {};
+
       const requests = await FacultyTransferService.listRequests({
         role: req.user.role,
         facultyId,
         department: req.user.department,
         filters,
+        ownerIds: ownerOpts.ownerIds ?? null,
+        ownerUserId: req.user.id,
       });
       return Api.success(res, "Transfer requests", { requests });
     } catch (err) {
