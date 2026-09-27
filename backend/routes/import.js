@@ -463,171 +463,141 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
   }
 });
 
-// IMPROVED: import.js - Venue Import Section with Better Error Messages
-
 /* =====================================================
-   ✅ IMPROVED: IMPORT VENUES FROM EXCEL
-   
-   Excel Format:
-   | Venue Name | Type      | Rows | Columns | Bench Config    |
-   |------------|-----------|------|---------|-----------------|
-   | AD101      | classroom | 10   | 5       | 2,2,3,3,2       |
-   | B201       | lab       | 8    | 4       | 2,2,2,2         |
-   
-   ⚠️ CRITICAL: Bench Config must be EXACTLY like: 2,2,3,3,2
-   - NO SPACES after commas
-   - NO PREFIX (like "5 2,2,3")
-   - Only numbers 2 or 3
+   VENUE BULK IMPORT — validate preview then atomic import
+   Excel: Venue Name | Type | Rows | Columns | Bench Config
 ===================================================== */
-router.post("/import-venues", sessionAuth, checkRole(["admin", "faculty_incharge"]), importLimiter, upload.single("file"), async (req, res) => {
-  try {
-    lastVenueImport = { insertedIds: [] };
+async function runVenueValidation(data) {
+  const { validateVenueRows } = require("../utils/venueBulkImport");
+  return validateVenueRows(data, {
+    venueExists: (name, type) => Venue.existsByNameAndType(name, type),
+  });
+}
 
-    if (!req.file) {
-      return res.status(400).json({ message: "No file uploaded." });
-    }
-    if (!assertValidUpload(req, res)) return;
-
-    const workbook = xlsx.readFile(req.file.path);
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const data = xlsx.utils.sheet_to_json(sheet);
-
-    const formattedData = [];
-    const skippedRecords = [];
-
-    for (let i = 0; i < data.length; i++) {
-      const row = data[i];
-      const rowNum = i + 2; // Excel row (accounting for header)
-      
-      try {
-        const name = row["Venue Name"]?.toString().trim();
-        const type = row["Type"]?.toString().trim().toLowerCase();
-        const benchesRow = parseInt(row["Rows"]);
-        const benchesCol = parseInt(row["Columns"]);
-        const benchConfigStr = row["Bench Config"]?.toString().trim();
-
-        // ✅ STEP 1: Check required fields
-        if (!name || !type || !benchesRow || !benchesCol || !benchConfigStr) {
-          skippedRecords.push(
-            `Row ${rowNum}: ${name || "Unknown"} - Missing required fields`
-          );
-          continue;
-        }
-
-        // ✅ STEP 2: Validate type
-        if (!["classroom", "lab", "hall"].includes(type)) {
-          skippedRecords.push(
-            `Row ${rowNum}: ${name} - Invalid type "${type}". Must be: classroom, lab, or hall`
-          );
-          continue;
-        }
-
-        // ✅ STEP 3: Parse bench config
-        console.log(`Row ${rowNum} (${name}): Raw Bench Config = "${benchConfigStr}"`);
-        
-        // Remove any leading/trailing spaces and split
-        const benchConfig = benchConfigStr
-          .split(",")
-          .map(s => {
-            const trimmed = s.trim();
-            const num = parseInt(trimmed);
-            
-            // ⚠️ DETECT COMMON ERROR: "5 2" instead of "2"
-            if (trimmed.includes(" ")) {
-              throw new Error(
-                `Invalid format "${trimmed}" - contains space. ` +
-                `Expected single number (2 or 3). ` +
-                `Check for prefix like "5 2,2,3"`
-              );
-            }
-            
-            return num;
-          })
-          .filter(n => !isNaN(n));
-
-        console.log(`Row ${rowNum} (${name}): Parsed config = [${benchConfig.join(", ")}]`);
-
-        // ✅ STEP 4: Validate config length
-        if (benchConfig.length !== benchesCol) {
-          skippedRecords.push(
-            `Row ${rowNum}: ${name} - Bench config has ${benchConfig.length} values ` +
-            `but Columns is ${benchesCol}. They must match!\n` +
-            `  Raw value: "${benchConfigStr}"\n` +
-            `  Parsed as: [${benchConfig.join(", ")}]\n` +
-            `  Expected: ${benchesCol} comma-separated values like "2,2,3,3,2"`
-          );
-          continue;
-        }
-
-        // ✅ STEP 5: Validate seat counts (2 or 3 only)
-        const invalidSeats = benchConfig.filter(s => s !== 2 && s !== 3);
-        if (invalidSeats.length > 0) {
-          skippedRecords.push(
-            `Row ${rowNum}: ${name} - Invalid seat counts: [${invalidSeats.join(", ")}]. ` +
-            `Only 2 or 3 allowed!`
-          );
-          continue;
-        }
-
-        // ✅ All validation passed
-        formattedData.push({
-          name,
-          type,
-          benchesRow,
-          benchesCol,
-          benchConfig
-        });
-
-      } catch (err) {
-        skippedRecords.push(`Row ${rowNum}: ${err.message}`);
+router.post(
+  "/preview-venues",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge"]),
+  importLimiter,
+  upload.single("file"),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ message: "No file uploaded." });
       }
-    }
+      if (!assertValidUpload(req, res)) return;
 
-    if (formattedData.length === 0) {
-      return res.status(400).json({
-        message: "❌ No valid venue records found in Excel.",
-        skippedRecords
+      const workbook = xlsx.readFile(req.file.path);
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const data = xlsx.utils.sheet_to_json(sheet);
+      const result = await runVenueValidation(data);
+
+      return res.json({
+        message: result.message,
+        ...result,
       });
+    } catch (error) {
+      console.error("VENUE PREVIEW ERROR:", error);
+      return res.status(500).json({
+        message: "Failed to validate venue file",
+        error: error.message,
+      });
+    } finally {
+      if (req.file) fs.unlink(req.file.path, () => {});
     }
+  }
+);
 
-    // ✅ Insert venues one by one
-    let insertedCount = 0;
-    const duplicates = [];
+router.post(
+  "/import-venues",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge"]),
+  importLimiter,
+  upload.single("file"),
+  async (req, res) => {
+    try {
+      lastVenueImport = { insertedIds: [] };
 
-    for (const venue of formattedData) {
-      try {
-        const venueId = await Venue.create(venue, await resolveOwnerOpts(req));
-        lastVenueImport.insertedIds.push(venueId);
-        insertedCount++;
-        
-        console.log(`✅ Inserted: ${venue.name} (${venue.type}) - ID: ${venueId}`);
-      } catch (err) {
-        if (err.code === "ER_DUP_ENTRY" || err.code === "23505") {
-          duplicates.push(`${venue.name} (${venue.type})`);
-        } else {
-          skippedRecords.push(`${venue.name} - Database error: ${err.message}`);
+      if (!req.file) {
+        return res.status(400).json({ message: "No file uploaded." });
+      }
+      if (!assertValidUpload(req, res)) return;
+
+      const workbook = xlsx.readFile(req.file.path);
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const data = xlsx.utils.sheet_to_json(sheet);
+      const result = await runVenueValidation(data);
+
+      if (!result.canImport) {
+        return res.status(400).json({
+          message: result.message || "Import blocked. Please correct the errors before importing.",
+          error: result.message,
+          rows: result.rows,
+          validCount: result.validCount,
+          errorCount: result.errorCount,
+          total: result.total,
+          canImport: false,
+        });
+      }
+
+      const ownerOpts = await resolveOwnerOpts(req);
+      let insertedCount = 0;
+      const duplicates = [];
+      const skippedRecords = [];
+
+      for (const venue of result.rows) {
+        try {
+          const venueId = await Venue.create(
+            {
+              name: venue.name,
+              type: venue.type,
+              benchesRow: venue.benchesRow,
+              benchesCol: venue.benchesCol,
+              benchConfig: venue.benchConfig,
+            },
+            ownerOpts
+          );
+          lastVenueImport.insertedIds.push(venueId);
+          insertedCount++;
+        } catch (err) {
+          if (err.code === "ER_DUP_ENTRY" || err.code === "23505") {
+            duplicates.push(`${venue.name} (${venue.type})`);
+          } else {
+            skippedRecords.push(`${venue.name} - Database error: ${err.message}`);
+          }
         }
       }
+
+      if (duplicates.length || skippedRecords.length) {
+        return res.status(400).json({
+          message: "Import blocked. Some venues could not be inserted.",
+          inserted: insertedCount,
+          skipped: duplicates.length + skippedRecords.length,
+          duplicates: duplicates.length ? duplicates : undefined,
+          skippedRecords: skippedRecords.length ? skippedRecords : undefined,
+          canImport: false,
+        });
+      }
+
+      res.json({
+        message: "Venue import completed",
+        inserted: insertedCount,
+        skipped: 0,
+        validCount: result.validCount,
+        errorCount: 0,
+        canImport: true,
+      });
+    } catch (error) {
+      console.error("VENUE IMPORT ERROR:", error);
+      res.status(500).json({
+        message: "Venue import failed",
+        error: error.message,
+      });
+    } finally {
+      if (req.file) fs.unlink(req.file.path, () => {});
     }
-
-    res.json({
-      message: "✅ Venue import completed",
-      inserted: insertedCount,
-      skipped: skippedRecords.length + duplicates.length,
-      skippedRecords: skippedRecords.length > 0 ? skippedRecords : undefined,
-      duplicates: duplicates.length > 0 ? duplicates : undefined
-    });
-
-  } catch (error) {
-    console.error("❌ VENUE IMPORT ERROR:", error);
-    res.status(500).json({
-      message: "Venue import failed",
-      error: error.message
-    });
-  } finally {
-    if (req.file) fs.unlink(req.file.path, () => {});
   }
-});
+);
 
 /* =====================================================
    UNDO ROUTES

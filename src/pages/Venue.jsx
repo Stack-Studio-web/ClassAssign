@@ -43,6 +43,8 @@ export default function AddVenue() {
   const [isDuplicateError, setIsDuplicateError] = useState(false);
 
   const [selectedFile, setSelectedFile] = useState(null);
+  const [importPreview, setImportPreview] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [importStatus, setImportStatus] = useState("");
   const [importError, setImportError] = useState("");
   const [lastImportInfo, setLastImportInfo] = useState(null);
@@ -243,23 +245,54 @@ export default function AddVenue() {
     setIsDuplicateError(false);
   };
 
-  const handleFileSelect = (e) => {
+  const handleFileSelect = async (e) => {
     const file = e.target.files[0];
-    if (file) {
-      if (!file.name.endsWith(".xlsx") && !file.name.endsWith(".xls")) {
-        setImportError("Please select a valid Excel file (.xlsx or .xls)");
-        setSelectedFile(null);
-        return;
-      }
-      setSelectedFile(file);
-      setImportError("");
-      setImportStatus("");
+    setImportPreview(null);
+    if (!file) {
+      setSelectedFile(null);
+      return;
+    }
+    if (!file.name.endsWith(".xlsx") && !file.name.endsWith(".xls")) {
+      setImportError("Please select a valid Excel file (.xlsx or .xls)");
+      setSelectedFile(null);
+      return;
+    }
+    setSelectedFile(file);
+    setImportError("");
+    setImportStatus("");
+    setPreviewLoading(true);
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const res = await api.post("/import/preview-venues", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setImportPreview(res.data);
+      setImportStatus(
+        res.data.canImport
+          ? `✅ ${res.data.message}`
+          : `⚠️ ${res.data.message}`
+      );
+    } catch (err) {
+      if (err.response?.status === 401) return;
+      setImportPreview(err.response?.data?.rows ? err.response.data : null);
+      setImportError(
+        err.response?.data?.message ||
+          err.response?.data?.error ||
+          "Validation failed. Check file format."
+      );
+    } finally {
+      setPreviewLoading(false);
     }
   };
 
   const handleBulkImport = async () => {
     if (!selectedFile) {
       setImportError("Please select a file first");
+      return;
+    }
+    if (!importPreview?.canImport) {
+      setImportError("Import blocked. Please correct the errors before importing.");
       return;
     }
     setIsImporting(true);
@@ -271,23 +304,22 @@ export default function AddVenue() {
       const res = await api.post("/import/import-venues", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
-      setImportStatus(
-        `✅ Import completed!\n` +
-          `• Inserted: ${res.data.inserted}\n` +
-          `• Skipped: ${res.data.skipped || 0}\n` +
-          (res.data.duplicates?.length > 0 ? `• Duplicates: ${res.data.duplicates.join(", ")}\n` : "") +
-          (res.data.skippedRecords?.length > 0 ? `• Errors: ${res.data.skippedRecords.join(", ")}` : "")
-      );
+      setImportStatus(`✅ Import completed! Inserted: ${res.data.inserted}`);
       setSelectedFile(null);
+      setImportPreview(null);
       document.getElementById("venue-file-input").value = "";
       await fetchStats();
       await fetchVenues();
       await checkLastImport();
     } catch (err) {
       if (err.response?.status === 401) return;
-      const errorMsg = err.response?.data?.message || "Import failed";
-      const details = err.response?.data?.skippedRecords?.join("\n") || "";
-      setImportError(`❌ ${errorMsg}\n${details}`);
+      const data = err.response?.data;
+      if (data?.rows) setImportPreview(data);
+      const details =
+        data?.skippedRecords?.join("\n") ||
+        data?.duplicates?.join(", ") ||
+        "";
+      setImportError(`❌ ${data?.message || "Import failed"}${details ? `\n${details}` : ""}`);
     } finally {
       setIsImporting(false);
     }
@@ -679,23 +711,105 @@ export default function AddVenue() {
                 {selectedFile && (
                   <p className="mt-3 text-sm text-gray-600">
                     Selected: <span className="font-medium">{selectedFile.name}</span>
+                    {previewLoading ? " — Validating…" : ""}
                   </p>
                 )}
               </div>
             </div>
 
+            {importPreview?.rows?.length > 0 && (
+              <div className="rounded-2xl border border-gray-200 overflow-hidden mb-6">
+                <div className="flex flex-wrap items-center justify-between gap-2 bg-gray-50 px-4 py-2.5 text-xs font-semibold text-gray-600">
+                  <span>
+                    Preview — {importPreview.validCount} valid, {importPreview.errorCount} error(s)
+                  </span>
+                  <span className={importPreview.canImport ? "text-green-700" : "text-red-700"}>
+                    {importPreview.canImport
+                      ? "Ready to import"
+                      : "Import blocked until errors are fixed"}
+                  </span>
+                </div>
+                <div className="max-h-72 overflow-auto">
+                  <table className="min-w-full text-xs">
+                    <thead className="sticky top-0 bg-white border-b border-gray-100 text-left text-gray-500">
+                      <tr>
+                        <th className="px-3 py-2">Row</th>
+                        <th className="px-3 py-2">Name</th>
+                        <th className="px-3 py-2">Type</th>
+                        <th className="px-3 py-2">Rows×Cols</th>
+                        <th className="px-3 py-2">Bench Config</th>
+                        <th className="px-3 py-2">Capacity</th>
+                        <th className="px-3 py-2">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {importPreview.rows.map((row) => (
+                        <tr
+                          key={`venue-preview-${row.rowNum}`}
+                          className={
+                            row.status === "ERROR"
+                              ? "bg-red-50/70 border-b border-red-100"
+                              : "border-b border-gray-50"
+                          }
+                        >
+                          <td className="px-3 py-2">{row.rowNum}</td>
+                          <td className="px-3 py-2 font-medium">{row.name || "—"}</td>
+                          <td className="px-3 py-2">{row.type || "—"}</td>
+                          <td className="px-3 py-2">
+                            {row.benchesRow && row.benchesCol
+                              ? `${row.benchesRow}×${row.benchesCol}`
+                              : "—"}
+                          </td>
+                          <td className="px-3 py-2 font-mono">
+                            {Array.isArray(row.benchConfig) && row.benchConfig.length
+                              ? row.benchConfig.join(",")
+                              : "—"}
+                          </td>
+                          <td className="px-3 py-2">{row.capacity || "—"}</td>
+                          <td className="px-3 py-2">
+                            {row.status === "VALID" ? (
+                              <span className="font-semibold text-green-700">VALID</span>
+                            ) : (
+                              <div>
+                                <span className="font-semibold text-red-700">ERROR</span>
+                                <p className="mt-0.5 text-red-700 font-normal max-w-[260px]">
+                                  {row.error || row.errors?.[0]}
+                                </p>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
             <div className="flex flex-wrap gap-3 mb-6">
               <button
                 type="button"
                 onClick={handleBulkImport}
-                disabled={!selectedFile || isImporting}
+                disabled={
+                  !selectedFile ||
+                  isImporting ||
+                  previewLoading ||
+                  !importPreview?.canImport
+                }
                 className={`px-6 py-2.5 rounded-xl font-medium text-white transition-all duration-200 ${
-                  !selectedFile || isImporting
+                  !selectedFile ||
+                  isImporting ||
+                  previewLoading ||
+                  !importPreview?.canImport
                     ? "bg-gray-300 cursor-not-allowed"
                     : "bg-green-600 hover:bg-green-700 shadow-sm hover:shadow-md"
                 }`}
               >
-                {isImporting ? "Importing..." : "Import Venues"}
+                {isImporting
+                  ? "Importing..."
+                  : previewLoading
+                    ? "Validating..."
+                    : "Import Venues"}
               </button>
               {lastImportInfo?.insertedIds?.length > 0 && (
                 <button
@@ -727,6 +841,8 @@ export default function AddVenue() {
                 <li><strong>Column Headers:</strong> Venue Name | Type | Rows | Columns | Bench Config</li>
                 <li><strong>Example Row:</strong> AD101 | classroom | 10 | 5 | 2,2,3,3,2</li>
                 <li><strong>Valid Types:</strong> classroom, lab, hall</li>
+                <li><strong>Bench Config:</strong> comma-separated 2 or 3 only; length must equal Columns</li>
+                <li><strong>Validation:</strong> file is validated first; Import is blocked until every row is VALID</li>
                 <li><strong>Bench Config:</strong> Comma-separated seats per column (2 or 3 only)</li>
                 <li><strong>Note:</strong> Bench config length must match number of columns</li>
               </ul>

@@ -152,6 +152,17 @@ const Venue = {
     return rows.length === 0;
   },
 
+  existsByNameAndType: async (name, type) => {
+    const [rows] = await db.query(
+      `SELECT id FROM venues
+       WHERE UPPER(TRIM(name)) = UPPER(TRIM(?))
+         AND LOWER(TRIM(type)) = LOWER(TRIM(?))
+       LIMIT 1`,
+      [name, type]
+    );
+    return (rows || []).length > 0;
+  },
+
   existsByNameAndTypeExceptId: async (name, type, id) => {
     const [rows] = await db.query(
       `SELECT id FROM venues
