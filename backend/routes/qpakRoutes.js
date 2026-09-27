@@ -161,13 +161,26 @@ router.get(
         requirePublished: false,
         user: req.user,
       });
-      res.setHeader("Content-Type", file.mime);
+      const safe =
+        typeof QpakService.safeDownloadFilename === "function"
+          ? QpakService.safeDownloadFilename(file.downloadName)
+          : path.basename(String(file.downloadName || "document.pdf").replace(/\\/g, "/"));
       const disposition = req.query.download === "1" ? "attachment" : "inline";
+      res.setHeader("Content-Type", "application/pdf");
       res.setHeader(
         "Content-Disposition",
-        `${disposition}; filename="${String(file.downloadName).replace(/"/g, "")}"`
+        `${disposition}; filename="${safe}"; filename*=UTF-8''${encodeURIComponent(safe)}`
       );
-      return res.sendFile(file.absolutePath);
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      return res.sendFile(path.resolve(file.absolutePath), (err) => {
+        if (err && !res.headersSent) {
+          console.error("QPAK admin sendFile failed:", err?.message || err);
+          return Api.fromError(
+            res,
+            Object.assign(new Error("File not found"), { statusCode: 404 })
+          );
+        }
+      });
     } catch (err) {
       return Api.fromError(res, err);
     }

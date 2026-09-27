@@ -8,12 +8,13 @@ import {
   FolderIcon,
 } from "@heroicons/react/24/outline";
 
-const apiBase = import.meta.env.VITE_API_URL?.trim() || "/api";
+const apiBase = (import.meta.env.VITE_API_URL?.trim() || "/api").replace(/\/$/, "");
 
 const FILTER_KEYS = ["dept", "course", "exam", "year", "semester", "batch", "courseName"];
 
 function buildPublicFileUrl(docUuid, fileUuid, download = false) {
-  const base = `${apiBase}/public/qpak/${docUuid}/files/${fileUuid}`;
+  if (!docUuid || !fileUuid) return "#";
+  const base = `${apiBase}/public/qpak/${encodeURIComponent(docUuid)}/files/${encodeURIComponent(fileUuid)}`;
   return download ? `${base}?download=1` : base;
 }
 
@@ -252,21 +253,27 @@ export default function QpakPublic() {
                           )}
                         </div>
                         <div className="flex shrink-0 gap-1.5">
-                          <a
-                            href={buildPublicFileUrl(doc.uuid, f.uuid)}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-[#0B1F4B] text-white hover:bg-[#122a5c]"
-                          >
-                            <DocumentTextIcon className="h-3.5 w-3.5" />
-                            View
-                          </a>
-                          <a
-                            href={buildPublicFileUrl(doc.uuid, f.uuid, true)}
-                            className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-slate-200 text-slate-700 hover:bg-white"
-                          >
-                            Download
-                          </a>
+                          {f.uuid && doc.uuid ? (
+                            <>
+                              <a
+                                href={buildPublicFileUrl(doc.uuid, f.uuid)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-[#0B1F4B] text-white hover:bg-[#122a5c]"
+                              >
+                                <DocumentTextIcon className="h-3.5 w-3.5" />
+                                View
+                              </a>
+                              <a
+                                href={buildPublicFileUrl(doc.uuid, f.uuid, true)}
+                                className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-slate-200 text-slate-700 hover:bg-white"
+                              >
+                                Download
+                              </a>
+                            </>
+                          ) : (
+                            <span className="text-[11px] text-slate-400">Unavailable</span>
+                          )}
                         </div>
                       </div>
                     ))

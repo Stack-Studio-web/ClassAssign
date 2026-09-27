@@ -11,17 +11,28 @@ const MAX_FOLDER_FILES = 40;
 function toFileRow(row) {
   if (!row) return null;
   return {
-    uuid: row.public_uuid ?? row.publicuuid,
+    uuid: asUuid(row.public_uuid ?? row.publicuuid),
     relativePath: row.relative_path ?? row.relativepath,
-    originalName: row.original_name ?? row.originalname,
+    originalName: path.basename(
+      String(row.original_name ?? row.originalname ?? "document.pdf").replace(/\\/g, "/")
+    ),
     fileSize: Number(row.file_size ?? row.filesize ?? 0),
   };
+}
+
+function asUuid(value) {
+  if (value == null) return null;
+  if (typeof value === "string") return value;
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(value)) {
+    return value.toString("utf8");
+  }
+  return String(value);
 }
 
 function toPublicRow(row, files = []) {
   if (!row) return null;
   return {
-    uuid: row.public_uuid ?? row.publicuuid,
+    uuid: asUuid(row.public_uuid ?? row.publicuuid),
     department: row.department,
     courseCode: row.course_code ?? row.coursecode,
     courseName: row.course_name ?? row.coursename,
@@ -191,18 +202,44 @@ function folderNameFromFiles(files = []) {
 
 async function listFilesForDocumentIds(docIds) {
   if (!docIds.length) return new Map();
-  const placeholders = docIds.map(() => "?").join(", ");
-  const [rows] = await db.query(
-    `SELECT * FROM qpak_files WHERE document_id IN (${placeholders}) ORDER BY relative_path ASC`,
-    docIds
-  );
-  const map = new Map();
-  for (const row of rows || []) {
-    const id = row.document_id ?? row.documentid;
-    if (!map.has(id)) map.set(id, []);
-    map.get(id).push(toFileRow(row));
+  try {
+    const placeholders = docIds.map(() => "?").join(", ");
+    const [rows] = await db.query(
+      `SELECT * FROM qpak_files WHERE document_id IN (${placeholders}) ORDER BY relative_path ASC`,
+      docIds
+    );
+    const map = new Map();
+    for (const row of rows || []) {
+      const id = row.document_id ?? row.documentid;
+      if (!map.has(id)) map.set(id, []);
+      map.get(id).push(toFileRow(row));
+    }
+    return map;
+  } catch (err) {
+    // Table may not exist yet on first boot before ensure schema finishes.
+    console.error("listFilesForDocumentIds:", err?.message || err);
+    return new Map();
   }
-  return map;
+}
+
+function safeDownloadFilename(name) {
+  const base = path.basename(String(name || "document.pdf").replace(/\\/g, "/"));
+  const cleaned = base.replace(/[^\w.\-()+ ]+/g, "_").trim() || "document.pdf";
+  return /\.pdf$/i.test(cleaned) ? cleaned : `${cleaned}.pdf`;
+}
+
+function moveUploadedFile(src, dest) {
+  try {
+    fs.renameSync(src, dest);
+  } catch (err) {
+    if (err?.code !== "EXDEV") throw err;
+    fs.copyFileSync(src, dest);
+    try {
+      fs.unlinkSync(src);
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 async function replaceFolderFiles(documentId, docUuid, folderFiles, folderName) {
@@ -233,12 +270,18 @@ async function replaceFolderFiles(documentId, docUuid, folderFiles, folderName) 
       "_"
     );
     const dest = path.join(dir, safeName);
-    fs.renameSync(file.path, dest);
-    const storedPath = path.posix.join("qpak", docUuid, safeName);
+    moveUploadedFile(file.path, dest);
+    const storedPath = path.posix.join("qpak", String(docUuid), safeName);
     await db.query(
       `INSERT INTO qpak_files (document_id, relative_path, stored_path, original_name, file_size)
        VALUES (?, ?, ?, ?, ?)`,
-      [documentId, relativePath, storedPath, path.basename(relativePath), file.size || 0]
+      [
+        documentId,
+        relativePath,
+        storedPath,
+        path.basename(relativePath),
+        file.size || 0,
+      ]
     );
   }
 
@@ -276,7 +319,7 @@ const QpakService = {
     `;
     const params = [];
     ({ sql, params } = applyFilters(sql, params, filters, { publishedOnly: true }));
-    sql += ` ORDER BY department ASC, course_code ASC, exam_type ASC, published_at DESC NULLS LAST`;
+    sql += ` ORDER BY department ASC, course_code ASC, exam_type ASC, COALESCE(published_at, created_at) DESC`;
     const [rows] = await db.query(sql, params);
     const ids = (rows || []).map((r) => r.id);
     const fileMap = await listFilesForDocumentIds(ids);
@@ -608,10 +651,13 @@ const QpakService = {
     }
     return {
       absolutePath: abs,
-      downloadName: file.original_name ?? file.originalname ?? path.basename(abs),
+      downloadName: safeDownloadFilename(
+        file.original_name ?? file.originalname ?? path.basename(abs)
+      ),
       mime: "application/pdf",
     };
   },
 };
 
 module.exports = QpakService;
+module.exports.safeDownloadFilename = safeDownloadFilename;

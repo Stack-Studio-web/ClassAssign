@@ -22,10 +22,11 @@ const EMPTY_FORM = {
   publish: true,
 };
 
-const apiBase = import.meta.env.VITE_API_URL?.trim() || "/api";
+const apiBase = (import.meta.env.VITE_API_URL?.trim() || "/api").replace(/\/$/, "");
 
 function fileUrl(docUuid, fileUuid, download = false) {
-  const base = `${apiBase}/qpak/${docUuid}/files/${fileUuid}`;
+  if (!docUuid || !fileUuid) return "#";
+  const base = `${apiBase}/qpak/${encodeURIComponent(docUuid)}/files/${encodeURIComponent(fileUuid)}`;
   return download ? `${base}?download=1` : base;
 }
 
