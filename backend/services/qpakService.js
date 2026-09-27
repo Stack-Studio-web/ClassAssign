@@ -313,34 +313,71 @@ const QpakService = {
   listPublished: async (query = {}) => {
     const filters = normalizeFilters(query);
     let sql = `
-      SELECT *
+      SELECT id, public_uuid, department, course_code, course_name, exam_type,
+             academic_year, semester, batch, folder_name, status,
+             published_at, created_at, updated_at
       FROM qpak_documents
       WHERE 1=1
     `;
     const params = [];
     ({ sql, params } = applyFilters(sql, params, filters, { publishedOnly: true }));
     sql += ` ORDER BY department ASC, course_code ASC, exam_type ASC, COALESCE(published_at, created_at) DESC`;
-    const [rows] = await db.query(sql, params);
-    const ids = (rows || []).map((r) => r.id);
+
+    let rows;
+    try {
+      [rows] = await db.query(sql, params);
+    } catch (err) {
+      // folder_name may be missing on older DBs — retry without it
+      if (/folder_name/i.test(String(err?.message || ""))) {
+        let fallbackSql = `
+          SELECT id, public_uuid, department, course_code, course_name, exam_type,
+                 academic_year, semester, batch, status,
+                 published_at, created_at, updated_at
+          FROM qpak_documents
+          WHERE 1=1
+        `;
+        const fallbackParams = [];
+        ({ sql: fallbackSql, params: fallbackParams } = applyFilters(
+          fallbackSql,
+          fallbackParams,
+          filters,
+          { publishedOnly: true }
+        ));
+        fallbackSql += ` ORDER BY department ASC, course_code ASC, exam_type ASC, COALESCE(published_at, created_at) DESC`;
+        [rows] = await db.query(fallbackSql, fallbackParams);
+      } else {
+        throw err;
+      }
+    }
+
+    const list = Array.isArray(rows) ? rows : [];
+    const ids = list.map((r) => r.id).filter((id) => id != null);
     const fileMap = await listFilesForDocumentIds(ids);
-    return (rows || []).map((r) => toPublicRow(r, fileMap.get(r.id) || []));
+    return list.map((r) => toPublicRow(r, fileMap.get(r.id) || []));
   },
 
   getFilterOptions: async () => {
-    const [rows] = await db.query(
-      `SELECT DISTINCT department, course_code, course_name, exam_type,
-              academic_year, semester, batch
-       FROM qpak_documents
-       WHERE deleted_at IS NULL AND status = 'PUBLISHED'
-       ORDER BY department, course_code`
-    );
+    let rows = [];
+    try {
+      const [result] = await db.query(
+        `SELECT DISTINCT department, course_code, course_name, exam_type,
+                academic_year, semester, batch
+         FROM qpak_documents
+         WHERE deleted_at IS NULL AND status = 'PUBLISHED'
+         ORDER BY department, course_code`
+      );
+      rows = Array.isArray(result) ? result : [];
+    } catch (err) {
+      console.error("getFilterOptions:", err?.message || err);
+      rows = [];
+    }
     const departments = new Set();
     const courses = [];
     const examTypes = new Set();
     const years = new Set();
     const semesters = new Set();
     const batches = new Set();
-    for (const r of rows || []) {
+    for (const r of rows) {
       if (r.department) departments.add(r.department);
       courses.push({
         code: r.course_code ?? r.coursecode,
