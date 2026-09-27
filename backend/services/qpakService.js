@@ -319,7 +319,7 @@ const QpakService = {
       FROM qpak_documents
       WHERE 1=1
     `;
-    const params = [];
+    let params = [];
     ({ sql, params } = applyFilters(sql, params, filters, { publishedOnly: true }));
     sql += ` ORDER BY department ASC, course_code ASC, exam_type ASC, COALESCE(published_at, created_at) DESC`;
 
@@ -336,7 +336,7 @@ const QpakService = {
           FROM qpak_documents
           WHERE 1=1
         `;
-        const fallbackParams = [];
+        let fallbackParams = [];
         ({ sql: fallbackSql, params: fallbackParams } = applyFilters(
           fallbackSql,
           fallbackParams,
