@@ -5,10 +5,10 @@ import {
   MagnifyingGlassIcon,
   FunnelIcon,
   EyeIcon,
-  CheckIcon,
   XMarkIcon,
   ArrowsRightLeftIcon,
   UserPlusIcon,
+  NoSymbolIcon,
 } from "@heroicons/react/24/outline";
 import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
@@ -18,6 +18,7 @@ const STATUS_BADGE = {
   Pending: "bg-amber-50 text-amber-800 border-amber-200",
   Approved: "bg-green-50 text-green-800 border-green-200",
   Rejected: "bg-red-50 text-red-800 border-red-200",
+  Cancelled: "bg-slate-100 text-slate-700 border-slate-200",
 };
 
 function StatusBadge({ status }) {
@@ -27,12 +28,24 @@ function StatusBadge({ status }) {
         STATUS_BADGE[status] || "bg-gray-100 text-gray-700 border-gray-200"
       }`}
     >
-      {status === "Pending" && ""}
-      {status === "Approved" && ""}
-      {status === "Rejected" && ""}
       {status}
     </span>
   );
+}
+
+function formatWhen(value) {
+  if (!value) return "—";
+  try {
+    return new Date(value).toLocaleString("en-IN", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return String(value);
+  }
 }
 
 export default function FacultyTransferRequests() {
@@ -80,8 +93,10 @@ export default function FacultyTransferRequests() {
         r.requestedFaculty?.name,
         r.requestedFaculty?.email,
         r.exam?.name,
+        r.exam?.code,
         r.venue?.name,
         r.reason,
+        r.status,
       ]
         .filter(Boolean)
         .join(" ")
@@ -95,58 +110,19 @@ export default function FacultyTransferRequests() {
     return filtered.slice(start, start + pageSize);
   }, [filtered, page]);
 
-  const handleApprove = async (uuid) => {
+  const handleCancel = async (uuid) => {
     const ok = await showConfirm(
-      "Approve this transfer? The attendance assignment and seating mapping will be updated."
+      "Cancel this mutual faculty request? This is an administrative override and does not transfer the assignment."
     );
     if (!ok) return;
     setActionLoading(uuid);
     try {
-      const res = await api.post(`/faculty-transfers/${uuid}/approve`);
-      const data = res.data?.data ?? res.data;
-      const emailNote = data?.notification?.sent
-        ? " Email notification sent."
-        : data?.notification?.errors?.length
-          ? " Transfer saved; email notification could not be sent."
-          : "";
-      if (data?.generatedPassword) {
-        toast.success(
-          `Approved. New faculty login password: ${data.generatedPassword}${emailNote}`,
-          "Transfer approved"
-        );
-      } else if (data?.userAlreadyExisted) {
-        toast.success(
-          `Transfer approved. Existing user account was linked.${emailNote}`,
-          "Transfer approved"
-        );
-      } else if (data?.newFacultyCreated) {
-        toast.success(`Transfer approved. New faculty profile created.${emailNote}`, "Transfer approved");
-      } else {
-        toast.success(`Transfer request approved.${emailNote}`);
-      }
+      await api.post(`/faculty-transfers/${uuid}/cancel`);
+      toast.success("Mutual change request cancelled.");
       setSelected(null);
       load();
     } catch (err) {
-      toast.error(getApiError(err), getApiErrorTitle(err, "Approval failed"));
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  const handleReject = async (uuid) => {
-    const reason = window.prompt("Rejection reason (required):");
-    if (!reason?.trim()) {
-      toast.warning("Rejection reason is required.");
-      return;
-    }
-    setActionLoading(uuid);
-    try {
-      await api.post(`/faculty-transfers/${uuid}/reject`, { reason: reason.trim() });
-      toast.success("Transfer request rejected.");
-      setSelected(null);
-      load();
-    } catch (err) {
-      toast.error(getApiError(err), getApiErrorTitle(err, "Rejection failed"));
+      toast.error(getApiError(err), getApiErrorTitle(err, "Cancel failed"));
     } finally {
       setActionLoading(null);
     }
@@ -161,9 +137,12 @@ export default function FacultyTransferRequests() {
               <ArrowsRightLeftIcon className="h-7 w-7" />
             </div>
             <div>
-              <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Faculty Change Requests</h1>
+              <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">
+                Mutual Faculty Requests
+              </h1>
               <p className="text-sm text-gray-500 mt-1">
-                Review and approve faculty attendance transfer requests.
+                View mutual faculty change history. Approvals are handled by the requested faculty.
+                You may cancel pending requests in exceptional cases.
               </p>
             </div>
           </div>
@@ -215,6 +194,7 @@ export default function FacultyTransferRequests() {
               <option value="Pending">Pending</option>
               <option value="Approved">Approved</option>
               <option value="Rejected">Rejected</option>
+              <option value="Cancelled">Cancelled</option>
             </select>
             <button
               type="button"
@@ -236,11 +216,11 @@ export default function FacultyTransferRequests() {
                 <thead>
                   <tr className="bg-gray-50/80 text-xs uppercase tracking-wide text-gray-500">
                     <th className="text-left px-5 py-3">Requested By</th>
-                    <th className="text-left px-5 py-3">Replacement</th>
-                    <th className="text-left px-5 py-3">Exam / Venue</th>
-                    <th className="text-left px-5 py-3">Date</th>
-                    <th className="text-left px-5 py-3">Reason</th>
+                    <th className="text-left px-5 py-3">Requested To</th>
+                    <th className="text-left px-5 py-3">Course / Venue</th>
+                    <th className="text-left px-5 py-3">Date / Time</th>
                     <th className="text-left px-5 py-3">Status</th>
+                    <th className="text-left px-5 py-3">Requested At</th>
                     <th className="text-right px-5 py-3">Actions</th>
                   </tr>
                 </thead>
@@ -258,18 +238,22 @@ export default function FacultyTransferRequests() {
                         <div className="text-xs text-gray-500">{r.requestedFaculty?.email}</div>
                       </td>
                       <td className="px-5 py-4">
-                        <div>{r.exam?.name}</div>
+                        <div>
+                          {r.exam?.code ? `${r.exam.code} · ` : ""}
+                          {r.exam?.name}
+                        </div>
                         <div className="text-xs text-gray-500">{r.venue?.name}</div>
                       </td>
                       <td className="px-5 py-4 text-gray-600">
-                        {r.examDate} · {r.session}
-                      </td>
-                      <td className="px-5 py-4 text-gray-600 max-w-[180px] truncate" title={r.reason}>
-                        {r.reason}
+                        <div>
+                          {r.examDate} · {r.session}
+                        </div>
+                        <div className="text-xs text-gray-500">{r.exam?.time || "—"}</div>
                       </td>
                       <td className="px-5 py-4">
                         <StatusBadge status={r.status} />
                       </td>
+                      <td className="px-5 py-4 text-gray-600 text-xs">{formatWhen(r.requestedAt)}</td>
                       <td className="px-5 py-4">
                         <div className="flex justify-end gap-1">
                           <button
@@ -281,26 +265,15 @@ export default function FacultyTransferRequests() {
                             <EyeIcon className="h-4 w-4" />
                           </button>
                           {r.status === "Pending" && (
-                            <>
-                              <button
-                                type="button"
-                                disabled={actionLoading === r.uuid}
-                                onClick={() => handleApprove(r.uuid)}
-                                className="p-2 text-green-600 hover:bg-green-50 rounded-lg disabled:opacity-40"
-                                title="Approve"
-                              >
-                                <CheckIcon className="h-4 w-4" />
-                              </button>
-                              <button
-                                type="button"
-                                disabled={actionLoading === r.uuid}
-                                onClick={() => handleReject(r.uuid)}
-                                className="p-2 text-red-600 hover:bg-red-50 rounded-lg disabled:opacity-40"
-                                title="Reject"
-                              >
-                                <XMarkIcon className="h-4 w-4" />
-                              </button>
-                            </>
+                            <button
+                              type="button"
+                              disabled={actionLoading === r.uuid}
+                              onClick={() => handleCancel(r.uuid)}
+                              className="p-2 text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-40"
+                              title="Cancel (override)"
+                            >
+                              <NoSymbolIcon className="h-4 w-4" />
+                            </button>
                           )}
                         </div>
                       </td>
@@ -309,7 +282,7 @@ export default function FacultyTransferRequests() {
                 </tbody>
               </table>
               {filtered.length === 0 && (
-                <p className="p-10 text-center text-gray-500">No transfer requests found.</p>
+                <p className="p-10 text-center text-gray-500">No mutual faculty requests found.</p>
               )}
             </div>
           )}
@@ -347,32 +320,66 @@ export default function FacultyTransferRequests() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-6 space-y-4">
             <div className="flex justify-between items-start">
-              <h3 className="text-lg font-bold text-gray-900">Request Details</h3>
+              <h3 className="text-lg font-bold text-gray-900">Request History</h3>
               <button type="button" onClick={() => setSelected(null)}>
                 <XMarkIcon className="h-5 w-5 text-gray-400" />
               </button>
             </div>
             <StatusBadge status={selected.status} />
+            <div className="text-sm space-y-2 border border-slate-100 rounded-xl p-4 bg-slate-50">
+              <p className="font-medium text-slate-800">{selected.currentFaculty?.name}</p>
+              <p className="text-slate-500 text-xs pl-2">↓ Requested change</p>
+              <p className="font-medium text-slate-800">{selected.requestedFaculty?.name || "—"}</p>
+              {selected.status === "Approved" && (
+                <>
+                  <p className="text-slate-500 text-xs pl-2">↓ Approved</p>
+                  <p className="text-slate-500 text-xs pl-2">↓ Assignment transferred</p>
+                  <p className="text-slate-500 text-xs pl-2">↓ Attendance transferred</p>
+                </>
+              )}
+              {selected.status === "Rejected" && (
+                <p className="text-slate-500 text-xs pl-2">↓ Rejected</p>
+              )}
+              {selected.status === "Cancelled" && (
+                <p className="text-slate-500 text-xs pl-2">↓ Cancelled</p>
+              )}
+            </div>
             <div className="text-sm space-y-2">
               <p>
-                <span className="text-gray-500">From:</span> {selected.currentFaculty?.name} (
-                {selected.currentFaculty?.email})
+                <span className="text-gray-500">Course:</span> {selected.exam?.name} (
+                {selected.exam?.code || "—"})
               </p>
               <p>
-                <span className="text-gray-500">To:</span>{" "}
-                {selected.requestedFaculty?.name || "New faculty"} (
-                {selected.requestedFaculty?.email})
+                <span className="text-gray-500">When:</span> {selected.examDate} ·{" "}
+                {selected.session} · {selected.exam?.time || "—"}
               </p>
               <p>
-                <span className="text-gray-500">Exam:</span> {selected.exam?.name} ·{" "}
-                {selected.venue?.name}
-              </p>
-              <p>
-                <span className="text-gray-500">When:</span> {selected.examDate} · {selected.session}
+                <span className="text-gray-500">Venue:</span> {selected.venue?.name}
               </p>
               <p>
                 <span className="text-gray-500">Reason:</span> {selected.reason}
               </p>
+              <p>
+                <span className="text-gray-500">Requested At:</span> {formatWhen(selected.requestedAt)}
+              </p>
+              {selected.approvedAt && (
+                <p>
+                  <span className="text-gray-500">Approved At:</span>{" "}
+                  {formatWhen(selected.approvedAt)}
+                </p>
+              )}
+              {selected.rejectedAt && (
+                <p>
+                  <span className="text-gray-500">Rejected At:</span>{" "}
+                  {formatWhen(selected.rejectedAt)}
+                </p>
+              )}
+              {selected.cancelledAt && (
+                <p>
+                  <span className="text-gray-500">Cancelled At:</span>{" "}
+                  {formatWhen(selected.cancelledAt)}
+                </p>
+              )}
               {selected.rejectionReason && (
                 <p className="text-red-700">
                   <span className="text-gray-500">Rejection:</span> {selected.rejectionReason}
@@ -380,22 +387,13 @@ export default function FacultyTransferRequests() {
               )}
             </div>
             {selected.status === "Pending" && (
-              <div className="flex gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => handleReject(selected.uuid)}
-                  className="flex-1 py-2 border border-red-200 text-red-700 rounded-xl text-sm font-medium"
-                >
-                  Reject
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleApprove(selected.uuid)}
-                  className="flex-1 py-2 bg-indigo-600 text-white rounded-xl text-sm font-semibold"
-                >
-                  Approve
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => handleCancel(selected.uuid)}
+                className="w-full py-2 border border-slate-200 text-slate-700 rounded-xl text-sm font-medium hover:bg-slate-50"
+              >
+                Cancel Request (Override)
+              </button>
             )}
           </div>
         </div>

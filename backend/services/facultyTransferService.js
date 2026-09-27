@@ -5,6 +5,7 @@ const Role = require("../models/Role");
 const AuditLog = require("../models/AuditLog");
 const AttendanceService = require("./attendanceService");
 const { notifyTransferApproved } = require("./transferApprovalNotification");
+const { notifyAdminsOfMutualApproval } = require("./mutualTransferAdminNotify");
 const { isValidKctEmail, passwordFromEmail, hashPassword } = require("../utils/password");
 
 function toRequestRow(row) {
@@ -19,7 +20,9 @@ function toRequestRow(row) {
     requestedAt: row.created_at ?? row.createdat,
     approvedAt: row.approved_at ?? row.approvedat ?? null,
     rejectedAt: row.rejected_at ?? row.rejectedat ?? null,
+    cancelledAt: row.cancelled_at ?? row.cancelledat ?? null,
     rejectionReason: row.rejection_reason ?? row.rejectionreason ?? null,
+    direction: row._direction || null,
     currentFaculty: {
       uuid: row.current_faculty_uuid ?? row.currentfacultyuuid ?? null,
       name: row.current_faculty_name ?? row.currentfacultyname ?? "",
@@ -484,30 +487,29 @@ const FacultyTransferService = {
     }
 
     let requestedFaculty = await findFacultyByEmail(email);
-    let finalName = requestedName?.trim() || requestedFaculty?.name || "";
-
-    if (!requestedFaculty && !finalName) {
-      const err = new Error("Faculty name is required when the email is not in the system");
+    if (!requestedFaculty) {
+      const err = new Error(
+        "Replacement faculty must already be registered in Hallora to receive a mutual change request"
+      );
       err.statusCode = 400;
       throw err;
     }
+    let finalName = requestedName?.trim() || requestedFaculty?.name || "";
 
-    if (requestedFaculty) {
-      const availability = await checkReplacementAvailability({
-        requestedFacultyId: requestedFaculty.id,
-        examId: ctx.examId,
-        venueId: ctx.venueId,
-        examDate: ctx.examDate,
-        examStartTime: ctx.examStartTime,
-        examEndTime: ctx.examEndTime,
-        excludeFacultyId: currentFacultyId,
-        excludeSpvId: ctx.seatingPlanVenueId,
-      });
-      if (!availability.available) {
-        const err = new Error(availability.message);
-        err.statusCode = 409;
-        throw err;
-      }
+    const availability = await checkReplacementAvailability({
+      requestedFacultyId: requestedFaculty.id,
+      examId: ctx.examId,
+      venueId: ctx.venueId,
+      examDate: ctx.examDate,
+      examStartTime: ctx.examStartTime,
+      examEndTime: ctx.examEndTime,
+      excludeFacultyId: currentFacultyId,
+      excludeSpvId: ctx.seatingPlanVenueId,
+    });
+    if (!availability.available) {
+      const err = new Error(availability.message);
+      err.statusCode = 409;
+      throw err;
     }
 
     const [result] = await db.query(
@@ -521,7 +523,7 @@ const FacultyTransferService = {
         ctx.assignment.internalId,
         ctx.seatingPlanVenueId,
         currentFacultyId,
-        requestedFaculty?.id ?? null,
+        requestedFaculty.id,
         finalName || null,
         email,
         ctx.examId,
@@ -580,11 +582,20 @@ const FacultyTransferService = {
     const params = [];
 
     if (role === "faculty" && facultyId) {
-      sql += ` AND r.current_faculty_id = ?`;
-      params.push(facultyId);
+      const direction = String(filters.direction || "").toLowerCase();
+      if (direction === "incoming") {
+        sql += ` AND r.requested_faculty_id = ?`;
+        params.push(facultyId);
+      } else if (direction === "outgoing") {
+        sql += ` AND r.current_faculty_id = ?`;
+        params.push(facultyId);
+      } else {
+        sql += ` AND (r.current_faculty_id = ? OR r.requested_faculty_id = ?)`;
+        params.push(facultyId, facultyId);
+      }
     } else if (role === "hod" && department) {
-      sql += ` AND cf.department = ?`;
-      params.push(department);
+      sql += ` AND (cf.department = ? OR rf.department = ?)`;
+      params.push(department, department);
     }
 
     if (filters.status) {
@@ -600,8 +611,8 @@ const FacultyTransferService = {
       params.push(filters.session);
     }
     if (filters.facultyUuid) {
-      sql += ` AND cf.public_uuid = ?`;
-      params.push(filters.facultyUuid);
+      sql += ` AND (cf.public_uuid = ? OR rf.public_uuid = ?)`;
+      params.push(filters.facultyUuid, filters.facultyUuid);
     }
     if (filters.venueUuid) {
       sql += ` AND v.public_uuid = ?`;
@@ -611,7 +622,15 @@ const FacultyTransferService = {
     sql += ` ORDER BY r.created_at DESC`;
 
     const [rows] = await db.query(sql, params);
-    return (rows || []).map(toRequestRow);
+    return (rows || []).map((row) => {
+      const mapped = toRequestRow(row);
+      if (role === "faculty" && facultyId && mapped) {
+        const isIncoming =
+          Number(row.requested_faculty_id ?? row.requestedfacultyid) === Number(facultyId);
+        mapped.direction = isIncoming ? "incoming" : "outgoing";
+      }
+      return mapped;
+    });
   },
 
   getRequestByUuid: async (uuid) => {
@@ -640,7 +659,7 @@ const FacultyTransferService = {
     return toRequestRow(rows[0]);
   },
 
-  approveRequest: async (requestUuid, adminUserId, { ipAddress, userAgent, ownerUserId } = {}) => {
+  approveRequest: async (requestUuid, approvingUserId, { ipAddress, userAgent, approvingFacultyId } = {}) => {
     const [reqRows] = await db.query(
       `SELECT * FROM faculty_transfer_requests WHERE public_uuid = ?`,
       [requestUuid]
@@ -654,6 +673,18 @@ const FacultyTransferService = {
     if (req.status !== "Pending") {
       const err = new Error("Only pending requests can be approved");
       err.statusCode = 409;
+      throw err;
+    }
+
+    const requestedFacultyId = req.requested_faculty_id ?? req.requestedfacultyid;
+    if (!requestedFacultyId) {
+      const err = new Error("Request has no target faculty — cannot approve mutual change");
+      err.statusCode = 409;
+      throw err;
+    }
+    if (!approvingFacultyId || Number(approvingFacultyId) !== Number(requestedFacultyId)) {
+      const err = new Error("Only the requested faculty can approve this mutual change request");
+      err.statusCode = 403;
       throw err;
     }
 
@@ -683,6 +714,7 @@ const FacultyTransferService = {
     const examId = assign.exam_id ?? assign.examid;
     const venueId = assign.venue_id ?? assign.venueid;
     const currentFacultyId = req.current_faculty_id ?? req.currentfacultyid;
+    const newFacultyId = Number(requestedFacultyId);
 
     const [lockedRows] = await db.query(
       `SELECT 1 FROM attendance WHERE exam_id = ? AND venue_id = ? AND is_locked = TRUE LIMIT 1`,
@@ -698,26 +730,6 @@ const FacultyTransferService = {
       const err = new Error("Assignment faculty has changed since the request was submitted");
       err.statusCode = 409;
       throw err;
-    }
-
-    let newFacultyId = req.requested_faculty_id ?? req.requestedfacultyid;
-    let generatedPassword = null;
-    let newFacultyCreated = false;
-    let userAlreadyExisted = false;
-
-    if (!newFacultyId) {
-      const email = req.requested_faculty_email ?? req.requestedfacultyemail;
-      const name = req.requested_faculty_name ?? req.requestedfacultyname;
-      const existing = await findFacultyByEmail(email);
-      if (existing) {
-        newFacultyId = existing.id;
-      } else {
-        const created = await createFacultyWithUser({ name, email });
-        newFacultyId = created.facultyId;
-        generatedPassword = created.generatedPassword;
-        newFacultyCreated = !created.existingFaculty;
-        userAlreadyExisted = !!created.userExists;
-      }
     }
 
     const timeRange = parseExamTimeRange(assign.exam_time ?? assign.examtime);
@@ -747,7 +759,7 @@ const FacultyTransferService = {
         venueId,
         currentFacultyId,
         assign,
-        adminUserId,
+        adminUserId: approvingUserId,
         ipAddress,
         userAgent,
       });
@@ -761,6 +773,11 @@ const FacultyTransferService = {
 
     // Email only after successful commit. Failures must not undo approval.
     let notification = { sent: false, queued: false, recipients: [], errors: [] };
+    let adminNotification = { sent: false, recipients: [], errors: [] };
+    let examMeta = {};
+    let prevFacName = "";
+    let newFacName = "";
+    let approvedAt = new Date();
     try {
       const examTime = assign.exam_time ?? assign.examtime ?? "";
       const timeParts = String(examTime)
@@ -791,39 +808,67 @@ const FacultyTransferService = {
         `SELECT name, department FROM faculty WHERE id = ? LIMIT 1`,
         [newFacultyId]
       );
+      const [approvedRows] = await db.query(
+        `SELECT approved_at FROM faculty_transfer_requests WHERE id = ? LIMIT 1`,
+        [req.id]
+      );
+      approvedAt = approvedRows?.[0]?.approved_at ?? approvedRows?.[0]?.approvedat ?? approvedAt;
+
+      examMeta = {
+        examName: examRows?.[0]?.exam_name ?? examRows?.[0]?.examname ?? "",
+        examCode: examRows?.[0]?.exam_code ?? examRows?.[0]?.examcode ?? "",
+        examDate:
+          examRows?.[0]?.exam_date ??
+          examRows?.[0]?.examdate ??
+          assign.exam_date ??
+          assign.examdate,
+        session:
+          examRows?.[0]?.exam_session ??
+          examRows?.[0]?.examsession ??
+          req.session ??
+          assign.exam_session ??
+          assign.examsession,
+        venueName: venueRows?.[0]?.name ?? "",
+        startTime,
+        endTime,
+      };
+      prevFacName = prevFacRows?.[0]?.name || "";
+      newFacName = newFacRows?.[0]?.name || "";
 
       notification = await notifyTransferApproved({
         currentFacultyId,
         newFacultyId,
-        adminUserId,
+        adminUserId: approvingUserId,
         transferDuty: {
-          previousFacultyName: prevFacRows?.[0]?.name,
-          newFacultyName: newFacRows?.[0]?.name,
-          examName:
-            examRows?.[0]?.exam_name ??
-            examRows?.[0]?.examname ??
-            examRows?.[0]?.exam_code ??
-            "Examination",
-          examDate:
-            examRows?.[0]?.exam_date ??
-            examRows?.[0]?.examdate ??
-            assign.exam_date ??
-            assign.examdate,
-          session:
-            examRows?.[0]?.exam_session ??
-            examRows?.[0]?.examsession ??
-            req.session ??
-            assign.exam_session ??
-            assign.examsession,
-          venueName: venueRows?.[0]?.name ?? "",
+          previousFacultyName: prevFacName,
+          newFacultyName: newFacName,
+          examName: examMeta.examName || examMeta.examCode || "Examination",
+          examDate: examMeta.examDate,
+          session: examMeta.session,
+          venueName: examMeta.venueName,
           startTime,
           endTime,
         },
       });
 
+      adminNotification = await notifyAdminsOfMutualApproval({
+        requestedByName: prevFacName,
+        approvedByName: newFacName,
+        courseCode: examMeta.examCode,
+        courseName: examMeta.examName,
+        examDate: examMeta.examDate,
+        startTime,
+        endTime,
+        session: examMeta.session,
+        venueName: examMeta.venueName,
+        previousFacultyName: prevFacName,
+        newFacultyName: newFacName,
+        approvedAt,
+      });
+
       try {
         await AuditLog.create({
-          userId: adminUserId,
+          userId: approvingUserId,
           action: "FACULTY_TRANSFER_EMAIL_NOTIFICATION",
           entityType: "FacultyTransferRequest",
           entityId: req.id,
@@ -832,6 +877,7 @@ const FacultyTransferService = {
             fromFacultyId: currentFacultyId,
             toFacultyId: newFacultyId,
             notification,
+            adminNotification,
             timestamp: new Date().toISOString(),
           },
           ipAddress,
@@ -859,9 +905,6 @@ const FacultyTransferService = {
     return {
       status: "Approved",
       transferStatus: "Approved",
-      generatedPassword,
-      newFacultyCreated,
-      userAlreadyExisted,
       facultyId: newFacultyId,
       previousFacultyId: currentFacultyId,
       notification: {
@@ -869,6 +912,11 @@ const FacultyTransferService = {
         queued: !!notification.queued,
         recipients: notification.recipients || [],
         errors: notification.errors || [],
+      },
+      adminNotification: {
+        sent: !!adminNotification.sent,
+        recipients: adminNotification.recipients || [],
+        errors: adminNotification.errors || [],
       },
     };
   },
@@ -1022,13 +1070,7 @@ const FacultyTransferService = {
     }
   },
 
-  rejectRequest: async (requestUuid, adminUserId, rejectionReason, { ipAddress, userAgent } = {}) => {
-    if (!rejectionReason?.trim()) {
-      const err = new Error("Rejection reason is required");
-      err.statusCode = 400;
-      throw err;
-    }
-
+  rejectRequest: async (requestUuid, rejectingUserId, rejectionReason, { ipAddress, userAgent, rejectingFacultyId } = {}) => {
     const [rows] = await db.query(
       `SELECT * FROM faculty_transfer_requests WHERE public_uuid = ?`,
       [requestUuid]
@@ -1045,27 +1087,36 @@ const FacultyTransferService = {
       throw err;
     }
 
+    const requestedFacultyId = req.requested_faculty_id ?? req.requestedfacultyid;
+    if (!rejectingFacultyId || Number(rejectingFacultyId) !== Number(requestedFacultyId)) {
+      const err = new Error("Only the requested faculty can reject this mutual change request");
+      err.statusCode = 403;
+      throw err;
+    }
+
     const { examDate: reqExamDate, examStartTime: reqExamStart } = await getExamStartForRequest(req);
     assertWithinTransferWindow(reqExamDate, reqExamStart);
 
     const requestId = req.id ?? req.ID;
+    const reasonText = (rejectionReason || "").trim() || "Rejected by requested faculty";
 
     await db.query(
       `UPDATE faculty_transfer_requests
        SET status = 'Rejected', rejected_by = ?, rejected_at = CURRENT_TIMESTAMP,
            rejection_reason = ?, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
-      [adminUserId, rejectionReason.trim(), requestId]
+      [rejectingUserId, reasonText, requestId]
     );
 
     await AuditLog.create({
-      userId: adminUserId,
+      userId: rejectingUserId,
       action: "FACULTY_TRANSFER_REJECTED",
       entityType: "FacultyTransferRequest",
       entityId: requestId,
       changes: {
         requestUuid,
-        rejectionReason: rejectionReason.trim(),
+        rejectionReason: reasonText,
+        rejectedByFacultyId: rejectingFacultyId,
         timestamp: new Date().toISOString(),
       },
       ipAddress,
@@ -1073,6 +1124,111 @@ const FacultyTransferService = {
     });
 
     return { status: "Rejected" };
+  },
+
+  cancelRequest: async (
+    requestUuid,
+    userId,
+    { ipAddress, userAgent, facultyId = null, role = "" } = {}
+  ) => {
+    const [rows] = await db.query(
+      `SELECT * FROM faculty_transfer_requests WHERE public_uuid = ?`,
+      [requestUuid]
+    );
+    const req = rows[0];
+    if (!req) {
+      const err = new Error("Request not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    if (req.status !== "Pending") {
+      const err = new Error("Only pending requests can be cancelled");
+      err.statusCode = 409;
+      throw err;
+    }
+
+    const currentFacultyId = req.current_faculty_id ?? req.currentfacultyid;
+    const roleName = String(role || "").toLowerCase();
+    const isAdminOverride = ["admin", "faculty_incharge", "hod"].includes(roleName);
+    const isRequester = facultyId && Number(facultyId) === Number(currentFacultyId);
+
+    if (!isAdminOverride && !isRequester) {
+      const err = new Error("Only the requesting faculty or an administrator can cancel this request");
+      err.statusCode = 403;
+      throw err;
+    }
+
+    const requestId = req.id ?? req.ID;
+    await db.query(
+      `UPDATE faculty_transfer_requests
+       SET status = 'Cancelled', cancelled_by = ?, cancelled_at = CURRENT_TIMESTAMP,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [userId, requestId]
+    );
+
+    await AuditLog.create({
+      userId,
+      action: "FACULTY_TRANSFER_CANCELLED",
+      entityType: "FacultyTransferRequest",
+      entityId: requestId,
+      changes: {
+        requestUuid,
+        cancelledByRole: roleName || "faculty",
+        timestamp: new Date().toISOString(),
+      },
+      ipAddress,
+      userAgent,
+    });
+
+    return { status: "Cancelled" };
+  },
+
+  listEligibleFacultyForAssignment: async ({ assignmentUuid, currentFacultyId, adminMode = false }) => {
+    const ctx = await getAssignmentContext(assignmentUuid);
+    if (!ctx) {
+      const err = new Error("Assignment not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    if (!adminMode && ctx.facultyId !== currentFacultyId) {
+      const err = new Error("You can only request transfer for your own assignments");
+      err.statusCode = 403;
+      throw err;
+    }
+
+    const excludeId = adminMode ? ctx.facultyId : currentFacultyId;
+    const [rows] = await db.query(
+      `SELECT id, public_uuid, name, email, department
+       FROM faculty
+       WHERE COALESCE(is_active, TRUE) = TRUE
+         AND id <> ?
+       ORDER BY name ASC`,
+      [excludeId]
+    );
+
+    const eligible = [];
+    for (const row of rows || []) {
+      const availability = await checkReplacementAvailability({
+        requestedFacultyId: row.id,
+        examId: ctx.examId,
+        venueId: ctx.venueId,
+        examDate: ctx.examDate,
+        examStartTime: ctx.examStartTime,
+        examEndTime: ctx.examEndTime,
+        excludeFacultyId: excludeId,
+        excludeSpvId: ctx.seatingPlanVenueId,
+      });
+      if (availability.available) {
+        eligible.push({
+          uuid: row.public_uuid ?? row.publicuuid,
+          name: row.name,
+          email: row.email,
+          department: row.department || "",
+        });
+      }
+    }
+    return eligible;
   },
 
   listChangeableAssignments: async ({ examDate = "", session = "", search = "" } = {}) => {

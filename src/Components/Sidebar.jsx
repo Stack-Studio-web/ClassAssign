@@ -37,7 +37,7 @@ const ADMIN_NAV = [
   { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
   { to: "/Hall", label: "Hall Allotment", icon: BuildingOfficeIcon },
   { to: "/admin/notifications", label: "Hall Notifications", icon: BellAlertIcon },
-  { to: "/admin/attendance/transfers", label: "Faculty Change Requests", icon: ArrowsRightLeftIcon },
+  { to: "/admin/attendance/transfers", label: "Mutual Faculty Requests", icon: ArrowsRightLeftIcon },
   { to: "/change", label: "Change Faculty", icon: UserPlusIcon },
   { to: "/attendance", label: "Active Attendance", icon: UserGroupIcon },
   { to: "/attendance/completed", label: "Completed Attendance", icon: CheckCircleIcon },
@@ -56,7 +56,7 @@ const FACULTY_NAV = [
   { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
   { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
   { to: "/admin/notifications", label: "Hall Notifications", icon: BellAlertIcon },
-  { to: "/admin/attendance/transfers", label: "Faculty Change Requests", icon: ArrowsRightLeftIcon },
+  { to: "/admin/attendance/transfers", label: "Mutual Faculty Requests", icon: ArrowsRightLeftIcon },
   { to: "/attendance", label: "Active Attendance", icon: UserGroupIcon },
   { to: "/ineligibility/view", label: "Ineligibility", icon: ExclamationTriangleIcon },
 ];
@@ -69,7 +69,7 @@ const HOD_NAV = [
   { to: "/attendance", label: "Active Attendance", icon: UserGroupIcon },
   { to: "/attendance/completed", label: "Completed Attendance", icon: CheckCircleIcon },
   { to: "/Hall", label: "Hall Allotment", icon: BuildingOfficeIcon },
-  { to: "/admin/attendance/transfers", label: "Faculty Change Requests", icon: ArrowsRightLeftIcon },
+  { to: "/admin/attendance/transfers", label: "Mutual Faculty Requests", icon: ArrowsRightLeftIcon },
   { to: "/change", label: "Change Faculty", icon: UserPlusIcon },
   { to: "/users", label: "User Management", icon: UsersIcon },
 ];

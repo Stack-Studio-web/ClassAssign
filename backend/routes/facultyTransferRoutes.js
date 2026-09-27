@@ -40,6 +40,38 @@ router.get(
 );
 
 router.get(
+  "/eligible-faculty",
+  sessionAuth,
+  checkRole(["faculty", "admin", "faculty_incharge", "hod"]),
+  async (req, res) => {
+    try {
+      const assignmentUuid = String(req.query.assignmentUuid || "").trim();
+      if (!assignmentUuid) {
+        return Api.validationError(res, "assignmentUuid is required");
+      }
+
+      const isFaculty = req.user.role === "faculty";
+      let currentFacultyId = null;
+      if (isFaculty) {
+        currentFacultyId = req.facultyId || (await resolveFacultyId(req));
+        if (!currentFacultyId) {
+          return Api.forbidden(res, "Faculty profile not found");
+        }
+      }
+
+      const faculty = await FacultyTransferService.listEligibleFacultyForAssignment({
+        assignmentUuid,
+        currentFacultyId,
+        adminMode: !isFaculty,
+      });
+      return Api.success(res, "Eligible faculty", { faculty });
+    } catch (err) {
+      return Api.fromError(res, err);
+    }
+  }
+);
+
+router.get(
   "/check-availability",
   sessionAuth,
   checkRole(["faculty", "admin", "faculty_incharge", "hod"]),
@@ -136,7 +168,12 @@ router.post(
         requestedName,
         reason,
       });
-      return Api.success(res, "Transfer request submitted. Awaiting admin approval.", result, 201);
+      return Api.success(
+        res,
+        "Mutual change request sent. Awaiting approval from the requested faculty.",
+        result,
+        201
+      );
     } catch (err) {
       return Api.fromError(res, err);
     }
@@ -155,6 +192,7 @@ router.get(
         session: req.query.session || "",
         facultyUuid: req.query.facultyUuid || "",
         venueUuid: req.query.venueUuid || "",
+        direction: req.query.direction || "",
       };
 
       let facultyId = null;
@@ -191,10 +229,13 @@ router.get(
       if (req.user.role === "faculty") {
         const facultyId = await resolveFacultyId(req);
         const [rows] = await require("../config/db").query(
-          `SELECT current_faculty_id FROM faculty_transfer_requests WHERE public_uuid = ?`,
+          `SELECT current_faculty_id, requested_faculty_id
+           FROM faculty_transfer_requests WHERE public_uuid = ?`,
           [req.params.uuid]
         );
-        if ((rows[0]?.current_faculty_id ?? rows[0]?.currentfacultyid) !== facultyId) {
+        const currentId = rows[0]?.current_faculty_id ?? rows[0]?.currentfacultyid;
+        const requestedId = rows[0]?.requested_faculty_id ?? rows[0]?.requestedfacultyid;
+        if (Number(currentId) !== Number(facultyId) && Number(requestedId) !== Number(facultyId)) {
           return Api.forbidden(res, "Access denied");
         }
       }
@@ -208,16 +249,21 @@ router.get(
 router.post(
   "/:uuid/approve",
   sessionAuth,
-  checkRole(["admin", "faculty_incharge", "hod"]),
+  checkRole(["faculty"]),
+  requireFacultyProfile,
   auditLogger("FACULTY_TRANSFER_APPROVED", "FacultyTransferRequest"),
   async (req, res) => {
     try {
       const result = await FacultyTransferService.approveRequest(
         req.params.uuid,
         req.user.id,
-        { ...getClientMeta(req), ownerUserId: req.user.id }
+        { ...getClientMeta(req), approvingFacultyId: req.facultyId }
       );
-      return Api.success(res, "Transfer request approved. Assignment updated.", result);
+      return Api.success(
+        res,
+        "Mutual change approved. Assignment and attendance responsibility transferred.",
+        result
+      );
     } catch (err) {
       return Api.fromError(res, err);
     }
@@ -227,18 +273,45 @@ router.post(
 router.post(
   "/:uuid/reject",
   sessionAuth,
-  checkRole(["admin", "faculty_incharge", "hod"]),
+  checkRole(["faculty"]),
+  requireFacultyProfile,
   auditLogger("FACULTY_TRANSFER_REJECTED", "FacultyTransferRequest"),
   async (req, res) => {
     try {
-      const { reason } = req.body;
+      const { reason } = req.body || {};
       const result = await FacultyTransferService.rejectRequest(
         req.params.uuid,
         req.user.id,
         reason,
-        getClientMeta(req)
+        { ...getClientMeta(req), rejectingFacultyId: req.facultyId }
       );
-      return Api.success(res, "Transfer request rejected.", result);
+      return Api.success(res, "Mutual change request rejected.", result);
+    } catch (err) {
+      return Api.fromError(res, err);
+    }
+  }
+);
+
+router.post(
+  "/:uuid/cancel",
+  sessionAuth,
+  checkRole(["faculty", "admin", "faculty_incharge", "hod"]),
+  auditLogger("FACULTY_TRANSFER_CANCELLED", "FacultyTransferRequest"),
+  async (req, res) => {
+    try {
+      let facultyId = null;
+      if (req.user.role === "faculty") {
+        facultyId = req.facultyId || (await resolveFacultyId(req));
+        if (!facultyId) {
+          return Api.forbidden(res, "Faculty profile not found");
+        }
+      }
+      const result = await FacultyTransferService.cancelRequest(req.params.uuid, req.user.id, {
+        ...getClientMeta(req),
+        facultyId,
+        role: req.user.role,
+      });
+      return Api.success(res, "Mutual change request cancelled.", result);
     } catch (err) {
       return Api.fromError(res, err);
     }

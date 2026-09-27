@@ -131,13 +131,15 @@ function testPortalUrlUsesEnvOrDefault() {
 }
 
 function testPendingOnlySemantics() {
-  // Mirrors service guard: only Pending → Approved once
+  // Mirrors service guard: only Pending → Approved / Rejected / Cancelled
   const transitions = {
-    Pending: "Approved",
+    Pending: ["Approved", "Rejected", "Cancelled"],
     Approved: null,
     Rejected: null,
+    Cancelled: null,
   };
-  assert.strictEqual(transitions.Pending, "Approved");
+  assert.ok(transitions.Pending.includes("Approved"));
+  assert.ok(transitions.Pending.includes("Cancelled"));
   assert.strictEqual(transitions.Approved, null);
   assert.strictEqual(transitions.Rejected, null);
 }
@@ -149,11 +151,14 @@ function testFacultyIdentityStable() {
   assert.strictEqual(after.id, 123);
 }
 
-function testUnauthorizedRolesBlocked() {
-  const allowed = new Set(["admin", "faculty_incharge", "hod"]);
-  assert.ok(!allowed.has("faculty"));
-  assert.ok(allowed.has("admin"));
-  assert.ok(allowed.has("faculty_incharge"));
+function testMutualApproveRoles() {
+  // Mutual workflow: requested faculty approves; admin/FI do not.
+  const mutualApprovers = new Set(["faculty"]);
+  const viewOnlyRoles = new Set(["admin", "faculty_incharge", "hod"]);
+  assert.ok(mutualApprovers.has("faculty"));
+  assert.ok(!mutualApprovers.has("admin"));
+  assert.ok(viewOnlyRoles.has("admin"));
+  assert.ok(viewOnlyRoles.has("faculty_incharge"));
 }
 
 testSubject();
@@ -163,9 +168,10 @@ testHtmlHasButtonAndNoLocalhostHardcode();
 testPortalUrlUsesEnvOrDefault();
 testPendingOnlySemantics();
 testFacultyIdentityStable();
-testUnauthorizedRolesBlocked();
+testMutualApproveRoles();
 
 require("../services/transferApprovalNotification");
+require("../services/mutualTransferAdminNotify");
 require("../services/facultyTransferService");
 require("../routes/facultyTransferRoutes");
 

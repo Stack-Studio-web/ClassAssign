@@ -19,17 +19,57 @@ async function ensureTransferSchema() {
         exam_date DATE,
         session VARCHAR(20),
         reason TEXT NOT NULL,
-        status VARCHAR(20) NOT NULL DEFAULT 'Pending'
-          CHECK (status IN ('Pending', 'Approved', 'Rejected')),
+        status VARCHAR(20) NOT NULL DEFAULT 'Pending',
         requested_by_user_id INT REFERENCES users(id),
         approved_by INT REFERENCES users(id),
         approved_at TIMESTAMPTZ,
         rejected_by INT REFERENCES users(id),
         rejected_at TIMESTAMPTZ,
         rejection_reason TEXT,
+        cancelled_by INT REFERENCES users(id),
+        cancelled_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
+    `);
+
+    await db.query(`
+      ALTER TABLE faculty_transfer_requests
+        ADD COLUMN IF NOT EXISTS cancelled_by INT REFERENCES users(id)
+    `);
+    await db.query(`
+      ALTER TABLE faculty_transfer_requests
+        ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ
+    `);
+
+    // Expand status CHECK to include Cancelled (mutual workflow)
+    await db.query(`
+      DO $mut$
+      DECLARE
+        cname text;
+      BEGIN
+        SELECT con.conname INTO cname
+        FROM pg_constraint con
+        JOIN pg_class rel ON rel.oid = con.conrelid
+        JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+        WHERE nsp.nspname = 'public'
+          AND rel.relname = 'faculty_transfer_requests'
+          AND con.contype = 'c'
+          AND pg_get_constraintdef(con.oid) ILIKE '%status%';
+
+        IF cname IS NOT NULL THEN
+          EXECUTE format('ALTER TABLE faculty_transfer_requests DROP CONSTRAINT %I', cname);
+        END IF;
+
+        BEGIN
+          ALTER TABLE faculty_transfer_requests
+            ADD CONSTRAINT faculty_transfer_requests_status_check
+            CHECK (status IN ('Pending', 'Approved', 'Rejected', 'Cancelled'));
+        EXCEPTION
+          WHEN duplicate_object THEN NULL;
+        END;
+      END
+      $mut$;
     `);
 
     await db.query(`
@@ -44,6 +84,10 @@ async function ensureTransferSchema() {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_faculty_transfer_requests_pending_assignment
         ON faculty_transfer_requests (attendance_assignment_id)
         WHERE status = 'Pending'
+    `);
+    await db.query(`
+      CREATE INDEX IF NOT EXISTS idx_faculty_transfer_requests_requested_faculty
+        ON faculty_transfer_requests (requested_faculty_id)
     `);
 
     await db.query(`

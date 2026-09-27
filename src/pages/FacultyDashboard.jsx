@@ -67,6 +67,8 @@ export default function FacultyDashboard() {
   const [exams, setExams] = useState([]);
   const [transferRequests, setTransferRequests] = useState([]);
   const [transferExam, setTransferExam] = useState(null);
+  const [incomingAction, setIncomingAction] = useState(null);
+  const [actionLoading, setActionLoading] = useState(null);
   const [error, setError] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -77,6 +79,19 @@ export default function FacultyDashboard() {
       return null;
     }
   }, []);
+
+  const refreshTransfers = async () => {
+    const res = await api.get("/faculty-transfers").catch(() => ({ data: {} }));
+    setTransferRequests(res.data?.data?.requests ?? res.data?.requests ?? []);
+  };
+
+  const incomingRequests = useMemo(
+    () =>
+      (transferRequests || []).filter(
+        (r) => r.direction === "incoming" && r.status === "Pending"
+      ),
+    [transferRequests]
+  );
 
   useEffect(() => {
     const load = async () => {
@@ -112,7 +127,10 @@ export default function FacultyDashboard() {
 
   const getTransferStatus = (examUuid) => {
     const req = transferRequests.find(
-      (r) => r.assignmentUuid === examUuid && r.status === "Pending"
+      (r) =>
+        r.assignmentUuid === examUuid &&
+        r.status === "Pending" &&
+        r.direction !== "incoming"
     );
     return req?.status || null;
   };
@@ -121,6 +139,59 @@ export default function FacultyDashboard() {
 
   const openAttendance = (exam) => {
     navigate(`/faculty/attendance/${exam.uuid}`, { state: { exam } });
+  };
+
+  const confirmIncomingApprove = async () => {
+    if (!incomingAction) return;
+    const uuid = incomingAction.uuid;
+    setActionLoading(uuid);
+    try {
+      await api.post(`/faculty-transfers/${uuid}/approve`);
+      toast.success("Mutual change approved. Assignment transferred to you.");
+      setIncomingAction(null);
+      await refreshTransfers();
+      const examRes = await api.get("/faculty-attendance/my-exams");
+      setExams(examRes.data.exams || []);
+    } catch (err) {
+      toast.error(err.response?.data?.message || err.message || "Approval failed");
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleIncomingReject = async (req) => {
+    setActionLoading(req.uuid);
+    try {
+      await api.post(`/faculty-transfers/${req.uuid}/reject`, {
+        reason: "Rejected by requested faculty",
+      });
+      toast.success("Mutual change request rejected.");
+      await refreshTransfers();
+    } catch (err) {
+      toast.error(err.response?.data?.message || err.message || "Rejection failed");
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleCancelOutgoing = async (examUuid) => {
+    const req = transferRequests.find(
+      (r) =>
+        r.assignmentUuid === examUuid &&
+        r.status === "Pending" &&
+        r.direction !== "incoming"
+    );
+    if (!req) return;
+    setActionLoading(req.uuid);
+    try {
+      await api.post(`/faculty-transfers/${req.uuid}/cancel`);
+      toast.success("Mutual change request cancelled.");
+      await refreshTransfers();
+    } catch (err) {
+      toast.error(err.response?.data?.message || err.message || "Cancel failed");
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   if (loading) {
@@ -228,6 +299,68 @@ export default function FacultyDashboard() {
           </div>
         )}
 
+        {incomingRequests.length > 0 && (
+          <section className="mb-6 space-y-3">
+            <h2 className="text-lg font-bold text-[#0B1F4B]">Incoming Faculty Change Requests</h2>
+            {incomingRequests.map((req) => (
+              <article
+                key={req.uuid}
+                className="bg-white rounded-2xl border border-amber-100 shadow-sm p-4 sm:p-5"
+              >
+                <p className="text-xs font-semibold uppercase tracking-wide text-amber-700 mb-2">
+                  Faculty Change Request · Pending
+                </p>
+                <div className="grid sm:grid-cols-2 gap-2 text-sm text-slate-700">
+                  <p>
+                    <span className="text-slate-500">Requested By:</span>{" "}
+                    <span className="font-medium">{req.currentFaculty?.name}</span>
+                  </p>
+                  <p>
+                    <span className="text-slate-500">Requested To:</span>{" "}
+                    <span className="font-medium">{req.requestedFaculty?.name || displayName}</span>
+                  </p>
+                  <p>
+                    <span className="text-slate-500">Course:</span> {req.exam?.name || "—"}
+                  </p>
+                  <p>
+                    <span className="text-slate-500">Course Code:</span> {req.exam?.code || "—"}
+                  </p>
+                  <p>
+                    <span className="text-slate-500">Date:</span> {req.examDate || "—"}
+                  </p>
+                  <p>
+                    <span className="text-slate-500">Time:</span> {req.exam?.time || "—"}
+                  </p>
+                  <p className="sm:col-span-2">
+                    <span className="text-slate-500">Venue:</span> {req.venue?.name || "—"}
+                  </p>
+                  <p className="sm:col-span-2">
+                    <span className="text-slate-500">Reason:</span> {req.reason || "—"}
+                  </p>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={actionLoading === req.uuid}
+                    onClick={() => setIncomingAction(req)}
+                    className="px-4 py-2 rounded-xl text-sm font-semibold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+                  >
+                    Approve
+                  </button>
+                  <button
+                    type="button"
+                    disabled={actionLoading === req.uuid}
+                    onClick={() => handleIncomingReject(req)}
+                    className="px-4 py-2 rounded-xl text-sm font-semibold border border-red-200 text-red-700 hover:bg-red-50 disabled:opacity-50"
+                  >
+                    Reject
+                  </button>
+                </div>
+              </article>
+            ))}
+          </section>
+        )}
+
         {exams.length === 0 ? (
           <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-8 text-center text-slate-500">
             No exams assigned yet. Contact the exam cell.
@@ -328,7 +461,7 @@ export default function FacultyDashboard() {
                       )}
                       {pendingTransfer && (
                         <p className="mt-2 text-xs text-amber-700 font-medium">
-                          Transfer request pending approval
+                          Mutual change request pending — awaiting faculty approval
                         </p>
                       )}
                     </div>
@@ -353,7 +486,16 @@ export default function FacultyDashboard() {
                           className="flex-1 lg:flex-none inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-semibold border border-blue-300 text-blue-700 bg-white hover:bg-blue-50"
                         >
                           <ArrowsRightLeftIcon className="h-4 w-4" />
-                          Request Transfer
+                          Request Change
+                        </button>
+                      )}
+                      {pendingTransfer && (
+                        <button
+                          type="button"
+                          onClick={() => handleCancelOutgoing(exam.uuid)}
+                          className="flex-1 lg:flex-none px-4 py-2.5 rounded-xl text-sm font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50"
+                        >
+                          Cancel Request
                         </button>
                       )}
                     </div>
@@ -382,14 +524,45 @@ export default function FacultyDashboard() {
       {transferExam && (
         <TransferRequestModal
           exam={transferExam}
+          currentFacultyName={displayName}
           onClose={() => setTransferExam(null)}
           onSuccess={() => {
-            toast.success("Transfer request submitted. Awaiting admin approval.");
-            api.get("/faculty-transfers").then((res) => {
-              setTransferRequests(res.data?.data?.requests ?? res.data?.requests ?? []);
-            });
+            toast.success("Mutual change request sent. Awaiting faculty approval.");
+            refreshTransfers();
           }}
         />
+      )}
+
+      {incomingAction && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4">
+            <h3 className="text-lg font-bold text-gray-900">Confirm Faculty Change?</h3>
+            <p className="text-sm text-slate-600">By approving this request:</p>
+            <ul className="text-sm text-slate-700 space-y-1.5 list-disc pl-5">
+              <li>This assignment will be transferred to you.</li>
+              <li>Attendance responsibility will be transferred to you.</li>
+              <li>The requesting faculty will no longer be responsible for attendance.</li>
+              <li>Admin / Faculty Incharge will be notified.</li>
+            </ul>
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setIncomingAction(null)}
+                className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={actionLoading === incomingAction.uuid}
+                onClick={confirmIncomingApprove}
+                className="flex-1 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50"
+              >
+                {actionLoading === incomingAction.uuid ? "Approving…" : "Confirm Approval"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
