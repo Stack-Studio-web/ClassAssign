@@ -19,6 +19,7 @@ import {
   BellAlertIcon,
   CheckCircleIcon,
   ShieldCheckIcon,
+  DocumentTextIcon,
 } from "@heroicons/react/24/outline";
 import { NavLink } from "react-router-dom";
 import { useSidebar } from "../context/SidebarContext";
@@ -45,6 +46,7 @@ const ADMIN_NAV = [
   { to: "/ineligibility/view", label: "Ineligibility", icon: ExclamationTriangleIcon },
   { to: "/users", label: "User Management", icon: UsersIcon },
   { to: "/admin/ownership", label: "Ownership Mapping", icon: ShieldCheckIcon },
+  { to: "/admin/qpak", label: "QPAK", icon: DocumentTextIcon },
   { to: "/logs", label: "Logs", icon: NewspaperIcon },
 ];
 
@@ -61,6 +63,7 @@ const FACULTY_NAV = [
   { to: "/admin/attendance/transfers", label: "Mutual Faculty Requests", icon: ArrowsRightLeftIcon },
   { to: "/attendance", label: "Active Attendance", icon: UserGroupIcon },
   { to: "/ineligibility/view", label: "Ineligibility", icon: ExclamationTriangleIcon },
+  { to: "/admin/qpak", label: "QPAK", icon: DocumentTextIcon },
 ];
 
 const HOD_NAV = [

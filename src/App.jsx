@@ -21,6 +21,8 @@ import StudentManagementPage from './pages/StudentManagement';
 import Faculty from './pages/Faculty';
 import UserManagement from './pages/UserManagement';
 import OwnershipMapping from './pages/OwnershipMapping';
+import QpakPublic from './pages/QpakPublic';
+import QpakManagement from './pages/QpakManagement';
 import Logs from './pages/Logs'; 
 import Timetable from './pages/Timetable'; // ✅ NEW
 import { StudentAttendance } from './Components/StudentAttendance';
@@ -101,8 +103,10 @@ function App() {
   return (
     <Routes>
       {/* PUBLIC ROUTES */}
-      <Route path="/" element={<Landing />} />      
+      <Route path="/" element={<Landing />} />
       <Route path="/login" element={<Landing />} />
+      <Route path="/QPAK" element={<QpakPublic />} />
+      <Route path="/qpak" element={<QpakPublic />} />
       <Route path="/attendance/login" element={<FacultyLogin />} />
       <Route path="/mentor-portal/login" element={<MentorLogin />} />
       <Route path="/mentor-portal/access-denied" element={<MentorAccessDenied />} />
@@ -446,6 +450,15 @@ function App() {
       {/* ======================================================
           ADMIN & HoD: User Management. ADMIN-ONLY: Audit Logs
       ====================================================== */}
+      <Route
+        path="/admin/qpak"
+        element={
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge']}>
+            <Layout><QpakManagement /></Layout>
+          </AuthGuard>
+        }
+      />
+
       <Route
         path="/users"
         element={

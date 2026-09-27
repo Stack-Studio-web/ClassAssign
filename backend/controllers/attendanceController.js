@@ -1,5 +1,6 @@
 const AttendanceService = require("../services/attendanceService");
 const AttendanceLifecycleService = require("../services/attendanceLifecycleService");
+const FacultyChangeNotifySettings = require("../services/facultyChangeNotifySettings");
 const PublicId = require("../utils/publicId");
 const Api = require("../utils/apiResponse");
 
@@ -401,6 +402,8 @@ const AttendanceController = {
 
   getReport: async (req, res) => {
     try {
+      const { resolveOwnerOpts } = require("../utils/rbac");
+      const ownerOpts = await resolveOwnerOpts(req);
       let examId;
       let venueId;
 
@@ -431,6 +434,7 @@ const AttendanceController = {
         examId: examId || undefined,
         venueId: venueId || undefined,
         department: req.user?.role === "hod" ? req.user?.department : undefined,
+        ownerOpts,
       });
       return res.json({ success: true, records: data });
     } catch (err) {
@@ -653,6 +657,37 @@ const AttendanceController = {
         return Api.validationError(res, err.message);
       }
       return Api.fromError(res, err, "Failed to fetch session detail");
+    }
+  },
+
+  getFacultyChangeEmail: async (req, res) => {
+    try {
+      if (req.user.role !== "faculty_incharge") {
+        return Api.forbidden(res, "Only Faculty Incharge can configure this email.");
+      }
+      const settings = await FacultyChangeNotifySettings.getForUser(req.user.id);
+      return Api.success(res, "Faculty change notification email", {
+        email: settings.email,
+        updatedAt: settings.updatedAt,
+      });
+    } catch (err) {
+      return Api.fromError(res, err, "Failed to load faculty change email");
+    }
+  },
+
+  saveFacultyChangeEmail: async (req, res) => {
+    try {
+      if (req.user.role !== "faculty_incharge") {
+        return Api.forbidden(res, "Only Faculty Incharge can configure this email.");
+      }
+      const email = req.body?.email ?? req.body?.notificationEmail ?? "";
+      const settings = await FacultyChangeNotifySettings.upsertForUser(req.user.id, email);
+      return Api.success(res, "Faculty change notification email saved", {
+        email: settings.email,
+        updatedAt: settings.updatedAt,
+      });
+    } catch (err) {
+      return Api.fromError(res, err, "Failed to save faculty change email");
     }
   },
 };

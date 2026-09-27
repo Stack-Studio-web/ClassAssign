@@ -821,8 +821,20 @@ const FacultyTransferService = {
         ) || timeParts[1] || "";
 
       const [examRows] = await db.query(
-        `SELECT exam_name, exam_code, exam_date, exam_session FROM exams WHERE id = ? LIMIT 1`,
-        [examId]
+        `SELECT e.exam_name, e.exam_code, e.exam_date, e.exam_session, e.owner_user_id,
+                (
+                  SELECT sp.exam_type
+                  FROM seating_plans sp
+                  JOIN seating_plan_venues spv ON spv.seating_plan_id = sp.id
+                  WHERE sp.exam_date = e.exam_date
+                    AND spv.venue_id = ?
+                  ORDER BY sp.id DESC
+                  LIMIT 1
+                ) AS exam_type
+         FROM exams e
+         WHERE e.id = ?
+         LIMIT 1`,
+        [venueId, examId]
       );
       const [venueRows] = await db.query(
         `SELECT name FROM venues WHERE id = ? LIMIT 1`,
@@ -842,6 +854,13 @@ const FacultyTransferService = {
       );
       approvedAt = approvedRows?.[0]?.approved_at ?? approvedRows?.[0]?.approvedat ?? approvedAt;
 
+      const ownerUserId =
+        req.owner_user_id ??
+        req.owneruserid ??
+        examRows?.[0]?.owner_user_id ??
+        examRows?.[0]?.owneruserid ??
+        null;
+
       examMeta = {
         examName: examRows?.[0]?.exam_name ?? examRows?.[0]?.examname ?? "",
         examCode: examRows?.[0]?.exam_code ?? examRows?.[0]?.examcode ?? "",
@@ -856,9 +875,15 @@ const FacultyTransferService = {
           req.session ??
           assign.exam_session ??
           assign.examsession,
+        examType: examRows?.[0]?.exam_type ?? examRows?.[0]?.examtype ?? "",
+        department:
+          prevFacRows?.[0]?.department ||
+          newFacRows?.[0]?.department ||
+          "",
         venueName: venueRows?.[0]?.name ?? "",
         startTime,
         endTime,
+        ownerUserId,
       };
       prevFacName = prevFacRows?.[0]?.name || "";
       newFacName = newFacRows?.[0]?.name || "";
@@ -880,10 +905,13 @@ const FacultyTransferService = {
       });
 
       adminNotification = await notifyAdminsOfMutualApproval({
+        ownerUserId: examMeta.ownerUserId,
         requestedByName: prevFacName,
         approvedByName: newFacName,
         courseCode: examMeta.examCode,
         courseName: examMeta.examName,
+        department: examMeta.department,
+        examType: examMeta.examType,
         examDate: examMeta.examDate,
         startTime,
         endTime,

@@ -21,6 +21,7 @@ const TABLE = {
   academicYears: "academic_years",
   semesters: "semesters",
   batches: "batches",
+  qpakDocuments: "qpak_documents",
 };
 
 function isValidUuid(value) {

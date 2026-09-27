@@ -163,6 +163,20 @@ router.get(
   AttendanceController.getReport
 );
 
+router.get(
+  "/faculty-change-email",
+  sessionAuth,
+  checkRole(["faculty_incharge"]),
+  AttendanceController.getFacultyChangeEmail
+);
+
+router.put(
+  "/faculty-change-email",
+  sessionAuth,
+  checkRole(["faculty_incharge"]),
+  AttendanceController.saveFacultyChangeEmail
+);
+
 /** @deprecated redirects to UUID route when possible */
 router.get(
   "/exam/:examId/venue/:venueId/students",

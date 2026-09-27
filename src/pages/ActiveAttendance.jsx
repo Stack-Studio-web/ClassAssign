@@ -1,14 +1,17 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   ArrowDownTrayIcon,
   CalendarDaysIcon,
   CheckCircleIcon,
+  ChevronDownIcon,
   ClockIcon,
+  EnvelopeIcon,
   FunnelIcon,
   MagnifyingGlassIcon,
   UserGroupIcon,
 } from "@heroicons/react/24/outline";
+import api from "../lib/api";
 import {
   downloadAbsenteesExport,
   fetchAbsenteeExportOptions,
@@ -16,6 +19,8 @@ import {
   fetchAttendanceCounts,
 } from "../lib/attendanceApi";
 import { getWindowBadge } from "../lib/attendanceWindow";
+import { useToast } from "../context/ToastContext";
+import { getApiError, getApiErrorTitle } from "../lib/errors";
 
 function formatDisplayDate(dateStr) {
   if (!dateStr) return "—";
@@ -49,6 +54,155 @@ function StatCard({ icon: Icon, iconBg, iconColor, label, value, subtext }) {
   );
 }
 
+function FacultyChangeEmailModal({ open, onClose }) {
+  const toast = useToast();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [savedEmail, setSavedEmail] = useState(null);
+  const [editing, setEditing] = useState(false);
+  const [email, setEmail] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const res = await api.get("/attendance/faculty-change-email");
+        const value = res.data?.data?.email ?? res.data?.email ?? null;
+        if (cancelled) return;
+        setSavedEmail(value);
+        setEmail(value || "");
+        setEditing(!value);
+      } catch (err) {
+        if (!cancelled) {
+          toast.error(getApiError(err), getApiErrorTitle(err, "Load failed"));
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, toast]);
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      const res = await api.put("/attendance/faculty-change-email", { email });
+      const value = res.data?.data?.email ?? res.data?.email ?? email.trim().toLowerCase();
+      setSavedEmail(value);
+      setEmail(value);
+      setEditing(false);
+      toast.success("Faculty change notification email saved.");
+    } catch (err) {
+      toast.error(getApiError(err), getApiErrorTitle(err, "Save failed"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+          <div className="flex items-center gap-2">
+            <EnvelopeIcon className="h-5 w-5 text-indigo-600" />
+            <h2 className="text-lg font-bold text-gray-900">Faculty Change Email</h2>
+          </div>
+          <button type="button" onClick={onClose} className="text-sm text-gray-400 hover:text-gray-600">
+            Close
+          </button>
+        </div>
+
+        <div className="p-5">
+          {loading ? (
+            <div className="flex justify-center py-10">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600" />
+            </div>
+          ) : !editing && savedEmail ? (
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">
+                  Faculty Change Notification Email
+                </h3>
+                <p className="text-sm text-gray-500 mt-1">
+                  Email address that receives notifications when a mutual faculty change
+                  request is approved.
+                </p>
+              </div>
+              <div className="rounded-xl bg-gray-50 border border-gray-100 px-4 py-3">
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                  Current Email
+                </p>
+                <p className="text-sm font-semibold text-gray-900 mt-1 break-all">{savedEmail}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setEmail(savedEmail);
+                  setEditing(true);
+                }}
+                className="w-full py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700"
+              >
+                Edit Email
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={handleSave} className="space-y-4">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">
+                  {savedEmail ? "Email Address" : "Faculty Change Notification Email"}
+                </h3>
+                <p className="text-sm text-gray-500 mt-1">
+                  Email address that should receive notifications when a mutual faculty
+                  change request is approved.
+                </p>
+              </div>
+              <label className="block text-sm">
+                <span className="sr-only">Email address</span>
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="facultychange@kct.ac.in"
+                  className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none"
+                />
+              </label>
+              <div className="flex gap-2">
+                {savedEmail && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEmail(savedEmail);
+                      setEditing(false);
+                    }}
+                    className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-medium text-gray-700"
+                  >
+                    Cancel
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="flex-1 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {saving ? "Saving…" : savedEmail ? "Update Email" : "Save Email"}
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ActiveAttendance() {
   const navigate = useNavigate();
   const [sessions, setSessions] = useState([]);
@@ -69,6 +223,9 @@ export default function ActiveAttendance() {
   const [exportTimes, setExportTimes] = useState([]);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState("");
+  const [adminToolsOpen, setAdminToolsOpen] = useState(false);
+  const [facultyChangeEmailOpen, setFacultyChangeEmailOpen] = useState(false);
+  const adminToolsRef = useRef(null);
 
   const userRole = useMemo(() => {
     try {
@@ -196,6 +353,18 @@ export default function ActiveAttendance() {
   };
 
   const isAdmin = userRole === "admin" || userRole === "faculty_incharge";
+  const isFacultyIncharge = userRole === "faculty_incharge";
+
+  useEffect(() => {
+    if (!adminToolsOpen) return;
+    const onDocClick = (e) => {
+      if (adminToolsRef.current && !adminToolsRef.current.contains(e.target)) {
+        setAdminToolsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [adminToolsOpen]);
 
   const handleMark = (row) => {
     if (userRole === "faculty" && row.assignmentUuid) {
@@ -215,12 +384,46 @@ export default function ActiveAttendance() {
           </div>
           <div className="flex flex-wrap gap-3 shrink-0">
             {isAdmin && (
-              <Link
-                to="/admin/attendance/reports"
-                className="inline-flex items-center gap-2 px-4 py-2.5 bg-white text-gray-700 text-sm font-semibold rounded-xl border border-gray-200 hover:bg-gray-50"
-              >
-                Admin Tools
-              </Link>
+              isFacultyIncharge ? (
+                <div className="relative" ref={adminToolsRef}>
+                  <button
+                    type="button"
+                    onClick={() => setAdminToolsOpen((v) => !v)}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 bg-white text-gray-700 text-sm font-semibold rounded-xl border border-gray-200 hover:bg-gray-50"
+                  >
+                    Admin Tools
+                    <ChevronDownIcon className="h-4 w-4 text-gray-400" />
+                  </button>
+                  {adminToolsOpen && (
+                    <div className="absolute right-0 mt-2 w-56 rounded-xl border border-gray-200 bg-white shadow-lg z-20 py-1">
+                      <Link
+                        to="/admin/attendance/reports"
+                        className="block px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50"
+                        onClick={() => setAdminToolsOpen(false)}
+                      >
+                        Attendance Reports
+                      </Link>
+                      <button
+                        type="button"
+                        className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50"
+                        onClick={() => {
+                          setAdminToolsOpen(false);
+                          setFacultyChangeEmailOpen(true);
+                        }}
+                      >
+                        Faculty Change Email
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <Link
+                  to="/admin/attendance/reports"
+                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-white text-gray-700 text-sm font-semibold rounded-xl border border-gray-200 hover:bg-gray-50"
+                >
+                  Admin Tools
+                </Link>
+              )
             )}
             <Link
               to="/attendance/completed"
@@ -231,6 +434,11 @@ export default function ActiveAttendance() {
             </Link>
           </div>
         </div>
+
+        <FacultyChangeEmailModal
+          open={facultyChangeEmailOpen}
+          onClose={() => setFacultyChangeEmailOpen(false)}
+        />
 
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">

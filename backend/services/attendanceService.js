@@ -354,33 +354,8 @@ const AttendanceService = {
   },
 
   getAssignments: async (opts = {}) => {
-    // Scope via exam owner, with seating-plan owner fallback for legacy unstamped exams.
-    let seatingOwnerSql = "";
-    const seatingOwnerParams = [];
-    if (opts.role && opts.role !== "admin") {
-      const ids =
-        opts.ownerIds && opts.ownerIds.length
-          ? opts.ownerIds
-          : opts.ownerUserId
-            ? [opts.ownerUserId]
-            : [];
-      if (ids.length === 0) {
-        return [];
-      }
-      const placeholders = ids.map(() => "?").join(", ");
-      seatingOwnerSql = ` AND (
-        e.owner_user_id IN (${placeholders})
-        OR EXISTS (
-          SELECT 1
-          FROM seating_plan_venues spv_own
-          JOIN seating_plans sp_own ON sp_own.id = spv_own.seating_plan_id
-          WHERE spv_own.venue_id = fa.venue_id
-            AND sp_own.exam_date = e.exam_date
-            AND sp_own.owner_user_id IN (${placeholders})
-        )
-      )`;
-      seatingOwnerParams.push(...ids, ...ids);
-    }
+    const { attendanceAssignmentOwnerScope } = require("../utils/attendanceOwnerScope");
+    const owner = attendanceAssignmentOwnerScope(opts);
 
     const [rows] = await db.query(
       `
@@ -423,10 +398,10 @@ const AttendanceService = {
       JOIN exams e ON e.id = fa.exam_id
       JOIN venues v ON v.id = fa.venue_id
       ${SESSION_JOIN}
-      WHERE 1=1${seatingOwnerSql}
+      WHERE 1=1${owner.sql}
       ORDER BY e.exam_date DESC, COALESCE(fa.start_time::text, e.exam_time) ASC, v.name ASC
     `,
-      seatingOwnerParams
+      owner.params
     );
     return AttendanceService.enrichAssignmentsWithWindow(rows || []);
   },
@@ -954,7 +929,10 @@ const AttendanceService = {
     return AttendanceWindow.getWindowState(examId, venueId);
   },
 
-  getAttendanceReport: async ({ examId, venueId, department } = {}) => {
+  getAttendanceReport: async ({ examId, venueId, department, ownerOpts = {} } = {}) => {
+    const { attendanceRecordOwnerScope } = require("../utils/attendanceOwnerScope");
+    const owner = attendanceRecordOwnerScope(ownerOpts);
+
     let sql = `
       SELECT
         att.status,
@@ -981,9 +959,9 @@ const AttendanceService = {
       JOIN faculty f ON f.id = att.faculty_id
       LEFT JOIN attendance_sessions sess
         ON sess.exam_id = att.exam_id AND sess.venue_id = att.venue_id
-      WHERE 1=1
+      WHERE 1=1${owner.sql}
     `;
-    const params = [];
+    const params = [...owner.params];
 
     if (examId) {
       sql += " AND att.exam_id = ?";
