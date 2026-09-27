@@ -60,6 +60,12 @@ export default function DashboardNavbar() {
           <span className="text-white font-semibold text-lg truncate hidden sm:inline">
             HALLORA
           </span>
+          {user?.academicContext?.label && (
+            <span className="hidden md:inline-flex items-center max-w-[240px] truncate text-xs font-medium text-indigo-200 bg-white/10 border border-white/10 rounded-lg px-2.5 py-1">
+              {user.academicContext.label}
+              {user.academicContext.hodName ? ` · ${user.academicContext.hodName}` : ""}
+            </span>
+          )}
         </div>
       </div>
 

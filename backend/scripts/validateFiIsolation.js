@@ -26,8 +26,9 @@ function testFiSelfOnlyFilter() {
 }
 
 function testFiCannotMutateSibling() {
-  assert.strictEqual(canMutateOwnedRecord("faculty_incharge", 9, 2, [2, 9]), false);
+  assert.strictEqual(canMutateOwnedRecord("faculty_incharge", 9, 2, [2, 9]), true);
   assert.strictEqual(canMutateOwnedRecord("faculty_incharge", 2, 2, [2]), true);
+  assert.strictEqual(canMutateOwnedRecord("faculty_incharge", 9, 2, [2]), false);
   assert.strictEqual(canMutateOwnedRecord("hod", 9, 1, [1, 9]), false);
   assert.strictEqual(canMutateOwnedRecord("admin", 9, 1, null), true);
 }
@@ -43,13 +44,15 @@ function testHodStillUsesWorkspaceIds() {
   assert.deepStrictEqual(hod.params, [1, 2, 3]);
 }
 
-async function testResolveOwnerOptsStrictFi() {
+async function testResolveOwnerOptsSharedContext() {
   const req = {
     user: { id: 42, role: "faculty_incharge", department: "CSE", workspaceId: "ws-test" },
     session: { createdByHodId: 7, workspaceId: "ws-test" },
   };
   const opts = await resolveOwnerOpts(req);
-  assert.deepStrictEqual(opts.ownerIds, [42]);
+  // Without DB context membership, falls back to workspace/self — never empty.
+  assert.ok(Array.isArray(opts.ownerIds));
+  assert.ok(opts.ownerIds.map(Number).includes(42));
   assert.strictEqual(opts.ownerUserId, 42);
   assert.strictEqual(opts.role, "faculty_incharge");
 }
@@ -78,12 +81,12 @@ testInsertNeverUsesClientOwner();
 testHodFailClosedWithoutOwnerIds();
 
 Promise.resolve()
-  .then(() => testResolveOwnerOptsStrictFi())
+  .then(() => testResolveOwnerOptsSharedContext())
   .then(() => {
     require("../services/ownershipMappingService");
     require("../routes/ownershipRoutes");
     require("../utils/ensureStrictFiIsolation");
-    console.log("✅ Strict Faculty Incharge isolation checks passed");
+    console.log("✅ Faculty Incharge Academic Context sharing checks passed");
     process.exit(0);
   })
   .catch((err) => {

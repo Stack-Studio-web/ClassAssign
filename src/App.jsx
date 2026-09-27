@@ -21,6 +21,7 @@ import StudentManagementPage from './pages/StudentManagement';
 import Faculty from './pages/Faculty';
 import UserManagement from './pages/UserManagement';
 import OwnershipMapping from './pages/OwnershipMapping';
+import AcademicContextAdmin from './pages/AcademicContextAdmin';
 import QpakPublic from './pages/QpakPublic';
 import QpakManagement from './pages/QpakManagement';
 import Logs from './pages/Logs'; 
@@ -473,6 +474,15 @@ function App() {
         element={
           <AuthGuard allowedRoles={['admin']}>
             <Layout><OwnershipMapping /></Layout>
+          </AuthGuard>
+        }
+      />
+
+      <Route
+        path="/admin/academic-contexts"
+        element={
+          <AuthGuard allowedRoles={['admin']}>
+            <Layout><AcademicContextAdmin /></Layout>
           </AuthGuard>
         }
       />

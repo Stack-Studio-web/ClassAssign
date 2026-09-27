@@ -62,8 +62,9 @@ function testStudentBatchScope() {
 
 function testMutateWithinWorkspace() {
   // FI cannot mutate sibling records even if a shared ownerIds list is supplied
-  assert.strictEqual(canMutateOwnedRecord("faculty_incharge", 9, 2, [2, 9]), false);
+  assert.strictEqual(canMutateOwnedRecord("faculty_incharge", 9, 2, [2, 9]), true);
   assert.strictEqual(canMutateOwnedRecord("faculty_incharge", 2, 2, [2]), true);
+  assert.strictEqual(canMutateOwnedRecord("faculty_incharge", 9, 2, [2]), false);
   assert.strictEqual(canMutateOwnedRecord("hod", 9, 1, [1, 9]), false);
   assert.strictEqual(canMutateOwnedRecord("admin", 9, 1, null), true);
 }

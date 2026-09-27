@@ -304,9 +304,8 @@ const User = {
   /**
    * Owner user ids used for read scoping.
    * admin → null (no filter)
-   * faculty_incharge → [self] only (strict isolation from other FIs)
-   * hod → getOwnerIdsForHod(self) (HOD + all FIs under them)
-   * FI without HOD → [self]
+   * faculty_incharge / hod → Academic Context members (shared data)
+   * FI without context → legacy HOD workspace or [self]
    */
   getWorkspaceOwnerIds: async (userLike = {}) => {
     const role = userLike.role || userLike.role_name || userLike.rolename || null;
@@ -314,15 +313,27 @@ const User = {
     if (role === "admin") return null;
     if (!userId) return [];
 
-    // Strict Faculty Incharge isolation — never include sibling FIs.
-    if (role === "faculty_incharge") {
-      return [Number(userId)];
+    try {
+      const AcademicContextService = require("../services/academicContextService");
+      if (role === "faculty_incharge" || role === "hod") {
+        const ctx = await AcademicContextService.getForUser(userId);
+        if (ctx?.id) {
+          const ids = await AcademicContextService.getMemberUserIds(ctx.id);
+          if (ids?.length) return ids;
+        }
+      }
+    } catch {
+      /* schema may not exist yet during early boot */
     }
 
+    if (role === "faculty_incharge") {
+      const hodId = await User.getWorkspaceHodId(userLike);
+      if (hodId) return User.getOwnerIdsForHod(hodId);
+      return [Number(userId)];
+    }
     if (role === "hod") {
       return User.getOwnerIdsForHod(Number(userId));
     }
-
     return [Number(userId)];
   },
 

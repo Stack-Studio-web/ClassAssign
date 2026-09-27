@@ -38,8 +38,10 @@ module.exports = async function sessionAuth(req, res, next) {
       hasAvatar: !!session.hasAvatar,
       workspaceId: session.workspaceId || null,
       createdByHodId: session.createdByHodId || null,
+      academicContextId: session.academicContextId || null,
     };
     req.workspaceId = session.workspaceId || null;
+    req.academicContextId = session.academicContextId || null;
 
     await SessionStore.touch(token);
     next();

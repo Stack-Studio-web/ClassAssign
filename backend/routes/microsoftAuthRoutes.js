@@ -52,7 +52,11 @@ async function cacheProfilePhotoForSession(sessionToken, accessToken) {
   }
 }
 
-function userPayloadFromSession(user, hasAvatar, workspaceId = null) {
+function userPayloadFromSession(user, hasAvatar, workspace = {}) {
+  const workspaceId = typeof workspace === "string" || workspace == null ? workspace : workspace.workspaceId;
+  const academicContext = typeof workspace === "object" && workspace ? workspace.academicContext : null;
+  const academicContextId =
+    typeof workspace === "object" && workspace ? workspace.academicContextId : null;
   return {
     uuid: user.public_uuid ?? user.publicuuid ?? user.uuid,
     username: user.username ?? user.name,
@@ -61,9 +65,10 @@ function userPayloadFromSession(user, hasAvatar, workspaceId = null) {
     department: user.department ?? null,
     mustChangePassword: !!(user.must_change_password ?? user.mustchangepassword),
     hasAvatar: !!hasAvatar,
-    // Same-origin cookie-authenticated endpoint — no token in URL
     avatarUrl: hasAvatar ? "/api/auth/me/avatar" : null,
     workspaceId: workspaceId || null,
+    academicContextId: academicContextId || null,
+    academicContext: academicContext || null,
   };
 }
 
@@ -142,6 +147,7 @@ async function completeMicrosoftAuth(req, res, redirectUri, stateData) {
     hasAvatar: false,
     workspaceId: workspace.workspaceId,
     createdByHodId: workspace.createdByHodId,
+    academicContextId: workspace.academicContextId,
   });
 
   const hasAvatar = await cacheProfilePhotoForSession(token, accessToken);
@@ -157,12 +163,13 @@ async function completeMicrosoftAuth(req, res, redirectUri, stateData) {
       hasAvatar: true,
       workspaceId: workspace.workspaceId,
       createdByHodId: workspace.createdByHodId,
+      academicContextId: workspace.academicContextId,
     });
   }
 
   return {
     token,
-    user: userPayloadFromSession(user, hasAvatar, workspace.workspaceId),
+    user: userPayloadFromSession(user, hasAvatar, workspace),
     platform,
     portal: stateData.portal || "admin",
   };

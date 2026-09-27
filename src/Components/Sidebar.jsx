@@ -45,6 +45,7 @@ const ADMIN_NAV = [
   { to: "/attendance/completed", label: "Completed Attendance", icon: CheckCircleIcon },
   { to: "/ineligibility/view", label: "Ineligibility", icon: ExclamationTriangleIcon },
   { to: "/users", label: "User Management", icon: UsersIcon },
+  { to: "/admin/academic-contexts", label: "Academic Contexts", icon: AcademicCapIcon },
   { to: "/admin/ownership", label: "Ownership Mapping", icon: ShieldCheckIcon },
   { to: "/admin/qpak", label: "QPAK", icon: DocumentTextIcon },
   { to: "/logs", label: "Logs", icon: NewspaperIcon },

@@ -89,8 +89,11 @@ function isHod(role) {
 function canMutateOwnedRecord(role, ownerUserId, currentUserId, ownerIds = null) {
   if (isAdmin(role)) return true;
   if (isHod(role)) return false;
-  // Faculty Incharge may only mutate their own rows — never sibling FI data.
+  // Faculty Incharges jointly manage data within their Academic Context.
   if (isFacultyIncharge(role)) {
+    if (ownerIds && Array.isArray(ownerIds) && ownerIds.length > 0) {
+      return ownerIds.map(Number).includes(Number(ownerUserId));
+    }
     if (!ownerUserId || !currentUserId) return false;
     return Number(ownerUserId) === Number(currentUserId);
   }
@@ -108,6 +111,7 @@ function requestScope(req) {
     department: req.user?.department ?? null,
     ownerIds: req.ownerIds ?? null,
     workspaceId: req.workspaceId ?? req.user?.workspaceId ?? null,
+    academicContextId: req.academicContextId ?? req.user?.academicContextId ?? null,
   };
 }
 
@@ -119,54 +123,70 @@ function ownerOpts(req) {
     department: req.user?.department ?? null,
     ownerIds: req.ownerIds ?? null,
     workspaceId: req.workspaceId ?? req.user?.workspaceId ?? null,
+    academicContextId: req.academicContextId ?? req.user?.academicContextId ?? null,
   };
 }
 
 /**
  * Resolve data-owner IDs for the request (cached on req).
  *
- * Strict Faculty Incharge isolation:
+ * Academic Context sharing:
  *   admin              → null (no owner filter; sees all)
- *   faculty_incharge   → [self] only (never sibling FIs)
- *   hod                → all users in HOD workspace (self + FIs)
+ *   faculty_incharge   → all member user ids of the same Academic Context
+ *   hod                → all member user ids of the same Academic Context
  *   other              → [self]
  *
- * Never trust client-supplied owner ids — always derived from session user.
+ * Never trust client-supplied academic_context_id / owner ids.
  */
 async function resolveOwnerOpts(req) {
   if (req._ownerOptsResolved) return ownerOpts(req);
 
   const User = require("../models/User");
+  const AcademicContextService = require("../services/academicContextService");
   const role = req.user?.role;
   const userId = req.user?.id;
 
   let workspaceId = req.session?.workspaceId ?? req.user?.workspaceId ?? null;
+  let academicContextId =
+    req.session?.academicContextId ?? req.user?.academicContextId ?? null;
   let ownerIds = null;
 
   if (role === "admin") {
     ownerIds = null;
-  } else if (role === "hod") {
-    ownerIds = await User.getWorkspaceOwnerIds({
-      id: userId,
-      role,
-      created_by_hod_id: req.session?.createdByHodId ?? null,
-    });
-    if (!workspaceId) {
-      workspaceId = await User.getWorkspacePublicUuid({
-        id: userId,
-        role,
-        created_by_hod_id: req.session?.createdByHodId ?? null,
-      });
+  } else if (role === "hod" || role === "faculty_incharge") {
+    try {
+      const ctx =
+        (academicContextId && (await AcademicContextService.getById(academicContextId))) ||
+        (await AcademicContextService.getForUser(userId));
+      if (ctx?.id) {
+        academicContextId = ctx.id;
+        ownerIds = await AcademicContextService.getMemberUserIds(ctx.id);
+        if (!ownerIds.length && userId) ownerIds = [Number(userId)];
+      }
+    } catch {
+      /* DB/schema unavailable — fall through to legacy workspace */
     }
-  } else if (role === "faculty_incharge") {
-    // Strict isolation — never expand to sibling Faculty Incharges.
-    ownerIds = userId ? [Number(userId)] : [];
+    if (!ownerIds) {
+      try {
+        ownerIds = await User.getWorkspaceOwnerIds({
+          id: userId,
+          role,
+          created_by_hod_id: req.session?.createdByHodId ?? null,
+        });
+      } catch {
+        ownerIds = userId ? [Number(userId)] : [];
+      }
+    }
     if (!workspaceId) {
-      workspaceId = await User.getWorkspacePublicUuid({
-        id: userId,
-        role,
-        created_by_hod_id: req.session?.createdByHodId ?? null,
-      });
+      try {
+        workspaceId = await User.getWorkspacePublicUuid({
+          id: userId,
+          role,
+          created_by_hod_id: req.session?.createdByHodId ?? null,
+        });
+      } catch {
+        workspaceId = null;
+      }
     }
   } else {
     ownerIds = userId ? [Number(userId)] : [];
@@ -174,7 +194,11 @@ async function resolveOwnerOpts(req) {
 
   req.ownerIds = ownerIds;
   req.workspaceId = workspaceId;
-  if (req.user) req.user.workspaceId = workspaceId;
+  req.academicContextId = academicContextId;
+  if (req.user) {
+    req.user.workspaceId = workspaceId;
+    req.user.academicContextId = academicContextId;
+  }
   req._ownerOptsResolved = true;
   return ownerOpts(req);
 }

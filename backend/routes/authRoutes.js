@@ -114,6 +114,8 @@ router.post("/login", loginLimiter, async (req, res) => {
         hasAvatar: false,
         avatarUrl: null,
         workspaceId: workspace.workspaceId,
+        academicContextId: workspace.academicContextId,
+        academicContext: workspace.academicContext,
       },
       redirectTo,
     };
@@ -129,6 +131,7 @@ router.post("/login", loginLimiter, async (req, res) => {
       hasAvatar: false,
       workspaceId: workspace.workspaceId,
       createdByHodId: workspace.createdByHodId,
+      academicContextId: workspace.academicContextId,
     });
 
     return attachAuthResponse(res, req, token, body);
@@ -151,6 +154,7 @@ router.post("/verify", sessionAuth, (req, res) => {
       hasAvatar,
       avatarUrl: hasAvatar ? "/api/auth/me/avatar" : null,
       workspaceId: req.user.workspaceId ?? req.session?.workspaceId ?? null,
+      academicContextId: req.user.academicContextId ?? req.session?.academicContextId ?? null,
     },
   });
 });
@@ -224,12 +228,31 @@ router.get("/session-info", sessionAuth, (req, res) => {
       hasAvatar,
       avatarUrl: hasAvatar ? "/api/auth/me/avatar" : null,
       workspaceId: req.user.workspaceId ?? req.session?.workspaceId ?? null,
+      academicContextId: req.user.academicContextId ?? req.session?.academicContextId ?? null,
     },
   });
 });
 
-router.get("/me", sessionAuth, (req, res) => {
+router.get("/me", sessionAuth, async (req, res) => {
   const hasAvatar = !!(req.session?.hasAvatar || req.user?.hasAvatar);
+  let academicContext = null;
+  try {
+    const AcademicContextService = require("../services/academicContextService");
+    const ctx = await AcademicContextService.getForUser(req.user.id);
+    if (ctx) {
+      academicContext = {
+        uuid: ctx.uuid,
+        label: ctx.label,
+        department: ctx.department,
+        academicYear: ctx.academicYear,
+        batch: ctx.batch,
+        semester: ctx.semester,
+        hodName: ctx.hodName,
+      };
+    }
+  } catch {
+    /* ignore */
+  }
   return res.status(200).json({
     uuid: req.user.publicUuid ?? req.session?.publicUuid,
     email: req.user.email,
@@ -240,6 +263,8 @@ router.get("/me", sessionAuth, (req, res) => {
     hasAvatar,
     avatarUrl: hasAvatar ? "/api/auth/me/avatar" : null,
     workspaceId: req.user.workspaceId ?? req.session?.workspaceId ?? null,
+    academicContextId: req.user.academicContextId ?? req.session?.academicContextId ?? null,
+    academicContext,
   });
 });
 

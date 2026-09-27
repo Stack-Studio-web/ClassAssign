@@ -1,13 +1,14 @@
 /**
  * Role-based data access.
- * owner_user_id = Faculty Incharge who created the row (session user id).
+ * owner_user_id = creator (Faculty Incharge session user id).
+ * Sharing boundary = Academic Context (all member owner ids via resolveOwnerOpts).
  *
  * Reads:
  *   admin            → unfiltered
- *   faculty_incharge → owner_user_id = self only (strict isolation)
- *   hod              → owner_user_id IN workspace (HOD + FIs under HOD)
+ *   faculty_incharge → owner_user_id IN Academic Context members
+ *   hod              → owner_user_id IN Academic Context members
  *
- * Writes always stamp the authenticated creator; never trust client owner ids.
+ * Writes stamp authenticated creator + academic_context_id when available.
  */
 function ownerColumn(prefix = "") {
   return prefix ? `${prefix}owner_user_id` : "owner_user_id";
@@ -143,6 +144,30 @@ module.exports = {
     // Ownership always comes from authenticated session userId — never from the client.
     if (!userId || role === "hod") return { col: "", val: null };
     return { col: ", owner_user_id", val: userId };
+  },
+
+  /**
+   * Stamp creator + academic_context_id on INSERT when context is known.
+   * Returns { col, vals, params } for appending to INSERT column/value lists.
+   */
+  insertOwnership: (opts = {}) => {
+    const role = opts.role;
+    const userId = opts.ownerUserId ?? opts.userId ?? null;
+    const academicContextId = opts.academicContextId ?? null;
+    if (!userId || role === "hod") {
+      if (academicContextId) {
+        return { col: ", academic_context_id", placeholders: ", ?", params: [academicContextId] };
+      }
+      return { col: "", placeholders: "", params: [] };
+    }
+    if (academicContextId) {
+      return {
+        col: ", owner_user_id, academic_context_id",
+        placeholders: ", ?, ?",
+        params: [userId, academicContextId],
+      };
+    }
+    return { col: ", owner_user_id", placeholders: ", ?", params: [userId] };
   },
 
   /**

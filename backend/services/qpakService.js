@@ -302,7 +302,12 @@ function canManage(row, user) {
   if (!row || !user) return false;
   if (user.role === "admin") return true;
   if (user.role !== "faculty_incharge") return false;
-  return Number(row.faculty_incharge_id ?? row.facultyinchargeid) === Number(user.id);
+  const owner = Number(row.faculty_incharge_id ?? row.facultyinchargeid);
+  if (owner === Number(user.id)) return true;
+  const rowCtx = row.academic_context_id ?? row.academiccontextid;
+  const userCtx = user.academicContextId ?? user.academic_context_id;
+  if (rowCtx && userCtx && Number(rowCtx) === Number(userCtx)) return true;
+  return false;
 }
 
 const QpakService = {
@@ -417,8 +422,20 @@ const QpakService = {
     `;
     const params = [];
     if (user.role === "faculty_incharge") {
-      sql += ` AND d.faculty_incharge_id = ?`;
-      params.push(user.id);
+      const AcademicContextService = require("./academicContextService");
+      const ctx = await AcademicContextService.getForUser(user.id);
+      if (ctx?.id) {
+        sql += ` AND (
+          d.academic_context_id = ?
+          OR d.faculty_incharge_id IN (
+            SELECT user_id FROM academic_context_members WHERE academic_context_id = ?
+          )
+        )`;
+        params.push(ctx.id, ctx.id);
+      } else {
+        sql += ` AND d.faculty_incharge_id = ?`;
+        params.push(user.id);
+      }
     } else if (user.role !== "admin") {
       return [];
     }
@@ -498,11 +515,22 @@ const QpakService = {
     const status = publishNow ? "PUBLISHED" : "DRAFT";
     const ownerId = user.id;
 
+    let academicContextId = user.academicContextId ?? user.academic_context_id ?? null;
+    if (!academicContextId) {
+      try {
+        const AcademicContextService = require("./academicContextService");
+        const ctx = await AcademicContextService.getForUser(ownerId);
+        academicContextId = ctx?.id ?? null;
+      } catch {
+        academicContextId = null;
+      }
+    }
+
     const [inserted] = await db.query(
       `INSERT INTO qpak_documents (
          department, course_code, course_name, exam_type, academic_year, semester, batch,
-         folder_name, status, uploaded_by, faculty_incharge_id, published_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         folder_name, status, uploaded_by, faculty_incharge_id, academic_context_id, published_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING id, public_uuid`,
       [
         meta.department,
@@ -516,6 +544,7 @@ const QpakService = {
         status,
         ownerId,
         ownerId,
+        academicContextId,
         status === "PUBLISHED" ? new Date() : null,
       ]
     );
