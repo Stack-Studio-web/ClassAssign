@@ -68,6 +68,8 @@ const FACULTY_NAV = [
 ];
 
 const HOD_NAV = [
+  { to: "/student/academic", label: "Academic Context", icon: AcademicCapIcon },
+  { to: "/student/batches", label: "Batch Management", icon: RectangleStackIcon },
   { to: "/student/browser", label: "Student Browser", icon: TableCellsIcon },
   { to: "/report", label: "Reports", icon: NewspaperIcon },
   { to: "/report/completed", label: "Completed Reports", icon: CheckCircleIcon },

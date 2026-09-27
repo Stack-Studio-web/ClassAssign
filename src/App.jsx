@@ -319,7 +319,7 @@ function App() {
       <Route
         path="/student"
         element={
-          <AuthGuard allowedRoles={['admin', 'faculty_incharge']}>
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod']}>
             <Navigate to="/student/academic" replace />
           </AuthGuard>
         }
@@ -328,7 +328,7 @@ function App() {
       <Route
         path="/student/academic"
         element={
-          <AuthGuard allowedRoles={['admin', 'faculty_incharge']}>
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod']}>
             <Layout><AcademicManagementPage /></Layout>
           </AuthGuard>
         }
@@ -346,7 +346,7 @@ function App() {
       <Route
         path="/student/batches"
         element={
-          <AuthGuard allowedRoles={['admin', 'faculty_incharge']}>
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod']}>
             <Layout><BatchManagementPage /></Layout>
           </AuthGuard>
         }

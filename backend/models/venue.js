@@ -1,6 +1,6 @@
 // Class/backend/models/venue.js - WITH DELETE BY IDS
 const db = require("../config/db");
-const { andClause, whereClause, insertField } = require("../utils/ownerFilter");
+const { andClause, whereClause } = require("../utils/ownerFilter");
 
 // PostgreSQL returns unquoted column names in lowercase; map to camelCase for API
 function toVenueRow(row) {
@@ -39,19 +39,23 @@ const Venue = {
       sessions = [],
     } = venue;
 
-    const { col, val } = insertField(opts.role, opts.ownerUserId);
+    const { insertOwnership } = require("../utils/ownerFilter");
+    const ownership = insertOwnership(opts);
     const capacity = benchesRow * benchConfig.reduce((sum, seats) => sum + (Number(seats) || 0), 0);
+    const cols = ["name", "type", "capacity", "benches_row", "benches_col", "is_available"];
     const vals = [name, type, capacity, benchesRow, benchesCol, isAvailable];
-    if (val != null) vals.push(val);
+    if (ownership.col) {
+      cols.push(...ownership.col.replace(/^,\s*/, "").split(",").map((c) => c.trim()).filter(Boolean));
+      vals.push(...ownership.params);
+    }
 
     const conn = await db.getConnection();
     try {
       await conn.beginTransaction();
 
       const [venueRes] = await conn.query(
-        `INSERT INTO venues
-         (name, type, capacity, benches_row, benches_col, is_available${col})
-         VALUES (?, ?, ?, ?, ?, ?${val != null ? ", ?" : ""})`,
+        `INSERT INTO venues (${cols.join(", ")})
+         VALUES (${cols.map(() => "?").join(", ")})`,
         vals
       );
 

@@ -98,6 +98,26 @@ async function ensureAcademicContextSchema() {
     }
 
     await backfillAcademicContexts();
+
+    // Academic years are global calendar config — clear legacy owner stamps
+    try {
+      await db.query(`UPDATE academic_years SET owner_user_id = NULL WHERE owner_user_id IS NOT NULL`);
+      await db.query(`UPDATE academic_years SET academic_context_id = NULL WHERE academic_context_id IS NOT NULL`);
+    } catch (err) {
+      console.warn("ensureAcademicContextSchema clear year ownership:", err.message);
+    }
+
+    // Shared batch names within an Academic Context (HOD scope)
+    try {
+      await db.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_batches_semester_context_name
+          ON batches (semester_id, academic_context_id, name)
+          WHERE academic_context_id IS NOT NULL
+      `);
+    } catch (err) {
+      console.warn("ensureAcademicContextSchema batch context unique:", err.message);
+    }
+
     console.log("✅ Academic Context schema OK");
   } catch (err) {
     console.error("ensureAcademicContextSchema error:", err.message);

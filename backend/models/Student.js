@@ -148,8 +148,8 @@ const Student = {
       INSERT (one row per import row; regn_no may repeat across courses/rows)
   ============================================================ */
   insertOne: async (s, opts = {}) => {
-    const { insertField } = require("../utils/ownerFilter");
-    const { col, val } = insertField(opts.role, opts.ownerUserId);
+    const { insertOwnership } = require("../utils/ownerFilter");
+    const ownership = insertOwnership(opts);
     const cols = [
       "regn_no",
       "student_name",
@@ -183,9 +183,11 @@ const Student = {
       cols.push("created_by");
       vals.push(opts.ownerUserId);
     }
-    if (val != null) {
-      cols.push("owner_user_id");
-      vals.push(val);
+
+    if (ownership.col) {
+      const extraCols = ownership.col.replace(/^,\s*/, "").split(",").map((c) => c.trim()).filter(Boolean);
+      cols.push(...extraCols);
+      vals.push(...ownership.params);
     }
 
     const placeholders = cols.map(() => "?").join(", ");

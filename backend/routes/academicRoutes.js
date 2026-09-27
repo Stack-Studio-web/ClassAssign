@@ -39,7 +39,7 @@ router.get(
   requirePermission(PERMISSIONS.ACADEMIC_YEAR_VIEW),
   async (req, res) => {
     try {
-      const years = await AcademicYear.list(await resolveOwnerOpts(req));
+      const years = await AcademicYear.list();
       return Api.success(res, "Academic years", { years });
     } catch (err) {
       return Api.fromError(res, err, "Failed to load academic years.");
@@ -62,7 +62,7 @@ router.post(
           startYear: startYear ?? parsed.startYear,
           endYear: endYear ?? parsed.endYear,
         },
-        await resolveOwnerOpts(req)
+        {}
       );
       return Api.success(res, "Academic year created", { year });
     } catch (err) {
@@ -266,7 +266,10 @@ router.post(
           code: req.body?.code,
           description: req.body?.description,
         },
-        opts
+        {
+          ...opts,
+          department: opts.department ?? req.user?.department ?? null,
+        }
       );
       return Api.success(res, "Batch created", { batch });
     } catch (err) {
@@ -289,7 +292,7 @@ router.patch(
       if (!row) return Api.notFound(res, "Batch not found");
       const opts = await resolveOwnerOpts(req);
       if (!Batch.canAccess(row, opts)) {
-        return Api.forbidden(res, "You can only update your own batches.");
+        return Api.forbidden(res, "You can only update batches in your Academic Context.");
       }
       if (!(await assertSemesterMutableByBatchInternalId(row.id, res))) return;
       let status = req.body?.status;
@@ -360,7 +363,7 @@ router.get(
       if (!row) return Api.notFound(res, "Batch not found");
       const opts = await resolveOwnerOpts(req);
       if (!Batch.canAccess(row, opts)) {
-        return Api.forbidden(res, "You do not have access to this batch.");
+        return Api.forbidden(res, "You do not have access to this batch in your Academic Context.");
       }
       const batch = await Batch.getByInternalId(row.id, opts);
       return Api.success(res, "Batch", { batch });
@@ -381,7 +384,7 @@ router.delete(
       if (!row) return Api.notFound(res, "Batch not found");
       const opts = await resolveOwnerOpts(req);
       if (!Batch.canAccess(row, opts)) {
-        return Api.forbidden(res, "You can only delete your own batches.");
+        return Api.forbidden(res, "You can only delete batches in your Academic Context.");
       }
       if (!(await assertSemesterMutableByBatchInternalId(row.id, res))) return;
       const blockers = await Batch.getDeleteBlockers(row.id);

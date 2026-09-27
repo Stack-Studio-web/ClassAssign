@@ -1,6 +1,6 @@
 // Class/backend/models/Faculty.js
 const db = require("../config/db");
-const { ownerWhereFromOpts, ownerAndFromOpts, insertField } = require("../utils/ownerFilter");
+const { ownerWhereFromOpts, ownerAndFromOpts } = require("../utils/ownerFilter");
 const {
   normalizeFacultyEmail,
   pickCanonicalFaculty,
@@ -124,11 +124,16 @@ const Faculty = {
   },
 
   create: async ({ name, department, email }, opts = {}) => {
-    const { col, val } = insertField(opts.role, opts.ownerUserId);
+    const { insertOwnership } = require("../utils/ownerFilter");
+    const ownership = insertOwnership(opts);
     const normalizedEmail = normalizeFacultyEmail(email);
+    const cols = ["name", "department", "email"];
     const vals = [name, department, normalizedEmail];
-    if (val != null) vals.push(val);
-    const sql = `INSERT INTO faculty (name, department, email${col}) VALUES (?, ?, ?${val != null ? ", ?" : ""})`;
+    if (ownership.col) {
+      cols.push(...ownership.col.replace(/^,\s*/, "").split(",").map((c) => c.trim()).filter(Boolean));
+      vals.push(...ownership.params);
+    }
+    const sql = `INSERT INTO faculty (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`;
     return db.query(sql, vals);
   },
 

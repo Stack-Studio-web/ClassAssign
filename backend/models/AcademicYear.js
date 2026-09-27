@@ -1,5 +1,4 @@
 const db = require("../config/db");
-const { whereClause, insertField } = require("../utils/ownerFilter");
 
 function mapYear(row) {
   if (!row) return null;
@@ -14,34 +13,28 @@ function mapYear(row) {
 }
 
 const AcademicYear = {
-  list: async (opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = whereClause(
-      opts.role,
-      opts.ownerUserId,
-      "",
-      opts.ownerIds
-    );
+  /**
+   * Academic years are institution-global calendar config.
+   * Admin creates them; all HOD/FI users may list and select them.
+   * Do NOT filter by owner_user_id / Academic Context membership.
+   */
+  list: async () => {
     const [rows] = await db.query(
       `SELECT id, public_uuid, label, start_year, end_year, is_archived, created_at
        FROM academic_years
-       ${ownerSql || "WHERE 1=1"}
-       ORDER BY is_archived ASC, label DESC`,
-      ownerParams
+       ORDER BY is_archived ASC, label DESC`
     );
     return (rows || []).map(mapYear);
   },
 
-  create: async ({ label, startYear, endYear }, opts = {}) => {
+  create: async ({ label, startYear, endYear }) => {
     const trimmed = String(label || "").trim();
     if (!trimmed) throw new Error("Academic year label is required");
-    const { col, val } = insertField(opts.role, opts.ownerUserId);
-    const vals = [trimmed, startYear ?? null, endYear ?? null];
-    if (val != null) vals.push(val);
     const [result] = await db.query(
-      `INSERT INTO academic_years (label, start_year, end_year${col})
-       VALUES (${vals.map(() => "?").join(", ")})
+      `INSERT INTO academic_years (label, start_year, end_year)
+       VALUES (?, ?, ?)
        RETURNING id, public_uuid, label, start_year, end_year, is_archived, created_at`,
-      vals
+      [trimmed, startYear ?? null, endYear ?? null]
     );
     const row = Array.isArray(result) ? result[0] : result?.rows?.[0] ?? result;
     return mapYear(row);

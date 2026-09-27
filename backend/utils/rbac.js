@@ -130,13 +130,17 @@ function ownerOpts(req) {
 /**
  * Resolve data-owner IDs for the request (cached on req).
  *
- * Academic Context sharing:
+ * Model:
+ *   Academic Year / Semester  → global calendar (listed without owner filter)
+ *   Academic data             → scoped by Academic Context (HOD + member FIs)
+ *
  *   admin              → null (no owner filter; sees all)
- *   faculty_incharge   → all member user ids of the same Academic Context
+ *   faculty_incharge   → all member user ids of the same Academic Context (HOD scope)
  *   hod                → all member user ids of the same Academic Context
  *   other              → [self]
  *
- * Never trust client-supplied academic_context_id / owner ids.
+ * Never trust client-supplied academic_context_id / owner / hod ids.
+ * Scope is always derived from the authenticated session user.
  */
 async function resolveOwnerOpts(req) {
   if (req._ownerOptsResolved) return ownerOpts(req);

@@ -61,13 +61,13 @@ export default function BatchManagementPage() {
 
   const studentsLabel = isAdmin
     ? "Total Students"
-    : isFacultyIncharge
-      ? "My Students"
+    : isFacultyIncharge || isHod
+      ? "Shared Students"
       : "Department Students";
   const batchesLabel = isAdmin
     ? "Total Batches"
-    : isFacultyIncharge
-      ? "My Batches"
+    : isFacultyIncharge || isHod
+      ? "Shared Batches"
       : "Department Batches";
   const showBatchOwner = isAdmin || isHod;
 

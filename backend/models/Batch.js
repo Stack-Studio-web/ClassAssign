@@ -2,11 +2,10 @@ const db = require("../config/db");
 const {
   batchScopeAnd,
   studentCountInBatchExpr,
-  insertField,
 } = require("../utils/ownerFilter");
 
 const DUPLICATE_BATCH_MESSAGE =
-  "A batch with this name already exists for your account in the selected semester.";
+  "A batch with this name already exists in your Academic Context for the selected semester.";
 
 function normalizeStatus(value) {
   const raw = String(value || "ACTIVE").toUpperCase();
@@ -53,12 +52,33 @@ function duplicateBatchError() {
 }
 
 const Batch = {
-  findByOwnerName: async (semesterId, ownerUserId, name, excludeId = null) => {
-    if (!semesterId || !ownerUserId || !String(name || "").trim()) return null;
+  /**
+   * Duplicate check within HOD/Academic Context scope (shared among member FIs),
+   * not per individual faculty_incharge_id.
+   */
+  findByScopeName: async (semesterId, name, opts = {}, excludeId = null) => {
+    if (!semesterId || !String(name || "").trim()) return null;
+    const batchName = String(name).trim();
+    const params = [semesterId, batchName];
     let sql = `SELECT id FROM batches
-               WHERE semester_id = ? AND owner_user_id = ?
+               WHERE semester_id = ?
                  AND LOWER(TRIM(name)) = LOWER(TRIM(?))`;
-    const params = [semesterId, ownerUserId, String(name).trim()];
+
+    if (opts.academicContextId) {
+      sql += " AND academic_context_id = ?";
+      params.push(Number(opts.academicContextId));
+    } else if (opts.ownerIds && opts.ownerIds.length) {
+      const ids = [...new Set(opts.ownerIds.map(Number).filter((id) => id > 0))];
+      if (!ids.length) return null;
+      sql += ` AND owner_user_id IN (${ids.map(() => "?").join(", ")})`;
+      params.push(...ids);
+    } else if (opts.ownerUserId) {
+      sql += " AND owner_user_id = ?";
+      params.push(Number(opts.ownerUserId));
+    } else {
+      return null;
+    }
+
     if (excludeId != null) {
       sql += " AND id <> ?";
       params.push(Number(excludeId));
@@ -66,6 +86,16 @@ const Batch = {
     sql += " LIMIT 1";
     const [rows] = await db.query(sql, params);
     return rows[0] ?? null;
+  },
+
+  /** @deprecated Prefer findByScopeName — kept for callers expecting per-owner check */
+  findByOwnerName: async (semesterId, ownerUserId, name, excludeId = null) => {
+    return Batch.findByScopeName(
+      semesterId,
+      name,
+      { ownerUserId },
+      excludeId
+    );
   },
 
   listBySemesterId: async (semesterId, opts = {}) => {
@@ -122,26 +152,33 @@ const Batch = {
   create: async ({ semesterId, name, code, description }, opts = {}) => {
     const batchName = String(name || "").trim();
     if (!batchName) throw new Error("Batch name is required");
-    const { val: ownerVal } = insertField(opts.role, opts.ownerUserId);
-    if (!ownerVal) {
+
+    const ownerUserId = opts.ownerUserId ?? opts.userId ?? null;
+    if (!ownerUserId || opts.role === "hod") {
       throw new Error("Batch owner is required.");
     }
 
-    const existing = await Batch.findByOwnerName(semesterId, ownerVal, batchName);
+    const existing = await Batch.findByScopeName(semesterId, batchName, opts);
     if (existing) throw duplicateBatchError();
 
-    const cols = ["semester_id", "name", "code", "description", "status"];
-    const vals = [semesterId, batchName, code?.trim() || null, description?.trim() || null, "ACTIVE"];
+    const cols = ["semester_id", "name", "code", "description", "status", "created_by", "owner_user_id"];
+    const vals = [
+      semesterId,
+      batchName,
+      code?.trim() || null,
+      description?.trim() || null,
+      "ACTIVE",
+      ownerUserId,
+      ownerUserId,
+    ];
     if (opts.department) {
       cols.push("department");
       vals.push(opts.department);
     }
-    if (opts.ownerUserId) {
-      cols.push("created_by");
-      vals.push(opts.ownerUserId);
+    if (opts.academicContextId) {
+      cols.push("academic_context_id");
+      vals.push(Number(opts.academicContextId));
     }
-    cols.push("owner_user_id");
-    vals.push(ownerVal);
 
     try {
       const [result] = await db.query(
@@ -160,7 +197,7 @@ const Batch = {
 
   update: async (id, { name, code, description, status }, opts = {}) => {
     const [currentRows] = await db.query(
-      `SELECT semester_id, owner_user_id, name FROM batches WHERE id = ? LIMIT 1`,
+      `SELECT semester_id, owner_user_id, academic_context_id, name FROM batches WHERE id = ? LIMIT 1`,
       [id]
     );
     const current = currentRows[0];
@@ -169,11 +206,17 @@ const Batch = {
     const nextName = name != null ? String(name).trim() : current.name;
     if (name != null && !nextName) throw new Error("Batch name is required");
 
-    if (nextName && current.owner_user_id) {
-      const duplicate = await Batch.findByOwnerName(
+    if (nextName) {
+      const scopeOpts = {
+        ...opts,
+        academicContextId:
+          opts.academicContextId ?? current.academic_context_id ?? current.academiccontextid ?? null,
+        ownerUserId: opts.ownerUserId ?? current.owner_user_id,
+      };
+      const duplicate = await Batch.findByScopeName(
         current.semester_id,
-        current.owner_user_id,
         nextName,
+        scopeOpts,
         id
       );
       if (duplicate) throw duplicateBatchError();

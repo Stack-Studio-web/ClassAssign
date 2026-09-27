@@ -33,8 +33,7 @@ import {
 import { ErrorAlert } from "../Components/ui/Alert";
 import { Button } from "../Components/ui/Button";
 import { AcademicPageSkeleton } from "../Components/ui/Skeleton";
-import { AdminOnly, WriteAccess } from "../Components/rbac/PermissionGate";
-import { ReadOnlyBanner } from "../Components/rbac/ReadOnlyBanner";
+import { AdminOnly } from "../Components/rbac/PermissionGate";
 import { useAuth } from "../hooks/useAuth";
 
 export default function AcademicManagementPage() {
@@ -85,8 +84,8 @@ export default function AcademicManagementPage() {
 
   const enrollmentLabel = isAdmin
     ? "Total Enrollment"
-    : isFacultyIncharge
-      ? "My Enrollment"
+    : isFacultyIncharge || isHod
+      ? "Shared Enrollment"
       : "Department Enrollment";
 
   const existingSemesterTypes = useMemo(
@@ -287,8 +286,8 @@ export default function AcademicManagementPage() {
           </h1>
           <p className="mt-1 text-sm text-gray-500">
             {isAdmin
-              ? "Create and manage academic years and semesters, then continue to Batch Management."
-              : "Select the academic year and semester, then continue to Batch Management."}
+              ? "Create global academic years and semesters available to all Faculty Incharges. Academic data remains scoped by HOD."
+              : "Select an academic year and semester to continue to Batch Management. Data is shared with Faculty Incharges under your HOD."}
           </p>
         </div>
         <AdminOnly>
@@ -302,7 +301,15 @@ export default function AcademicManagementPage() {
       <StudentManagementNav />
 
       {!isAdmin && isFacultyIncharge && (
-        <ReadOnlyBanner message="Only Admin can create or complete academic years and semesters. You can select an existing context below." />
+        <div className="rounded-xl border border-blue-100 bg-blue-50/70 px-4 py-3 text-sm text-blue-900">
+          Select an academic year and semester to continue to Batch Management.
+          Students and batches you create are shared with other Faculty Incharges under the same HOD.
+        </div>
+      )}
+      {!isAdmin && isHod && (
+        <div className="rounded-xl border border-blue-100 bg-blue-50/70 px-4 py-3 text-sm text-blue-900">
+          Select an academic year and semester to view shared academic data for your Faculty Incharges.
+        </div>
       )}
 
       {years.length === 0 ? (
