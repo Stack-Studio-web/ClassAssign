@@ -71,6 +71,14 @@ function BatchCard({
               <span className="text-gray-400"> · {batch.createdBy.name}</span>
             )}
           </p>
+          {batch.uuid && (
+            <p
+              className="mt-1.5 truncate font-mono text-[10px] text-gray-400"
+              title={batch.uuid}
+            >
+              UUID {batch.uuid}
+            </p>
+          )}
         </div>
         {!readOnly && (
           <BatchMenu

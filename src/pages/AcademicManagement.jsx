@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Plus, LayoutGrid, List } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { Plus, LayoutGrid, List, ArrowRight } from "lucide-react";
 import { useAcademicContext } from "../context/AcademicContext";
 import { useConfirm } from "../context/ConfirmContext";
 import { useToast } from "../context/ToastContext";
@@ -37,6 +38,7 @@ import { ReadOnlyBanner } from "../Components/rbac/ReadOnlyBanner";
 import { useAuth } from "../hooks/useAuth";
 
 export default function AcademicManagementPage() {
+  const navigate = useNavigate();
   const toast = useToast();
   const showConfirm = useConfirm();
   const { isAdmin, isFacultyIncharge, isHod } = useAuth();
@@ -92,12 +94,22 @@ export default function AcademicManagementPage() {
     [semesters]
   );
 
+  const canContinue = Boolean(selectedYear?.uuid && selectedSemester?.uuid);
+
   useEffect(() => {
     if (!selectedYear && years.length > 0 && !contextLoading) {
       const first = years.find((y) => !y.isArchived) ?? years[0];
       if (first) selectYear(first);
     }
   }, [years, selectedYear, contextLoading, selectYear]);
+
+  const handleContinue = () => {
+    if (!canContinue) {
+      toast.warning("Select an academic year and semester before continuing.");
+      return;
+    }
+    navigate("/student/batches");
+  };
 
   const clearError = () => setApiError(null);
 
@@ -275,8 +287,8 @@ export default function AcademicManagementPage() {
           </h1>
           <p className="mt-1 text-sm text-gray-500">
             {isAdmin
-              ? "Manage academic years, semesters, and completion status."
-              : "Select the academic year and semester for your student workflow."}
+              ? "Create and manage academic years and semesters, then continue to Batch Management."
+              : "Select the academic year and semester, then continue to Batch Management."}
           </p>
         </div>
         <AdminOnly>
@@ -403,6 +415,27 @@ export default function AcademicManagementPage() {
                     canDeleteCompleted={isAdmin}
                   />
                 </section>
+
+                <div className="sticky bottom-4 z-10 rounded-2xl border border-blue-100 bg-white/95 p-4 shadow-lg backdrop-blur-sm">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0 text-sm text-gray-600">
+                      <p className="font-semibold text-gray-900">Ready for Batch Management</p>
+                      <p className="mt-0.5 truncate">
+                        {selectedYear?.label || "—"}
+                        <span className="mx-1.5 text-gray-300">·</span>
+                        {selectedSemester?.label || selectedSemester?.semesterType || "Select a semester"}
+                      </p>
+                    </div>
+                    <Button
+                      onClick={handleContinue}
+                      disabled={!canContinue}
+                      className="shrink-0"
+                    >
+                      Continue
+                      <ArrowRight className="h-4 w-4" aria-hidden />
+                    </Button>
+                  </div>
+                </div>
               </>
             ) : (
               <div className="rounded-2xl border border-gray-100 bg-white p-12 text-center text-gray-500 shadow-sm">

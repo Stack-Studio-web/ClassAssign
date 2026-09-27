@@ -1,12 +1,16 @@
 import React from "react";
 import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
-import { Calendar, BookOpen, Users, Layers, Pencil } from "lucide-react";
+import { Calendar, BookOpen, Users, Layers, ArrowLeftRight } from "lucide-react";
 import { Button } from "../ui/Button";
 import { cn } from "../../lib/utils";
 import { StatusBadge } from "../ui/Badge";
 import { isSemesterCompleted } from "../../lib/semesterStatus";
 
+/**
+ * Read-only academic year + semester banner for Batch Management.
+ * Year/semester are chosen on Academic Management; change via the CTA only.
+ */
 export function AcademicContextCard({
   year,
   semester,
@@ -32,6 +36,9 @@ export function AcademicContextCard({
         className
       )}
     >
+      <p className="mb-3 text-[11px] font-bold uppercase tracking-wider text-blue-600">
+        Academic Context (read-only)
+      </p>
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="grid flex-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <ContextStat icon={Calendar} label="Academic Year" value={year.label} />
@@ -40,7 +47,7 @@ export function AcademicContextCard({
             label="Semester"
             value={
               <span className="inline-flex items-center gap-2">
-                {semester.label || `${semester.semesterType} Semester`}
+                {semester.label || semester.semesterType || "—"}
                 {completed && <StatusBadge variant="completed">COMPLETED</StatusBadge>}
               </span>
             }
@@ -53,8 +60,8 @@ export function AcademicContextCard({
           onClick={() => navigate("/student/academic")}
           className="shrink-0 border-blue-200 bg-white"
         >
-          <Pencil className="h-4 w-4" aria-hidden />
-          Edit Context
+          <ArrowLeftRight className="h-4 w-4" aria-hidden />
+          Change Academic Context
         </Button>
       </div>
     </motion.div>

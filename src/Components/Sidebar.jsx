@@ -28,7 +28,6 @@ import { logout } from "../lib/api";
 const ADMIN_NAV = [
   { to: "/allotment", label: "Dashboard", icon: ComputerDesktopIcon },
   { to: "/student/academic", label: "Academic Management", icon: CalendarDaysIcon },
-  { to: "/student/manage", label: "Student Management", icon: UserGroupIcon },
   { to: "/student/batches", label: "Batch Management", icon: RectangleStackIcon },
   { to: "/student/browser", label: "Student Browser", icon: TableCellsIcon },
   { to: "/mentor/import", label: "Mentor Management", icon: UsersIcon },
@@ -53,8 +52,9 @@ const ADMIN_NAV = [
 
 const FACULTY_NAV = [
   { to: "/allotment", label: "Allotment", icon: ComputerDesktopIcon },
-  { to: "/student/academic", label: "Academic Context", icon: AcademicCapIcon },
+  { to: "/student/academic", label: "Academic Management", icon: AcademicCapIcon },
   { to: "/student/batches", label: "Batch Management", icon: RectangleStackIcon },
+  { to: "/student/browser", label: "Student Browser", icon: TableCellsIcon },
   { to: "/mentor/import", label: "Mentor Management", icon: UsersIcon },
   { to: "/faculty", label: "Faculty Management", icon: UserPlusIcon },
   { to: "/report", label: "Reports", icon: NewspaperIcon },

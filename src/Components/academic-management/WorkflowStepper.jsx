@@ -5,33 +5,39 @@ import { cn } from "../../lib/utils";
 import { useAuth } from "../../hooks/useAuth";
 import { PERMISSIONS } from "../../lib/rbac/permissions";
 
+/** Wizard: Academic Year/Semester → Batch + Import → Student Browser */
 const ADMIN_STEPS = [
-  { id: 1, label: "Academic Context", path: "/student/academic", permission: PERMISSIONS.ACADEMIC_YEAR_VIEW },
-  { id: 2, label: "Student Management", path: "/student/manage", permission: PERMISSIONS.STUDENT_IMPORT },
-  { id: 3, label: "Batch Management", path: "/student/batches", permission: PERMISSIONS.BATCH_VIEW },
-  { id: 4, label: "Student Browser", path: "/student/browser", permission: PERMISSIONS.STUDENT_VIEW },
+  { id: 1, label: "Academic Management", path: "/student/academic", permission: PERMISSIONS.ACADEMIC_YEAR_VIEW },
+  { id: 2, label: "Batch Management", path: "/student/batches", permission: PERMISSIONS.BATCH_VIEW },
+  { id: 3, label: "Student Browser", path: "/student/browser", permission: PERMISSIONS.STUDENT_VIEW },
 ];
 
 const FACULTY_STEPS = [
-  { id: 1, label: "Academic Context", path: "/student/academic", permission: PERMISSIONS.ACADEMIC_YEAR_VIEW },
+  { id: 1, label: "Academic Management", path: "/student/academic", permission: PERMISSIONS.ACADEMIC_YEAR_VIEW },
   { id: 2, label: "Batch Management", path: "/student/batches", permission: PERMISSIONS.BATCH_VIEW },
+  { id: 3, label: "Student Browser", path: "/student/browser", permission: PERMISSIONS.STUDENT_VIEW },
 ];
 
-function stepStatus(stepId, pathname, isFacultyFlow) {
-  if (isFacultyFlow) {
-    if (stepId === 2 && pathname.startsWith("/student/batches")) return "active";
-    if (stepId === 1 && pathname.startsWith("/student/academic")) return "active";
-    if (stepId === 1 && pathname.startsWith("/student/batches")) return "complete";
+function stepStatus(stepId, pathname) {
+  const onAcademic = pathname.startsWith("/student/academic");
+  const onBatches = pathname.startsWith("/student/batches");
+  const onBrowser = pathname.startsWith("/student/browser");
+  const onManage = pathname.startsWith("/student/manage");
+
+  if (stepId === 1) {
+    if (onAcademic) return "active";
+    if (onBatches || onBrowser || onManage) return "complete";
     return "upcoming";
   }
-
-  if (stepId === 4 && pathname.startsWith("/student/browser")) return "active";
-  if (stepId === 3 && pathname.startsWith("/student/batches")) return "active";
-  if (stepId === 2 && pathname.startsWith("/student/manage")) return "active";
-  if (stepId === 1 && pathname.startsWith("/student/academic")) return "active";
-  if (stepId === 1 && (pathname.startsWith("/student/manage") || pathname.startsWith("/student/batches") || pathname.startsWith("/student/browser"))) return "complete";
-  if (stepId === 2 && (pathname.startsWith("/student/batches") || pathname.startsWith("/student/browser"))) return "complete";
-  if (stepId === 3 && pathname.startsWith("/student/browser")) return "complete";
+  if (stepId === 2) {
+    if (onBatches || onManage) return "active";
+    if (onBrowser) return "complete";
+    return "upcoming";
+  }
+  if (stepId === 3) {
+    if (onBrowser) return "active";
+    return "upcoming";
+  }
   return "upcoming";
 }
 
@@ -53,7 +59,7 @@ export function WorkflowStepper({ className }) {
       )}
     >
       {steps.map((step, index) => {
-        const status = stepStatus(step.id, pathname, isFacultyFlow);
+        const status = stepStatus(step.id, pathname);
         const isLast = index === steps.length - 1;
 
         return (

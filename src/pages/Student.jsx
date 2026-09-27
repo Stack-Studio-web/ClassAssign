@@ -18,6 +18,7 @@ import {
 } from "../hooks/useStudents";
 import StudentPagination from "../Components/StudentPagination";
 import Loader from "../Components/Loader";
+import { StudentManagementNav } from "../Components/StudentManagementNav";
 import { StudentBrowserBreadcrumb } from "../Components/student-browser/StudentBrowserBreadcrumb";
 import { AcademicContextBar } from "../Components/student-browser/AcademicContextBar";
 import { StudentStatsCards } from "../Components/student-browser/StudentStatsCards";
@@ -121,7 +122,7 @@ export default function StudentBrowserPage() {
       ? "/student/batches"
       : "/report";
 
-  const importPath = isFacultyIncharge && !isAdmin ? "/student/batches" : "/student/manage";
+  const importPath = "/student/batches";
 
   const currentUserLabel =
     user?.username || user?.name || user?.email || "User";
@@ -314,6 +315,8 @@ export default function StudentBrowserPage() {
   return (
     <div className="min-h-screen bg-gray-50 pb-10">
       <div className="space-y-5">
+        {(isAdmin || isFacultyIncharge) && <StudentManagementNav />}
+
         <StudentBrowserBreadcrumb dashboardPath={dashboardPath} />
 
         <div>
@@ -321,7 +324,7 @@ export default function StudentBrowserPage() {
             Student Browser
           </h1>
           <p className="mt-1 text-sm text-gray-600">
-            Browse, search and manage students for the selected Academic Context.
+            Browse, search and manage students for the selected Academic Year, Semester, and Batch.
           </p>
         </div>
 

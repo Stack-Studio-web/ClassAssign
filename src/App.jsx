@@ -17,7 +17,6 @@ import MentorListPage from './pages/MentorList';
 import MentorMappingPage from './pages/MentorMapping';
 import AcademicManagementPage from './pages/AcademicManagement';
 import BatchManagementPage from './pages/BatchManagement';
-import StudentManagementPage from './pages/StudentManagement';
 import Faculty from './pages/Faculty';
 import UserManagement from './pages/UserManagement';
 import OwnershipMapping from './pages/OwnershipMapping';
@@ -321,7 +320,7 @@ function App() {
         path="/student"
         element={
           <AuthGuard allowedRoles={['admin', 'faculty_incharge']}>
-            <Navigate to="/student/manage" replace />
+            <Navigate to="/student/academic" replace />
           </AuthGuard>
         }
       />
@@ -339,7 +338,7 @@ function App() {
         path="/student/manage"
         element={
           <AuthGuard allowedRoles={['admin', 'faculty_incharge']}>
-            <Layout><StudentManagementPage /></Layout>
+            <Navigate to="/student/batches" replace />
           </AuthGuard>
         }
       />
@@ -403,7 +402,7 @@ function App() {
         path="/student/import"
         element={
           <AuthGuard allowedRoles={['admin', 'faculty_incharge']}>
-            <Navigate to="/student/manage" replace />
+            <Navigate to="/student/batches" replace />
           </AuthGuard>
         }
       />

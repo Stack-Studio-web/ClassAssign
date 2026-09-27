@@ -336,6 +336,14 @@ export default function StudentImportCard() {
   };
 
   const handleImport = async () => {
+    if (preview?.existingCount > 0 && importMode === "cancel") {
+      setSelectedFile(null);
+      setPreview(null);
+      setFileError("");
+      setImportMode("append");
+      toast.info("Import cancelled. No students were changed.");
+      return;
+    }
     if (!canRunImport) return;
     if (preview?.existingCount > 0 && importMode === "append") {
       const ok = await showConfirm({
@@ -416,29 +424,68 @@ export default function StudentImportCard() {
       </div>
 
       <div className="space-y-5 p-6">
-        <div className="rounded-lg bg-blue-50/60 border border-blue-100 px-4 py-3 text-sm text-blue-900">
-          <span className="font-semibold">{selectedYear?.label}</span>
-          <span className="mx-2 text-blue-300">·</span>
-          <span>{selectedSemester?.label || selectedSemester?.semesterType}</span>
-          <span className="mx-2 text-blue-300">·</span>
-          <span className="font-semibold">Batch {selectedBatch?.name}</span>
+        <div className="rounded-xl border border-blue-100 bg-blue-50/60 px-4 py-4 text-sm text-blue-950">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-blue-600">
+            Import Destination
+          </p>
+          <dl className="mt-3 grid gap-2 sm:grid-cols-3">
+            <div>
+              <dt className="text-[10px] font-bold uppercase tracking-wider text-blue-500">Academic Year</dt>
+              <dd className="font-semibold text-gray-900">{selectedYear?.label || "—"}</dd>
+            </div>
+            <div>
+              <dt className="text-[10px] font-bold uppercase tracking-wider text-blue-500">Semester</dt>
+              <dd className="font-semibold text-gray-900">
+                {selectedSemester?.label || selectedSemester?.semesterType || "—"}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-[10px] font-bold uppercase tracking-wider text-blue-500">Batch</dt>
+              <dd className="font-semibold text-gray-900">{selectedBatch?.name || "—"}</dd>
+              {selectedBatch?.uuid && (
+                <dd className="mt-0.5 truncate font-mono text-[10px] text-blue-400" title={selectedBatch.uuid}>
+                  UUID {selectedBatch.uuid}
+                </dd>
+              )}
+            </div>
+          </dl>
         </div>
 
         <ImportSteps currentStep={currentStep} />
 
         {preview?.existingCount > 0 && !importResult && (
-          <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 space-y-2">
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 space-y-3">
             <p className="text-sm font-medium text-amber-900">
               This batch already contains {preview.existingCount} student(s).
             </p>
-            <div className="flex flex-wrap gap-4 text-sm">
+            <p className="text-xs text-amber-800">Choose an action. Students are never overwritten automatically.</p>
+            <div className="flex flex-col gap-2 text-sm sm:flex-row sm:flex-wrap sm:gap-4">
               <label className="flex items-center gap-2 cursor-pointer">
-                <input type="radio" checked={importMode === "append"} onChange={() => setImportMode("append")} />
+                <input
+                  type="radio"
+                  name="import-mode"
+                  checked={importMode === "append"}
+                  onChange={() => setImportMode("append")}
+                />
                 Append Students
               </label>
               <label className="flex items-center gap-2 cursor-pointer">
-                <input type="radio" checked={importMode === "replace"} onChange={() => setImportMode("replace")} />
-                Replace Batch Students
+                <input
+                  type="radio"
+                  name="import-mode"
+                  checked={importMode === "replace"}
+                  onChange={() => setImportMode("replace")}
+                />
+                Replace Existing Batch
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="import-mode"
+                  checked={importMode === "cancel"}
+                  onChange={() => setImportMode("cancel")}
+                />
+                Cancel
               </label>
             </div>
           </div>
@@ -464,9 +511,24 @@ export default function StudentImportCard() {
         )}
 
         <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
-          <Button disabled={!canRunImport || importDisabled} onClick={handleImport} className="min-w-[160px]">
-            {loading ? "Importing…" : "Import Students"}
-          </Button>
+          {preview?.existingCount > 0 && importMode === "cancel" ? (
+            <Button
+              variant="outline"
+              disabled={loading || importDisabled}
+              onClick={handleImport}
+              className="min-w-[160px]"
+            >
+              Cancel Import
+            </Button>
+          ) : (
+            <Button
+              disabled={!canRunImport || importDisabled}
+              onClick={handleImport}
+              className="min-w-[160px]"
+            >
+              {loading ? "Importing…" : "Import Students"}
+            </Button>
+          )}
           {!importResult && (
             <Button variant="ghost" onClick={handleUndo} className="text-red-600">
               <RotateCcw className="h-4 w-4" aria-hidden />

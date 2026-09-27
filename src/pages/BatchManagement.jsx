@@ -170,7 +170,7 @@ export default function BatchManagementPage() {
             Batch Management
           </h1>
           <p className="mt-1 text-sm text-gray-500">
-            Create batches, import students into your selected batch, and review enrollment for this semester.
+            Create or select a batch for this academic year and semester, then import students. Batches are identified by immutable UUID.
           </p>
         </div>
         <Button variant="outline" onClick={() => navigate("/student/academic")} className="shrink-0">
