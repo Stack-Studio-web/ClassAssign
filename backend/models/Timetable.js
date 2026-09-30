@@ -275,7 +275,81 @@ const Timetable = {
 
     const [rows] = await db.query(query, params);
     return (rows || []).map(toTimetableRow);
-  }
+  },
+
+  /**
+   * Distinct year-month schedule keys present in timetable (plus optional seed).
+   */
+  getScheduleMonths: async (opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = ownerWhereFromOpts(opts);
+    const [rows] = await db.query(
+      `SELECT DISTINCT
+         EXTRACT(YEAR FROM date)::int AS year,
+         EXTRACT(MONTH FROM date)::int AS month
+       FROM timetable${ownerSql || " WHERE 1=1"}
+       ORDER BY year DESC, month DESC`,
+      ownerParams
+    );
+    return rows || [];
+  },
+
+  /**
+   * Filtered timetable rows for COE DOCX export, enriched with batch/semester.
+   */
+  getForCoeExport: async ({ department, examTypes, year, month }, opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = ownerAndFromOpts(opts, "t.");
+    const params = [];
+    let sql = `
+      SELECT
+        t.id,
+        t.public_uuid,
+        t.date,
+        t.start_time AS startTime,
+        t.end_time AS endTime,
+        t.session,
+        t.course_code AS courseCode,
+        t.course_name AS courseName,
+        t.department,
+        t.exam_type AS examType,
+        t.batch,
+        t.batch_id AS batchId,
+        b.public_uuid AS batchUuid,
+        COALESCE(NULLIF(TRIM(t.batch), ''), b.name) AS batchName,
+        s.semester_number AS semesterNumber,
+        s.label AS semesterLabel,
+        s.semester_type AS semesterType
+      FROM timetable t
+      LEFT JOIN batches b ON b.id = t.batch_id
+      LEFT JOIN semesters s ON s.id = b.semester_id
+      WHERE 1=1
+    `;
+
+    if (department) {
+      sql += ` AND UPPER(TRIM(t.department)) = UPPER(TRIM(?))`;
+      params.push(department);
+    }
+
+    if (Array.isArray(examTypes) && examTypes.length > 0) {
+      sql += ` AND UPPER(TRIM(t.exam_type)) IN (${examTypes.map(() => "?").join(",")})`;
+      params.push(...examTypes.map((t) => String(t).toUpperCase().trim()));
+    }
+
+    if (year && month) {
+      sql += ` AND EXTRACT(YEAR FROM t.date) = ? AND EXTRACT(MONTH FROM t.date) = ?`;
+      params.push(Number(year), Number(month));
+    }
+
+    sql += `${ownerSql} ORDER BY t.date ASC, t.start_time ASC, t.course_code ASC`;
+    params.push(...ownerParams);
+
+    const [rows] = await db.query(sql, params);
+    return (rows || []).map((row) => ({
+      ...toTimetableRow(row),
+      semesterNumber: row.semesternumber ?? row.semesterNumber ?? null,
+      semesterLabel: row.semesterlabel ?? row.semesterLabel ?? null,
+      semesterType: row.semestertype ?? row.semesterType ?? null,
+    }));
+  },
 };
 
 module.exports = Timetable;

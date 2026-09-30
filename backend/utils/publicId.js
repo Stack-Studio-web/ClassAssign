@@ -11,6 +11,8 @@ const TABLE = {
   students: "students",
   faculty: "faculty",
   venues: "venues",
+  blocks: "blocks",
+  allotmentVenueSelections: "allotment_venue_selections",
   exams: "exams",
   timetable: "timetable",
   ineligible: "ineligible_students",

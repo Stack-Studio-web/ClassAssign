@@ -16,7 +16,7 @@ export default function Faculty() {
   // Edit States
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState(0);
-  const [togglingAvailabilityId, setTogglingAvailabilityId] = useState(null);
+  const [updatingId, setUpdatingId] = useState(null);
 
   // Import/Status States
   const [skippedEmails, setSkippedEmails] = useState([]);
@@ -111,17 +111,28 @@ export default function Faculty() {
     }
   };
 
-  const handleToggleAvailability = async (f) => {
-    const on = f.isAvailable !== false;
-    setTogglingAvailabilityId(f.uuid);
+  const handleAvailableChange = (f, checked) => {
+    setFaculty((prev) =>
+      prev.map((row) =>
+        row.uuid === f.uuid ? { ...row, isAvailable: checked } : row
+      )
+    );
+  };
+
+  const handleUpdateFaculty = async (f) => {
+    setUpdatingId(f.uuid);
     try {
-      await api.put(`/faculty/${f.uuid}/availability`, { isAvailable: !on });
-      setMessage("✅ Availability updated");
+      await api.put(`/faculty/${f.uuid}/availability`, {
+        isAvailable: f.isAvailable !== false,
+      });
+      toast.success("Faculty updated successfully");
+      setMessage("✅ Faculty updated successfully");
       await fetchFaculty();
-    } catch {
-      setMessage("❌ Could not update availability");
+    } catch (err) {
+      toast.error(getApiError(err, "Failed to update faculty"), getApiErrorTitle(err, "Update failed"));
+      setMessage("❌ Failed to update faculty");
     } finally {
-      setTogglingAvailabilityId(null);
+      setUpdatingId(null);
     }
   };
 
@@ -493,23 +504,17 @@ export default function Faculty() {
                         <span className="font-bold text-violet-700 bg-violet-100 px-2 py-1 rounded-lg text-xs">{f.transferCount ?? 0}</span>
                       </td>
                       <td className="px-4 md:px-6 py-3 md:py-4 text-center">
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={f.isAvailable !== false}
-                          aria-label={f.isAvailable !== false ? "Mark unavailable" : "Mark available"}
-                          disabled={togglingAvailabilityId === f.uuid}
-                          onClick={() => handleToggleAvailability(f)}
-                          className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 ${
-                            f.isAvailable !== false ? "bg-emerald-500" : "bg-gray-300"
-                          }`}
-                        >
-                          <span
-                            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
-                              f.isAvailable !== false ? "translate-x-6" : "translate-x-1"
-                            }`}
+                        <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={f.isAvailable !== false}
+                            onChange={(e) => handleAvailableChange(f, e.target.checked)}
+                            disabled={updatingId === f.uuid}
+                            aria-label={`${f.name} available`}
+                            className="h-4 w-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 disabled:opacity-50"
                           />
-                        </button>
+                          <span className="text-sm text-gray-700">Available</span>
+                        </label>
                       </td>
                       <td className="px-4 md:px-6 py-3 md:py-4">
                         {editingId === f.uuid ? (
@@ -526,6 +531,14 @@ export default function Faculty() {
                         ) : (
                           <div className="flex flex-wrap gap-2">
                             <button type="button" onClick={() => handleEditClick(f)} className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium">Edit</button>
+                            <button
+                              type="button"
+                              disabled={updatingId === f.uuid || loading}
+                              onClick={() => handleUpdateFaculty(f)}
+                              className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium"
+                            >
+                              {updatingId === f.uuid ? "Updating..." : "Update"}
+                            </button>
                             <button type="button" disabled={deletingId === f.uuid || loading} onClick={() => handleDelete(f.uuid)} className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium">{deletingId === f.uuid ? "Removing..." : "Remove"}</button>
                           </div>
                         )}

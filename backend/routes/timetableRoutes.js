@@ -15,6 +15,16 @@ const checkRole = require("../middleware/checkRole");
 const auditLogger = require("../middleware/auditLogger");
 
 const upload = multer({ dest: "uploads/" });
+const {
+  departmentDisplayName,
+  departmentBranchCode,
+  toRoman,
+  deriveDegree,
+  examTypesForAssessment,
+  parseScheduleKey,
+  formatScheduleLabel,
+} = require("../utils/coeExportHelpers");
+
 /* =====================================================
     GET: ALL TIMETABLE SCHEDULES
     Roles: admin, faculty_incharge, hod (hod sees own department only)
@@ -72,6 +82,124 @@ router.get("/by-exam-details",
       res.status(500).json({
         error: "Failed to fetch courses",
         details: err.message
+      });
+    }
+  }
+);
+
+/* =====================================================
+    GET: COE export schedule month options
+===================================================== */
+router.get(
+  "/coe/schedules",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge", "hod"]),
+  async (req, res) => {
+    try {
+      const months = await Timetable.getScheduleMonths(await resolveOwnerOpts(req));
+      const options = (months || []).map((r) => {
+        const year = Number(r.year ?? r.YEAR);
+        const month = Number(r.month ?? r.MONTH);
+        return {
+          value: `${year}-${String(month).padStart(2, "0")}`,
+          label: formatScheduleLabel(year, month),
+        };
+      });
+      // Ensure SEPTEMBER 2026 is always selectable for the current requirement
+      if (!options.some((o) => o.value === "2026-09")) {
+        options.unshift({ value: "2026-09", label: "SEPTEMBER 2026" });
+      }
+      res.json(options);
+    } catch (err) {
+      console.error("COE SCHEDULES ERROR:", err);
+      res.status(500).json({ error: "Failed to load schedule options", details: err.message });
+    }
+  }
+);
+
+/* =====================================================
+    GET: COE export filtered data (backend filtering)
+===================================================== */
+router.get(
+  "/coe/export-data",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge", "hod"]),
+  async (req, res) => {
+    try {
+      const { department, assessment, schedule, track } = req.query;
+      if (!department || !assessment || !schedule || !track) {
+        return res.status(400).json({
+          error: "Missing required parameters",
+          details: "department, assessment, schedule, and track are required",
+        });
+      }
+
+      const parsed = parseScheduleKey(schedule);
+      if (!parsed) {
+        return res.status(400).json({
+          error: "Invalid schedule",
+          details: "Schedule must be like SEPTEMBER 2026 or 2026-09",
+        });
+      }
+
+      const examTypes = examTypesForAssessment(assessment);
+      const rows = await Timetable.getForCoeExport(
+        {
+          department,
+          examTypes,
+          year: parsed.year,
+          month: parsed.month,
+        },
+        await resolveOwnerOpts(req)
+      );
+
+      if (!rows.length) {
+        return res.status(404).json({
+          error: "No timetable records found for the selected configuration.",
+          sections: [],
+        });
+      }
+
+      const deptName = departmentDisplayName(department);
+      const branch = departmentBranchCode(department);
+      const scheduleLabel = formatScheduleLabel(parsed.year, parsed.month);
+      const assessmentLabel = String(assessment).trim().toUpperCase();
+      const trackLabel = String(track).trim().toUpperCase();
+
+      // Group by degree / branch / semester so sections stay separate
+      const sectionMap = new Map();
+      for (const row of rows) {
+        const degree = deriveDegree(row.department, row.batchName || row.batch);
+        const semester =
+          toRoman(row.semesterNumber) ||
+          (row.semesterLabel ? String(row.semesterLabel).replace(/semester/i, "").trim() : "") ||
+          "—";
+        const key = `${degree}|${branch}|${semester}`;
+        if (!sectionMap.has(key)) {
+          sectionMap.set(key, {
+            degree,
+            branch,
+            semester,
+            rows: [],
+          });
+        }
+        sectionMap.get(key).rows.push(row);
+      }
+
+      res.json({
+        departmentCode: String(department).trim().toUpperCase(),
+        departmentName: deptName,
+        assessment: assessmentLabel,
+        schedule: scheduleLabel,
+        track: trackLabel,
+        title: `${assessmentLabel} SCHEDULE - ${scheduleLabel} (${trackLabel})`,
+        sections: [...sectionMap.values()],
+      });
+    } catch (err) {
+      console.error("COE EXPORT DATA ERROR:", err);
+      res.status(500).json({
+        error: "Failed to prepare COE export data",
+        details: err.message,
       });
     }
   }

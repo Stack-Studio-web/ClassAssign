@@ -545,6 +545,30 @@ router.post(
       const duplicates = [];
       const skippedRecords = [];
 
+      // Assign imported venues to the FI's department block (or GENERAL for admin)
+      const Block = require("../models/Block");
+      const dept =
+        Block.normalizeDept(req.user?.department) ||
+        (req.user?.role === "admin" ? "GENERAL" : null);
+      let importBlockId = null;
+      if (dept) {
+        const mine = await Block.list({ mine: true, department: dept });
+        if (mine.length > 0) {
+          importBlockId = mine[0].id;
+        } else {
+          const created = await Block.create(
+            {
+              name: `${dept} Main Block`,
+              code: `${dept}-BLOCK`,
+              description: `Auto-created for venue import (${dept})`,
+              owningDepartment: dept,
+            },
+            { ...ownerOpts, department: dept }
+          );
+          importBlockId = created.id;
+        }
+      }
+
       for (const venue of result.rows) {
         try {
           const venueId = await Venue.create(
@@ -554,6 +578,8 @@ router.post(
               benchesRow: venue.benchesRow,
               benchesCol: venue.benchesCol,
               benchConfig: venue.benchConfig,
+              blockId: importBlockId,
+              code: venue.name,
             },
             ownerOpts
           );

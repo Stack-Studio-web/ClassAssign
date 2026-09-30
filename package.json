@@ -19,7 +19,7 @@
     "@tanstack/react-virtual": "^3.14.6",
     "axios": "^1.16.0",
     "cors": "^2.8.5",
-    "docx": "^9.5.1",
+    "docx": "^9.8.1",
     "expo": "^49.0.23",
     "express": "^5.2.1",
     "file-saver": "^2.0.5",

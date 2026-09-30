@@ -64,6 +64,7 @@ const ensureFacultyChangeNotifySchema = require("./utils/ensureFacultyChangeNoti
 const ensureAcademicContextSchema = require("./utils/ensureAcademicContextSchema");
 const ensureStrictFiIsolation = require("./utils/ensureStrictFiIsolation");
 const ensureQpakSchema = require("./utils/ensureQpakSchema");
+const ensureBlockVenueSchema = require("./utils/ensureBlockVenueSchema");
 const ensureEnterpriseSchema = require("./utils/ensureEnterpriseSchema");
 const ensureBatchSchema = require("./utils/ensureBatchSchema");
 const ensureMentorSchema = require("./utils/ensureMentorSchema");
@@ -163,6 +164,7 @@ async function start() {
       await ensureAcademicContextSchema();
       await ensureStrictFiIsolation();
       await ensureQpakSchema();
+      await ensureBlockVenueSchema();
       await ensureAcademicSchema();
       await ensureEnterpriseSchema();
       await ensureBatchSchema();

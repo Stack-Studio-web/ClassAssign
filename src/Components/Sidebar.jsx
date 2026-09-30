@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import {
   ComputerDesktopIcon,
   NewspaperIcon,
@@ -12,6 +12,7 @@ import {
   CalendarDaysIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  ChevronDownIcon,
   ArrowsRightLeftIcon,
   AcademicCapIcon,
   RectangleStackIcon,
@@ -21,7 +22,7 @@ import {
   ShieldCheckIcon,
   DocumentTextIcon,
 } from "@heroicons/react/24/outline";
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 import { useSidebar } from "../context/SidebarContext";
 import { logout } from "../lib/api";
 
@@ -82,8 +83,105 @@ const HOD_NAV = [
   { to: "/users", label: "User Management", icon: UsersIcon },
 ];
 
+/** Faculty In-Charge sidebar — Academic Management is a collapsible group. */
+const FACULTY_INCHARGE_NAV = [
+  {
+    label: "Academic Management",
+    icon: AcademicCapIcon,
+    children: [
+      { to: "/student/batches", label: "Batch Management", icon: RectangleStackIcon },
+      { to: "/student/browser", label: "Student Browser", icon: TableCellsIcon },
+    ],
+  },
+  { to: "/faculty", label: "Faculty Management", icon: UserPlusIcon },
+  { to: "/timetable", label: "Time Table", icon: CalendarDaysIcon },
+  { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
+  { to: "/allotment", label: "Allotment", icon: ComputerDesktopIcon },
+  { to: "/report", label: "Reports", icon: NewspaperIcon },
+  { to: "/admin/attendance/transfers", label: "Mutual Faculty Request", icon: ArrowsRightLeftIcon },
+  { to: "/attendance", label: "Attendance", icon: UserGroupIcon },
+  { to: "/admin/qpak", label: "QPAK", icon: DocumentTextIcon },
+];
+
+const linkClassName = (isActive, collapsed, open) =>
+  `flex items-center gap-3 rounded-lg text-[15px] font-medium transition-all duration-200
+  ${collapsed && !open ? "lg:justify-center lg:px-0 lg:py-3 px-4 py-3" : "px-4 py-3"}
+  ${isActive
+    ? "bg-gray-100 text-gray-900 font-semibold"
+    : "text-gray-600 hover:bg-gray-50 hover:text-gray-800"
+  }`;
+
+const NavItemLink = ({ to, label, icon: Icon, collapsed, open, onNavigate, end }) => (
+  <NavLink
+    to={to}
+    end={end}
+    onClick={onNavigate}
+    className={({ isActive }) => linkClassName(isActive, collapsed, open)}
+  >
+    <Icon className="h-5 w-5 shrink-0 text-inherit" />
+    {(!collapsed || open) && <span className="truncate">{label}</span>}
+  </NavLink>
+);
+
+const NavGroup = ({ item, collapsed, open, onNavigate, pathname }) => {
+  const childActive = item.children.some(
+    (child) => pathname === child.to || pathname.startsWith(`${child.to}/`)
+  );
+  const [expanded, setExpanded] = useState(childActive);
+
+  useEffect(() => {
+    if (childActive) setExpanded(true);
+  }, [childActive]);
+
+  const showLabels = !collapsed || open;
+  const Icon = item.icon;
+
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        className={`w-full flex items-center gap-3 rounded-lg text-[15px] font-medium transition-all duration-200
+          ${collapsed && !open ? "lg:justify-center lg:px-0 lg:py-3 px-4 py-3" : "px-4 py-3"}
+          ${childActive
+            ? "bg-gray-100 text-gray-900 font-semibold"
+            : "text-gray-600 hover:bg-gray-50 hover:text-gray-800"
+          }`}
+      >
+        <Icon className="h-5 w-5 shrink-0 text-inherit" />
+        {showLabels && (
+          <>
+            <span className="truncate flex-1 text-left">{item.label}</span>
+            <ChevronDownIcon
+              className={`h-4 w-4 shrink-0 transition-transform duration-200 ${expanded ? "rotate-180" : ""}`}
+            />
+          </>
+        )}
+      </button>
+      {expanded && (
+        <ul className={`mt-0.5 space-y-0.5 ${showLabels ? "ml-3 pl-2 border-l border-gray-200" : ""}`}>
+          {item.children.map((child) => (
+            <li key={`${child.to}-${child.label}`}>
+              <NavItemLink
+                to={child.to}
+                label={child.label}
+                icon={child.icon}
+                collapsed={collapsed}
+                open={open}
+                onNavigate={onNavigate}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+};
+
 const Sidebar = () => {
   const ctx = useSidebar();
+  const location = useLocation();
   const collapsed = ctx?.collapsed ?? false;
   const setCollapsed = ctx?.setCollapsed ?? (() => {});
   const open = ctx?.mobileMenuOpen ?? false;
@@ -102,12 +200,15 @@ const Sidebar = () => {
   if (!userRole) return null;
 
   const handleLogout = () => logout();
+  const closeMobile = () => setOpen(false);
 
   let navItems;
   if (userRole === "hod") {
     navItems = HOD_NAV;
   } else if (userRole === "admin") {
     navItems = ADMIN_NAV;
+  } else if (userRole === "faculty_incharge") {
+    navItems = FACULTY_INCHARGE_NAV;
   } else {
     navItems = FACULTY_NAV;
   }
@@ -140,25 +241,29 @@ const Sidebar = () => {
 
         <nav className="flex-1 overflow-y-auto scrollbar-hide pt-12 lg:pt-4 pb-4 px-3 min-h-0">
           <ul className="space-y-0.5">
-            {navItems.map(({ to, label, icon: Icon }) => (
-              <li key={`${to}-${label}`}>
-                <NavLink
-                  to={to}
-                  onClick={() => setOpen(false)}
-                  className={({ isActive }) =>
-                    `flex items-center gap-3 rounded-lg text-[15px] font-medium transition-all duration-200
-                    ${collapsed && !open ? "lg:justify-center lg:px-0 lg:py-3 px-4 py-3" : "px-4 py-3"}
-                    ${isActive
-                      ? "bg-gray-100 text-gray-900 font-semibold"
-                      : "text-gray-600 hover:bg-gray-50 hover:text-gray-800"
-                    }`
-                  }
-                >
-                  <Icon className="h-5 w-5 shrink-0 text-inherit" />
-                  {(!collapsed || open) && <span className="truncate">{label}</span>}
-                </NavLink>
-              </li>
-            ))}
+            {navItems.map((item) =>
+              item.children ? (
+                <NavGroup
+                  key={item.label}
+                  item={item}
+                  collapsed={collapsed}
+                  open={open}
+                  onNavigate={closeMobile}
+                  pathname={location.pathname}
+                />
+              ) : (
+                <li key={`${item.to}-${item.label}`}>
+                  <NavItemLink
+                    to={item.to}
+                    label={item.label}
+                    icon={item.icon}
+                    collapsed={collapsed}
+                    open={open}
+                    onNavigate={closeMobile}
+                  />
+                </li>
+              )
+            )}
           </ul>
         </nav>
 

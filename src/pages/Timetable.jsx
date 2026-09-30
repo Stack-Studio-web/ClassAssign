@@ -1,11 +1,16 @@
 import React, { useState, useEffect, useRef } from "react";
 import api from "../lib/api";
 import { logger } from "../lib/logger";
-import { TrashIcon, FunnelIcon, XMarkIcon, CalendarDaysIcon } from "@heroicons/react/24/outline";
+import { TrashIcon, FunnelIcon, XMarkIcon, CalendarDaysIcon, DocumentArrowDownIcon } from "@heroicons/react/24/outline";
 import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
 import { downloadTemplate } from "../lib/downloadTemplate";
+import {
+  COE_ASSESSMENTS,
+  COE_TRACKS,
+  downloadCoeScheduleDocx,
+} from "../lib/coeScheduleDocx";
 
 const Timetable = () => {
   const toast = useToast();
@@ -53,6 +58,20 @@ const Timetable = () => {
   });
 
   const [showFilters, setShowFilters] = useState(false);
+
+  // COE DOCX export
+  const [showCoeExport, setShowCoeExport] = useState(false);
+  const [coeExporting, setCoeExporting] = useState(false);
+  const [coeScheduleOptions, setCoeScheduleOptions] = useState([
+    { value: "2026-09", label: "SEPTEMBER 2026" },
+  ]);
+  const [coeForm, setCoeForm] = useState({
+    logo: "KCT",
+    department: "",
+    assessment: "SUMMATIVE ASSESSMENT - I",
+    schedule: "2026-09",
+    track: "REGULAR",
+  });
 
   // User permissions
   const [hasWriteAccess, setHasWriteAccess] = useState(false);
@@ -466,12 +485,70 @@ const Timetable = () => {
     });
   };
 
+  const openCoeExport = async () => {
+    setShowCoeExport(true);
+    try {
+      const res = await api.get("/timetable/coe/schedules");
+      const opts = Array.isArray(res.data) ? res.data : [];
+      if (opts.length) setCoeScheduleOptions(opts);
+    } catch (err) {
+      console.error("Failed to load COE schedule options:", err);
+    }
+    setCoeForm((prev) => ({
+      ...prev,
+      department: prev.department || departmentOptions[0] || "",
+    }));
+  };
+
+  const handleCoeExport = async () => {
+    const { logo, department, assessment, schedule, track } = coeForm;
+    if (!logo || !department || !assessment || !schedule || !track) {
+      toast.error("Please select Logo, Department, Assessment, Schedule, and Track.");
+      return;
+    }
+    setCoeExporting(true);
+    try {
+      const res = await api.get("/timetable/coe/export-data", {
+        params: { department, assessment, schedule, track },
+      });
+      const payload = res.data;
+      if (!payload?.sections?.length) {
+        toast.error("No timetable records found for the selected configuration.");
+        return;
+      }
+      const filename = await downloadCoeScheduleDocx(payload, logo);
+      toast.success(`Downloaded ${filename}`);
+      setShowCoeExport(false);
+    } catch (err) {
+      if (err.response?.status === 404) {
+        toast.error(
+          err.response?.data?.error ||
+            "No timetable records found for the selected configuration."
+        );
+      } else {
+        toast.error(getApiError(err, "Failed to export COE schedule"), getApiErrorTitle(err, "Export failed"));
+      }
+    } finally {
+      setCoeExporting(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-50 font-[Inter,sans-serif]">
       {/* Header — Venue style */}
-      <div className="px-4 md:px-8 py-4 md:py-6">
-        <h1 className="text-2xl md:text-3xl font-bold text-gray-800">Exam Timetable Management</h1>
-        <p className="text-sm text-gray-500 mt-0.5">Add schedules manually or bulk import. Filter and manage exam slots.</p>
+      <div className="px-4 md:px-8 py-4 md:py-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+        <div>
+          <h1 className="text-2xl md:text-3xl font-bold text-gray-800">Exam Timetable Management</h1>
+          <p className="text-sm text-gray-500 mt-0.5">Add schedules manually or bulk import. Filter and manage exam slots.</p>
+        </div>
+        <button
+          type="button"
+          onClick={openCoeExport}
+          className="inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold shadow-sm transition-all duration-200"
+        >
+          <DocumentArrowDownIcon className="h-5 w-5" />
+          Export COE Schedule
+        </button>
       </div>
 
       {/* Message — inline alert */}
@@ -999,6 +1076,123 @@ const Timetable = () => {
                   )}
                 </tbody>
               </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* COE Schedule DOCX export modal */}
+      {showCoeExport && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => !coeExporting && setShowCoeExport(false)}
+            aria-hidden
+          />
+          <div className="relative w-full sm:max-w-md bg-white rounded-t-2xl sm:rounded-2xl shadow-xl p-5 sm:p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-start justify-between gap-2">
+              <h2 className="text-lg font-bold text-gray-900">Controller of Examinations Export</h2>
+              <button
+                type="button"
+                disabled={coeExporting}
+                onClick={() => setShowCoeExport(false)}
+                className="p-1 rounded-lg hover:bg-gray-100"
+                aria-label="Close"
+              >
+                <XMarkIcon className="h-5 w-5 text-gray-500" />
+              </button>
+            </div>
+
+            <label className="block text-sm font-medium text-gray-700 space-y-1">
+              <span>Logo</span>
+              <select
+                value={coeForm.logo}
+                onChange={(e) => setCoeForm((f) => ({ ...f, logo: e.target.value }))}
+                className="w-full h-11 px-3 rounded-xl border border-gray-200 bg-white text-sm"
+              >
+                <option value="KCT">KCT</option>
+                <option value="KSI">KSI</option>
+              </select>
+            </label>
+
+            <label className="block text-sm font-medium text-gray-700 space-y-1">
+              <span>Department</span>
+              <select
+                value={coeForm.department}
+                onChange={(e) => setCoeForm((f) => ({ ...f, department: e.target.value }))}
+                className="w-full h-11 px-3 rounded-xl border border-gray-200 bg-white text-sm"
+              >
+                <option value="">Select Department</option>
+                {departmentOptions.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block text-sm font-medium text-gray-700 space-y-1">
+              <span>Assessment</span>
+              <select
+                value={coeForm.assessment}
+                onChange={(e) => setCoeForm((f) => ({ ...f, assessment: e.target.value }))}
+                className="w-full h-11 px-3 rounded-xl border border-gray-200 bg-white text-sm"
+              >
+                {COE_ASSESSMENTS.map((a) => (
+                  <option key={a} value={a}>
+                    {a}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block text-sm font-medium text-gray-700 space-y-1">
+              <span>Schedule</span>
+              <select
+                value={coeForm.schedule}
+                onChange={(e) => setCoeForm((f) => ({ ...f, schedule: e.target.value }))}
+                className="w-full h-11 px-3 rounded-xl border border-gray-200 bg-white text-sm"
+              >
+                {coeScheduleOptions.map((s) => (
+                  <option key={s.value} value={s.value}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block text-sm font-medium text-gray-700 space-y-1">
+              <span>Track</span>
+              <select
+                value={coeForm.track}
+                onChange={(e) => setCoeForm((f) => ({ ...f, track: e.target.value }))}
+                className="w-full h-11 px-3 rounded-xl border border-gray-200 bg-white text-sm"
+              >
+                {COE_TRACKS.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div className="flex gap-2 pt-2 justify-end">
+              <button
+                type="button"
+                disabled={coeExporting}
+                onClick={() => setShowCoeExport(false)}
+                className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={coeExporting}
+                onClick={handleCoeExport}
+                className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-sm font-semibold"
+              >
+                {coeExporting ? "Exporting…" : "Export DOCX"}
+              </button>
             </div>
           </div>
         </div>
