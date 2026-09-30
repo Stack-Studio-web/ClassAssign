@@ -336,14 +336,14 @@ const Report = () => {
           className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-green-600 hover:bg-green-700 text-white font-medium shadow-sm transition-all duration-200"
         >
           <BuildingOffice2Icon className="h-5 w-5" />
-          Hall View
+          Hall Arrangement
         </button>
         <button
           onClick={() => navigate("/attendance/sheets")}
           className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-medium shadow-sm transition-all duration-200"
         >
           <ClipboardDocumentListIcon className="h-5 w-5" />
-          Attendance
+          Attendance Sheet
         </button>
         {selectedPlans.length > 0 && (
           <>
@@ -352,14 +352,14 @@ const Report = () => {
               className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-sm transition-all duration-200"
             >
               <PrinterIcon className="h-5 w-5" />
-              Print Selected ({selectedPlans.length})
+              Seating Arrangement ({selectedPlans.length})
             </button>
             <button
               onClick={handlePrintFacultySchedule}
               className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-medium shadow-sm transition-all duration-200"
             >
               <DocumentTextIcon className="h-5 w-5" />
-              Faculty Schedule PDF
+              Faculty Invigilation Schedule
             </button>
             {(userRole === "admin" || userRole === "faculty_incharge") && (
               <>
