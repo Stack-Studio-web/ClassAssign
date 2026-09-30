@@ -50,7 +50,27 @@ export async function downloadCompletedExport(params = {}) {
 
 export async function fetchAbsenteeExportOptions(params = {}) {
   const res = await api.get("/attendance/export/absentees/options", { params });
-  return res.data;
+  const body = res.data;
+  // Controller returns { success, dates, sessions, examTimes } (spread at top level)
+  if (body?.dates || body?.sessions || body?.examTimes) {
+    return {
+      dates: Array.isArray(body.dates) ? body.dates : [],
+      sessions: Array.isArray(body.sessions) ? body.sessions : [],
+      examTimes: Array.isArray(body.examTimes) ? body.examTimes : [],
+    };
+  }
+  // Nested { data: { dates, ... } } fallback if wrapper changes
+  const nested = body?.data;
+  if (nested && typeof nested === "object") {
+    return {
+      dates: Array.isArray(nested.dates) ? nested.dates : [],
+      sessions: Array.isArray(nested.sessions) ? nested.sessions : [],
+      examTimes: Array.isArray(nested.examTimes) ? nested.examTimes : [],
+    };
+  }
+  const err = new Error(body?.message || body?.error || "Invalid export options response");
+  err.response = res;
+  throw err;
 }
 
 export async function downloadAbsenteesExport(params = {}) {

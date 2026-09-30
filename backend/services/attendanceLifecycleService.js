@@ -389,20 +389,26 @@ const AttendanceLifecycleService = {
 
   /**
    * Distinct exam dates / sessions / times available for absentee Excel export.
+   * Sourced from existing examination assignments (exams + faculty_assignments),
+   * not from already-marked Absent rows — otherwise Day stays empty until absentees exist.
    */
   getAbsenteeExportOptions: async (user, role, filters = {}) => {
     const roleScope = await buildRoleScope(user, role);
     const date = filters.date || null;
     const session = filters.session || null;
 
+    const scheduleFrom = `
+      FROM faculty_assignments fa
+      JOIN faculty f ON f.id = fa.faculty_id
+      JOIN exams e ON e.id = fa.exam_id
+      JOIN venues v ON v.id = fa.venue_id
+    `;
+
     const [dateRows] = await db.query(
-      `SELECT DISTINCT e.exam_date
-       FROM attendance att
-       JOIN exams e ON e.id = att.exam_id
-       JOIN faculty_assignments fa ON fa.exam_id = att.exam_id AND fa.venue_id = att.venue_id
-       JOIN faculty f ON f.id = fa.faculty_id
-       WHERE att.status = 'Absent'${roleScope.sql}
-       ORDER BY e.exam_date DESC`,
+      `SELECT DISTINCT to_char(e.exam_date, 'YYYY-MM-DD') AS exam_date
+       ${scheduleFrom}
+       WHERE e.exam_date IS NOT NULL${roleScope.sql}
+       ORDER BY 1 DESC`,
       roleScope.params
     );
 
@@ -410,8 +416,8 @@ const AttendanceLifecycleService = {
       .map((r) => {
         const d = r.exam_date ?? r.examdate;
         if (!d) return null;
-        if (d instanceof Date) return d.toISOString().slice(0, 10);
-        return String(d).includes("T") ? String(d).split("T")[0] : String(d).slice(0, 10);
+        const s = String(d).trim();
+        return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : null;
       })
       .filter(Boolean);
 
@@ -419,12 +425,8 @@ const AttendanceLifecycleService = {
     if (date) {
       const [sessRows] = await db.query(
         `SELECT DISTINCT e.exam_session
-         FROM attendance att
-         JOIN exams e ON e.id = att.exam_id
-         JOIN faculty_assignments fa ON fa.exam_id = att.exam_id AND fa.venue_id = att.venue_id
-         JOIN faculty f ON f.id = fa.faculty_id
-         WHERE att.status = 'Absent'
-           AND e.exam_date = ?${roleScope.sql}
+         ${scheduleFrom}
+         WHERE e.exam_date = ?${roleScope.sql}
          ORDER BY e.exam_session`,
         [date, ...roleScope.params]
       );
@@ -452,15 +454,17 @@ const AttendanceLifecycleService = {
 
       const [timeRows] = await db.query(
         `SELECT DISTINCT
-           COALESCE(fa.start_time::text, split_part(e.exam_time, '-', 1)) AS start_time,
-           COALESCE(fa.end_time::text, split_part(e.exam_time, '-', 2)) AS end_time,
+           COALESCE(
+             CASE WHEN fa.start_time IS NOT NULL THEN to_char(fa.start_time, 'HH24:MI') END,
+             NULLIF(TRIM(split_part(COALESCE(e.exam_time, ''), '-', 1)), '')
+           ) AS start_time,
+           COALESCE(
+             CASE WHEN fa.end_time IS NOT NULL THEN to_char(fa.end_time, 'HH24:MI') END,
+             NULLIF(TRIM(split_part(COALESCE(e.exam_time, ''), '-', 2)), '')
+           ) AS end_time,
            e.exam_time
-         FROM attendance att
-         JOIN exams e ON e.id = att.exam_id
-         JOIN faculty_assignments fa ON fa.exam_id = att.exam_id AND fa.venue_id = att.venue_id
-         JOIN faculty f ON f.id = fa.faculty_id
-         WHERE att.status = 'Absent'
-           AND e.exam_date = ?
+         ${scheduleFrom}
+         WHERE e.exam_date = ?
            AND ${sessionClause}${roleScope.sql}
          ORDER BY 1, 2`,
         [date, ...sessParams, ...roleScope.params]

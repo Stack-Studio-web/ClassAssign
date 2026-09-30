@@ -221,6 +221,9 @@ export default function ActiveAttendance() {
   const [exportDates, setExportDates] = useState([]);
   const [exportSessions, setExportSessions] = useState([]);
   const [exportTimes, setExportTimes] = useState([]);
+  const [exportOptionsLoading, setExportOptionsLoading] = useState(true);
+  const [exportSessionsLoading, setExportSessionsLoading] = useState(false);
+  const [exportTimesLoading, setExportTimesLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState("");
   const [adminToolsOpen, setAdminToolsOpen] = useState(false);
@@ -268,11 +271,30 @@ export default function ActiveAttendance() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      setExportOptionsLoading(true);
+      setExportError("");
       try {
         const data = await fetchAbsenteeExportOptions({});
-        if (!cancelled) setExportDates(data.dates || []);
-      } catch {
-        if (!cancelled) setExportDates([]);
+        if (cancelled) return;
+        setExportDates(data.dates);
+        if (data.dates.length === 0) {
+          setExportError("No examination schedule available.");
+        }
+      } catch (err) {
+        if (import.meta.env.DEV) {
+          console.error("Absentee export options failed:", err);
+        }
+        if (!cancelled) {
+          setExportDates([]);
+          setExportError(
+            err.response?.data?.message ||
+              err.response?.data?.error ||
+              err.message ||
+              "Unable to load examination schedule."
+          );
+        }
+      } finally {
+        if (!cancelled) setExportOptionsLoading(false);
       }
     })();
     return () => {
@@ -284,19 +306,35 @@ export default function ActiveAttendance() {
     if (!exportDate) {
       setExportSessions([]);
       setExportSession("");
+      setExportTimeLabel("");
+      setExportTimes([]);
       return;
     }
     let cancelled = false;
     (async () => {
+      setExportSessionsLoading(true);
       try {
         const data = await fetchAbsenteeExportOptions({ date: exportDate });
         if (cancelled) return;
-        setExportSessions(data.sessions || []);
+        setExportSessions(data.sessions);
         setExportSession("");
         setExportTimeLabel("");
         setExportTimes([]);
-      } catch {
-        if (!cancelled) setExportSessions([]);
+      } catch (err) {
+        if (import.meta.env.DEV) {
+          console.error("Absentee export sessions failed:", err);
+        }
+        if (!cancelled) {
+          setExportSessions([]);
+          setExportError(
+            err.response?.data?.message ||
+              err.response?.data?.error ||
+              err.message ||
+              "Unable to load sessions for the selected day."
+          );
+        }
+      } finally {
+        if (!cancelled) setExportSessionsLoading(false);
       }
     })();
     return () => {
@@ -312,16 +350,30 @@ export default function ActiveAttendance() {
     }
     let cancelled = false;
     (async () => {
+      setExportTimesLoading(true);
       try {
         const data = await fetchAbsenteeExportOptions({
           date: exportDate,
           session: exportSession,
         });
         if (cancelled) return;
-        setExportTimes(data.examTimes || []);
+        setExportTimes(data.examTimes);
         setExportTimeLabel("");
-      } catch {
-        if (!cancelled) setExportTimes([]);
+      } catch (err) {
+        if (import.meta.env.DEV) {
+          console.error("Absentee export exam times failed:", err);
+        }
+        if (!cancelled) {
+          setExportTimes([]);
+          setExportError(
+            err.response?.data?.message ||
+              err.response?.data?.error ||
+              err.message ||
+              "Unable to load exam times for the selected filters."
+          );
+        }
+      } finally {
+        if (!cancelled) setExportTimesLoading(false);
       }
     })();
     return () => {
@@ -487,10 +539,16 @@ export default function ActiveAttendance() {
               <span className="font-medium">Day</span>
               <select
                 value={exportDate}
-                onChange={(e) => setExportDate(e.target.value)}
-                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
+                onChange={(e) => {
+                  setExportError("");
+                  setExportDate(e.target.value);
+                }}
+                disabled={exportOptionsLoading}
+                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl bg-white focus:ring-2 focus:ring-indigo-500 outline-none disabled:bg-gray-50"
               >
-                <option value="">Select Day</option>
+                <option value="">
+                  {exportOptionsLoading ? "Loading days..." : "Select Day"}
+                </option>
                 {exportDates.map((d) => (
                   <option key={d} value={d}>
                     {d}
@@ -502,12 +560,17 @@ export default function ActiveAttendance() {
               <span className="font-medium">Session</span>
               <select
                 value={exportSession}
-                onChange={(e) => setExportSession(e.target.value)}
-                disabled={!exportDate}
+                onChange={(e) => {
+                  setExportError("");
+                  setExportSession(e.target.value);
+                }}
+                disabled={!exportDate || exportSessionsLoading}
                 className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl bg-white focus:ring-2 focus:ring-indigo-500 outline-none disabled:bg-gray-50"
               >
-                <option value="">Select Session</option>
-                {(exportSessions.length ? exportSessions : ["FN", "AN"]).map((s) => (
+                <option value="">
+                  {exportSessionsLoading ? "Loading sessions..." : "Select Session"}
+                </option>
+                {exportSessions.map((s) => (
                   <option key={s} value={s}>
                     {s}
                   </option>
@@ -519,10 +582,12 @@ export default function ActiveAttendance() {
               <select
                 value={exportTimeLabel}
                 onChange={(e) => setExportTimeLabel(e.target.value)}
-                disabled={!exportDate || !exportSession}
+                disabled={!exportDate || !exportSession || exportTimesLoading}
                 className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl bg-white focus:ring-2 focus:ring-indigo-500 outline-none disabled:bg-gray-50"
               >
-                <option value="">Select Exam Time</option>
+                <option value="">
+                  {exportTimesLoading ? "Loading exam times..." : "Select Exam Time"}
+                </option>
                 {exportTimes.map((t) => (
                   <option key={t.label} value={t.label}>
                     {t.label}
