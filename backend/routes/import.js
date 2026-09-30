@@ -700,3 +700,5 @@ router.post("/undo-venue-import", sessionAuth, checkRole(["admin", "faculty_inch
   }
 });
 
+module.exports = router;
+
