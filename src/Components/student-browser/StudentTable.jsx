@@ -9,13 +9,10 @@ export const StudentTable = memo(function StudentTable({
   onToggleSelect,
   onToggleSelectAll,
   onView,
-  onEdit,
-  onDelete,
   onMoveBatch,
   showCreatedBy,
   readOnly,
   isAdmin,
-  deletingId,
 }) {
   const allSelected = students.length > 0 && students.every((s) => selectedIds.has(s.uuid));
   const someSelected = students.some((s) => selectedIds.has(s.uuid));
@@ -39,13 +36,10 @@ export const StudentTable = memo(function StudentTable({
       selected={selectedIds.has(student.uuid)}
       onToggleSelect={onToggleSelect}
       onView={onView}
-      onEdit={onEdit}
-      onDelete={onDelete}
       onMoveBatch={onMoveBatch}
       showCreatedBy={showCreatedBy}
       readOnly={readOnly}
       isAdmin={isAdmin}
-      deleting={deletingId === student.uuid}
     />
   ));
 

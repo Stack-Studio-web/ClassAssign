@@ -1,5 +1,5 @@
 import React, { memo } from "react";
-import { Eye, Pencil, Trash2, ArrowRightLeft } from "lucide-react";
+import { Eye, ArrowRightLeft } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/Button";
 import { StatusBadge } from "../ui/Badge";
@@ -9,13 +9,10 @@ export const StudentRow = memo(function StudentRow({
   selected,
   onToggleSelect,
   onView,
-  onEdit,
-  onDelete,
   onMoveBatch,
   showCreatedBy,
   readOnly = false,
   isAdmin = false,
-  deleting = false,
 }) {
   const canSelect = !readOnly;
 
@@ -54,27 +51,10 @@ export const StudentRow = memo(function StudentRow({
           <Button variant="ghost" size="icon" onClick={() => onView?.(student)} aria-label="View student">
             <Eye className="h-4 w-4" />
           </Button>
-          {!readOnly && (
-            <>
-              <Button variant="ghost" size="icon" onClick={() => onEdit?.(student)} aria-label="Edit student">
-                <Pencil className="h-4 w-4" />
-              </Button>
-              {isAdmin && (
-                <Button variant="ghost" size="icon" onClick={() => onMoveBatch?.(student)} aria-label="Move batch">
-                  <ArrowRightLeft className="h-4 w-4" />
-                </Button>
-              )}
-              <Button
-                variant="ghost"
-                size="icon"
-                disabled={deleting}
-                onClick={() => onDelete?.(student)}
-                aria-label="Delete student"
-                className="text-red-600 hover:text-red-700 hover:bg-red-50"
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            </>
+          {!readOnly && isAdmin && (
+            <Button variant="ghost" size="icon" onClick={() => onMoveBatch?.(student)} aria-label="Move batch">
+              <ArrowRightLeft className="h-4 w-4" />
+            </Button>
           )}
         </div>
       </td>

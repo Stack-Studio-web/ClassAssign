@@ -96,7 +96,6 @@ export default function StudentBrowserPage() {
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [drawerStudent, setDrawerStudent] = useState(null);
-  const [deletingId, setDeletingId] = useState(null);
   const [bulkBusy, setBulkBusy] = useState(false);
 
   const debouncedSearch = useDebouncedValue(searchQuery, 400);
@@ -212,29 +211,6 @@ export default function StudentBrowserPage() {
   const refreshStudentData = useCallback(async () => {
     await invalidateStudentsQueries(queryClient);
   }, [queryClient]);
-
-  const handleDelete = useCallback(
-    async (student) => {
-      const ok = await showConfirm(`Delete student ${student.regnNo}?`);
-      if (!ok) return;
-      setDeletingId(student.uuid);
-      try {
-        await api.delete(`/students/${student.uuid}`);
-        toast.success("Student deleted.");
-        await refreshStudentData();
-        setSelectedIds((prev) => {
-          const next = new Set(prev);
-          next.delete(student.uuid);
-          return next;
-        });
-      } catch (err) {
-        toast.error(getApiError(err, "Failed to delete student."), getApiErrorTitle(err, "Delete failed"));
-      } finally {
-        setDeletingId(null);
-      }
-    },
-    [showConfirm, toast, refreshStudentData]
-  );
 
   const handleBulkDelete = async () => {
     const ids = [...selectedIds];
@@ -414,13 +390,10 @@ export default function StudentBrowserPage() {
                     onToggleSelect={toggleSelect}
                     onToggleSelectAll={toggleSelectAll}
                     onView={setDrawerStudent}
-                    onEdit={() => handleNotAvailable("Edit student")}
-                    onDelete={handleDelete}
                     onMoveBatch={() => handleNotAvailable("Move batch")}
                     showCreatedBy={showCreatedBy}
                     readOnly={readOnly}
                     isAdmin={isAdmin}
-                    deletingId={deletingId}
                   />
                   <div className="border-t border-gray-100 px-4 py-3">
                     <StudentPagination
