@@ -94,9 +94,7 @@ router.post("/login", loginLimiter, async (req, res) => {
       ? "/change-password"
       : user.role_name === "faculty"
         ? "/faculty/dashboard"
-        : user.role_name === "hod"
-          ? "/users"
-          : "/allotment";
+        : "/student/academic";
 
     const workspace = await resolveWorkspaceSessionFields(user);
 
@@ -200,9 +198,7 @@ router.post("/change-password", sessionAuth, async (req, res) => {
       redirectTo:
         user.role_name === "faculty"
           ? "/faculty/dashboard"
-          : user.role_name === "hod"
-            ? "/users"
-            : "/allotment",
+          : "/student/academic",
     });
   } catch (error) {
     console.error("Change password error:", error.message);

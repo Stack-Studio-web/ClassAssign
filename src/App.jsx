@@ -76,9 +76,7 @@ const AuthGuard = ({ children, allowedRoles = [] }) => {
         );
         const fallback = user.role === 'faculty'
           ? '/faculty/dashboard'
-          : user.role === 'hod'
-            ? '/student/browser'
-            : '/allotment';
+          : '/student/academic';
         navigate(fallback, { replace: true });
         return;
       }

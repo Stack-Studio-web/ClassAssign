@@ -39,10 +39,8 @@ function Landing() {
                     navigate('/change-password', { replace: true });
                 } else if (user.role === 'faculty') {
                     navigate('/faculty/dashboard', { replace: true });
-                } else if (user.role === 'hod') {
-                    navigate('/users', { replace: true });
                 } else {
-                    navigate('/allotment', { replace: true });
+                    navigate('/student/academic', { replace: true });
                 }
             }, 800);
         } catch {
@@ -67,7 +65,7 @@ function Landing() {
                     setTimeout(() => navigate('/change-password', { replace: true }), 800);
                 } else {
                     setFlashMessage('Successfully logged in! Redirecting...');
-                    const target = data.redirectTo || '/allotment';
+                    const target = data.redirectTo || '/student/academic';
                     setTimeout(() => navigate(target, { replace: true }), 800);
                 }
             } else {

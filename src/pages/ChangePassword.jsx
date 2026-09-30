@@ -47,7 +47,7 @@ export default function ChangePassword() {
         }
       }
 
-      navigate(data.redirectTo || '/allotment', { replace: true });
+      navigate(data.redirectTo || '/student/academic', { replace: true });
     } catch (err) {
       setError(err.response?.data?.message || 'Failed to update password');
     } finally {
