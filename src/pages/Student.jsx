@@ -1,9 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import api from "../lib/api";
+import React, { useEffect, useMemo, useState } from "react";
 import { useToast } from "../context/ToastContext";
-import { useConfirm } from "../context/ConfirmContext";
-import { getApiError, getApiErrorTitle } from "../lib/errors";
+import { getApiError } from "../lib/errors";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useAcademicContext } from "../context/AcademicContext";
 import { useAuth } from "../hooks/useAuth";
@@ -14,7 +11,6 @@ import {
   useStudentFilterOptions,
   useStudentCourseStats,
   useStudentStatsTotal,
-  invalidateStudentsQueries,
 } from "../hooks/useStudents";
 import StudentPagination from "../Components/StudentPagination";
 import Loader from "../Components/Loader";
@@ -23,15 +19,13 @@ import { StudentBrowserBreadcrumb } from "../Components/student-browser/StudentB
 import { AcademicContextBar } from "../Components/student-browser/AcademicContextBar";
 import { StudentStatsCards } from "../Components/student-browser/StudentStatsCards";
 import { CourseSummary } from "../Components/student-browser/CourseSummary";
-import {
-  StudentFilterToolbar,
-  getSortFromPreset,
-} from "../Components/student-browser/StudentFilterToolbar";
-import { StudentTable } from "../Components/student-browser/StudentTable";
-import { StudentDrawer } from "../Components/student-browser/StudentDrawer";
-import { BulkActions } from "../Components/student-browser/BulkActions";
+import { CourseStudentTable } from "../Components/student-browser/CourseStudentTable";
+import { getSortFromPreset } from "../Components/student-browser/StudentFilterToolbar";
 import { StudentEmptyState } from "../Components/student-browser/StudentEmptyState";
 import { isBatchActive } from "../lib/batchStatus";
+import { Search, ArrowLeft } from "lucide-react";
+import { Input } from "../Components/ui/Input";
+import { Button } from "../Components/ui/Button";
 
 const EMPTY_FILTERS = {
   courseName: "",
@@ -44,37 +38,8 @@ const EMPTY_FILTERS = {
   status: "",
 };
 
-function exportSelectedCsv(students) {
-  const header = ["Registration No", "Student Name", "Course Name", "Course Code", "Batch", "Email"];
-  const rows = students.map((s) =>
-    [
-      s.regnNo,
-      s.studentName,
-      s.courseName,
-      s.courseDescription,
-      s.batchName,
-      s.email,
-    ]
-      .map((v) => {
-        const cell = String(v ?? "");
-        return /[",\n]/.test(cell) ? `"${cell.replace(/"/g, '""')}"` : cell;
-      })
-      .join(",")
-  );
-  const csv = [header.join(","), ...rows].join("\n");
-  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `students_export_${new Date().toISOString().slice(0, 10)}.csv`;
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
 export default function StudentBrowserPage() {
   const toast = useToast();
-  const showConfirm = useConfirm();
-  const queryClient = useQueryClient();
   const { user, isReadOnly, isAdmin, isFacultyIncharge, isHod, department: userDepartment } = useAuth();
   const {
     batches,
@@ -91,12 +56,9 @@ export default function StudentBrowserPage() {
 
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
-  const [sortPreset, setSortPreset] = useState("name-asc");
+  const [sortPreset] = useState("name-asc");
   const [searchQuery, setSearchQuery] = useState("");
   const [filters, setFilters] = useState(EMPTY_FILTERS);
-  const [selectedIds, setSelectedIds] = useState(() => new Set());
-  const [drawerStudent, setDrawerStudent] = useState(null);
-  const [bulkBusy, setBulkBusy] = useState(false);
 
   const debouncedSearch = useDebouncedValue(searchQuery, 400);
   const { sortBy, sortOrder } = getSortFromPreset(sortPreset);
@@ -105,9 +67,11 @@ export default function StudentBrowserPage() {
   const contextReady = isYearSemesterComplete;
   const canBrowse = contextReady || isReadOnly;
 
+  const selectedCourseCode = filters.courseDescription || "";
+  const courseSelected = Boolean(selectedCourseCode);
+
   const showCreatedBy = isAdmin || isHod;
   const showFacultyFilter = isAdmin || isHod;
-  const showAdvancedFilters = isAdmin || isHod;
 
   const studentsLabel = isAdmin
     ? "Total Students"
@@ -132,8 +96,17 @@ export default function StudentBrowserPage() {
 
   useEffect(() => {
     setPage(1);
-    setSelectedIds(new Set());
-  }, [debouncedSearch, filters, sortPreset, pageSize, effectiveBatchId]);
+    setSearchQuery("");
+    setFilters((prev) => ({
+      ...prev,
+      courseDescription: "",
+      courseName: "",
+    }));
+  }, [effectiveBatchId, selectedYear?.uuid, selectedSemester?.uuid]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, pageSize]);
 
   useEffect(() => {
     if (filters.batchUuid && filters.batchUuid !== selectedBatch?.uuid) {
@@ -154,7 +127,7 @@ export default function StudentBrowserPage() {
   );
   const { data: courseStatsData, isFetching: courseStatsFetching } = useStudentCourseStats({
     page: 1,
-    limit: 24,
+    limit: 50,
     batchId: effectiveBatchId,
     contextReady,
     enabled: canBrowse,
@@ -182,7 +155,7 @@ export default function StudentBrowserPage() {
     sortOrder,
     batchId: effectiveBatchId,
     contextReady,
-    enabled: canBrowse,
+    enabled: canBrowse && courseSelected,
   });
 
   const students = studentsPage?.students ?? [];
@@ -201,6 +174,10 @@ export default function StudentBrowserPage() {
   );
 
   const courses = courseStatsData?.courses ?? [];
+  const selectedCourse = useMemo(
+    () => courses.find((c) => c.courseCode === selectedCourseCode) || null,
+    [courses, selectedCourseCode]
+  );
 
   useEffect(() => {
     if (studentsError && studentsQueryError) {
@@ -208,85 +185,30 @@ export default function StudentBrowserPage() {
     }
   }, [studentsError, studentsQueryError, toast]);
 
-  const refreshStudentData = useCallback(async () => {
-    await invalidateStudentsQueries(queryClient);
-  }, [queryClient]);
-
-  const handleBulkDelete = async () => {
-    const ids = [...selectedIds];
-    if (!ids.length) return;
-    const ok = await showConfirm(`Delete ${ids.length} selected student(s)?`);
-    if (!ok) return;
-    setBulkBusy(true);
-    try {
-      await Promise.all(ids.map((uuid) => api.delete(`/students/${uuid}`)));
-      toast.success(`Deleted ${ids.length} student(s).`);
-      setSelectedIds(new Set());
-      await refreshStudentData();
-    } catch (err) {
-      toast.error(getApiError(err, "Bulk delete failed."), "Error");
-    } finally {
-      setBulkBusy(false);
-    }
-  };
-
-  const handleBulkExport = () => {
-    const selected = students.filter((s) => selectedIds.has(s.uuid));
-    if (!selected.length) {
-      toast.warning("Select students on this page to export.");
-      return;
-    }
-    exportSelectedCsv(selected);
-    toast.success(`Exported ${selected.length} student(s).`);
-  };
-
-  const handleNotAvailable = (feature) => {
-    toast.info(`${feature} is not available via the current API.`, "Coming soon");
-  };
-
-  const toggleSelect = (uuid) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(uuid)) next.delete(uuid);
-      else next.add(uuid);
-      return next;
-    });
-  };
-
-  const toggleSelectAll = () => {
-    const allOnPage = students.every((s) => selectedIds.has(s.uuid));
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (allOnPage) {
-        students.forEach((s) => next.delete(s.uuid));
-      } else {
-        students.forEach((s) => next.add(s.uuid));
-      }
-      return next;
-    });
-  };
-
-  const resetFilters = () => {
-    setFilters(EMPTY_FILTERS);
-    setSearchQuery("");
-    setSortPreset("name-asc");
-    setPage(1);
-  };
-
   const handleCourseSelect = (courseCode) => {
     const course = courses.find((c) => c.courseCode === courseCode);
+    setSearchQuery("");
+    setPage(1);
     setFilters((prev) => ({
       ...prev,
-      courseDescription: prev.courseDescription === courseCode ? "" : courseCode,
-      courseName: course?.courseName && prev.courseDescription !== courseCode ? course.courseName : prev.courseName,
+      courseDescription: courseCode,
+      courseName: course?.courseName || "",
     }));
   };
 
-  const drawerContext = {
-    yearLabel: selectedYear?.label,
-    semesterLabel: selectedSemester?.label || selectedSemester?.semesterType,
-    department: userDepartment || filters.department,
+  const handleBackToCourses = () => {
+    setSearchQuery("");
+    setPage(1);
+    setFilters((prev) => ({
+      ...prev,
+      courseDescription: "",
+      courseName: "",
+    }));
   };
+
+  const courseTitle =
+    selectedCourse?.courseName || filters.courseName || selectedCourseCode || "Course";
+  const courseStudentCount = selectedCourse?.count ?? pagination.totalItems ?? 0;
 
   return (
     <div className="min-h-screen bg-gray-50 pb-10">
@@ -341,88 +263,105 @@ export default function StudentBrowserPage() {
               completedImports={0}
             />
 
-            <CourseSummary
-              courses={courses}
-              activeCourseCode={filters.courseDescription}
-              onSelectCourse={handleCourseSelect}
-              showOwner={showCreatedBy}
-              loading={courseStatsFetching}
-            />
-
-            <StudentFilterToolbar
-              search={searchQuery}
-              onSearchChange={setSearchQuery}
-              filters={filters}
-              onFilterChange={setFilters}
-              sortPreset={sortPreset}
-              onSortPresetChange={setSortPreset}
-              onReset={resetFilters}
-              filterOptions={filterOptions}
-              showAdvancedFilters={showAdvancedFilters}
-              showFacultyFilter={showFacultyFilter}
-              batches={activeBatches}
-            />
-
-            <BulkActions
-              selectedCount={selectedIds.size}
-              onBulkDelete={handleBulkDelete}
-              onBulkExport={handleBulkExport}
-              onBulkMove={() => handleNotAvailable("Bulk move")}
-              onBulkChangeBatch={() => handleNotAvailable("Bulk change batch")}
-              onBulkChangeCourse={() => handleNotAvailable("Bulk change course")}
-              disabled={bulkBusy}
-              readOnly={readOnly}
-            />
-
-            <section className="rounded-2xl border border-gray-100 bg-white shadow-sm overflow-hidden">
-              {studentsLoading && !students.length ? (
-                <div className="py-16">
-                  <Loader message="Loading students…" size="md" />
-                </div>
-              ) : students.length === 0 ? (
-                <StudentEmptyState importPath={readOnly ? undefined : importPath} />
-              ) : (
-                <>
-                  <StudentTable
-                    students={students}
-                    loading={studentsLoading}
-                    selectedIds={selectedIds}
-                    onToggleSelect={toggleSelect}
-                    onToggleSelectAll={toggleSelectAll}
-                    onView={setDrawerStudent}
-                    onMoveBatch={() => handleNotAvailable("Move batch")}
-                    showCreatedBy={showCreatedBy}
-                    readOnly={readOnly}
-                    isAdmin={isAdmin}
+            {!courseSelected ? (
+              <>
+                <CourseSummary
+                  courses={courses}
+                  activeCourseCode=""
+                  onSelectCourse={handleCourseSelect}
+                  showOwner={showCreatedBy}
+                  loading={courseStatsFetching}
+                />
+                {!courseStatsFetching && courses.length === 0 && (
+                  <StudentEmptyState
+                    importPath={readOnly ? undefined : importPath}
+                    message="No courses with students found for the selected academic context."
                   />
-                  <div className="border-t border-gray-100 px-4 py-3">
-                    <StudentPagination
-                      page={pagination.page}
-                      pageSize={pagination.limit}
-                      totalItems={pagination.totalItems}
-                      totalPages={pagination.totalPages}
-                      hasNext={pagination.hasNext}
-                      hasPrevious={pagination.hasPrevious}
-                      onPageChange={setPage}
-                      onPageSizeChange={(size) => {
-                        setPageSize(size);
-                        setPage(1);
-                      }}
-                      disabled={studentsFetching}
+                )}
+              </>
+            ) : (
+              <section className="space-y-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleBackToCourses}
+                  className="gap-2"
+                >
+                  <ArrowLeft className="h-4 w-4" aria-hidden />
+                  Back to Courses
+                </Button>
+
+                <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm">
+                  <h2 className="text-xl font-bold text-gray-900">{courseTitle}</h2>
+                  <p className="mt-1 text-sm text-gray-600">
+                    Course Code:{" "}
+                    <span className="font-semibold text-gray-800">{selectedCourseCode}</span>
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-blue-600">
+                    {courseStudentCount} {courseStudentCount === 1 ? "Student" : "Students"}
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
+                  <div className="relative max-w-xl">
+                    <Search
+                      className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+                      aria-hidden
+                    />
+                    <Input
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search registration number, name, or email…"
+                      className="pl-9"
+                      aria-label="Search students in selected course"
                     />
                   </div>
-                </>
-              )}
-            </section>
+                </div>
+
+                <section className="rounded-2xl border border-gray-100 bg-white shadow-sm overflow-hidden">
+                  {studentsLoading && !students.length ? (
+                    <div className="py-16">
+                      <Loader message="Loading students…" size="md" />
+                    </div>
+                  ) : students.length === 0 ? (
+                    <StudentEmptyState
+                      importPath={undefined}
+                      message={
+                        debouncedSearch
+                          ? "No students match your search in this course."
+                          : "No students found for this course."
+                      }
+                    />
+                  ) : (
+                    <>
+                      <CourseStudentTable
+                        students={students}
+                        loading={studentsLoading}
+                      />
+                      <div className="border-t border-gray-100 px-4 py-3">
+                        <StudentPagination
+                          page={pagination.page}
+                          pageSize={pagination.limit}
+                          totalItems={pagination.totalItems}
+                          totalPages={pagination.totalPages}
+                          hasNext={pagination.hasNext}
+                          hasPrevious={pagination.hasPrevious}
+                          onPageChange={setPage}
+                          onPageSizeChange={(size) => {
+                            setPageSize(size);
+                            setPage(1);
+                          }}
+                          disabled={studentsFetching}
+                        />
+                      </div>
+                    </>
+                  )}
+                </section>
+              </section>
+            )}
           </>
         )}
-
-        <StudentDrawer
-          student={drawerStudent}
-          open={Boolean(drawerStudent)}
-          onClose={() => setDrawerStudent(null)}
-          context={drawerContext}
-        />
       </div>
     </div>
   );
