@@ -27,13 +27,11 @@ function normalizeDept(dept) {
     .toUpperCase();
 }
 
-function canManageBlock(user, owningDepartment) {
+function canManageBlock(user, _owningDepartment) {
   if (!user) return false;
-  if (user.role === "admin") return true;
-  if (user.role !== "faculty_incharge") return false;
-  const userDept = normalizeDept(user.department);
-  const blockDept = normalizeDept(owningDepartment);
-  return Boolean(userDept && blockDept && userDept === blockDept);
+  // Venues/blocks are shared institutional resources for Admin + Faculty In-Charge.
+  // createdBy / owning_department are audit-only and must not restrict access.
+  return user.role === "admin" || user.role === "faculty_incharge";
 }
 
 const Block = {
@@ -80,6 +78,66 @@ const Block = {
     return rows?.[0] || null;
   },
 
+  async findByName(name) {
+    const [rows] = await db.query(
+      `SELECT b.*,
+              (SELECT COUNT(*) FROM venues v WHERE v.block_id = b.id) AS venue_count,
+              (SELECT COALESCE(SUM(v.capacity), 0) FROM venues v WHERE v.block_id = b.id) AS total_capacity
+       FROM blocks b
+       WHERE UPPER(TRIM(b.name)) = UPPER(TRIM(?))
+       LIMIT 1`,
+      [String(name || "").trim()]
+    );
+    return rows?.[0] || null;
+  },
+
+  /**
+   * Resolve a block by name or create it. Shared across all Faculty In-Charges.
+   */
+  async findOrCreateByName(name, opts = {}) {
+    const trimmed = String(name || "").trim();
+    if (!trimmed) {
+      const err = new Error("Block name is required");
+      err.statusCode = 400;
+      throw err;
+    }
+    const existing = await this.findByName(trimmed);
+    if (existing) {
+      return {
+        id: existing.id,
+        uuid: existing.public_uuid ?? existing.publicuuid,
+        name: existing.name,
+        created: false,
+      };
+    }
+    const codeBase = trimmed
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 40);
+    const code = codeBase || `BLOCK-${Date.now()}`;
+    const owningDepartment =
+      normalizeDept(opts.department) ||
+      normalizeDept(opts.owningDepartment) ||
+      "SHARED";
+    const created = await this.create(
+      {
+        name: trimmed,
+        code,
+        description: opts.description || null,
+        owningDepartment,
+        status: "ACTIVE",
+      },
+      opts
+    );
+    return {
+      id: created.id,
+      uuid: created.uuid,
+      name: trimmed,
+      created: true,
+    };
+  },
+
   /**
    * College-wide list (no owner filter). Optional mine=true filters by user's department.
    */
@@ -111,11 +169,12 @@ const Block = {
     const name = String(data.name || "").trim();
     const code = String(data.code || "").trim().toUpperCase();
     const description = data.description ? String(data.description).trim() : null;
-    const owningDepartment = normalizeDept(data.owningDepartment || opts.department);
+    const owningDepartment =
+      normalizeDept(data.owningDepartment || opts.department) || "SHARED";
     const status = data.status || "ACTIVE";
 
-    if (!name || !code || !owningDepartment) {
-      const err = new Error("name, code, and owning department are required");
+    if (!name || !code) {
+      const err = new Error("name and code are required");
       err.statusCode = 400;
       throw err;
     }

@@ -464,13 +464,16 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
 });
 
 /* =====================================================
-   VENUE BULK IMPORT — validate preview then atomic import
-   Excel: Venue Name | Type | Rows | Columns | Bench Config
+   VENUE BULK IMPORT — validate preview then import
+   Excel: Venue Name | Type | [Block] | Rows | Columns | Bench Config
+   Block column optional — UI blockUuid used as fallback.
+   Seating fields (Rows/Columns/Bench Config) unchanged.
 ===================================================== */
 async function runVenueValidation(data) {
   const { validateVenueRows } = require("../utils/venueBulkImport");
   return validateVenueRows(data, {
     venueExists: (name, type) => Venue.existsByNameAndType(name, type),
+    findExistingVenue: (name, type) => Venue.findByNameAndType(name, type),
   });
 }
 
@@ -528,6 +531,34 @@ router.post(
       const data = xlsx.utils.sheet_to_json(sheet);
       const result = await runVenueValidation(data);
 
+      const onDuplicate = String(req.body?.onDuplicate || req.body?.on_duplicate || "skip")
+        .trim()
+        .toLowerCase();
+      const allowedDup = new Set(["skip", "update_block", "update_venue"]);
+      if (!allowedDup.has(onDuplicate)) {
+        return res.status(400).json({
+          message: "onDuplicate must be skip, update_block, or update_venue",
+        });
+      }
+
+      const uiBlockUuid = String(req.body?.blockUuid || req.body?.block_uuid || "").trim() || null;
+
+      if (!result.hasBlockColumn && !uiBlockUuid) {
+        const needsBlock = (result.rows || []).some(
+          (r) =>
+            (r.status === "VALID" ||
+              (r.status === "DUPLICATE" && onDuplicate !== "skip")) &&
+            !r.blockName
+        );
+        if (needsBlock) {
+          return res.status(400).json({
+            message:
+              "Block is required. Select a Block for import or include a Block column in the Excel file.",
+            hasBlockColumn: false,
+          });
+        }
+      }
+
       if (!result.canImport) {
         return res.status(400).json({
           message: result.message || "Import blocked. Please correct the errors before importing.",
@@ -535,42 +566,77 @@ router.post(
           rows: result.rows,
           validCount: result.validCount,
           errorCount: result.errorCount,
+          duplicateCount: result.duplicateCount,
           total: result.total,
           canImport: false,
         });
       }
 
       const ownerOpts = await resolveOwnerOpts(req);
-      let insertedCount = 0;
-      const duplicates = [];
-      const skippedRecords = [];
-
-      // Assign imported venues to the FI's department block (or GENERAL for admin)
       const Block = require("../models/Block");
-      const dept =
-        Block.normalizeDept(req.user?.department) ||
-        (req.user?.role === "admin" ? "GENERAL" : null);
-      let importBlockId = null;
-      if (dept) {
-        const mine = await Block.list({ mine: true, department: dept });
-        if (mine.length > 0) {
-          importBlockId = mine[0].id;
-        } else {
-          const created = await Block.create(
-            {
-              name: `${dept} Main Block`,
-              code: `${dept}-BLOCK`,
-              description: `Auto-created for venue import (${dept})`,
-              owningDepartment: dept,
-            },
-            { ...ownerOpts, department: dept }
-          );
-          importBlockId = created.id;
+      const { resolveInternalId, TABLE } = require("../utils/publicId");
+
+      let defaultBlockId = null;
+      if (uiBlockUuid) {
+        defaultBlockId = await resolveInternalId(TABLE.blocks, uiBlockUuid);
+        if (!defaultBlockId) {
+          return res.status(400).json({ message: "Selected Block not found." });
         }
       }
 
+      let insertedCount = 0;
+      let updatedCount = 0;
+      let skippedCount = 0;
+      const duplicates = [];
+      const skippedRecords = [];
+
       for (const venue of result.rows) {
+        if (venue.status === "ERROR") continue;
+
         try {
+          let blockId = defaultBlockId;
+          if (venue.blockName) {
+            const resolved = await Block.findOrCreateByName(venue.blockName, {
+              ...ownerOpts,
+              department: req.user?.department || "SHARED",
+            });
+            blockId = resolved.id;
+          }
+          if (!blockId) {
+            skippedRecords.push(`${venue.name} - Block is required`);
+            continue;
+          }
+
+          if (venue.status === "DUPLICATE" || venue.isDuplicate) {
+            const existing = await Venue.findByNameAndType(venue.name, venue.type);
+            if (existing && onDuplicate === "skip") {
+              skippedCount += 1;
+              duplicates.push(
+                `${venue.name} (${venue.type}) — skipped` +
+                  (existing.blockName ? ` [Block: ${existing.blockName}]` : "")
+              );
+              continue;
+            }
+            if (existing && onDuplicate === "update_block") {
+              await Venue.setBlockId(existing.id, blockId);
+              updatedCount += 1;
+              continue;
+            }
+            if (existing && onDuplicate === "update_venue") {
+              await Venue.update(existing.id, {
+                name: venue.name,
+                type: venue.type,
+                benchesRow: venue.benchesRow,
+                benchesCol: venue.benchesCol,
+                benchConfig: venue.benchConfig,
+                blockId,
+                code: venue.name,
+              });
+              updatedCount += 1;
+              continue;
+            }
+          }
+
           const venueId = await Venue.create(
             {
               name: venue.name,
@@ -578,7 +644,7 @@ router.post(
               benchesRow: venue.benchesRow,
               benchesCol: venue.benchesCol,
               benchConfig: venue.benchConfig,
-              blockId: importBlockId,
+              blockId,
               code: venue.name,
             },
             ownerOpts
@@ -588,35 +654,42 @@ router.post(
         } catch (err) {
           if (err.code === "ER_DUP_ENTRY" || err.code === "23505") {
             duplicates.push(`${venue.name} (${venue.type})`);
+            skippedCount += 1;
           } else {
             skippedRecords.push(`${venue.name} - Database error: ${err.message}`);
           }
         }
       }
 
-      if (duplicates.length || skippedRecords.length) {
+      if (insertedCount === 0 && updatedCount === 0) {
         return res.status(400).json({
-          message: "Import blocked. Some venues could not be inserted.",
-          inserted: insertedCount,
-          skipped: duplicates.length + skippedRecords.length,
-          duplicates: duplicates.length ? duplicates : undefined,
-          skippedRecords: skippedRecords.length ? skippedRecords : undefined,
-          canImport: false,
+          message:
+            skippedCount > 0
+              ? `No venues imported. ${skippedCount} duplicate(s) skipped.`
+              : "Import blocked. Some venues could not be inserted.",
+          inserted: 0,
+          updated: 0,
+          skipped: skippedCount,
+          duplicates,
+          skippedRecords,
         });
       }
 
       res.json({
-        message: "Venue import completed",
+        message: `Import completed. Inserted: ${insertedCount}, Updated: ${updatedCount}, Skipped: ${skippedCount}`,
         inserted: insertedCount,
-        skipped: 0,
+        updated: updatedCount,
+        skipped: skippedCount,
+        duplicates,
+        skippedRecords,
         validCount: result.validCount,
         errorCount: 0,
         canImport: true,
       });
     } catch (error) {
       console.error("VENUE IMPORT ERROR:", error);
-      res.status(500).json({
-        message: "Venue import failed",
+      res.status(error.statusCode || 500).json({
+        message: error.message || "Venue import failed",
         error: error.message,
       });
     } finally {

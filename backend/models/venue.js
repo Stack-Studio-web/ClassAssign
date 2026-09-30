@@ -394,6 +394,50 @@ const Venue = {
     return (rows || []).length > 0;
   },
 
+  findByNameAndType: async (name, type) => {
+    const [rows] = await db.query(
+      `SELECT
+         v.id,
+         v.public_uuid,
+         v.name,
+         v.type,
+         v.capacity,
+         v.benches_row AS benchesRow,
+         v.benches_col AS benchesCol,
+         v.block_id,
+         b.public_uuid AS block_uuid,
+         b.name AS block_name
+       FROM venues v
+       LEFT JOIN blocks b ON b.id = v.block_id
+       WHERE UPPER(TRIM(v.name)) = UPPER(TRIM(?))
+         AND LOWER(TRIM(v.type)) = LOWER(TRIM(?))
+       LIMIT 1`,
+      [name, type]
+    );
+    const raw = rows?.[0];
+    if (!raw) return null;
+    return {
+      id: raw.id,
+      uuid: raw.public_uuid ?? raw.publicuuid,
+      name: raw.name,
+      type: raw.type,
+      capacity: raw.capacity,
+      benchesRow: raw.benchesrow ?? raw.benchesRow,
+      benchesCol: raw.benchescol ?? raw.benchesCol,
+      blockId: raw.block_id ?? raw.blockid,
+      blockUuid: raw.block_uuid ?? raw.blockuuid,
+      blockName: raw.block_name ?? raw.blockname,
+    };
+  },
+
+  setBlockId: async (venueId, blockId) => {
+    await db.query(
+      `UPDATE venues SET block_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [blockId, venueId]
+    );
+    return true;
+  },
+
   existsByNameAndTypeExceptId: async (name, type, id) => {
     const [rows] = await db.query(
       `SELECT id FROM venues
@@ -543,22 +587,25 @@ const Venue = {
   },
 
   assertCanManage: async (venueId, user) => {
-    if (user?.role === "admin") return true;
-    const [rows] = await db.query(
-      `SELECT b.owning_department
-       FROM venues v
-       LEFT JOIN blocks b ON b.id = v.block_id
-       WHERE v.id = ?
-       LIMIT 1`,
-      [venueId]
-    );
-    const owning = rows?.[0]?.owning_department ?? rows?.[0]?.owningdepartment;
-    if (!Block.canManageBlock(user, owning)) {
+    if (!user) {
       const err = new Error("You do not have permission to modify this venue");
       err.statusCode = 403;
       throw err;
     }
-    return true;
+    // Shared institutional venues — any Admin / Faculty In-Charge may manage.
+    // createdBy and block owning_department are audit-only.
+    if (user.role === "admin" || user.role === "faculty_incharge") {
+      const [rows] = await db.query(`SELECT id FROM venues WHERE id = ? LIMIT 1`, [venueId]);
+      if (!rows?.length) {
+        const err = new Error("Venue not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      return true;
+    }
+    const err = new Error("You do not have permission to modify this venue");
+    err.statusCode = 403;
+    throw err;
   },
 };
 

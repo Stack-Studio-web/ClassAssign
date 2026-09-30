@@ -4,6 +4,7 @@ import api from "../lib/api";
 import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
+import { downloadTemplate } from "../lib/downloadTemplate";
 import {
   BuildingOffice2Icon,
   MagnifyingGlassIcon,
@@ -11,6 +12,8 @@ import {
   CalendarDaysIcon,
   LockClosedIcon,
   XMarkIcon,
+  ArrowUpTrayIcon,
+  DocumentArrowDownIcon,
 } from "@heroicons/react/24/outline";
 
 const VENUE_TYPES = [
@@ -98,7 +101,6 @@ export default function VenueManagement() {
     }
   }, []);
 
-  const [viewMode, setViewMode] = useState("my"); // my | all
   const [blocks, setBlocks] = useState([]);
   const [venues, setVenues] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -135,16 +137,29 @@ export default function VenueManagement() {
   const [saving, setSaving] = useState(false);
   const [uniformSeats, setUniformSeats] = useState(2);
 
+  // Excel import (existing seating columns + optional Block)
+  const [importBlockUuid, setImportBlockUuid] = useState("");
+  const [onDuplicate, setOnDuplicate] = useState("skip");
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [importPreview, setImportPreview] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importStatus, setImportStatus] = useState("");
+  const [importError, setImportError] = useState("");
+
+  // Shared institutional venues — all Admin / FI may manage
+  const canWrite =
+    user?.role === "admin" || user?.role === "faculty_incharge";
   const manageableBlocks = useMemo(
-    () => blocks.filter((b) => b.canManage),
-    [blocks]
+    () => (canWrite ? blocks : blocks.filter((b) => b.canManage)),
+    [blocks, canWrite]
   );
 
   const fetchBlocks = useCallback(async () => {
-    const endpoint = viewMode === "my" ? "/venues/blocks/my" : "/venues/blocks";
-    const res = await api.get(endpoint);
+    // Always load all blocks — venues are shared, not creator-scoped
+    const res = await api.get("/venues/blocks");
     setBlocks(res.data || []);
-  }, [viewMode]);
+  }, []);
 
   const fetchVenues = useCallback(async () => {
     const params = {
@@ -153,12 +168,11 @@ export default function VenueManagement() {
       endTime,
       session: examSession,
     };
-    if (viewMode === "my") params.mine = "true";
     if (filterBlock) params.blockUuid = filterBlock;
     if (filterType) params.type = filterType;
     const res = await api.get("/venues", { params });
     setVenues(res.data || []);
-  }, [viewMode, examDate, startTime, endTime, examSession, filterBlock, filterType]);
+  }, [examDate, startTime, endTime, examSession, filterBlock, filterType]);
 
   const fetchPool = useCallback(async () => {
     if (!examDate || !examSession) return;
@@ -240,11 +254,8 @@ export default function VenueManagement() {
       }
       map.get(key).venues.push(v);
     }
-    // Keep blocks with venues, or empty manageable blocks in My view
-    return [...map.values()].filter(
-      (g) => g.venues.length > 0 || (viewMode === "my" && g.block.canManage)
-    );
-  }, [blocks, filteredVenues, viewMode]);
+    return [...map.values()].filter((g) => g.venues.length > 0 || canWrite);
+  }, [blocks, filteredVenues, canWrite]);
 
   const selectedCapacity = useMemo(() => {
     let total = 0;
@@ -334,8 +345,8 @@ export default function VenueManagement() {
   };
 
   const openEditVenue = (venue) => {
-    if (!venue.canManage) {
-      toast.error("You cannot edit venues in another block.");
+    if (!canWrite) {
+      toast.error("You cannot edit venues.");
       return;
     }
     setEditingVenue(venue);
@@ -394,8 +405,8 @@ export default function VenueManagement() {
   };
 
   const handleDisableVenue = async (venue) => {
-    if (!venue.canManage) {
-      toast.error("You cannot modify venues in another block.");
+    if (!canWrite) {
+      toast.error("You cannot modify venues.");
       return;
     }
     const nextStatus = venue.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
@@ -442,17 +453,110 @@ export default function VenueManagement() {
     }
   };
 
+  const handleImportFileSelect = async (e) => {
+    const file = e.target.files?.[0];
+    setImportPreview(null);
+    setImportError("");
+    setImportStatus("");
+    if (!file) {
+      setSelectedFile(null);
+      return;
+    }
+    if (!file.name.endsWith(".xlsx") && !file.name.endsWith(".xls")) {
+      setImportError("Please select a valid Excel file (.xlsx or .xls)");
+      setSelectedFile(null);
+      return;
+    }
+    setSelectedFile(file);
+    setPreviewLoading(true);
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const res = await api.post("/import/preview-venues", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setImportPreview(res.data);
+      setImportStatus(res.data.message || "");
+    } catch (err) {
+      if (err.response?.status === 401) return;
+      setImportPreview(err.response?.data?.rows ? err.response.data : null);
+      setImportError(
+        err.response?.data?.message ||
+          err.response?.data?.error ||
+          "Validation failed. Check file format."
+      );
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const handleBulkImport = async () => {
+    if (!selectedFile) {
+      setImportError("Please select a file first");
+      return;
+    }
+    if (importPreview && importPreview.hasBlockColumn === false && !importBlockUuid) {
+      setImportError("Select a Block for this import (Excel has no Block column).");
+      return;
+    }
+    if (importPreview && (importPreview.errorCount > 0 || importPreview.canImport === false)) {
+      setImportError(
+        importPreview.message ||
+          "Import blocked. Please correct the errors before importing."
+      );
+      return;
+    }
+    setIsImporting(true);
+    setImportError("");
+    setImportStatus("");
+    const formData = new FormData();
+    formData.append("file", selectedFile);
+    if (importBlockUuid) formData.append("blockUuid", importBlockUuid);
+    formData.append("onDuplicate", onDuplicate);
+    try {
+      const res = await api.post("/import/import-venues", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      const inserted = res.data.inserted ?? 0;
+      const updated = res.data.updated ?? 0;
+      const skipped = res.data.skipped ?? 0;
+      const summary =
+        res.data.message ||
+        `Import validated. Inserted: ${inserted}, Updated: ${updated}, Skipped: ${skipped}`;
+      setImportStatus(summary);
+      toast.success(summary);
+      setSelectedFile(null);
+      setImportPreview(null);
+      const input = document.getElementById("venue-file-input");
+      if (input) input.value = "";
+      await refresh();
+      // Post-import check: confirm venues are listed under the selected/shared blocks
+      if (inserted + updated > 0) {
+        setImportStatus(
+          `${summary} — Venue list refreshed. Confirm Block filter shows the imported venues.`
+        );
+      }
+    } catch (err) {
+      if (err.response?.status === 401) return;
+      const data = err.response?.data;
+      if (data?.rows) setImportPreview(data);
+      setImportError(data?.message || getApiError(err, "Import failed"));
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-3 sm:px-4 md:px-6 py-4 sm:py-6 space-y-4 sm:space-y-6">
       <header className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Venue Management</h1>
           <p className="text-sm text-gray-600 mt-1">
-            Manage blocks and classrooms. Availability is checked by date and session.
+            Shared institutional venues classified by Block. Availability is checked by date and session.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {manageableBlocks.length > 0 && (
+          {canWrite && (
             <button
               type="button"
               onClick={() => openCreateVenue()}
@@ -462,37 +566,161 @@ export default function VenueManagement() {
               Add Venue
             </button>
           )}
-          <button
-            type="button"
-            onClick={() => setShowBlockForm(true)}
-            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm font-semibold text-gray-800 hover:bg-gray-50"
-          >
-            <PlusIcon className="h-4 w-4" />
-            Add Block
-          </button>
+          {canWrite && (
+            <button
+              type="button"
+              onClick={() => setShowBlockForm(true)}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm font-semibold text-gray-800 hover:bg-gray-50"
+            >
+              <PlusIcon className="h-4 w-4" />
+              Add Block
+            </button>
+          )}
         </div>
       </header>
 
-      {/* View tabs */}
-      <div className="inline-flex rounded-full bg-gray-100 p-1 text-sm font-medium">
-        <button
-          type="button"
-          onClick={() => setViewMode("my")}
-          className={`px-4 py-2 rounded-full transition ${
-            viewMode === "my" ? "bg-white shadow-sm text-blue-600" : "text-gray-600"
-          }`}
-        >
-          My Blocks
-        </button>
-        <button
-          type="button"
-          onClick={() => setViewMode("all")}
-          className={`px-4 py-2 rounded-full transition ${
-            viewMode === "all" ? "bg-white shadow-sm text-blue-600" : "text-gray-600"
-          }`}
-        >
-          All Blocks
-        </button>
+      {/* Excel import — keeps existing seating columns; Block optional */}
+      {canWrite && (
+        <section className="bg-white border border-gray-100 rounded-xl shadow-sm p-4 sm:p-5 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div>
+              <h2 className="text-base font-bold text-gray-900">Import Venues</h2>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Excel: Venue Name | Type | Block (optional) | Rows | Columns | Bench Config
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                downloadTemplate("venue").catch((e) => toast.error(e.message, "Download failed"))
+              }
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-50 text-blue-700 text-xs font-semibold hover:bg-blue-100"
+            >
+              <DocumentArrowDownIcon className="h-4 w-4" />
+              Download Template
+            </button>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <label className="text-xs font-semibold text-gray-600 space-y-1 sm:col-span-2">
+              <span>Excel File</span>
+              <input
+                id="venue-file-input"
+                type="file"
+                accept=".xlsx,.xls"
+                onChange={handleImportFileSelect}
+                className="block w-full text-sm text-gray-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-gray-100 file:text-gray-700"
+              />
+            </label>
+            <label className="text-xs font-semibold text-gray-600 space-y-1">
+              <span>Block {importPreview?.hasBlockColumn ? "(Excel has Block)" : "*"}</span>
+              <select
+                value={importBlockUuid}
+                onChange={(e) => setImportBlockUuid(e.target.value)}
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm bg-white"
+              >
+                <option value="">Select Block</option>
+                {blocks.map((b) => (
+                  <option key={b.uuid} value={b.uuid}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-xs font-semibold text-gray-600 space-y-1">
+              <span>If venue already exists</span>
+              <select
+                value={onDuplicate}
+                onChange={(e) => setOnDuplicate(e.target.value)}
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm bg-white"
+              >
+                <option value="skip">Skip</option>
+                <option value="update_block">Update Block</option>
+                <option value="update_venue">Update Existing Venue</option>
+              </select>
+            </label>
+          </div>
+          {previewLoading && <p className="text-sm text-gray-500">Validating…</p>}
+          {importStatus && (
+            <p className="text-sm text-gray-700 bg-gray-50 rounded-lg px-3 py-2">{importStatus}</p>
+          )}
+          {importError && (
+            <p className="text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2 whitespace-pre-wrap">
+              {importError}
+            </p>
+          )}
+          {importPreview?.rows?.length > 0 && (
+            <div className="max-h-48 overflow-auto rounded-lg border border-gray-100">
+              <table className="min-w-full text-xs">
+                <thead className="bg-gray-50 sticky top-0">
+                  <tr>
+                    <th className="px-2 py-1.5 text-left">Row</th>
+                    <th className="px-2 py-1.5 text-left">Name</th>
+                    <th className="px-2 py-1.5 text-left">Type</th>
+                    <th className="px-2 py-1.5 text-left">Block</th>
+                    <th className="px-2 py-1.5 text-left">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {importPreview.rows.map((r) => (
+                    <tr key={r.rowNum} className="border-t border-gray-50">
+                      <td className="px-2 py-1">{r.rowNum}</td>
+                      <td className="px-2 py-1">{r.name}</td>
+                      <td className="px-2 py-1">{r.type}</td>
+                      <td className="px-2 py-1">
+                        {r.blockName ||
+                          (r.existing?.blockName
+                            ? `Existing: ${r.existing.blockName}`
+                            : "—")}
+                      </td>
+                      <td className="px-2 py-1">
+                        <span
+                          className={
+                            r.status === "VALID"
+                              ? "text-green-700"
+                              : r.status === "DUPLICATE"
+                                ? "text-amber-700"
+                                : "text-red-700"
+                          }
+                        >
+                          {r.status}
+                          {r.error ? `: ${r.error}` : ""}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={
+                isImporting ||
+                !selectedFile ||
+                previewLoading ||
+                (importPreview &&
+                  (importPreview.errorCount > 0 || importPreview.canImport === false)) ||
+                (importPreview?.hasBlockColumn === false && !importBlockUuid)
+              }
+              onClick={handleBulkImport}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50"
+            >
+              <ArrowUpTrayIcon className="h-4 w-4" />
+              {isImporting ? "Importing…" : "Import"}
+            </button>
+            {importPreview?.hasBlockColumn === false && !importBlockUuid && (
+              <p className="text-xs text-amber-700 self-center">
+                Select a Block before importing (Excel has no Block column).
+              </p>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* Shared venue list — Block filter is primary */}
+      <div className="text-sm font-medium text-gray-600">
+        Venues are shared across all Faculty In-Charges (not restricted by who created them).
       </div>
 
       {/* Filters */}
@@ -689,10 +917,9 @@ export default function VenueManagement() {
                   <p className="text-xs text-gray-500">
                     {block.code}
                     {block.status && block.status !== "ACTIVE" ? ` · ${block.status}` : ""}
-                    {block.canManage ? " · Manageable" : " · View only"}
                   </p>
                 </div>
-                {block.canManage && (
+                {canWrite && (
                   <button
                     type="button"
                     onClick={() => openCreateVenue(block.uuid)}
@@ -769,7 +996,7 @@ export default function VenueManagement() {
                               <CalendarDaysIcon className="h-3.5 w-3.5" />
                               View Schedule
                             </button>
-                            {v.canManage && (
+                            {canWrite && (
                               <>
                                 <button
                                   type="button"
@@ -883,7 +1110,7 @@ export default function VenueManagement() {
                 disabled={!!editingVenue}
               >
                 <option value="">Select block</option>
-                {manageableBlocks.map((b) => (
+                {(canWrite ? blocks : manageableBlocks).map((b) => (
                   <option key={b.uuid} value={b.uuid}>
                     {b.name}
                   </option>
@@ -1019,9 +1246,7 @@ export default function VenueManagement() {
           >
             <h3 className="text-lg font-bold text-gray-900">Add Block</h3>
             <p className="text-xs text-gray-500">
-              {user?.role === "faculty_incharge"
-                ? "New blocks are assigned to your department for management (not shown in the UI)."
-                : "Provide a department code for ownership (internal authorization only)."}
+              Blocks classify venues for filtering and allotment. Venues remain shared across all Faculty In-Charges.
             </p>
             <label className="block text-xs font-semibold text-gray-600 space-y-1">
               <span>Name</span>

@@ -1,6 +1,7 @@
 /**
  * Venue bulk-import parsing & validation.
- * Columns: Venue Name | Type | Rows | Columns | Bench Config
+ * Required columns: Venue Name | Type | Rows | Columns | Bench Config
+ * Optional column: Block (backward compatible when omitted)
  */
 
 const ALLOWED_TYPES = new Set(["classroom", "lab", "hall"]);
@@ -18,6 +19,9 @@ function parseVenueRow(row, rowNum) {
   const name = String(cell(row, "Venue Name", "venueName", "venue_name", "Name") || "").trim();
   const typeRaw = String(cell(row, "Type", "type") || "").trim();
   const type = typeRaw.toLowerCase();
+  const blockName = String(
+    cell(row, "Block", "block", "Block Name", "blockName", "block_name") || ""
+  ).trim();
   const rowsRaw = cell(row, "Rows", "rows", "benchesRow", "benches_row");
   const colsRaw = cell(row, "Columns", "columns", "Cols", "benchesCol", "benches_col");
   const benchConfigStr = String(
@@ -91,6 +95,7 @@ function parseVenueRow(row, rowNum) {
     rowNum,
     name,
     type: ALLOWED_TYPES.has(type) ? type : typeRaw,
+    blockName: blockName || null,
     benchesRow: Number.isNaN(benchesRow) ? null : benchesRow,
     benchesCol: Number.isNaN(benchesCol) ? null : benchesCol,
     benchConfig,
@@ -99,12 +104,31 @@ function parseVenueRow(row, rowNum) {
   };
 }
 
+/**
+ * @param {object[]} rawRows
+ * @param {object} helpers
+ * @param {function} helpers.venueExists
+ * @param {function} [helpers.findExistingVenue] - returns { uuid, name, type, blockName, blockUuid }
+ */
 async function validateVenueRows(rawRows, helpers = {}) {
-  const { venueExists } = helpers;
+  const { venueExists, findExistingVenue } = helpers;
   const preview = [];
   const seenKeys = new Set();
   let validCount = 0;
   let errorCount = 0;
+  let duplicateCount = 0;
+  let hasBlockColumn = false;
+
+  for (let i = 0; i < rawRows.length; i++) {
+    const headers = Object.keys(rawRows[i] || {});
+    if (
+      headers.some((h) =>
+        ["block", "block name", "blockname", "block_name"].includes(String(h).toLowerCase().trim())
+      )
+    ) {
+      hasBlockColumn = true;
+    }
+  }
 
   for (let i = 0; i < rawRows.length; i++) {
     const rowNum = i + 2;
@@ -113,10 +137,16 @@ async function validateVenueRows(rawRows, helpers = {}) {
     const empty =
       !parsed.name &&
       !parsed.type &&
+      !parsed.blockName &&
       parsed.benchesRow == null &&
       parsed.benchesCol == null &&
       !(parsed.benchConfig && parsed.benchConfig.length);
     if (empty) continue;
+
+    if (parsed.blockName) hasBlockColumn = true;
+
+    let existing = null;
+    let isDuplicate = false;
 
     if (parsed.name && parsed.type && ALLOWED_TYPES.has(parsed.type)) {
       const key = `${parsed.name.toUpperCase()}::${parsed.type}`;
@@ -129,48 +159,88 @@ async function validateVenueRows(rawRows, helpers = {}) {
       }
 
       if (
+        typeof findExistingVenue === "function" &&
+        !parsed.errors.some((e) => e.includes("Duplicate row"))
+      ) {
+        existing = await findExistingVenue(parsed.name, parsed.type);
+        if (existing) {
+          isDuplicate = true;
+          parsed.errors.push(
+            `Venue "${parsed.name}" (${parsed.type}) already exists.` +
+              (existing.blockName ? ` Existing Block: ${existing.blockName}.` : "")
+          );
+        }
+      } else if (
         typeof venueExists === "function" &&
         !parsed.errors.some((e) => e.includes("Duplicate row"))
       ) {
         const exists = await venueExists(parsed.name, parsed.type);
         if (exists) {
-          parsed.errors.push(
-            `Venue "${parsed.name}" (${parsed.type}) already exists.`
-          );
+          isDuplicate = true;
+          parsed.errors.push(`Venue "${parsed.name}" (${parsed.type}) already exists.`);
         }
       }
     }
 
-    const status = parsed.errors.length ? "ERROR" : "VALID";
-    if (status === "VALID") validCount += 1;
-    else errorCount += 1;
+    // Soft-duplicate (already in DB) vs hard validation error
+    const hardErrors = parsed.errors.filter(
+      (e) => !String(e).includes("already exists")
+    );
+    let status = "VALID";
+    if (hardErrors.length) {
+      status = "ERROR";
+      errorCount += 1;
+    } else if (isDuplicate) {
+      status = "DUPLICATE";
+      duplicateCount += 1;
+    } else {
+      validCount += 1;
+    }
 
     preview.push({
       rowNum: parsed.rowNum,
       name: parsed.name,
       type: parsed.type,
+      blockName: parsed.blockName,
       benchesRow: parsed.benchesRow,
       benchesCol: parsed.benchesCol,
       benchConfig: parsed.benchConfig,
       capacity: parsed.capacity,
       status,
+      isDuplicate,
+      existing: existing
+        ? {
+            uuid: existing.uuid,
+            blockName: existing.blockName || null,
+            blockUuid: existing.blockUuid || null,
+          }
+        : null,
       errors: parsed.errors,
       error: parsed.errors[0] || null,
     });
   }
 
+  // Import allowed when there are valid rows, or only soft-duplicates (handled at import time)
+  const canImport = preview.length > 0 && errorCount === 0 && (validCount > 0 || duplicateCount > 0);
+
   return {
     rows: preview,
     validCount,
     errorCount,
+    duplicateCount,
     total: preview.length,
-    canImport: preview.length > 0 && errorCount === 0,
+    hasBlockColumn,
+    canImport,
     message:
       preview.length === 0
         ? "No venue rows found in the file."
         : errorCount > 0
           ? "Import blocked. Please correct the errors before importing."
-          : "All venue records validated successfully.",
+          : duplicateCount > 0 && validCount === 0
+            ? `All ${duplicateCount} venue(s) already exist. Choose how to handle duplicates, then Import.`
+            : duplicateCount > 0
+              ? `${validCount} new venue(s) ready; ${duplicateCount} duplicate(s) will use your duplicate action.`
+              : "All venue records validated successfully.",
   };
 }
 
