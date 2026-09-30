@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "../lib/api";
 import { useToast } from "../context/ToastContext";
@@ -146,6 +146,7 @@ export default function VenueManagement() {
   const [isImporting, setIsImporting] = useState(false);
   const [importStatus, setImportStatus] = useState("");
   const [importError, setImportError] = useState("");
+  const fileInputRef = useRef(null);
 
   // Shared institutional venues — all Admin / FI may manage
   const canWrite =
@@ -527,8 +528,7 @@ export default function VenueManagement() {
       toast.success(summary);
       setSelectedFile(null);
       setImportPreview(null);
-      const input = document.getElementById("venue-file-input");
-      if (input) input.value = "";
+      if (fileInputRef.current) fileInputRef.current.value = "";
       await refresh();
       // Post-import check: confirm venues are listed under the selected/shared blocks
       if (inserted + updated > 0) {
@@ -601,16 +601,30 @@ export default function VenueManagement() {
             </button>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <label className="text-xs font-semibold text-gray-600 space-y-1 sm:col-span-2">
+            <div className="text-xs font-semibold text-gray-600 space-y-1 sm:col-span-2">
               <span>Excel File</span>
-              <input
-                id="venue-file-input"
-                type="file"
-                accept=".xlsx,.xls"
-                onChange={handleImportFileSelect}
-                className="block w-full text-sm text-gray-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-gray-100 file:text-gray-700"
-              />
-            </label>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  ref={fileInputRef}
+                  id="venue-file-input"
+                  type="file"
+                  accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                  onChange={handleImportFileSelect}
+                  className="sr-only"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm font-semibold text-gray-800 hover:bg-gray-50"
+                >
+                  <ArrowUpTrayIcon className="h-4 w-4" />
+                  Browse…
+                </button>
+                <span className="text-sm font-normal text-gray-600 truncate max-w-[220px]">
+                  {selectedFile ? selectedFile.name : "No file selected"}
+                </span>
+              </div>
+            </div>
             <label className="text-xs font-semibold text-gray-600 space-y-1">
               <span>Block {importPreview?.hasBlockColumn ? "(Excel has Block)" : "*"}</span>
               <select
