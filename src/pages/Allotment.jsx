@@ -1,6 +1,5 @@
 // Allotment.jsx - FIXED: AUTO faculty assignment now saves faculty ID to database
 import React, { useState, useEffect, useMemo } from "react";
-import { Link } from "react-router-dom";
 import api from "../lib/api";
 import { logger } from "../lib/logger";
 import {
@@ -248,11 +247,16 @@ const Allotment = () => {
     checkUserAccess();
   }, []);
  
-  // --- Faculty fetch (venues come from the allotment selection pool) ---
+  // --- Initial Data Fetch ---
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const fRes = await api.get("/faculty");
+        const [vRes, fRes] = await Promise.all([
+          api.get("/venues"),
+          api.get("/faculty")
+        ]);
+
+        setVenues(vRes.data.filter((v) => v.isAvailable));
         setAllFaculty(fRes.data);
       } catch (err) {
         if (err.response?.status === 401) {
@@ -268,79 +272,6 @@ const Allotment = () => {
     fetchData();
   }, []);
 
-  // Venue pool = venues selected on Venue Management for this date/session
-  useEffect(() => {
-    const fetchVenuePool = async () => {
-      if (!examDate || !examSession) {
-        setVenues([]);
-        setSelectedVenues([]);
-        return;
-      }
-      try {
-        const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
-        const [selRes, availRes] = await Promise.all([
-          api.get("/venues/selection", {
-            params: { examDate: dateOnly, examSession },
-          }),
-          api.get("/venues", {
-            params: {
-              date: dateOnly,
-              startTime: examStartTime,
-              endTime: examEndTime,
-              session: examSession,
-            },
-          }),
-        ]);
-
-        const selections = selRes.data || [];
-        const allVenues = availRes.data || [];
-        const byUuid = new Map(allVenues.map((v) => [String(v.uuid), v]));
-
-        const poolVenues = selections
-          .map((s) => {
-            const live = byUuid.get(String(s.venueUuid));
-            if (live) {
-              const available =
-                live.status === "ACTIVE" &&
-                (!live.availability || live.availability.available !== false);
-              if (!available) return null;
-              return {
-                ...live,
-                selectionUuid: s.uuid,
-                blockName: live.blockName || s.blockName,
-              };
-            }
-            return {
-              uuid: s.venueUuid,
-              name: s.venueName,
-              code: s.venueCode,
-              capacity: s.capacity,
-              type: s.venueType,
-              blockName: s.blockName,
-              blockUuid: s.blockUuid,
-              isAvailable: true,
-              status: "ACTIVE",
-              selectionUuid: s.uuid,
-              benchConfig: undefined,
-              benchesRow: 5,
-              benchesCol: 5,
-            };
-          })
-          .filter(Boolean);
-
-        setVenues(poolVenues);
-        setSelectedVenues(poolVenues);
-        setSeatingMode(poolVenues.length > 0 ? "manual" : "auto");
-      } catch (err) {
-        if (err.response?.status === 401) return;
-        console.error("Failed to fetch venue pool:", err);
-        setVenues([]);
-        setSelectedVenues([]);
-      }
-    };
-    fetchVenuePool();
-  }, [examDate, examSession, examStartTime, examEndTime]);
- 
   // ✅ Fetch courses AND students from timetable when date/time/session change
   useEffect(() => {
     const fetchCoursesFromTimetable = async () => {
@@ -636,19 +567,7 @@ const Allotment = () => {
  
     if (venuesToUse.length === 0) {
       setIsGenerating(false);
-      return setError(
-        "No venues in the allotment pool. Select available venues on the Venue Management page first."
-      );
-    }
-
-    const missingLayout = venuesToUse.filter(
-      (v) => !Array.isArray(v.benchConfig) || v.benchConfig.length === 0
-    );
-    if (missingLayout.length > 0) {
-      setIsGenerating(false);
-      return setError(
-        `Venue layout missing for: ${missingLayout.map((v) => v.name).join(", ")}. Re-select them from Venue Management.`
-      );
+      return setError("No venues available.");
     }
  
     // Build student list BY COURSE-DEPARTMENT COMBINATION
@@ -1496,108 +1415,68 @@ const Allotment = () => {
               <h3 className="font-bold text-base sm:text-lg text-gray-900">2. Configuration</h3>
             </div>
             <div className="p-4 sm:p-5 space-y-6">
-              {/* Venue Selection — from Venue Management pool only */}
+              {/* Venue Selection */}
               <div className="space-y-3">
                 <div className="flex items-center gap-2">
                   <BuildingOffice2Icon className="h-5 w-5 text-gray-700" />
-                  <label className="text-sm font-semibold text-gray-800">Selected Venues</label>
+                  <label className="text-sm font-semibold text-gray-800">Venue Selection</label>
                 </div>
-                <p className="text-xs text-gray-600">
-                  Only venues added from{" "}
-                  <Link to="/venue" className="font-semibold text-blue-600 hover:underline">
-                    Venue Management
-                  </Link>{" "}
-                  for this date and session appear here.
-                </p>
-                {venues.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-3 py-4 text-sm text-gray-600">
-                    No venues in the pool for {examDate || "this date"} ({examSession}).
-                    Open Venue Management, check availability, select venues, then{" "}
-                    <span className="font-semibold">Add to Allotment</span>.
-                  </div>
+                <div className="inline-flex w-full sm:w-auto rounded-full bg-gray-100 p-1 text-xs font-medium">
+                  <button
+                    type="button"
+                    onClick={() => hasWriteAccess && setSeatingMode("auto")}
+                    className={`flex-1 min-h-[40px] sm:min-h-0 sm:py-2 px-4 py-2.5 rounded-full transition-all ${
+                      seatingMode === "auto"
+                        ? "bg-white shadow-sm text-blue-600"
+                        : "text-gray-500"
+                    } ${!hasWriteAccess ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
+                    disabled={!hasWriteAccess}
+                  >
+                    Auto
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => hasWriteAccess && setSeatingMode("manual")}
+                    className={`flex-1 min-h-[40px] sm:min-h-0 sm:py-2 px-4 py-2.5 rounded-full transition-all ${
+                      seatingMode === "manual"
+                        ? "bg-white shadow-sm text-blue-600"
+                        : "text-gray-500"
+                    } ${!hasWriteAccess ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
+                    disabled={!hasWriteAccess}
+                  >
+                    Manual
+                  </button>
+                </div>
+                {seatingMode === "auto" ? (
+                  <p className="text-sm font-medium text-gray-600">
+                    All available venues will be used for seating.
+                  </p>
                 ) : (
-                  <>
-                    <div className="inline-flex w-full sm:w-auto rounded-full bg-gray-100 p-1 text-xs font-medium">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (!hasWriteAccess) return;
-                          setSeatingMode("auto");
-                          setSelectedVenues(venues);
-                        }}
-                        className={`flex-1 min-h-[40px] sm:min-h-0 sm:py-2 px-4 py-2.5 rounded-full transition-all ${
-                          seatingMode === "auto"
-                            ? "bg-white shadow-sm text-blue-600"
-                            : "text-gray-500"
-                        } ${!hasWriteAccess ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
-                        disabled={!hasWriteAccess}
-                      >
-                        Use all in pool
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => hasWriteAccess && setSeatingMode("manual")}
-                        className={`flex-1 min-h-[40px] sm:min-h-0 sm:py-2 px-4 py-2.5 rounded-full transition-all ${
-                          seatingMode === "manual"
-                            ? "bg-white shadow-sm text-blue-600"
-                            : "text-gray-500"
-                        } ${!hasWriteAccess ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
-                        disabled={!hasWriteAccess}
-                      >
-                        Choose subset
-                      </button>
-                    </div>
-                    <div className="space-y-2 max-h-56 overflow-y-auto">
-                      {Object.entries(
-                        venues.reduce((acc, v) => {
-                          const key = v.blockName || "Other";
-                          if (!acc[key]) acc[key] = [];
-                          acc[key].push(v);
-                          return acc;
-                        }, {})
-                      ).map(([blockName, blockVenues]) => (
-                        <div key={blockName}>
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-gray-500 mb-1">
-                            {blockName}
-                          </p>
-                          {blockVenues.map((v) => {
-                            const isChecked = selectedVenues.some((vx) => vx.uuid === v.uuid);
-                            return (
-                              <label
-                                key={v.uuid}
-                                className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors mb-1 ${
-                                  isChecked
-                                    ? "border-blue-200 bg-blue-50/50"
-                                    : "border-gray-200 hover:bg-gray-50"
-                                } ${!hasWriteAccess || seatingMode === "auto" ? "cursor-not-allowed opacity-80" : ""}`}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={seatingMode === "auto" ? true : isChecked}
-                                  onChange={() => seatingMode === "manual" && toggleVenueSelection(v)}
-                                  disabled={!hasWriteAccess || seatingMode === "auto"}
-                                  className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                                />
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-sm font-semibold text-gray-900">{v.name}</p>
-                                  <p className="text-xs font-medium text-gray-600">
-                                    Capacity: {v.capacity} seats
-                                  </p>
-                                </div>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      ))}
-                    </div>
-                    <p className="text-xs font-semibold text-gray-700">
-                      Total capacity:{" "}
-                      {(seatingMode === "auto" ? venues : selectedVenues).reduce(
-                        (s, v) => s + (v.capacity || 0),
-                        0
-                      )}
-                    </p>
-                  </>
+                  <div className="space-y-2 max-h-48 overflow-y-auto">
+                    {venues.map((v) => {
+                      const isChecked = selectedVenues.some((vx) => vx.uuid === v.uuid);
+                      return (
+                        <label
+                          key={v.uuid}
+                          className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${
+                            isChecked ? "border-blue-200 bg-blue-50/50" : "border-gray-200 hover:bg-gray-50"
+                          } ${!hasWriteAccess ? "cursor-not-allowed opacity-60" : ""}`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => toggleVenueSelection(v)}
+                            disabled={!hasWriteAccess}
+                            className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold text-gray-900">{v.name}</p>
+                            <p className="text-xs font-medium text-gray-600">Capacity: {v.capacity} students</p>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
                 )}
               </div>
 

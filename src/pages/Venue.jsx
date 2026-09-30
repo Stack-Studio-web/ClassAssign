@@ -1,464 +1,253 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import React, { useState, useEffect } from "react";
 import api from "../lib/api";
 import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
-import { downloadTemplate } from "../lib/downloadTemplate";
+import { downloadTemplate as downloadTemplateFile } from "../lib/downloadTemplate";
 import {
-  BuildingOffice2Icon,
-  MagnifyingGlassIcon,
-  PlusIcon,
-  CalendarDaysIcon,
-  LockClosedIcon,
-  XMarkIcon,
   ArrowUpTrayIcon,
   DocumentArrowDownIcon,
+  ArrowUturnLeftIcon,
+  BuildingOffice2Icon,
+  UserGroupIcon,
+  ArrowLeftIcon,
+  InformationCircleIcon,
+  Squares2X2Icon,
 } from "@heroicons/react/24/outline";
 
-const VENUE_TYPES = [
-  { value: "", label: "All" },
-  { value: "classroom", label: "Classroom" },
-  { value: "lab", label: "Laboratory" },
-  { value: "hall", label: "Hall" },
-  { value: "seminar_hall", label: "Seminar Hall" },
-  { value: "auditorium", label: "Auditorium" },
-  { value: "other", label: "Other" },
-];
-
-const CAPACITY_PRESETS = [
-  { value: "", label: "All" },
-  { value: "1-30", label: "1 – 30" },
-  { value: "31-60", label: "31 – 60" },
-  { value: "61-100", label: "61 – 100" },
-  { value: "101+", label: "101+" },
-];
-
-const SESSION_PRESETS = {
-  FN: { start: "09:00", end: "12:00" },
-  AN: { start: "13:00", end: "16:00" },
-};
-
-function formatDisplayDate(iso) {
-  if (!iso) return "";
-  try {
-    return new Date(`${iso}T00:00:00`).toLocaleDateString("en-IN", {
-      day: "numeric",
-      month: "long",
-      year: "numeric",
-    });
-  } catch {
-    return iso;
-  }
-}
-
-function formatTimeRange(start, end) {
-  const fmt = (t) => {
-    if (!t) return "";
-    const [h, m] = String(t).slice(0, 5).split(":");
-    const hour = Number(h);
-    const ampm = hour >= 12 ? "PM" : "AM";
-    const h12 = hour % 12 || 12;
-    return `${h12}:${m} ${ampm}`;
-  };
-  return `${fmt(start)} – ${fmt(end)}`;
-}
-
-function capacityInRange(capacity, preset) {
-  if (!preset) return true;
-  const c = Number(capacity) || 0;
-  if (preset === "1-30") return c >= 1 && c <= 30;
-  if (preset === "31-60") return c >= 31 && c <= 60;
-  if (preset === "61-100") return c >= 61 && c <= 100;
-  if (preset === "101+") return c >= 101;
-  return true;
-}
-
-function defaultForm() {
-  return {
-    name: "",
-    code: "",
-    type: "classroom",
-    benchesRow: "5",
-    benchesCol: "5",
-    floor: "",
-    description: "",
-    blockUuid: "",
-    status: "ACTIVE",
-  };
-}
-
-export default function VenueManagement() {
+export default function AddVenue() {
   const toast = useToast();
   const showConfirm = useConfirm();
-
-  const user = useMemo(() => {
-    try {
-      const raw = sessionStorage.getItem("user");
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
-    }
-  }, []);
-
-  const [blocks, setBlocks] = useState([]);
+  const [totalVenues, setTotalVenues] = useState(0);
+  const [totalCapacity, setTotalCapacity] = useState(0);
+  const [activeTab, setActiveTab] = useState("basic");
   const [venues, setVenues] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [editingId, setEditingId] = useState(null);
 
   const [searchQuery, setSearchQuery] = useState("");
-  const [filterBlock, setFilterBlock] = useState("");
-  const [filterType, setFilterType] = useState("");
-  const [filterCapacity, setFilterCapacity] = useState("");
-  const [filterAvailability, setFilterAvailability] = useState(""); // "" | available | reserved
+  const [sortOrder, setSortOrder] = useState("lowToHigh");
 
-  const [examDate, setExamDate] = useState(() => {
-    const d = new Date();
-    return d.toISOString().slice(0, 10);
-  });
-  const [examSession, setExamSession] = useState("FN");
-  const [startTime, setStartTime] = useState(SESSION_PRESETS.FN.start);
-  const [endTime, setEndTime] = useState(SESSION_PRESETS.FN.end);
-
-  const [selected, setSelected] = useState(() => new Set());
-  const [pool, setPool] = useState([]);
-  const [scheduleModal, setScheduleModal] = useState(null);
-  const [scheduleLoading, setScheduleLoading] = useState(false);
-
-  const [showVenueForm, setShowVenueForm] = useState(false);
-  const [showBlockForm, setShowBlockForm] = useState(false);
-  const [editingVenue, setEditingVenue] = useState(null);
-  const [form, setForm] = useState(defaultForm());
-  const [blockForm, setBlockForm] = useState({
+  const [form, setForm] = useState({
     name: "",
-    code: "",
-    description: "",
-    owningDepartment: "",
+    type: "",
+    benchesRow: "",
+    benchesCol: "",
   });
-  const [saving, setSaving] = useState(false);
+
+  const [benchConfig, setBenchConfig] = useState([]);
+  const [configMode, setConfigMode] = useState("uniform");
   const [uniformSeats, setUniformSeats] = useState(2);
 
-  // Excel import (existing seating columns + optional Block)
-  const [importBlockUuid, setImportBlockUuid] = useState("");
-  const [onDuplicate, setOnDuplicate] = useState("skip");
+  const [calculatedCapacity, setCalculatedCapacity] = useState(0);
+  const [error, setError] = useState("");
+  const [isDuplicateError, setIsDuplicateError] = useState(false);
+
   const [selectedFile, setSelectedFile] = useState(null);
   const [importPreview, setImportPreview] = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
-  const [isImporting, setIsImporting] = useState(false);
   const [importStatus, setImportStatus] = useState("");
   const [importError, setImportError] = useState("");
-  const fileInputRef = useRef(null);
+  const [lastImportInfo, setLastImportInfo] = useState(null);
+  const [isImporting, setIsImporting] = useState(false);
+  const [togglingVenueId, setTogglingVenueId] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
+  const [isUndoing, setIsUndoing] = useState(false);
 
-  // Shared institutional venues — all Admin / FI may manage
-  const canWrite =
-    user?.role === "admin" || user?.role === "faculty_incharge";
-  const manageableBlocks = useMemo(
-    () => (canWrite ? blocks : blocks.filter((b) => b.canManage)),
-    [blocks, canWrite]
-  );
+  const venueTypes = [
+    { value: "", label: "Select Type" },
+    { value: "classroom", label: "Classroom" },
+    { value: "lab", label: "Lab" },
+    { value: "hall", label: "Hall" },
+  ];
 
-  const fetchBlocks = useCallback(async () => {
-    // Always load all blocks — venues are shared, not creator-scoped
-    const res = await api.get("/venues/blocks");
-    setBlocks(res.data || []);
+  useEffect(() => {
+    const rows = Number(form.benchesRow) || 0;
+    if (benchConfig.length > 0) {
+      const totalSeats = benchConfig.reduce((sum, seats) => sum + seats, 0);
+      setCalculatedCapacity(rows * totalSeats);
+    } else {
+      setCalculatedCapacity(0);
+    }
+  }, [form.benchesRow, benchConfig]);
+
+  useEffect(() => {
+    const cols = Number(form.benchesCol) || 0;
+    if (cols > 0) {
+      if (configMode === "uniform") {
+        setBenchConfig(Array(cols).fill(uniformSeats));
+      } else if (benchConfig.length !== cols) {
+        const newConfig = Array(cols).fill(2);
+        for (let i = 0; i < Math.min(cols, benchConfig.length); i++) {
+          newConfig[i] = benchConfig[i];
+        }
+        setBenchConfig(newConfig);
+      }
+    } else {
+      setBenchConfig([]);
+    }
+  }, [form.benchesCol, configMode, uniformSeats]);
+
+  const fetchStats = async () => {
+    try {
+      const res = await api.get("/venues/stats");
+      setTotalVenues(res.data.totalVenues);
+      setTotalCapacity(res.data.totalCapacity);
+    } catch (err) {
+      if (err.response?.status !== 401) console.error("Failed to fetch stats", err);
+    }
+  };
+
+  const fetchVenues = async () => {
+    try {
+      const res = await api.get("/venues");
+      setVenues(res.data);
+    } catch (err) {
+      if (err.response?.status !== 401) console.error("Failed to fetch venues", err);
+    }
+  };
+
+  const checkLastImport = async () => {
+    try {
+      const res = await api.get("/import/last-venue-import");
+      setLastImportInfo(res.data);
+    } catch (err) {
+      console.error("Failed to fetch last import info", err);
+    }
+  };
+
+  useEffect(() => {
+    fetchStats();
+    fetchVenues();
+    checkLastImport();
   }, []);
 
-  const fetchVenues = useCallback(async () => {
-    const params = {
-      date: examDate,
-      startTime,
-      endTime,
-      session: examSession,
-    };
-    if (filterBlock) params.blockUuid = filterBlock;
-    if (filterType) params.type = filterType;
-    const res = await api.get("/venues", { params });
-    setVenues(res.data || []);
-  }, [examDate, startTime, endTime, examSession, filterBlock, filterType]);
-
-  const fetchPool = useCallback(async () => {
-    if (!examDate || !examSession) return;
-    try {
-      const res = await api.get("/venues/selection", {
-        params: { examDate, examSession },
-      });
-      setPool(res.data || []);
-    } catch {
-      setPool([]);
-    }
-  }, [examDate, examSession]);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      await Promise.all([fetchBlocks(), fetchVenues(), fetchPool()]);
-    } catch (err) {
-      if (err.response?.status !== 401) {
-        toast.error(getApiError(err), "Failed to load venues");
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [fetchBlocks, fetchVenues, fetchPool, toast]);
-
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
-
-  useEffect(() => {
-    setSelected(new Set());
-  }, [examDate, examSession, startTime, endTime]);
-
-  useEffect(() => {
-    const preset = SESSION_PRESETS[examSession];
-    if (preset) {
-      setStartTime(preset.start);
-      setEndTime(preset.end);
-    }
-  }, [examSession]);
-
-  const filteredVenues = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    return venues.filter((v) => {
-      if (q) {
-        const hay = `${v.name} ${v.code || ""} ${v.blockName || ""} ${v.type}`.toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      if (!capacityInRange(v.capacity, filterCapacity)) return false;
-      if (filterAvailability === "available") {
-        if (!(v.availability?.available && v.status === "ACTIVE")) return false;
-      }
-      if (filterAvailability === "reserved") {
-        if (v.availability?.available !== false) return false;
-      }
-      return true;
-    });
-  }, [venues, searchQuery, filterCapacity, filterAvailability]);
-
-  const venuesByBlock = useMemo(() => {
-    const map = new Map();
-    for (const b of blocks) {
-      map.set(b.uuid, { block: b, venues: [] });
-    }
-    for (const v of filteredVenues) {
-      const key = v.blockUuid || "__none__";
-      if (!map.has(key)) {
-        map.set(key, {
-          block: {
-            uuid: key,
-            name: v.blockName || "Unassigned Block",
-            code: v.blockCode || "",
-            canManage: v.canManage,
-            status: "ACTIVE",
-          },
-          venues: [],
-        });
-      }
-      map.get(key).venues.push(v);
-    }
-    return [...map.values()].filter((g) => g.venues.length > 0 || canWrite);
-  }, [blocks, filteredVenues, canWrite]);
-
-  const selectedCapacity = useMemo(() => {
-    let total = 0;
-    for (const v of venues) {
-      if (selected.has(v.uuid)) total += v.capacity || 0;
-    }
-    return total;
-  }, [selected, venues]);
-
-  const poolCapacity = useMemo(
-    () => pool.reduce((s, p) => s + (p.capacity || 0), 0),
-    [pool]
-  );
-
-  const openSchedule = async (venue) => {
-    setScheduleLoading(true);
-    try {
-      const res = await api.get(`/venues/${venue.uuid}/schedule`, {
-        params: { from: examDate, to: examDate },
-      });
-      setScheduleModal(res.data);
-    } catch (err) {
-      toast.error(getApiError(err), "Could not load schedule");
-    } finally {
-      setScheduleLoading(false);
-    }
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setForm((prev) => ({ ...prev, [name]: value }));
+    setError("");
+    setIsDuplicateError(false);
   };
 
-  const toggleSelect = (venue) => {
-    if (venue.status !== "ACTIVE") return;
-    if (venue.availability && venue.availability.available === false) return;
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(venue.uuid)) next.delete(venue.uuid);
-      else next.add(venue.uuid);
-      return next;
-    });
+  const handleBenchConfigChange = (index, value) => {
+    const newConfig = [...benchConfig];
+    newConfig[index] = parseInt(value) || 2;
+    setBenchConfig(newConfig);
   };
 
-  const handleAddToAllotment = async () => {
-    if (selected.size === 0) {
-      toast.error("Select at least one available venue.");
-      return;
-    }
-    try {
-      setSaving(true);
-      const res = await api.post("/venues/selection", {
-        venueUuids: [...selected],
-        examDate,
-        examSession,
-        startTime,
-        endTime,
-      });
-      toast.success(res.data.message || "Venues added to allotment pool.");
-      if (res.data.rejected?.length) {
-        toast.error(
-          `${res.data.rejected.length} venue(s) could not be selected.`,
-          "Partial selection"
-        );
-      }
-      setSelected(new Set());
-      await fetchPool();
-    } catch (err) {
-      toast.error(getApiError(err), getApiErrorTitle(err, "Selection failed"));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const removeFromPool = async (selectionUuid) => {
-    try {
-      await api.delete(`/venues/selection/${selectionUuid}`);
-      toast.success("Removed from allotment pool.");
-      await fetchPool();
-    } catch (err) {
-      toast.error(getApiError(err), "Could not remove");
-    }
-  };
-
-  const openCreateVenue = (blockUuid = "") => {
-    setEditingVenue(null);
-    setForm({
-      ...defaultForm(),
-      blockUuid: blockUuid || manageableBlocks[0]?.uuid || "",
-    });
-    setShowVenueForm(true);
-  };
-
-  const openEditVenue = (venue) => {
-    if (!canWrite) {
-      toast.error("You cannot edit venues.");
-      return;
-    }
-    setEditingVenue(venue);
-    setForm({
-      name: venue.name,
-      code: venue.code || venue.name,
-      type: venue.type,
-      benchesRow: String(venue.benchesRow || 5),
-      benchesCol: String(venue.benchesCol || 5),
-      floor: venue.floor || "",
-      description: venue.description || "",
-      blockUuid: venue.blockUuid || "",
-      status: venue.status || "ACTIVE",
-    });
-    setUniformSeats(venue.benchConfig?.[0] || 2);
-    setShowVenueForm(true);
-  };
-
-  const handleSaveVenue = async (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    const benchesRow = Number(form.benchesRow);
-    const benchesCol = Number(form.benchesCol);
-    if (!form.name || !form.type || !form.blockUuid || !benchesRow || !benchesCol) {
-      toast.error("Name, type, block, rows and columns are required.");
+    setError("");
+    setIsDuplicateError(false);
+
+    if (!form.name || !form.type || !form.benchesRow || !form.benchesCol) {
+      setError("All fields are required.");
       return;
     }
-    const benchConfig = Array(benchesCol).fill(Number(uniformSeats) || 2);
+
+    if (benchConfig.length === 0) {
+      setError("Please configure bench seating.");
+      return;
+    }
+
     const payload = {
-      name: form.name.trim(),
-      code: (form.code || form.name).trim(),
-      type: form.type,
-      benchesRow,
-      benchesCol,
-      benchConfig,
-      blockUuid: form.blockUuid,
-      floor: form.floor || null,
-      description: form.description || null,
-      status: form.status,
+      ...form,
+      benchesRow: Number(form.benchesRow),
+      benchesCol: Number(form.benchesCol),
+      benchConfig: benchConfig,
     };
+
     try {
       setSaving(true);
-      if (editingVenue) {
-        await api.put(`/venues/${editingVenue.uuid}`, payload);
-        toast.success("Venue updated.");
+      if (editingId) {
+        await api.put(`/venues/${editingId}`, payload);
+        toast.success("Venue updated successfully.");
       } else {
         await api.post("/venues", payload);
-        toast.success("Venue created.");
+        toast.success("Venue added successfully.");
       }
-      setShowVenueForm(false);
-      await refresh();
+      handleReset();
+      fetchStats();
+      fetchVenues();
     } catch (err) {
-      toast.error(getApiError(err), getApiErrorTitle(err, "Save failed"));
+      if (err.response?.status === 401) return;
+      if (err.response?.data?.error === "Duplicate venue") {
+        setIsDuplicateError(true);
+        setError(`A venue named "${form.name}" with type "${form.type}" already exists.`);
+      } else {
+        setError(getApiError(err, "Failed to save venue."));
+      }
     } finally {
       setSaving(false);
     }
   };
 
-  const handleDisableVenue = async (venue) => {
-    if (!canWrite) {
-      toast.error("You cannot modify venues.");
+  const handleToggleVenueAvailability = async (venue) => {
+    const id = venue.uuid;
+    const on = venue.isAvailable !== false;
+    setTogglingVenueId(id);
+    try {
+      await api.put(`/venues/${id}/availability`, { isAvailable: !on });
+      fetchStats();
+      fetchVenues();
+    } catch (err) {
+      if (err.response?.status !== 401) {
+        toast.error(getApiError(err), "Could not update availability");
+      }
+    } finally {
+      setTogglingVenueId(null);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!id) {
+      toast.error("Invalid venue ID.", "Cannot delete");
       return;
     }
-    const nextStatus = venue.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
-    const ok = await showConfirm(
-      nextStatus === "INACTIVE"
-        ? `Disable ${venue.name}? It will not be selectable for allotment.`
-        : `Re-enable ${venue.name}?`
-    );
+    const ok = await showConfirm("Are you sure you want to delete this venue?");
     if (!ok) return;
+    setDeletingId(id);
     try {
-      await api.patch(`/venues/${venue.uuid}/status`, { status: nextStatus });
-      toast.success(`Venue ${nextStatus === "ACTIVE" ? "enabled" : "disabled"}.`);
-      await fetchVenues();
+      await api.delete(`/venues/${id}`);
+      toast.success("Venue deleted successfully.");
+      fetchStats();
+      fetchVenues();
     } catch (err) {
-      toast.error(getApiError(err), "Status update failed");
-    }
-  };
-
-  const handleCreateBlock = async (e) => {
-    e.preventDefault();
-    if (!blockForm.name || !blockForm.code) {
-      toast.error("Block name and code are required.");
-      return;
-    }
-    try {
-      setSaving(true);
-      await api.post("/venues/blocks", {
-        name: blockForm.name.trim(),
-        code: blockForm.code.trim().toUpperCase(),
-        description: blockForm.description || null,
-        owningDepartment:
-          user?.role === "admin"
-            ? blockForm.owningDepartment || user?.department
-            : undefined,
-      });
-      toast.success("Block created.");
-      setShowBlockForm(false);
-      setBlockForm({ name: "", code: "", description: "", owningDepartment: "" });
-      await refresh();
-    } catch (err) {
-      toast.error(getApiError(err), getApiErrorTitle(err, "Could not create block"));
+      if (err.response?.status === 401) return;
+      toast.error(getApiError(err), getApiErrorTitle(err, "Cannot delete venue"));
     } finally {
-      setSaving(false);
+      setDeletingId(null);
     }
   };
 
-  const handleImportFileSelect = async (e) => {
-    const file = e.target.files?.[0];
+  const handleEdit = (venue) => {
+    setForm({
+      name: venue.name,
+      type: venue.type,
+      benchesRow: venue.benchesRow,
+      benchesCol: venue.benchesCol,
+    });
+    setBenchConfig(venue.benchConfig || Array(venue.benchesCol).fill(2));
+    setConfigMode("custom");
+    setCalculatedCapacity(venue.capacity);
+    setEditingId(venue.uuid);
+    setActiveTab("basic");
+  };
+
+  const handleReset = () => {
+    setForm({ name: "", type: "", benchesRow: "", benchesCol: "" });
+    setBenchConfig([]);
+    setConfigMode("uniform");
+    setUniformSeats(2);
+    setCalculatedCapacity(0);
+    setEditingId(null);
+    setError("");
+    setIsDuplicateError(false);
+  };
+
+  const handleFileSelect = async (e) => {
+    const file = e.target.files[0];
     setImportPreview(null);
-    setImportError("");
-    setImportStatus("");
     if (!file) {
       setSelectedFile(null);
       return;
@@ -469,6 +258,8 @@ export default function VenueManagement() {
       return;
     }
     setSelectedFile(file);
+    setImportError("");
+    setImportStatus("");
     setPreviewLoading(true);
     const formData = new FormData();
     formData.append("file", file);
@@ -477,7 +268,11 @@ export default function VenueManagement() {
         headers: { "Content-Type": "multipart/form-data" },
       });
       setImportPreview(res.data);
-      setImportStatus(res.data.message || "");
+      setImportStatus(
+        res.data.canImport
+          ? `✅ ${res.data.message}`
+          : `⚠️ ${res.data.message}`
+      );
     } catch (err) {
       if (err.response?.status === 401) return;
       setImportPreview(err.response?.data?.rows ? err.response.data : null);
@@ -496,15 +291,8 @@ export default function VenueManagement() {
       setImportError("Please select a file first");
       return;
     }
-    if (importPreview && importPreview.hasBlockColumn === false && !importBlockUuid) {
-      setImportError("Select a Block for this import (Excel has no Block column).");
-      return;
-    }
-    if (importPreview && (importPreview.errorCount > 0 || importPreview.canImport === false)) {
-      setImportError(
-        importPreview.message ||
-          "Import blocked. Please correct the errors before importing."
-      );
+    if (!importPreview?.canImport) {
+      setImportError("Import blocked. Please correct the errors before importing.");
       return;
     }
     setIsImporting(true);
@@ -512,816 +300,656 @@ export default function VenueManagement() {
     setImportStatus("");
     const formData = new FormData();
     formData.append("file", selectedFile);
-    if (importBlockUuid) formData.append("blockUuid", importBlockUuid);
-    formData.append("onDuplicate", onDuplicate);
     try {
       const res = await api.post("/import/import-venues", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
-      const inserted = res.data.inserted ?? 0;
-      const updated = res.data.updated ?? 0;
-      const skipped = res.data.skipped ?? 0;
-      const summary =
-        res.data.message ||
-        `Import validated. Inserted: ${inserted}, Updated: ${updated}, Skipped: ${skipped}`;
-      setImportStatus(summary);
-      toast.success(summary);
+      setImportStatus(`✅ Import completed! Inserted: ${res.data.inserted}`);
       setSelectedFile(null);
       setImportPreview(null);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-      await refresh();
-      // Post-import check: confirm venues are listed under the selected/shared blocks
-      if (inserted + updated > 0) {
-        setImportStatus(
-          `${summary} — Venue list refreshed. Confirm Block filter shows the imported venues.`
-        );
-      }
+      document.getElementById("venue-file-input").value = "";
+      await fetchStats();
+      await fetchVenues();
+      await checkLastImport();
     } catch (err) {
       if (err.response?.status === 401) return;
       const data = err.response?.data;
       if (data?.rows) setImportPreview(data);
-      setImportError(data?.message || getApiError(err, "Import failed"));
+      const details =
+        data?.skippedRecords?.join("\n") ||
+        data?.duplicates?.join(", ") ||
+        "";
+      setImportError(`❌ ${data?.message || "Import failed"}${details ? `\n${details}` : ""}`);
     } finally {
       setIsImporting(false);
     }
   };
 
+  const handleUndoImport = async () => {
+    const ok = await showConfirm("This will delete all venues from the last import. Continue?");
+    if (!ok) return;
+    setIsUndoing(true);
+    try {
+      const res = await api.post("/import/undo-venue-import");
+      toast.success(res.data.message || res.data.data?.message || "Import undone successfully.");
+      await fetchStats();
+      await fetchVenues();
+      await checkLastImport();
+    } catch (err) {
+      if (err.response?.status === 401) return;
+      toast.error(getApiError(err), getApiErrorTitle(err, "Undo failed"));
+    } finally {
+      setIsUndoing(false);
+    }
+  };
+
+  const handleDownloadTemplate = () => {
+    downloadTemplateFile("venue").catch((e) => toast.error(e.message, "Download failed"));
+  };
+
+  const handleSearch = (e) => setSearchQuery(e.target.value);
+  const handleSort = () =>
+    setSortOrder((prev) => (prev === "highToLow" ? "lowToHigh" : "highToLow"));
+
+  const filteredVenues = venues
+    .filter(
+      (v) =>
+        v.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        v.type.toLowerCase().includes(searchQuery.toLowerCase())
+    )
+    .sort((a, b) =>
+      sortOrder === "highToLow" ? b.capacity - a.capacity : a.capacity - b.capacity
+    );
+
+  const rows = Number(form.benchesRow) || 0;
+  const cols = Number(form.benchesCol) || 0;
+
   return (
-    <div className="max-w-7xl mx-auto px-3 sm:px-4 md:px-6 py-4 sm:py-6 space-y-4 sm:space-y-6">
-      <header className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+    <div className="min-h-screen bg-gray-50 font-[Inter,sans-serif]">
+      {/* ========== HEADER ========== */}
+      <div className="px-4 md:px-8 py-6 flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => window.history.back()}
+          className="p-2 rounded-xl text-gray-500 hover:text-gray-800 hover:bg-white transition-all duration-200"
+          aria-label="Go back"
+        >
+          <ArrowLeftIcon className="h-5 w-5" />
+        </button>
         <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Venue Management</h1>
-          <p className="text-sm text-gray-600 mt-1">
-            Shared institutional venues classified by Block. Availability is checked by date and session.
+          <h1 className="text-2xl md:text-3xl font-bold text-gray-800">
+            {editingId ? "Edit Venue" : "Venue Management"}
+          </h1>
+          <p className="text-sm text-gray-500 mt-0.5">
+            Configure and oversee your property seating and event capacity.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          {canWrite && (
-            <button
-              type="button"
-              onClick={() => openCreateVenue()}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700"
-            >
-              <PlusIcon className="h-4 w-4" />
-              Add Venue
-            </button>
-          )}
-          {canWrite && (
-            <button
-              type="button"
-              onClick={() => setShowBlockForm(true)}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm font-semibold text-gray-800 hover:bg-gray-50"
-            >
-              <PlusIcon className="h-4 w-4" />
-              Add Block
-            </button>
-          )}
-        </div>
-      </header>
-
-      {/* Excel import — keeps existing seating columns; Block optional */}
-      {canWrite && (
-        <section className="bg-white border border-gray-100 rounded-xl shadow-sm p-4 sm:p-5 space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-            <div>
-              <h2 className="text-base font-bold text-gray-900">Import Venues</h2>
-              <p className="text-xs text-gray-500 mt-0.5">
-                Excel: Venue Name | Type | Block (optional) | Rows | Columns | Bench Config
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() =>
-                downloadTemplate("venue").catch((e) => toast.error(e.message, "Download failed"))
-              }
-              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-50 text-blue-700 text-xs font-semibold hover:bg-blue-100"
-            >
-              <DocumentArrowDownIcon className="h-4 w-4" />
-              Download Template
-            </button>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <div className="text-xs font-semibold text-gray-600 space-y-1 sm:col-span-2">
-              <span>Excel File</span>
-              <div className="flex flex-wrap items-center gap-2">
-                <input
-                  ref={fileInputRef}
-                  id="venue-file-input"
-                  type="file"
-                  accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
-                  onChange={handleImportFileSelect}
-                  className="sr-only"
-                />
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm font-semibold text-gray-800 hover:bg-gray-50"
-                >
-                  <ArrowUpTrayIcon className="h-4 w-4" />
-                  Browse…
-                </button>
-                <span className="text-sm font-normal text-gray-600 truncate max-w-[220px]">
-                  {selectedFile ? selectedFile.name : "No file selected"}
-                </span>
-              </div>
-            </div>
-            <label className="text-xs font-semibold text-gray-600 space-y-1">
-              <span>Block {importPreview?.hasBlockColumn ? "(Excel has Block)" : "*"}</span>
-              <select
-                value={importBlockUuid}
-                onChange={(e) => setImportBlockUuid(e.target.value)}
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm bg-white"
-              >
-                <option value="">Select Block</option>
-                {blocks.map((b) => (
-                  <option key={b.uuid} value={b.uuid}>
-                    {b.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="text-xs font-semibold text-gray-600 space-y-1">
-              <span>If venue already exists</span>
-              <select
-                value={onDuplicate}
-                onChange={(e) => setOnDuplicate(e.target.value)}
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm bg-white"
-              >
-                <option value="skip">Skip</option>
-                <option value="update_block">Update Block</option>
-                <option value="update_venue">Update Existing Venue</option>
-              </select>
-            </label>
-          </div>
-          {previewLoading && <p className="text-sm text-gray-500">Validating…</p>}
-          {importStatus && (
-            <p className="text-sm text-gray-700 bg-gray-50 rounded-lg px-3 py-2">{importStatus}</p>
-          )}
-          {importError && (
-            <p className="text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2 whitespace-pre-wrap">
-              {importError}
-            </p>
-          )}
-          {importPreview?.rows?.length > 0 && (
-            <div className="max-h-48 overflow-auto rounded-lg border border-gray-100">
-              <table className="min-w-full text-xs">
-                <thead className="bg-gray-50 sticky top-0">
-                  <tr>
-                    <th className="px-2 py-1.5 text-left">Row</th>
-                    <th className="px-2 py-1.5 text-left">Name</th>
-                    <th className="px-2 py-1.5 text-left">Type</th>
-                    <th className="px-2 py-1.5 text-left">Block</th>
-                    <th className="px-2 py-1.5 text-left">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {importPreview.rows.map((r) => (
-                    <tr key={r.rowNum} className="border-t border-gray-50">
-                      <td className="px-2 py-1">{r.rowNum}</td>
-                      <td className="px-2 py-1">{r.name}</td>
-                      <td className="px-2 py-1">{r.type}</td>
-                      <td className="px-2 py-1">
-                        {r.blockName ||
-                          (r.existing?.blockName
-                            ? `Existing: ${r.existing.blockName}`
-                            : "—")}
-                      </td>
-                      <td className="px-2 py-1">
-                        <span
-                          className={
-                            r.status === "VALID"
-                              ? "text-green-700"
-                              : r.status === "DUPLICATE"
-                                ? "text-amber-700"
-                                : "text-red-700"
-                          }
-                        >
-                          {r.status}
-                          {r.error ? `: ${r.error}` : ""}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              disabled={
-                isImporting ||
-                !selectedFile ||
-                previewLoading ||
-                (importPreview &&
-                  (importPreview.errorCount > 0 || importPreview.canImport === false)) ||
-                (importPreview?.hasBlockColumn === false && !importBlockUuid)
-              }
-              onClick={handleBulkImport}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50"
-            >
-              <ArrowUpTrayIcon className="h-4 w-4" />
-              {isImporting ? "Importing…" : "Import"}
-            </button>
-            {importPreview?.hasBlockColumn === false && !importBlockUuid && (
-              <p className="text-xs text-amber-700 self-center">
-                Select a Block before importing (Excel has no Block column).
-              </p>
-            )}
-          </div>
-        </section>
-      )}
-
-      {/* Shared venue list — Block filter is primary */}
-      <div className="text-sm font-medium text-gray-600">
-        Venues are shared across all Faculty In-Charges (not restricted by who created them).
       </div>
 
-      {/* Filters */}
-      <section className="bg-white border border-gray-100 rounded-xl shadow-sm p-4 space-y-3">
-        <div className="relative">
-          <MagnifyingGlassIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
-          <input
-            type="search"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search venues..."
-            className="w-full pl-10 pr-3 py-2.5 rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-          />
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-          <label className="text-xs font-semibold text-gray-600 space-y-1">
-            <span>Block</span>
-            <select
-              value={filterBlock}
-              onChange={(e) => setFilterBlock(e.target.value)}
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-            >
-              <option value="">All</option>
-              {blocks.map((b) => (
-                <option key={b.uuid} value={b.uuid}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-xs font-semibold text-gray-600 space-y-1">
-            <span>Venue Type</span>
-            <select
-              value={filterType}
-              onChange={(e) => setFilterType(e.target.value)}
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-            >
-              {VENUE_TYPES.map((t) => (
-                <option key={t.value || "all"} value={t.value}>
-                  {t.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-xs font-semibold text-gray-600 space-y-1">
-            <span>Capacity</span>
-            <select
-              value={filterCapacity}
-              onChange={(e) => setFilterCapacity(e.target.value)}
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-            >
-              {CAPACITY_PRESETS.map((c) => (
-                <option key={c.value || "all"} value={c.value}>
-                  {c.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-xs font-semibold text-gray-600 space-y-1">
-            <span>Availability</span>
-            <select
-              value={filterAvailability}
-              onChange={(e) => setFilterAvailability(e.target.value)}
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-            >
-              <option value="">All</option>
-              <option value="available">Available</option>
-              <option value="reserved">Reserved</option>
-            </select>
-          </label>
-          <label className="text-xs font-semibold text-gray-600 space-y-1">
-            <span>Date</span>
-            <input
-              type="date"
-              value={examDate}
-              onChange={(e) => setExamDate(e.target.value)}
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-            />
-          </label>
-          <label className="text-xs font-semibold text-gray-600 space-y-1">
-            <span>Session</span>
-            <select
-              value={examSession}
-              onChange={(e) => setExamSession(e.target.value)}
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-            >
-              <option value="FN">FN (Morning)</option>
-              <option value="AN">AN (Afternoon)</option>
-            </select>
-          </label>
-        </div>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <label className="text-xs font-semibold text-gray-600 space-y-1">
-            <span>Start</span>
-            <input
-              type="time"
-              value={startTime}
-              onChange={(e) => setStartTime(e.target.value)}
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-            />
-          </label>
-          <label className="text-xs font-semibold text-gray-600 space-y-1">
-            <span>End</span>
-            <input
-              type="time"
-              value={endTime}
-              onChange={(e) => setEndTime(e.target.value)}
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-            />
-          </label>
-          <div className="col-span-2 flex items-end text-xs text-gray-500">
-            Checking {formatDisplayDate(examDate)} · {formatTimeRange(startTime, endTime)}
+      {/* ========== STATS CARDS ========== */}
+      <div className="px-4 md:px-8 mb-6 grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-all duration-200">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Total Venues</p>
+              <p className="text-2xl md:text-3xl font-bold text-gray-800 mt-1">{totalVenues}</p>
+              <p className="text-sm text-gray-400 mt-1">—</p>
+            </div>
+            <div className="w-12 h-12 rounded-2xl bg-blue-100 flex items-center justify-center shrink-0">
+              <BuildingOffice2Icon className="h-6 w-6 text-blue-600" />
+            </div>
           </div>
         </div>
-      </section>
-
-      {/* Allotment pool summary */}
-      {(pool.length > 0 || selected.size > 0) && (
-        <section className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 space-y-3">
-          {selected.size > 0 && (
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-              <p className="text-sm font-semibold text-indigo-900">
-                {selected.size} venue{selected.size === 1 ? "" : "s"} selected · Total capacity:{" "}
-                {selectedCapacity}
-              </p>
-              <button
-                type="button"
-                disabled={saving}
-                onClick={handleAddToAllotment}
-                className="inline-flex items-center justify-center px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-60"
-              >
-                Add to Allotment
-              </button>
-            </div>
-          )}
-          {pool.length > 0 && (
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-all duration-200">
+          <div className="flex items-start justify-between">
             <div>
-              <div className="flex items-center justify-between gap-2 mb-2">
-                <p className="text-sm font-semibold text-indigo-900">
-                  Allotment pool ({examSession} · {formatDisplayDate(examDate)}) — {pool.length}{" "}
-                  venues · {poolCapacity} seats
-                </p>
-                <Link
-                  to="/allotment"
-                  className="text-sm font-semibold text-indigo-700 hover:underline"
-                >
-                  Open Allotment →
-                </Link>
-              </div>
-              <ul className="flex flex-wrap gap-2">
-                {pool.map((p) => (
-                  <li
-                    key={p.uuid}
-                    className="inline-flex items-center gap-2 rounded-full bg-white border border-indigo-200 px-3 py-1 text-xs font-medium text-gray-800"
-                  >
-                    <span>
-                      {p.venueName} ({p.capacity})
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => removeFromPool(p.uuid)}
-                      className="text-gray-400 hover:text-red-600"
-                      aria-label="Remove"
-                    >
-                      <XMarkIcon className="h-3.5 w-3.5" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Total Capacity</p>
+              <p className="text-2xl md:text-3xl font-bold text-gray-800 mt-1">{totalCapacity.toLocaleString()}</p>
+              <p className="text-sm text-gray-400 mt-1">—</p>
             </div>
-          )}
-        </section>
-      )}
-
-      {/* Block → Venue list */}
-      {loading ? (
-        <p className="text-center text-gray-500 py-12">Loading venues…</p>
-      ) : venuesByBlock.length === 0 ? (
-        <div className="bg-white border border-dashed border-gray-200 rounded-xl p-10 text-center text-gray-500">
-          <BuildingOffice2Icon className="h-10 w-10 mx-auto mb-3 text-gray-300" />
-          <p className="font-medium">No blocks or venues found.</p>
-          <p className="text-sm mt-1">Create a block, then add venues under My Blocks.</p>
+            <div className="w-12 h-12 rounded-2xl bg-violet-100 flex items-center justify-center shrink-0">
+              <UserGroupIcon className="h-6 w-6 text-violet-600" />
+            </div>
+          </div>
         </div>
-      ) : (
-        <div className="space-y-4">
-          {venuesByBlock.map(({ block, venues: blockVenues }) => (
-            <section
-              key={block.uuid}
-              className="bg-white border border-gray-100 rounded-xl shadow-sm overflow-hidden"
-            >
-              <div className="px-4 sm:px-5 py-3 border-b border-gray-100 flex flex-wrap items-center justify-between gap-2 bg-gray-50/80">
+      </div>
+
+      {/* ========== TABS ========== */}
+      <div className="px-4 md:px-8 border-b border-gray-200 bg-white rounded-t-2xl">
+        <div className="flex overflow-x-auto scrollbar-hide -mb-px">
+          <button
+            type="button"
+            onClick={() => setActiveTab("basic")}
+            className={`py-4 px-4 md:px-6 text-sm font-medium whitespace-nowrap border-b-2 transition-all duration-200 ${
+              activeTab === "basic"
+                ? "border-blue-600 text-blue-600"
+                : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            Basic Details
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("bulk")}
+            className={`py-4 px-4 md:px-6 text-sm font-medium whitespace-nowrap border-b-2 transition-all duration-200 ${
+              activeTab === "bulk"
+                ? "border-blue-600 text-blue-600"
+                : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            Bulk Import
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("hall")}
+            className={`py-4 px-4 md:px-6 text-sm font-medium whitespace-nowrap border-b-2 transition-all duration-200 ${
+              activeTab === "hall"
+                ? "border-blue-600 text-blue-600"
+                : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            All Venues
+          </button>
+        </div>
+      </div>
+
+      {/* ========== BASIC DETAILS TAB ========== */}
+      {activeTab === "basic" && (
+        <div className="px-4 md:px-8 py-6 md:py-8">
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 md:p-8">
+            <form onSubmit={handleSubmit} className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              {/* Left: Form */}
+              <div className="space-y-6">
+                <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                  <InformationCircleIcon className="h-5 w-5 text-blue-500" />
+                  Venue Details
+                </h2>
+
+                {error && (
+                  <div
+                    className={`p-4 rounded-xl text-sm font-medium ${
+                      isDuplicateError
+                        ? "bg-amber-50 border border-amber-200 text-amber-800"
+                        : "bg-red-50 border border-red-200 text-red-800"
+                    }`}
+                  >
+                    {error}
+                  </div>
+                )}
+
                 <div>
-                  <h2 className="text-base sm:text-lg font-bold text-gray-900">{block.name}</h2>
-                  <p className="text-xs text-gray-500">
-                    {block.code}
-                    {block.status && block.status !== "ACTIVE" ? ` · ${block.status}` : ""}
-                  </p>
+                  <label className="block text-sm font-medium text-gray-600 mb-2">Venue Name</label>
+                  <input
+                    type="text"
+                    name="name"
+                    value={form.name}
+                    onChange={handleChange}
+                    placeholder="e.g. AD203 / B201"
+                    className="w-full h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                  />
                 </div>
-                {canWrite && (
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-600 mb-2">Venue Type</label>
+                  <select
+                    name="type"
+                    value={form.type}
+                    onChange={handleChange}
+                    className="w-full h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all bg-white"
+                  >
+                    {venueTypes.map((t) => (
+                      <option key={t.value} value={t.value}>
+                        {t.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-600 mb-2">Benches (Rows)</label>
+                    <input
+                      type="number"
+                      name="benchesRow"
+                      value={form.benchesRow}
+                      onChange={handleChange}
+                      placeholder="e.g. 20"
+                      min={1}
+                      max={20}
+                      className="w-full h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-600 mb-2">Benches (Columns)</label>
+                    <input
+                      type="number"
+                      name="benchesCol"
+                      value={form.benchesCol}
+                      onChange={handleChange}
+                      placeholder="e.g. 10"
+                      min={1}
+                      max={20}
+                      className="w-full h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                    />
+                  </div>
+                </div>
+
+                {form.benchesCol > 0 && (
+                  <>
+                    <h3 className="text-lg font-semibold text-gray-800 flex items-center gap-2 pt-4 border-t border-gray-100">
+                      <Squares2X2Icon className="h-5 w-5 text-blue-500" />
+                      Bench Seating Configuration
+                    </h3>
+                    <div className="flex gap-6">
+                      <label className="flex items-center gap-3 cursor-pointer group">
+                        <input
+                          type="radio"
+                          name="configMode"
+                          checked={configMode === "uniform"}
+                          onChange={() => setConfigMode("uniform")}
+                          className="peer sr-only"
+                        />
+                        <span className="relative h-5 w-5 shrink-0 rounded-full border-2 border-gray-300 group-hover:border-blue-400 transition-colors peer-checked:border-blue-600 peer-checked:bg-blue-600 after:absolute after:left-1/2 after:top-1/2 after:h-2 after:w-2 after:-translate-x-1/2 after:-translate-y-1/2 after:rounded-full after:bg-white after:scale-0 after:content-[''] peer-checked:after:scale-100" />
+                        <span className="text-sm font-medium text-gray-700">Uniform</span>
+                      </label>
+                      <label className="flex items-center gap-3 cursor-pointer group">
+                        <input
+                          type="radio"
+                          name="configMode"
+                          checked={configMode === "custom"}
+                          onChange={() => setConfigMode("custom")}
+                          className="peer sr-only"
+                        />
+                        <span className="relative h-5 w-5 shrink-0 rounded-full border-2 border-gray-300 group-hover:border-blue-400 transition-colors peer-checked:border-blue-600 peer-checked:bg-blue-600 after:absolute after:left-1/2 after:top-1/2 after:h-2 after:w-2 after:-translate-x-1/2 after:-translate-y-1/2 after:rounded-full after:bg-white after:scale-0 after:content-[''] peer-checked:after:scale-100" />
+                        <span className="text-sm font-medium text-gray-700">Custom</span>
+                      </label>
+                    </div>
+
+                    {configMode === "uniform" ? (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-600 mb-2">Seats per bench</label>
+                        <select
+                          value={uniformSeats}
+                          onChange={(e) => {
+                            const seats = parseInt(e.target.value);
+                            setUniformSeats(seats);
+                            setBenchConfig(Array(Number(form.benchesCol)).fill(seats));
+                          }}
+                          className="w-full h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all bg-white"
+                        >
+                          <option value={2}>2 Seats</option>
+                          <option value={3}>3 Seats</option>
+                        </select>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+                        {benchConfig.map((seats, idx) => (
+                          <div key={idx}>
+                            <label className="block text-xs font-medium text-gray-600 mb-1">
+                              Column {String.fromCharCode(65 + idx)}
+                            </label>
+                            <select
+                              value={seats}
+                              onChange={(e) => handleBenchConfigChange(idx, e.target.value)}
+                              className="w-full h-11 px-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none transition-all text-sm bg-white"
+                            >
+                              <option value={2}>2</option>
+                              <option value={3}>3</option>
+                            </select>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="p-4 rounded-xl bg-blue-50 border border-blue-100 text-sm text-blue-800">
+                      <p><strong>Configuration:</strong> {benchConfig.join(", ")} seats per column</p>
+                      <p className="mt-1"><strong>Total Capacity:</strong> {calculatedCapacity} students</p>
+                    </div>
+                  </>
+                )}
+
+                <div className="flex flex-wrap gap-3 pt-4">
+                  <button
+                    type="submit"
+                    disabled={saving}
+                    className="px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold shadow-sm hover:shadow-md transition-all duration-200"
+                  >
+                    {saving ? "Saving..." : editingId ? "Update Venue" : "Add Venue"}
+                  </button>
                   <button
                     type="button"
-                    onClick={() => openCreateVenue(block.uuid)}
-                    className="text-sm font-semibold text-blue-600 hover:underline"
+                    onClick={handleReset}
+                    className="px-6 py-3 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold transition-all duration-200"
                   >
-                    + Add venue
+                    Reset
                   </button>
+                </div>
+              </div>
+
+              {/* Right: Configuration Summary */}
+              <div className="lg:pl-0">
+                <div className="bg-blue-50 border border-blue-100 rounded-2xl p-6">
+                  <h4 className="text-xs font-semibold text-blue-800 uppercase tracking-wide mb-4">
+                    Configuration Summary
+                  </h4>
+                  <div className="grid grid-cols-2 gap-6">
+                    <div>
+                      <p className="text-sm text-blue-700">Total Benches</p>
+                      <p className="text-xl font-bold text-blue-900 mt-0.5">
+                        {rows && cols ? rows * cols : "—"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-blue-700">Layout</p>
+                      <p className="text-lg font-bold text-blue-900 mt-0.5">
+                        {rows && cols ? `${rows} Rows × ${cols} Columns` : "—"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-blue-700">Total Seats</p>
+                      <p className="text-xl font-bold text-blue-900 mt-0.5">
+                        {calculatedCapacity ? calculatedCapacity.toLocaleString() : "—"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-blue-700">Density</p>
+                      <p className="text-lg font-bold text-blue-900 mt-0.5">
+                        {configMode === "uniform" ? "Uniform" : "Custom"}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========== BULK IMPORT TAB ========== */}
+      {activeTab === "bulk" && (
+        <div className="px-4 md:px-8 py-6 md:py-8">
+          <div className="max-w-3xl">
+            <h2 className="text-lg font-semibold text-gray-800 mb-6">Bulk Import Venues</h2>
+
+            <div className="bg-blue-50 border border-blue-100 rounded-2xl p-6 mb-6">
+              <div className="flex items-start gap-4">
+                <DocumentArrowDownIcon className="h-6 w-6 text-blue-600 shrink-0 mt-0.5" />
+                <div>
+                  <h3 className="font-semibold text-blue-900 mb-2">Download Template First</h3>
+                  <p className="text-sm text-blue-800 mb-4">
+                    Use our template to ensure your data is formatted correctly.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleDownloadTemplate}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium shadow-sm transition-all duration-200"
+                  >
+                    <DocumentArrowDownIcon className="h-5 w-5" />
+                    Download Excel Template
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white border-2 border-dashed border-gray-200 rounded-2xl p-8 mb-6">
+              <div className="text-center">
+                <ArrowUpTrayIcon className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                <input
+                  id="venue-file-input"
+                  type="file"
+                  accept=".xlsx,.xls"
+                  onChange={handleFileSelect}
+                  className="hidden"
+                />
+                <label
+                  htmlFor="venue-file-input"
+                  className="cursor-pointer inline-flex items-center gap-2 px-5 py-2.5 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 text-sm font-medium text-gray-700 transition-all duration-200"
+                >
+                  <ArrowUpTrayIcon className="h-5 w-5" />
+                  Choose Excel File
+                </label>
+                {selectedFile && (
+                  <p className="mt-3 text-sm text-gray-600">
+                    Selected: <span className="font-medium">{selectedFile.name}</span>
+                    {previewLoading ? " — Validating…" : ""}
+                  </p>
                 )}
               </div>
-              <ul className="divide-y divide-gray-100">
-                {blockVenues.length === 0 ? (
-                  <li className="px-4 py-6 text-sm text-gray-500">No venues in this block yet.</li>
-                ) : (
-                  blockVenues.map((v) => {
-                    const reserved = v.availability && v.availability.available === false;
-                    const available =
-                      v.status === "ACTIVE" && (!v.availability || v.availability.available);
-                    const conflict = v.availability?.conflicts?.[0];
-                    const isChecked = selected.has(v.uuid);
-                    const selectable = available && !reserved;
+            </div>
 
-                    return (
-                      <li key={v.uuid} className="px-4 sm:px-5 py-3 sm:py-4">
-                        <div className="flex flex-col sm:flex-row sm:items-start gap-3">
-                          <div className="flex items-start gap-3 flex-1 min-w-0">
-                            {selectable ? (
-                              <input
-                                type="checkbox"
-                                checked={isChecked}
-                                onChange={() => toggleSelect(v)}
-                                className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600"
-                              />
+            {importPreview?.rows?.length > 0 && (
+              <div className="rounded-2xl border border-gray-200 overflow-hidden mb-6">
+                <div className="flex flex-wrap items-center justify-between gap-2 bg-gray-50 px-4 py-2.5 text-xs font-semibold text-gray-600">
+                  <span>
+                    Preview — {importPreview.validCount} valid, {importPreview.errorCount} error(s)
+                  </span>
+                  <span className={importPreview.canImport ? "text-green-700" : "text-red-700"}>
+                    {importPreview.canImport
+                      ? "Ready to import"
+                      : "Import blocked until errors are fixed"}
+                  </span>
+                </div>
+                <div className="max-h-72 overflow-auto">
+                  <table className="min-w-full text-xs">
+                    <thead className="sticky top-0 bg-white border-b border-gray-100 text-left text-gray-500">
+                      <tr>
+                        <th className="px-3 py-2">Row</th>
+                        <th className="px-3 py-2">Name</th>
+                        <th className="px-3 py-2">Type</th>
+                        <th className="px-3 py-2">Rows×Cols</th>
+                        <th className="px-3 py-2">Bench Config</th>
+                        <th className="px-3 py-2">Capacity</th>
+                        <th className="px-3 py-2">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {importPreview.rows.map((row) => (
+                        <tr
+                          key={`venue-preview-${row.rowNum}`}
+                          className={
+                            row.status === "ERROR"
+                              ? "bg-red-50/70 border-b border-red-100"
+                              : "border-b border-gray-50"
+                          }
+                        >
+                          <td className="px-3 py-2">{row.rowNum}</td>
+                          <td className="px-3 py-2 font-medium">{row.name || "—"}</td>
+                          <td className="px-3 py-2">{row.type || "—"}</td>
+                          <td className="px-3 py-2">
+                            {row.benchesRow && row.benchesCol
+                              ? `${row.benchesRow}×${row.benchesCol}`
+                              : "—"}
+                          </td>
+                          <td className="px-3 py-2 font-mono">
+                            {Array.isArray(row.benchConfig) && row.benchConfig.length
+                              ? row.benchConfig.join(",")
+                              : "—"}
+                          </td>
+                          <td className="px-3 py-2">{row.capacity || "—"}</td>
+                          <td className="px-3 py-2">
+                            {row.status === "VALID" ? (
+                              <span className="font-semibold text-green-700">VALID</span>
                             ) : (
-                              <LockClosedIcon className="mt-1 h-4 w-4 text-gray-400 shrink-0" />
+                              <div>
+                                <span className="font-semibold text-red-700">ERROR</span>
+                                <p className="mt-0.5 text-red-700 font-normal max-w-[260px]">
+                                  {row.error || row.errors?.[0]}
+                                </p>
+                              </div>
                             )}
-                            <div className="min-w-0 flex-1">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <p className="font-semibold text-gray-900">{v.name}</p>
-                                <span className="text-xs rounded-full bg-gray-100 px-2 py-0.5 text-gray-600 capitalize">
-                                  {String(v.type).replace("_", " ")}
-                                </span>
-                                <span className="text-xs text-gray-500">{v.capacity} seats</span>
-                                {v.floor ? (
-                                  <span className="text-xs text-gray-500">Floor {v.floor}</span>
-                                ) : null}
-                              </div>
-                              <div className="mt-1.5 flex flex-wrap items-center gap-2 text-sm">
-                                {v.status !== "ACTIVE" ? (
-                                  <span className="font-semibold text-gray-500">
-                                    ● {v.status}
-                                  </span>
-                                ) : reserved ? (
-                                  <>
-                                    <span className="font-semibold text-red-600">🔴 Reserved</span>
-                                    {conflict && (
-                                      <span className="text-gray-600">
-                                        {formatTimeRange(conflict.startTime, conflict.endTime)}
-                                        {conflict.purpose ? ` · ${conflict.purpose}` : ""}
-                                      </span>
-                                    )}
-                                  </>
-                                ) : (
-                                  <span className="font-semibold text-green-600">🟢 Available</span>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                          <div className="flex flex-wrap gap-2 sm:justify-end">
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-3 mb-6">
+              <button
+                type="button"
+                onClick={handleBulkImport}
+                disabled={
+                  !selectedFile ||
+                  isImporting ||
+                  previewLoading ||
+                  !importPreview?.canImport
+                }
+                className={`px-6 py-2.5 rounded-xl font-medium text-white transition-all duration-200 ${
+                  !selectedFile ||
+                  isImporting ||
+                  previewLoading ||
+                  !importPreview?.canImport
+                    ? "bg-gray-300 cursor-not-allowed"
+                    : "bg-green-600 hover:bg-green-700 shadow-sm hover:shadow-md"
+                }`}
+              >
+                {isImporting
+                  ? "Importing..."
+                  : previewLoading
+                    ? "Validating..."
+                    : "Import Venues"}
+              </button>
+              {lastImportInfo?.insertedIds?.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleUndoImport}
+                  disabled={isUndoing}
+                  className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-medium bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white shadow-sm transition-all duration-200"
+                >
+                  <ArrowUturnLeftIcon className="h-5 w-5" />
+                  {isUndoing ? "Undoing..." : `Undo Last Import (${lastImportInfo.insertedIds.length})`}
+                </button>
+              )}
+            </div>
+
+            {importStatus && (
+              <div className="p-4 rounded-2xl bg-green-50 border border-green-200 mb-6">
+                <pre className="text-sm text-green-800 whitespace-pre-wrap font-mono">{importStatus}</pre>
+              </div>
+            )}
+            {importError && (
+              <div className="p-4 rounded-2xl bg-red-50 border border-red-200 mb-6">
+                <pre className="text-sm text-red-800 whitespace-pre-wrap font-mono">{importError}</pre>
+              </div>
+            )}
+
+            <div className="bg-gray-50 rounded-2xl p-6 border border-gray-100">
+              <h3 className="font-semibold text-gray-800 mb-3">Excel Format Required</h3>
+              <ul className="space-y-2 text-sm text-gray-600">
+                <li><strong>Column Headers:</strong> Venue Name | Type | Rows | Columns | Bench Config</li>
+                <li><strong>Example Row:</strong> AD101 | classroom | 10 | 5 | 2,2,3,3,2</li>
+                <li><strong>Valid Types:</strong> classroom, lab, hall</li>
+                <li><strong>Bench Config:</strong> comma-separated 2 or 3 only; length must equal Columns</li>
+                <li><strong>Validation:</strong> file is validated first; Import is blocked until every row is VALID</li>
+                <li><strong>Bench Config:</strong> Comma-separated seats per column (2 or 3 only)</li>
+                <li><strong>Note:</strong> Bench config length must match number of columns</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========== ALL VENUES TAB ========== */}
+      {activeTab === "hall" && (
+        <div className="px-4 md:px-8 py-6 md:py-8">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+            <h2 className="text-lg font-semibold text-gray-800">All Venues</h2>
+            <div className="flex flex-wrap items-center gap-3">
+              <input
+                type="text"
+                placeholder="Search by name or type..."
+                value={searchQuery}
+                onChange={handleSearch}
+                className="w-full md:w-64 h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+              />
+              <button
+                type="button"
+                onClick={handleSort}
+                className="h-12 px-4 rounded-xl bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-medium text-sm shadow-sm transition-all duration-200"
+              >
+                Sort: Capacity {sortOrder === "highToLow" ? "High → Low" : "Low → High"}
+              </button>
+            </div>
+          </div>
+
+          {venues.length === 0 ? (
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center text-gray-500">
+              No venues found.
+            </div>
+          ) : (
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="min-w-[900px] md:min-w-full">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-100">
+                      <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Name</th>
+                      <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Type</th>
+                      <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Capacity</th>
+                      <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Rows × Cols</th>
+                      <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Bench Config</th>
+                      <th className="px-6 py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide">Available</th>
+                      <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {filteredVenues.map((venue) => (
+                      <tr key={venue.uuid} className="hover:bg-gray-50/50 transition-colors">
+                        <td className="px-6 py-4 font-medium text-gray-800">{venue.name}</td>
+                        <td className="px-6 py-4 text-gray-600 capitalize">{venue.type}</td>
+                        <td className="px-6 py-4 font-medium text-gray-800">{venue.capacity}</td>
+                        <td className="px-6 py-4 text-gray-600">
+                          {venue.benchesRow} × {venue.benchesCol}
+                        </td>
+                        <td className="px-6 py-4 text-sm font-mono text-gray-500">
+                          [{venue.benchConfig?.join(", ") || "N/A"}]
+                        </td>
+                        <td className="px-6 py-4 text-center">
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={venue.isAvailable !== false}
+                            aria-label={venue.isAvailable !== false ? "Mark unavailable" : "Mark available"}
+                            disabled={togglingVenueId === (venue.uuid)}
+                            onClick={() => handleToggleVenueAvailability(venue)}
+                            className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 ${
+                              venue.isAvailable !== false ? "bg-emerald-500" : "bg-gray-300"
+                            }`}
+                          >
+                            <span
+                              className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
+                                venue.isAvailable !== false ? "translate-x-6" : "translate-x-1"
+                              }`}
+                            />
+                          </button>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex flex-wrap gap-2">
                             <button
                               type="button"
-                              onClick={() => openSchedule(v)}
-                              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                              onClick={() => handleEdit(venue)}
+                              className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium transition-all duration-200"
                             >
-                              <CalendarDaysIcon className="h-3.5 w-3.5" />
-                              View Schedule
+                              Edit
                             </button>
-                            {canWrite && (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={() => openEditVenue(v)}
-                                  className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-semibold text-gray-700 hover:bg-gray-50"
-                                >
-                                  Edit
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleDisableVenue(v)}
-                                  className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-semibold text-gray-700 hover:bg-gray-50"
-                                >
-                                  {v.status === "ACTIVE" ? "Disable" : "Enable"}
-                                </button>
-                              </>
-                            )}
+                            <button
+                              type="button"
+                              disabled={deletingId === (venue.uuid)}
+                              onClick={() => handleDelete(venue.uuid)}
+                              className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium transition-all duration-200"
+                            >
+                              {deletingId === (venue.uuid) ? "Deleting..." : "Delete"}
+                            </button>
                           </div>
-                        </div>
-                      </li>
-                    );
-                  })
-                )}
-              </ul>
-            </section>
-          ))}
-        </div>
-      )}
-
-      {/* Schedule modal */}
-      {(scheduleModal || scheduleLoading) && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
-          <div
-            className="absolute inset-0 bg-black/40"
-            onClick={() => setScheduleModal(null)}
-            aria-hidden
-          />
-          <div className="relative w-full sm:max-w-lg bg-white rounded-t-2xl sm:rounded-2xl shadow-xl max-h-[85vh] overflow-y-auto">
-            {scheduleLoading || !scheduleModal ? (
-              <p className="p-8 text-center text-gray-500">Loading schedule…</p>
-            ) : (
-              <div className="p-5 space-y-4">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <h3 className="text-lg font-bold text-gray-900">
-                      {scheduleModal.venue?.name}
-                    </h3>
-                    <p className="text-sm text-gray-600">
-                      Capacity: {scheduleModal.venue?.capacity} · Block:{" "}
-                      {scheduleModal.venue?.blockName || "—"}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setScheduleModal(null)}
-                    className="p-1 rounded-lg hover:bg-gray-100"
-                  >
-                    <XMarkIcon className="h-5 w-5" />
-                  </button>
-                </div>
-                <p className="text-sm font-semibold text-gray-800">
-                  {formatDisplayDate(examDate)}
-                </p>
-                <hr />
-                {(scheduleModal.schedule || []).length === 0 ? (
-                  <p className="text-sm text-green-700 font-medium">
-                    🟢 No reservations on this date — fully available.
-                  </p>
-                ) : (
-                  <ul className="space-y-3">
-                    {scheduleModal.schedule.map((s, i) => (
-                      <li key={`${s.startTime}-${i}`} className="rounded-lg border border-gray-100 p-3">
-                        <p className="text-sm font-semibold text-gray-900">
-                          {formatTimeRange(s.startTime, s.endTime)}
-                        </p>
-                        <p className="text-sm text-red-600 font-medium mt-0.5">🔴 Reserved</p>
-                        {s.purpose && (
-                          <p className="text-sm text-gray-700 mt-1">{s.purpose}</p>
-                        )}
-                        {s.allotmentCode && (
-                          <p className="text-xs text-gray-500 mt-1">Allotment: {s.allotmentCode}</p>
-                        )}
-                      </li>
+                        </td>
+                      </tr>
                     ))}
-                  </ul>
-                )}
+                  </tbody>
+                </table>
               </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Venue form modal */}
-      {showVenueForm && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setShowVenueForm(false)} />
-          <form
-            onSubmit={handleSaveVenue}
-            className="relative w-full sm:max-w-md bg-white rounded-t-2xl sm:rounded-2xl shadow-xl p-5 space-y-3 max-h-[90vh] overflow-y-auto"
-          >
-            <h3 className="text-lg font-bold text-gray-900">
-              {editingVenue ? "Edit Venue" : "Add Venue"}
-            </h3>
-            <label className="block text-xs font-semibold text-gray-600 space-y-1">
-              <span>Block</span>
-              <select
-                required
-                value={form.blockUuid}
-                onChange={(e) => setForm((f) => ({ ...f, blockUuid: e.target.value }))}
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-                disabled={!!editingVenue}
-              >
-                <option value="">Select block</option>
-                {(canWrite ? blocks : manageableBlocks).map((b) => (
-                  <option key={b.uuid} value={b.uuid}>
-                    {b.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="block text-xs font-semibold text-gray-600 space-y-1">
-              <span>Name</span>
-              <input
-                required
-                value={form.name}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-                placeholder="CSE-101"
-              />
-            </label>
-            <label className="block text-xs font-semibold text-gray-600 space-y-1">
-              <span>Code</span>
-              <input
-                value={form.code}
-                onChange={(e) => setForm((f) => ({ ...f, code: e.target.value }))}
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-                placeholder="Optional (defaults to name)"
-              />
-            </label>
-            <div className="grid grid-cols-2 gap-3">
-              <label className="block text-xs font-semibold text-gray-600 space-y-1">
-                <span>Type</span>
-                <select
-                  value={form.type}
-                  onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))}
-                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-                >
-                  {VENUE_TYPES.filter((t) => t.value).map((t) => (
-                    <option key={t.value} value={t.value}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="block text-xs font-semibold text-gray-600 space-y-1">
-                <span>Floor</span>
-                <input
-                  value={form.floor}
-                  onChange={(e) => setForm((f) => ({ ...f, floor: e.target.value }))}
-                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-                />
-              </label>
             </div>
-            <div className="grid grid-cols-3 gap-3">
-              <label className="block text-xs font-semibold text-gray-600 space-y-1">
-                <span>Rows</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={20}
-                  required
-                  value={form.benchesRow}
-                  onChange={(e) => setForm((f) => ({ ...f, benchesRow: e.target.value }))}
-                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-                />
-              </label>
-              <label className="block text-xs font-semibold text-gray-600 space-y-1">
-                <span>Columns</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={20}
-                  required
-                  value={form.benchesCol}
-                  onChange={(e) => setForm((f) => ({ ...f, benchesCol: e.target.value }))}
-                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-                />
-              </label>
-              <label className="block text-xs font-semibold text-gray-600 space-y-1">
-                <span>Seats/bench</span>
-                <select
-                  value={uniformSeats}
-                  onChange={(e) => setUniformSeats(Number(e.target.value))}
-                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-                >
-                  <option value={2}>2</option>
-                  <option value={3}>3</option>
-                </select>
-              </label>
-            </div>
-            <p className="text-xs text-gray-500">
-              Capacity:{" "}
-              {(Number(form.benchesRow) || 0) *
-                (Number(form.benchesCol) || 0) *
-                (Number(uniformSeats) || 2)}{" "}
-              seats
-            </p>
-            <label className="block text-xs font-semibold text-gray-600 space-y-1">
-              <span>Status</span>
-              <select
-                value={form.status}
-                onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-              >
-                <option value="ACTIVE">ACTIVE</option>
-                <option value="INACTIVE">INACTIVE</option>
-                <option value="MAINTENANCE">MAINTENANCE</option>
-              </select>
-            </label>
-            <div className="flex gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setShowVenueForm(false)}
-                className="flex-1 py-2.5 rounded-lg border border-gray-200 text-sm font-semibold"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={saving}
-                className="flex-1 py-2.5 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-60"
-              >
-                {saving ? "Saving…" : "Save"}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* Block form modal */}
-      {showBlockForm && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setShowBlockForm(false)} />
-          <form
-            onSubmit={handleCreateBlock}
-            className="relative w-full sm:max-w-md bg-white rounded-t-2xl sm:rounded-2xl shadow-xl p-5 space-y-3"
-          >
-            <h3 className="text-lg font-bold text-gray-900">Add Block</h3>
-            <p className="text-xs text-gray-500">
-              Blocks classify venues for filtering and allotment. Venues remain shared across all Faculty In-Charges.
-            </p>
-            <label className="block text-xs font-semibold text-gray-600 space-y-1">
-              <span>Name</span>
-              <input
-                required
-                value={blockForm.name}
-                onChange={(e) => setBlockForm((f) => ({ ...f, name: e.target.value }))}
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-                placeholder="CSE Main Block"
-              />
-            </label>
-            <label className="block text-xs font-semibold text-gray-600 space-y-1">
-              <span>Code</span>
-              <input
-                required
-                value={blockForm.code}
-                onChange={(e) => setBlockForm((f) => ({ ...f, code: e.target.value }))}
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-                placeholder="CSE-BLOCK"
-              />
-            </label>
-            {user?.role === "admin" && (
-              <label className="block text-xs font-semibold text-gray-600 space-y-1">
-                <span>Owning department code (internal)</span>
-                <input
-                  required
-                  value={blockForm.owningDepartment}
-                  onChange={(e) =>
-                    setBlockForm((f) => ({ ...f, owningDepartment: e.target.value }))
-                  }
-                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-                  placeholder="CSE"
-                />
-              </label>
-            )}
-            <label className="block text-xs font-semibold text-gray-600 space-y-1">
-              <span>Description</span>
-              <textarea
-                value={blockForm.description}
-                onChange={(e) => setBlockForm((f) => ({ ...f, description: e.target.value }))}
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-                rows={2}
-              />
-            </label>
-            <div className="flex gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setShowBlockForm(false)}
-                className="flex-1 py-2.5 rounded-lg border border-gray-200 text-sm font-semibold"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={saving}
-                className="flex-1 py-2.5 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-60"
-              >
-                {saving ? "Saving…" : "Create"}
-              </button>
-            </div>
-          </form>
+          )}
         </div>
       )}
     </div>

@@ -9,8 +9,6 @@ const PUBLIC_UUID_TABLES = [
   "students",
   "faculty",
   "venues",
-  "blocks",
-  "allotment_venue_selections",
   "exams",
   "timetable",
   "ineligible_students",

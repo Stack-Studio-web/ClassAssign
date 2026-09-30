@@ -271,20 +271,7 @@ router.post(
       const attendanceSync = await AttendanceService.syncAssignmentsFromSeatingPlan(seatingPlanId, connection);
 
       for (const v of resolvedVenues) {
-        const purpose = Array.isArray(selectedCourses)
-          ? selectedCourses
-              .map((c) => c.courseName || c.course_name || c.courseCode || c.course_code)
-              .filter(Boolean)
-              .slice(0, 3)
-              .join(", ")
-          : null;
-        await Venue.addSession(v.venueId, dateOnly, examStartTime, examEndTime, connection, {
-          seatingPlanId,
-          purpose: purpose || `${examType || "Exam"} Examination`,
-          examSession: examSession || null,
-          status: "RESERVED",
-          allotmentCode: null,
-        });
+        await Venue.addSession(v.venueId, dateOnly, examStartTime, examEndTime, connection);
       }
 
       await connection.commit();
