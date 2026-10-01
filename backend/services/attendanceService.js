@@ -692,6 +692,31 @@ const AttendanceService = {
     return (rows || []).map(toStudentRow);
   },
 
+  /**
+   * Recorded attendance for an exam+venue (completed View Attendance source of truth).
+   * Does NOT depend on seating-plan joins — uses attendance.student_id → students.
+   */
+  getRecordedAttendanceForExamVenue: async (examId, venueId) => {
+    const [rows] = await db.query(
+      `
+      SELECT
+        st.public_uuid AS student_public_uuid,
+        st.regn_no,
+        COALESCE(NULLIF(TRIM(st.student_name), ''), st.regn_no) AS student_name,
+        att.status,
+        att.is_locked,
+        att.marked_time
+      FROM attendance att
+      INNER JOIN students st ON st.id = att.student_id
+      WHERE att.exam_id = ?
+        AND att.venue_id = ?
+      ORDER BY st.regn_no ASC, att.id ASC
+      `,
+      [examId, venueId]
+    );
+    return (rows || []).map(toStudentRow);
+  },
+
   upsertAttendance: async ({
     examId,
     venueId,

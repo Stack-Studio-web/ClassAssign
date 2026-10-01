@@ -363,13 +363,18 @@ const AttendanceLifecycleService = {
       throw err;
     }
 
-    const students = await AttendanceService.getStudentsForExamVenue(session.examId, session.venueId);
+    const students = await AttendanceService.getRecordedAttendanceForExamVenue(
+      session.examId,
+      session.venueId
+    );
     const present = students.filter((s) => s.status === "Present");
     const absent = students.filter((s) => s.status === "Absent");
     const unmarked = students.filter((s) => !s.status);
 
     return {
       sessionUuid,
+      examId: session.examId,
+      venueId: session.venueId,
       readOnly: true,
       students,
       statistics: {

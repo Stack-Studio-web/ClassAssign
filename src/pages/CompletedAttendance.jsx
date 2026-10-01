@@ -54,15 +54,31 @@ function StatCard({ icon: Icon, iconBg, iconColor, label, value }) {
 function DetailModal({ sessionUuid, onClose }) {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const [tab, setTab] = useState("present");
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
+      setError("");
+      setDetail(null);
       try {
         const data = await fetchCompletedDetail(sessionUuid);
-        if (!cancelled) setDetail(data);
+        if (cancelled) return;
+        // Support flat { students, ... } or nested { data: { ... } }
+        const payload = data?.presentStudents || data?.students ? data : data?.data || data;
+        setDetail(payload);
+      } catch (err) {
+        if (cancelled) return;
+        setDetail(null);
+        setError(
+          err?.response?.data?.error ||
+            err?.response?.data?.message ||
+            err?.message ||
+            "Unable to load attendance."
+        );
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -70,14 +86,38 @@ function DetailModal({ sessionUuid, onClose }) {
     return () => {
       cancelled = true;
     };
-  }, [sessionUuid]);
+  }, [sessionUuid, reloadKey]);
+
+  const normalizeStatus = (status) => {
+    const s = String(status || "").trim().toLowerCase();
+    if (s === "present") return "Present";
+    if (s === "absent") return "Absent";
+    return status || "Unmarked";
+  };
+
+  const allStudents = (detail?.students || []).map((s) => ({
+    ...s,
+    status: normalizeStatus(s.status),
+  }));
+  const presentStudents = (detail?.presentStudents || allStudents.filter((s) => s.status === "Present")).map(
+    (s) => ({ ...s, status: normalizeStatus(s.status) })
+  );
+  const absentStudents = (detail?.absentStudents || allStudents.filter((s) => s.status === "Absent")).map(
+    (s) => ({ ...s, status: normalizeStatus(s.status) })
+  );
 
   const list =
-    tab === "present"
-      ? detail?.presentStudents || []
-      : tab === "absent"
-        ? detail?.absentStudents || []
-        : detail?.students || [];
+    tab === "present" ? presentStudents : tab === "absent" ? absentStudents : allStudents;
+
+  const stats = detail?.statistics || {
+    total: allStudents.length,
+    present: presentStudents.length,
+    absent: absentStudents.length,
+    percentage:
+      allStudents.length > 0
+        ? Math.round((presentStudents.length / allStudents.length) * 100)
+        : 0,
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
@@ -96,28 +136,38 @@ function DetailModal({ sessionUuid, onClose }) {
           <div className="flex justify-center py-16">
             <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600" />
           </div>
+        ) : error ? (
+          <div className="flex flex-col items-center justify-center gap-4 py-16 px-6 text-center">
+            <p className="text-sm text-red-700 font-medium">Unable to load attendance.</p>
+            <p className="text-xs text-gray-500 max-w-md">{error}</p>
+            <button
+              type="button"
+              onClick={() => setReloadKey((k) => k + 1)}
+              className="px-4 py-2 text-sm font-semibold rounded-xl bg-indigo-600 text-white hover:bg-indigo-700"
+            >
+              Retry
+            </button>
+          </div>
         ) : (
           <>
-            {detail?.statistics && (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 px-6 py-4 bg-gray-50/80 border-b border-gray-100">
-                <div className="text-center">
-                  <p className="text-xs text-gray-500">Total</p>
-                  <p className="text-xl font-bold">{detail.statistics.total}</p>
-                </div>
-                <div className="text-center">
-                  <p className="text-xs text-gray-500">Present</p>
-                  <p className="text-xl font-bold text-green-600">{detail.statistics.present}</p>
-                </div>
-                <div className="text-center">
-                  <p className="text-xs text-gray-500">Absent</p>
-                  <p className="text-xl font-bold text-red-600">{detail.statistics.absent}</p>
-                </div>
-                <div className="text-center">
-                  <p className="text-xs text-gray-500">Attendance %</p>
-                  <p className="text-xl font-bold text-indigo-600">{detail.statistics.percentage}%</p>
-                </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 px-6 py-4 bg-gray-50/80 border-b border-gray-100">
+              <div className="text-center">
+                <p className="text-xs text-gray-500">Total</p>
+                <p className="text-xl font-bold">{stats.total ?? 0}</p>
               </div>
-            )}
+              <div className="text-center">
+                <p className="text-xs text-gray-500">Present</p>
+                <p className="text-xl font-bold text-green-600">{stats.present ?? 0}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-gray-500">Absent</p>
+                <p className="text-xl font-bold text-red-600">{stats.absent ?? 0}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-gray-500">Attendance %</p>
+                <p className="text-xl font-bold text-indigo-600">{stats.percentage ?? 0}%</p>
+              </div>
+            </div>
 
             <div className="flex gap-2 px-6 pt-4">
               {["present", "absent", "all"].map((t) => (

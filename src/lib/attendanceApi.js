@@ -17,7 +17,15 @@ export async function fetchAttendanceCounts() {
 
 export async function fetchCompletedDetail(sessionUuid) {
   const res = await api.get(`/attendance/completed/${sessionUuid}`);
-  return res.data;
+  const body = res.data;
+  // Controller returns { success, students, presentStudents, absentStudents, statistics, ... }
+  if (body && (Array.isArray(body.students) || Array.isArray(body.presentStudents))) {
+    return body;
+  }
+  if (body?.data && typeof body.data === "object") {
+    return body.data;
+  }
+  return body;
 }
 
 export function exportCompletedAttendance(params = {}) {
