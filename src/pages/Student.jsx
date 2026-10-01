@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useToast } from "../context/ToastContext";
 import { getApiError } from "../lib/errors";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
@@ -20,6 +20,7 @@ import { AcademicContextBar } from "../Components/student-browser/AcademicContex
 import { StudentStatsCards } from "../Components/student-browser/StudentStatsCards";
 import { CourseSummary } from "../Components/student-browser/CourseSummary";
 import { CourseStudentTable } from "../Components/student-browser/CourseStudentTable";
+import { StudentDrawer } from "../Components/student-browser/StudentDrawer";
 import { getSortFromPreset } from "../Components/student-browser/StudentFilterToolbar";
 import { StudentEmptyState } from "../Components/student-browser/StudentEmptyState";
 import { isBatchActive } from "../lib/batchStatus";
@@ -59,6 +60,7 @@ export default function StudentBrowserPage() {
   const [sortPreset] = useState("name-asc");
   const [searchQuery, setSearchQuery] = useState("");
   const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [selectedStudentUuid, setSelectedStudentUuid] = useState(null);
 
   const debouncedSearch = useDebouncedValue(searchQuery, 400);
   const { sortBy, sortOrder } = getSortFromPreset(sortPreset);
@@ -97,6 +99,7 @@ export default function StudentBrowserPage() {
   useEffect(() => {
     setPage(1);
     setSearchQuery("");
+    setSelectedStudentUuid(null);
     setFilters((prev) => ({
       ...prev,
       courseDescription: "",
@@ -189,6 +192,7 @@ export default function StudentBrowserPage() {
     const course = courses.find((c) => c.courseCode === courseCode);
     setSearchQuery("");
     setPage(1);
+    setSelectedStudentUuid(null);
     setFilters((prev) => ({
       ...prev,
       courseDescription: courseCode,
@@ -199,12 +203,23 @@ export default function StudentBrowserPage() {
   const handleBackToCourses = () => {
     setSearchQuery("");
     setPage(1);
+    setSelectedStudentUuid(null);
     setFilters((prev) => ({
       ...prev,
       courseDescription: "",
       courseName: "",
     }));
   };
+
+  const handleSelectStudent = useCallback((student) => {
+    const uuid = student?.uuid;
+    if (!uuid) return;
+    setSelectedStudentUuid((prev) => (prev === uuid ? null : uuid));
+  }, []);
+
+  const handleCloseDrawer = useCallback(() => {
+    setSelectedStudentUuid(null);
+  }, []);
 
   const courseTitle =
     selectedCourse?.courseName || filters.courseName || selectedCourseCode || "Course";
@@ -338,6 +353,8 @@ export default function StudentBrowserPage() {
                       <CourseStudentTable
                         students={students}
                         loading={studentsLoading}
+                        selectedUuid={selectedStudentUuid}
+                        onSelectStudent={handleSelectStudent}
                       />
                       <div className="border-t border-gray-100 px-4 py-3">
                         <StudentPagination
@@ -363,6 +380,12 @@ export default function StudentBrowserPage() {
           </>
         )}
       </div>
+
+      <StudentDrawer
+        studentUuid={selectedStudentUuid}
+        open={Boolean(selectedStudentUuid)}
+        onClose={handleCloseDrawer}
+      />
     </div>
   );
 }

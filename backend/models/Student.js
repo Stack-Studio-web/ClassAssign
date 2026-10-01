@@ -15,6 +15,7 @@ function toStudentRow(row) {
     null;
 
   const regnNo = row.regnno ?? row.regnNo;
+  const storedDepartment = row.department ?? row.dept ?? null;
   const out = {
     uuid: row.public_uuid ?? row.publicuuid ?? row.uuid,
     regnNo,
@@ -23,7 +24,11 @@ function toStudentRow(row) {
     courseDescription: row.coursedescription ?? row.courseDescription,
     email: row.email,
     batchName: row.batchname ?? row.batchName ?? null,
-    department: deriveDepartmentFromRegnNo(regnNo),
+    // Prefer students.department column; fall back to regn segment for department only
+    department:
+      (storedDepartment && String(storedDepartment).trim()) ||
+      deriveDepartmentFromRegnNo(regnNo),
+    createdAt: row.created_at ?? row.createdAt ?? null,
   };
 
   if (ownerId || creatorUuid || creatorName) {
@@ -262,6 +267,8 @@ const Student = {
         st.course_name AS courseName,
         st.course_description AS courseDescription,
         st.email,
+        st.department,
+        st.created_at,
         st.owner_user_id,
         b.name AS batchName,
         u.public_uuid AS creator_uuid,
@@ -399,6 +406,45 @@ const Student = {
         hasPrevious: page > 1,
       },
     };
+  },
+
+  /* ===============================
+      GET ONE (Student Browser details)
+  =============================== */
+  getById: async (id, opts = {}) => {
+    const { studentScopeAnd } = require("../utils/ownerFilter");
+    const { sql: ownerSql, params: ownerParams } = studentScopeAnd(
+      opts.role,
+      opts.ownerUserId,
+      opts.department,
+      "st.",
+      opts.ownerIds
+    );
+
+    const [rows] = await db.query(
+      `SELECT
+        st.public_uuid,
+        st.regn_no AS regnNo,
+        st.student_name AS studentName,
+        st.course_name AS courseName,
+        st.course_description AS courseDescription,
+        st.email,
+        st.department,
+        st.created_at,
+        st.owner_user_id,
+        b.name AS batchName,
+        u.public_uuid AS creator_uuid,
+        COALESCE(NULLIF(TRIM(u.username), ''), u.email, 'Faculty Incharge') AS creator_name,
+        m.name AS mentor_name,
+        m.email AS mentor_email
+      ${STUDENT_FROM}
+      WHERE st.id = ?${ownerSql}
+      LIMIT 1`,
+      [id, ...ownerParams]
+    );
+
+    const row = Array.isArray(rows) ? rows[0] : rows;
+    return row ? toStudentRow(row) : null;
   },
 
   /* ===============================

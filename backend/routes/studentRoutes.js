@@ -314,6 +314,25 @@ router.delete("/by-course/:courseCode", sessionAuth, checkRole(["admin", "facult
   }
 });
 
+// ✅ GET student details by UUID (Student Browser drawer)
+router.get(
+  "/:uuid",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge", "hod"]),
+  resolveEntity(TABLE.students),
+  async (req, res) => {
+    try {
+      const student = await Student.getById(req.internalId, await resolveOwnerOpts(req));
+      if (!student) {
+        return Api.notFound(res, "Student not found");
+      }
+      return Api.success(res, "Student", student);
+    } catch (error) {
+      return Api.fromError(res, error, "Failed to load student details.");
+    }
+  }
+);
+
 // ✅ DELETE student by UUID
 router.delete("/:uuid", sessionAuth, checkRole(["admin", "faculty_incharge"]), resolveEntity(TABLE.students), async (req, res) => {
   try {

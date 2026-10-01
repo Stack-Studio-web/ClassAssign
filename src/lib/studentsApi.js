@@ -122,6 +122,12 @@ export async function fetchStudentStatsTotal(batchId) {
   return res.data?.totalStudents ?? res.data?.data?.totalStudents ?? 0;
 }
 
+export async function fetchStudentByUuid(uuid) {
+  if (!uuid) throw new Error("Student UUID is required");
+  const res = await api.get(`/students/${uuid}`);
+  return res.data?.data ?? res.data ?? null;
+}
+
 export function buildStudentsQueryParams({
   page = 1,
   limit = 25,

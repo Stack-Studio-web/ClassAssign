@@ -6,6 +6,7 @@ import {
   fetchStudentFilterOptions,
   fetchStudentCourseStats,
   fetchStudentStatsTotal,
+  fetchStudentByUuid,
   buildStudentsQueryParams,
 } from "../lib/studentsApi";
 
@@ -93,6 +94,15 @@ export function useStudentStatsTotal(batchId, enabled = true, contextReady = fal
     queryFn: () => fetchStudentStatsTotal(batchId),
     enabled: enabled && (Boolean(batchId) || contextReady),
     staleTime: 60_000,
+  });
+}
+
+export function useStudentDetail(uuid, enabled = true) {
+  return useQuery({
+    queryKey: [STUDENTS_QUERY_KEY, "detail", uuid],
+    queryFn: () => fetchStudentByUuid(uuid),
+    enabled: Boolean(enabled && uuid),
+    staleTime: 30_000,
   });
 }
 

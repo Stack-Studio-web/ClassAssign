@@ -1,13 +1,17 @@
 import React, { memo } from "react";
 import { StatusBadge } from "../ui/Badge";
 import Loader from "../Loader";
+import { cn } from "../../lib/utils";
 
 /**
  * Simplified student list for a selected course (no Course / Last Updated / Actions).
+ * Row click opens the Student Details drawer (parent handles selection).
  */
 export const CourseStudentTable = memo(function CourseStudentTable({
   students,
   loading,
+  selectedUuid = null,
+  onSelectStudent,
 }) {
   if (loading && !students.length) {
     return (
@@ -41,22 +45,41 @@ export const CourseStudentTable = memo(function CourseStudentTable({
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100">
-          {students.map((student) => (
-            <tr key={student.uuid} className="hover:bg-gray-50/80 transition-colors">
-              <td className="px-4 py-3 text-sm font-semibold text-blue-600">
-                {student.regnNo}
-              </td>
-              <td className="px-4 py-3 text-sm font-medium text-gray-900">
-                {student.studentName ?? "—"}
-              </td>
-              <td className="px-4 py-3 text-sm text-gray-600">
-                {student.batchName ?? "—"}
-              </td>
-              <td className="px-4 py-3">
-                <StatusBadge variant="active">Active</StatusBadge>
-              </td>
-            </tr>
-          ))}
+          {students.map((student) => {
+            const selected = selectedUuid && student.uuid === selectedUuid;
+            return (
+              <tr
+                key={student.uuid}
+                role="button"
+                tabIndex={0}
+                aria-selected={selected}
+                onClick={() => onSelectStudent?.(student)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onSelectStudent?.(student);
+                  }
+                }}
+                className={cn(
+                  "cursor-pointer transition-colors",
+                  selected ? "bg-blue-50/90 hover:bg-blue-50" : "hover:bg-gray-50/80"
+                )}
+              >
+                <td className="px-4 py-3 text-sm font-semibold text-blue-600">
+                  {student.regnNo}
+                </td>
+                <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                  {student.studentName ?? "—"}
+                </td>
+                <td className="px-4 py-3 text-sm text-gray-600">
+                  {student.batchName ?? "—"}
+                </td>
+                <td className="px-4 py-3">
+                  <StatusBadge variant="active">Active</StatusBadge>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
