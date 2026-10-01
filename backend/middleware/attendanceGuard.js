@@ -37,7 +37,11 @@ async function resolveAssignmentContext(req, res, next) {
 
 async function requireFacultyProfile(req, res, next) {
   try {
-    if (req.user.role === "admin" || req.user.role === "faculty_incharge") {
+    if (
+      req.user.role === "admin" ||
+      req.user.role === "faculty_incharge" ||
+      req.user.role === "hod"
+    ) {
       return next();
     }
 

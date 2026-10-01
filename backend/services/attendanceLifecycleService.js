@@ -350,10 +350,16 @@ const AttendanceLifecycleService = {
     }
 
     const roleScope = await buildRoleScope(user, role);
+    // roleScope for FI/HOD references exams (e) and venues (v) — must JOIN them.
     const [accessRows] = await db.query(
-      `SELECT fa.id FROM faculty_assignments fa
+      `SELECT fa.id
+       FROM faculty_assignments fa
        JOIN faculty f ON f.id = fa.faculty_id
-       WHERE fa.exam_id = ? AND fa.venue_id = ?${roleScope.sql}
+       JOIN exams e ON e.id = fa.exam_id
+       JOIN venues v ON v.id = fa.venue_id
+       WHERE fa.exam_id = ?
+         AND fa.venue_id = ?
+         ${roleScope.sql}
        LIMIT 1`,
       [session.examId, session.venueId, ...roleScope.params]
     );
@@ -363,10 +369,28 @@ const AttendanceLifecycleService = {
       throw err;
     }
 
-    const students = await AttendanceService.getRecordedAttendanceForExamVenue(
-      session.examId,
-      session.venueId
-    );
+    let students = [];
+    try {
+      students = await AttendanceService.getRecordedAttendanceForExamVenue(
+        session.examId,
+        session.venueId
+      );
+    } catch (recordErr) {
+      console.error(
+        "getRecordedAttendanceForExamVenue failed, falling back to seating roster:",
+        recordErr?.message || recordErr
+      );
+      students = await AttendanceService.getStudentsForExamVenue(
+        session.examId,
+        session.venueId
+      );
+      // Completed view should only show recorded statuses when possible;
+      // seating fallback may include unmarked rows — keep recorded only.
+      students = (students || []).filter(
+        (s) => s.status === "Present" || s.status === "Absent"
+      );
+    }
+
     const present = students.filter((s) => s.status === "Present");
     const absent = students.filter((s) => s.status === "Absent");
     const unmarked = students.filter((s) => !s.status);

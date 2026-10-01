@@ -74,7 +74,8 @@ function DetailModal({ sessionUuid, onClose }) {
         if (cancelled) return;
         setDetail(null);
         setError(
-          err?.response?.data?.error ||
+          err?.response?.data?.details ||
+            err?.response?.data?.error ||
             err?.response?.data?.message ||
             err?.message ||
             "Unable to load attendance."

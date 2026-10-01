@@ -650,13 +650,22 @@ const AttendanceController = {
       }
       return res.json({ success: true, ...detail });
     } catch (err) {
+      console.error("getCompletedDetail ERROR:", err?.message || err);
+      if (err?.stack) console.error(err.stack);
       if (err.statusCode === 403) {
         return Api.forbidden(res, err.message);
       }
       if (err.statusCode === 400) {
         return Api.validationError(res, err.message);
       }
-      return Api.fromError(res, err, "Failed to fetch session detail");
+      // Surface actionable detail for operators (still generic code).
+      return Api.fail(
+        res,
+        500,
+        "SERVER_ERROR",
+        "Failed to load completed attendance.",
+        err?.message || "Unexpected error occurred."
+      );
     }
   },
 
