@@ -1,14 +1,18 @@
 /**
  * Timetable Add Schedule form option queries (Timetable-only).
  *
- * Source of truth for courses:
- *   Department → students in that department → DISTINCT course_description / course_name
+ * Department values in the Timetable UI come from the same source as
+ * GET /students/filter-options → departments:
+ *   UPPER((regexp_match(regn_no, '^[0-9]{2}([A-Z]+)'))[1])
+ * e.g. 23BCS001 / 24BCS010 → "BCS"
  *
- * Enrollment in Hallora is stored on the student row (course_description, course_name),
- * not a separate Course.department lookup.
+ * Course enrollment is stored on the student row:
+ *   course_description (code), course_name (title)
  *
- * Department resolution prefers students.department; falls back to register-number
- * pattern YY + DEPT (e.g. 23BCS001) only when department is unset.
+ * Flow:
+ *   department code
+ *     → students belonging to that department
+ *     → DISTINCT course_description / course_name
  */
 const db = require("../config/db");
 const { andClause } = require("../utils/ownerFilter");
@@ -26,25 +30,30 @@ function ownerFragments(opts = {}) {
 }
 
 /**
- * Student belongs to department.
- * Prefer st.department; fallback: regn starts with YY + DEPT (23BCS…).
- * Two `?` params: dept, dept.
+ * Match students to a Timetable department dropdown value (e.g. BCS).
+ *
+ * Must stay aligned with Student.getFilterOptions departments extraction.
+ *
+ * Prefer students.department when it stores the same code.
+ * Always also match the register-number department segment so students whose
+ * department column is blank OR holds a different label still resolve
+ * (this was why courses?department=BCS returned []).
+ *
+ * Binds two params: dept, dept.
  */
 function studentDepartmentMatchSql() {
   return `(
     UPPER(TRIM(COALESCE(st.department, ''))) = ?
-    OR (
-      NULLIF(TRIM(COALESCE(st.department, '')), '') IS NULL
-      AND UPPER(TRIM(st.regn_no)) ~ ('^[0-9]{2}' || ? || '[0-9]')
-    )
+    OR UPPER((regexp_match(UPPER(TRIM(st.regn_no)), '^[0-9]{2}([A-Z]+)'))[1]) = ?
   )`;
 }
 
-/** Derived batch code from regn (e.g. 23BCS001 → 23BCS). */
+/** Derived batch code from regn (23BCS001 → 23BCS). */
 const DERIVED_BATCH_SQL = `UPPER(SUBSTRING(UPPER(TRIM(st.regn_no)) FROM '^[0-9]{2}[A-Z]+'))`;
 
 /**
  * Unique courses enrolled by students of the selected department.
+ * No batch filter at this stage.
  */
 async function listCoursesByDepartment(department, opts = {}) {
   const dept = normalizeDept(department);
@@ -75,11 +84,8 @@ async function listCoursesByDepartment(department, opts = {}) {
 }
 
 /**
- * Batches that contain students of this department enrolled in this course.
+ * Batches containing students of this department enrolled in this course.
  * Count = students in (department + course + batch), not total batch size.
- *
- * Prefer formal batches via batch_id; also include derived YY+DEPT codes for
- * enrolled students so legacy rows without batch_id still appear.
  */
 async function listBatchesForCourse(department, courseCode, opts = {}) {
   const dept = normalizeDept(department);
@@ -88,7 +94,6 @@ async function listBatchesForCourse(department, courseCode, opts = {}) {
 
   const { sql: ownerSql, params: ownerParams } = ownerFragments(opts);
 
-  // Formal batches (batch_id present)
   const [formalRows] = await db.query(
     `
     SELECT
@@ -108,7 +113,6 @@ async function listBatchesForCourse(department, courseCode, opts = {}) {
     [course, dept, dept, ...ownerParams]
   );
 
-  // Derived batch codes from enrollments (covers missing batch_id)
   const [derivedRows] = await db.query(
     `
     SELECT
@@ -143,18 +147,15 @@ async function listBatchesForCourse(department, courseCode, opts = {}) {
     const name = String(r.name || "").toUpperCase();
     if (!name) continue;
     const existing = byName.get(name);
+    const count = Number(r.studentCount ?? r.studentcount ?? 0);
     if (existing) {
-      // Prefer formal batch metadata; keep the higher enrollment count if derived is larger
-      existing.studentCount = Math.max(
-        existing.studentCount,
-        Number(r.studentCount ?? r.studentcount ?? 0)
-      );
+      existing.studentCount = Math.max(existing.studentCount, count);
     } else {
       byName.set(name, {
         id: null,
         uuid: name,
         name,
-        studentCount: Number(r.studentCount ?? r.studentcount ?? 0),
+        studentCount: count,
       });
     }
   }
@@ -174,10 +175,7 @@ async function listStudentsForCourseBatch(
   if (!dept || !course) return [];
 
   const { sql: ownerSql, params: ownerParams } = ownerFragments(opts);
-  const conditions = [
-    "st.course_description = ?",
-    studentDepartmentMatchSql(),
-  ];
+  const conditions = ["st.course_description = ?", studentDepartmentMatchSql()];
   const params = [course, dept, dept];
 
   const name = batchName ? String(batchName).trim().toUpperCase() : "";
@@ -191,7 +189,6 @@ async function listStudentsForCourseBatch(
     );
     params.push(String(batchUuid));
   } else if (name) {
-    // Match formal batch name OR derived YY+DEPT prefix on regn
     conditions.push(`(
       st.batch_id IN (SELECT id FROM batches WHERE UPPER(TRIM(name)) = ?)
       OR ${DERIVED_BATCH_SQL} = ?
