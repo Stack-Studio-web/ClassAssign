@@ -1,6 +1,6 @@
-import React, { useState, useRef, useEffect, useMemo } from "react";
+import React, { useMemo } from "react";
 import { motion } from "framer-motion";
-import { MoreVertical, Zap, BarChart3, Plus } from "lucide-react";
+import { Zap, BarChart3, Plus } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { StatusBadge } from "../ui/Badge";
 import { Button } from "../ui/Button";
@@ -16,74 +16,6 @@ function sortSemesters(list) {
     const order = { ODD: 0, EVEN: 1 };
     return (order[a.semesterType] ?? 2) - (order[b.semesterType] ?? 2);
   });
-}
-
-function SemesterMenu({ onEdit, onMarkCompleted, onViewExisting, onDeleteCompleted, isCompleted, manageSemesters = true, canDeleteCompleted = false }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-
-  useEffect(() => {
-    const handler = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-
-  const items = isCompleted
-    ? [
-        { label: "View", action: onViewExisting },
-        ...(canDeleteCompleted
-          ? [{ label: "Delete Semester", action: onDeleteCompleted, destructive: true }]
-          : []),
-      ]
-    : manageSemesters
-      ? [
-          { label: "Edit", action: onEdit },
-          { label: "Mark as Completed", action: onMarkCompleted },
-          { label: "View", action: onViewExisting },
-        ]
-      : [{ label: "View", action: onViewExisting }];
-
-  return (
-    <div className="relative" ref={ref}>
-      <Button
-        variant="ghost"
-        size="icon"
-        aria-label="Semester actions"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      >
-        <MoreVertical className="h-4 w-4" />
-      </Button>
-      {open && (
-        <div
-          role="menu"
-          className="absolute right-0 top-full z-20 mt-1 min-w-[180px] rounded-lg border border-gray-100 bg-white py-1 shadow-lg"
-        >
-          {items.map(({ label, action }) => (
-            <button
-              key={label}
-              type="button"
-              role="menuitem"
-              className={cn(
-                "w-full px-3 py-2 text-left text-sm hover:bg-gray-50",
-                label === "Mark as Completed" && "text-emerald-700",
-                label === "Delete Semester" && "text-red-700",
-                label !== "Mark as Completed" && label !== "Delete Semester" && "text-gray-700"
-              )}
-              onClick={() => {
-                setOpen(false);
-                action?.();
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
 }
 
 function semesterStatusVariant(semester, stats) {
@@ -104,15 +36,9 @@ export function SemesterCard({
   semester,
   year,
   stats,
-  onSelect,
   onActivate,
-  onEdit,
-  onMarkCompleted,
   onViewAnalytics,
-  onDeleteCompleted,
   selected,
-  manageSemesters = true,
-  canDeleteCompleted = false,
 }) {
   const completed = isSemesterCompleted(semester);
   const duration = deriveSemesterDuration(year, semester.semesterType);
@@ -135,26 +61,15 @@ export function SemesterCard({
         selected ? "border-blue-400 ring-2 ring-blue-100" : !completed && "border-gray-100"
       )}
     >
-      <div className="flex items-start justify-between gap-2">
-        <div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="font-bold text-gray-900">{semester.semesterType} Semester</h3>
-            <StatusBadge variant={statusVariant}>{statusLabel}</StatusBadge>
-          </div>
-          <p className="mt-1 text-xs text-gray-500">{duration}</p>
-          {completed && (
-            <p className="mt-1 text-xs text-gray-400">Historical record — read-only</p>
-          )}
+      <div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <h3 className="font-bold text-gray-900">{semester.semesterType} Semester</h3>
+          <StatusBadge variant={statusVariant}>{statusLabel}</StatusBadge>
         </div>
-        <SemesterMenu
-          onEdit={onEdit}
-          onMarkCompleted={onMarkCompleted}
-          onViewExisting={() => onSelect?.(semester)}
-          onDeleteCompleted={() => onDeleteCompleted?.(semester)}
-          isCompleted={completed}
-          manageSemesters={manageSemesters}
-          canDeleteCompleted={canDeleteCompleted}
-        />
+        <p className="mt-1 text-xs text-gray-500">{duration}</p>
+        {completed && (
+          <p className="mt-1 text-xs text-gray-400">Historical record — read-only</p>
+        )}
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-3">
@@ -231,14 +146,9 @@ function SemesterCardGrid({
   selectedSemester,
   onSelectSemester,
   onActivateSemester,
-  onEditSemester,
-  onMarkCompleted,
   onViewAnalytics,
-  onDeleteCompleted,
   showAddCard,
   onAddSemester,
-  manageSemesters = true,
-  canDeleteCompleted = false,
 }) {
   const navigate = useNavigate();
 
@@ -251,22 +161,12 @@ function SemesterCardGrid({
           year={year}
           stats={statsBySemester[sem.uuid]}
           selected={selectedSemester?.uuid === sem.uuid}
-          onSelect={onSelectSemester}
           onActivate={onActivateSemester}
-          onEdit={() => {
-            if (!isSemesterCompleted(sem)) onEditSemester?.(sem);
-          }}
-          onMarkCompleted={() => {
-            if (!isSemesterCompleted(sem)) onMarkCompleted?.(sem);
-          }}
           onViewAnalytics={(s) => {
             onSelectSemester?.(s);
             onViewAnalytics?.(s);
             navigate("/student/batches");
           }}
-          onDeleteCompleted={() => onDeleteCompleted?.(sem)}
-          manageSemesters={manageSemesters}
-          canDeleteCompleted={canDeleteCompleted}
         />
       ))}
       {showAddCard && <AddSemesterCard onClick={onAddSemester} />}
@@ -282,13 +182,13 @@ export function SemesterGrid({
   onSelectSemester,
   onAddSemester,
   onActivateSemester,
-  onEditSemester,
-  onMarkSemesterCompleted,
-  onDeleteCompletedSemester,
+  onEditSemester: _onEditSemester,
+  onMarkSemesterCompleted: _onMarkSemesterCompleted,
+  onDeleteCompletedSemester: _onDeleteCompletedSemester,
   onViewAnalytics,
   loading,
   manageSemesters = true,
-  canDeleteCompleted = false,
+  canDeleteCompleted: _canDeleteCompleted = false,
 }) {
   const { activeSemesters, completedSemesters } = useMemo(() => {
     const active = sortSemesters(semesters.filter((s) => !s.isArchived));
@@ -321,14 +221,9 @@ export function SemesterGrid({
             selectedSemester={selectedSemester}
             onSelectSemester={onSelectSemester}
             onActivateSemester={onActivateSemester}
-            onEditSemester={onEditSemester}
-            onMarkCompleted={onMarkSemesterCompleted}
-            onDeleteCompleted={onDeleteCompletedSemester}
             onViewAnalytics={onViewAnalytics}
             showAddCard={manageSemesters}
             onAddSemester={onAddSemester}
-            manageSemesters={manageSemesters}
-            canDeleteCompleted={canDeleteCompleted}
           />
         ) : (
           <div className="space-y-4">
@@ -350,14 +245,9 @@ export function SemesterGrid({
             selectedSemester={selectedSemester}
             onSelectSemester={onSelectSemester}
             onActivateSemester={onActivateSemester}
-            onEditSemester={onEditSemester}
-            onMarkCompleted={onMarkSemesterCompleted}
-            onDeleteCompleted={onDeleteCompletedSemester}
             onViewAnalytics={onViewAnalytics}
             showAddCard={false}
             onAddSemester={onAddSemester}
-            manageSemesters={manageSemesters}
-            canDeleteCompleted={canDeleteCompleted}
           />
         </div>
       )}

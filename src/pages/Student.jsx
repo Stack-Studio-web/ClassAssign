@@ -272,10 +272,8 @@ export default function StudentBrowserPage() {
             <StudentStatsCards
               studentsLabel={studentsLabel}
               totalStudents={statsTotal}
-              importedToday={0}
               activeBatches={activeBatches.length}
               courseCount={courses.length}
-              completedImports={0}
             />
 
             {!courseSelected ? (
