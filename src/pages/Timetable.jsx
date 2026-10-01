@@ -181,12 +181,13 @@ const Timetable = () => {
         setBatchOptions(
           (Array.isArray(batches) ? batches : [])
             .map((b) => ({
-              name: String(b.name || "").toUpperCase(),
+              // Actual Batch.name from DB (e.g. 2024-2028) — never a regn prefix
+              name: String(b.name || "").trim(),
               uuid: b.uuid || null,
               id: b.id ?? null,
               studentCount: Number(b.studentCount ?? 0),
             }))
-            .filter((b) => b.name)
+            .filter((b) => b.name && b.id != null)
         );
       } catch (err) {
         if (requestId !== batchRequestIdRef.current) return;
@@ -198,17 +199,18 @@ const Timetable = () => {
     })();
   }, [manualData.department, manualData.courseCode]);
 
-  // Students for department + course + batch
-  // Always send batch *code* (same key as batch dropdown / studentCount).
-  // Only send batchUuid when it is a real batches.public_uuid.
+  // Students for department + course + actual Batch (batch_id / public_uuid).
+  // Never identify batch by register-number prefix.
   useEffect(() => {
     const dept = String(manualData.department || "").trim().toUpperCase();
     const courseCode = String(manualData.courseCode || "").trim();
     const batch = String(manualData.batch || "").trim();
     const batchUuid = String(manualData.batchUuid || "").trim();
     const batchId = manualData.batchId;
+    const hasBatchId = batchId != null && batchId !== "";
+    const hasBatchUuid = isRealBatchUuid(batchUuid);
 
-    if (!dept || !courseCode || !batch) {
+    if (!dept || !courseCode || (!hasBatchId && !hasBatchUuid)) {
       setPreviewStudents([]);
       setStudentsLoading(false);
       return;
@@ -224,9 +226,9 @@ const Timetable = () => {
           params: {
             department: dept,
             courseCode,
-            batch,
-            ...(isRealBatchUuid(batchUuid) ? { batchUuid } : {}),
-            ...(batchId != null && batchId !== "" ? { batchId } : {}),
+            ...(batch ? { batch } : {}),
+            ...(hasBatchUuid ? { batchUuid } : {}),
+            ...(hasBatchId ? { batchId } : {}),
           },
         });
         if (requestId !== studentsRequestIdRef.current) return;
@@ -785,8 +787,7 @@ const Timetable = () => {
                       setManualData((prev) => ({
                         ...prev,
                         batch: name,
-                        // Only keep a real batches.public_uuid — derived codes
-                        // like "24BCS" must not be sent as batchUuid.
+                        // Actual batches.public_uuid / batches.id only
                         batchUuid: isRealBatchUuid(uuid) ? uuid : "",
                         batchId: found?.id ?? "",
                       }));
@@ -807,7 +808,7 @@ const Timetable = () => {
                     </option>
                     {!batchLoading &&
                       batchOptions.map((b) => (
-                        <option key={b.uuid || b.name} value={b.name}>
+                        <option key={b.id ?? b.uuid ?? b.name} value={b.name}>
                           {b.name}
                           {b.studentCount != null ? ` (${b.studentCount} students)` : ""}
                         </option>

@@ -9,17 +9,16 @@
  * Course enrollment is stored on the student row:
  *   course_description (code), course_name (title)
  *
- * Batch identity for this form is the batch *code* (e.g. 24BCS):
- *   formal: UPPER(TRIM(batches.name)) via students.batch_id
- *   derived: UPPER(SUBSTRING(regn_no FROM '^[0-9]{2}[A-Z]+'))
- * Batch dropdown studentCount and the student list MUST use this same key.
+ * Batch is ONLY the formal Batch record via students.batch_id → batches.
+ * Register-number prefixes (e.g. "24BCS" from "24BCS002") are NEVER treated
+ * as a batch. Register number ≠ department ≠ batch.
  *
  * Flow:
  *   department code
  *     → students belonging to that department
  *     → DISTINCT course_description / course_name
- *     → batches (formal ∪ derived) for that course
- *     → students for course + batch code
+ *     → DISTINCT batches via student.batch_id for that course
+ *     → students for course + batch_id
  */
 const db = require("../config/db");
 const { andClause } = require("../utils/ownerFilter");
@@ -36,6 +35,12 @@ function ownerFragments(opts = {}) {
   return andClause(opts.role, opts.ownerUserId, "st.", opts.ownerIds);
 }
 
+function isBatchPublicUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    String(value || "")
+  );
+}
+
 /**
  * Match students to a Timetable department dropdown value (e.g. BCS).
  *
@@ -47,6 +52,8 @@ function ownerFragments(opts = {}) {
  * (this was why courses?department=BCS returned []).
  *
  * Binds two params: dept, dept.
+ *
+ * Note: regn parsing here is for DEPARTMENT only — never for batch.
  */
 function studentDepartmentMatchSql() {
   return `(
@@ -54,9 +61,6 @@ function studentDepartmentMatchSql() {
     OR UPPER((regexp_match(UPPER(TRIM(st.regn_no)), '^[0-9]{2}([A-Z]+)'))[1]) = ?
   )`;
 }
-
-/** Derived batch code from regn (23BCS001 → 23BCS). */
-const DERIVED_BATCH_SQL = `UPPER(SUBSTRING(UPPER(TRIM(st.regn_no)) FROM '^[0-9]{2}[A-Z]+'))`;
 
 /**
  * Unique courses enrolled by students of the selected department.
@@ -91,8 +95,11 @@ async function listCoursesByDepartment(department, opts = {}) {
 }
 
 /**
- * Batches containing students of this department enrolled in this course.
- * Count = students in (department + course + batch), not total batch size.
+ * Actual Batch records for students of this department enrolled in this course.
+ *
+ * Source of truth: students.batch_id → batches (id, public_uuid, name).
+ * Does NOT derive batch names from register numbers.
+ * Count = students with that course enrollment AND that batch_id.
  */
 async function listBatchesForCourse(department, courseCode, opts = {}) {
   const dept = normalizeDept(department);
@@ -101,17 +108,18 @@ async function listBatchesForCourse(department, courseCode, opts = {}) {
 
   const { sql: ownerSql, params: ownerParams } = ownerFragments(opts);
 
-  const [formalRows] = await db.query(
+  const [rows] = await db.query(
     `
     SELECT
       b.id,
       b.public_uuid AS uuid,
-      UPPER(TRIM(b.name)) AS name,
+      TRIM(b.name) AS name,
       COUNT(st.id)::int AS "studentCount"
     FROM students st
     INNER JOIN batches b ON b.id = st.batch_id
     WHERE st.course_description = ?
       AND ${studentDepartmentMatchSql()}
+      AND st.batch_id IS NOT NULL
       ${ownerSql}
     GROUP BY b.id, b.public_uuid, b.name
     HAVING COUNT(st.id) > 0
@@ -120,108 +128,51 @@ async function listBatchesForCourse(department, courseCode, opts = {}) {
     [course, dept, dept, ...ownerParams]
   );
 
-  const [derivedRows] = await db.query(
-    `
-    SELECT
-      ${DERIVED_BATCH_SQL} AS name,
-      COUNT(*)::int AS "studentCount"
-    FROM students st
-    WHERE st.course_description = ?
-      AND ${studentDepartmentMatchSql()}
-      AND ${DERIVED_BATCH_SQL} IS NOT NULL
-      ${ownerSql}
-    GROUP BY 1
-    HAVING COUNT(*) > 0
-    ORDER BY 1 DESC
-    `,
-    [course, dept, dept, ...ownerParams]
-  );
-
-  const byName = new Map();
-
-  for (const r of formalRows || []) {
-    const name = String(r.name || "").toUpperCase();
-    if (!name) continue;
-    byName.set(name, {
+  return (rows || [])
+    .map((r) => ({
       id: r.id ?? null,
       uuid: r.uuid ?? r.public_uuid ?? null,
-      name,
+      name: String(r.name || "").trim(),
       studentCount: Number(r.studentCount ?? r.studentcount ?? 0),
-    });
-  }
-
-  for (const r of derivedRows || []) {
-    const name = String(r.name || "").toUpperCase();
-    if (!name) continue;
-    const existing = byName.get(name);
-    const count = Number(r.studentCount ?? r.studentcount ?? 0);
-    if (existing) {
-      // Same students may appear in formal + derived aggregations; keep the
-      // larger count so the dropdown matches the student-list query below.
-      existing.studentCount = Math.max(existing.studentCount, count);
-    } else {
-      // Derived-only batch: identity is the code (e.g. 24BCS), not a UUID.
-      // Do NOT put the code into uuid — that caused the student API to treat
-      // "24BCS" as a batch public_uuid and return [].
-      byName.set(name, {
-        id: null,
-        uuid: null,
-        name,
-        studentCount: count,
-      });
-    }
-  }
-
-  return [...byName.values()].sort((a, b) => String(b.name).localeCompare(String(a.name)));
-}
-
-function isBatchPublicUuid(value) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-    String(value || "")
-  );
+    }))
+    .filter((b) => b.id != null && b.name);
 }
 
 /**
- * Resolve the batch *code* used by listBatchesForCourse grouping
- * (formal batches.name or DERIVED_BATCH_SQL, e.g. "24BCS").
+ * Resolve students.batch_id from Timetable form identifiers.
+ * Prefer numeric id, then batches.public_uuid. Never invent ids from regn.
  */
-async function resolveBatchCode({ batchName, batchUuid, batchId }) {
-  const fromName = batchName ? String(batchName).trim().toUpperCase() : "";
-  if (fromName) return fromName;
-
-  // Frontend historically sent derived code as batchUuid (e.g. "24BCS").
-  if (batchUuid && !isBatchPublicUuid(batchUuid)) {
-    return String(batchUuid).trim().toUpperCase();
-  }
-
+async function resolveBatchId({ batchId, batchUuid, batchName }) {
   if (batchId != null && batchId !== "" && Number.isFinite(Number(batchId))) {
-    const [rows] = await db.query(
-      `SELECT UPPER(TRIM(name)) AS name FROM batches WHERE id = ? LIMIT 1`,
-      [Number(batchId)]
-    );
-    const n = rows?.[0]?.name;
-    if (n) return String(n).trim().toUpperCase();
+    return Number(batchId);
   }
 
   if (batchUuid && isBatchPublicUuid(batchUuid)) {
     const [rows] = await db.query(
-      `SELECT UPPER(TRIM(name)) AS name FROM batches WHERE public_uuid = ? LIMIT 1`,
+      `SELECT id FROM batches WHERE public_uuid = ? LIMIT 1`,
       [String(batchUuid)]
     );
-    const n = rows?.[0]?.name;
-    if (n) return String(n).trim().toUpperCase();
+    const id = rows?.[0]?.id;
+    if (id != null) return Number(id);
   }
 
-  return "";
+  // Fallback: exact Batch.name match only (never regn-prefix synthesis).
+  const name = batchName ? String(batchName).trim() : "";
+  if (name) {
+    const [rows] = await db.query(
+      `SELECT id FROM batches WHERE UPPER(TRIM(name)) = UPPER(TRIM(?)) LIMIT 1`,
+      [name]
+    );
+    const id = rows?.[0]?.id;
+    if (id != null) return Number(id);
+  }
+
+  return null;
 }
 
 /**
- * Students in department enrolled in course and belonging to selected batch.
- *
- * MUST use the same Student + course_description + batch relationship that
- * listBatchesForCourse uses for studentCount (derived regn prefix and/or
- * formal batches.name). Filtering only by st.batch_id would miss derived
- * batches and return [] while the dropdown still shows "(N students)".
+ * Students in department enrolled in course with students.batch_id = selected batch.
+ * Same membership as listBatchesForCourse studentCount.
  */
 async function listStudentsForCourseBatch(
   { department, courseCode, batchUuid, batchName, batchId },
@@ -231,15 +182,11 @@ async function listStudentsForCourseBatch(
   const course = normalizeCourse(courseCode);
   if (!dept || !course) return [];
 
-  const batchCode = await resolveBatchCode({ batchName, batchUuid, batchId });
-  if (!batchCode) return [];
+  const resolvedBatchId = await resolveBatchId({ batchId, batchUuid, batchName });
+  if (resolvedBatchId == null) return [];
 
   const { sql: ownerSql, params: ownerParams } = ownerFragments(opts);
 
-  // Same membership as batch count:
-  //   course_description = course
-  //   AND department match
-  //   AND (derived regn batch code = batchCode OR formal batch name = batchCode)
   const [rows] = await db.query(
     `
     SELECT
@@ -248,25 +195,18 @@ async function listStudentsForCourseBatch(
       st.student_name AS "studentName",
       st.course_description AS "courseCode",
       st.course_name AS "courseName",
-      COALESCE(
-        (SELECT UPPER(TRIM(b.name)) FROM batches b WHERE b.id = st.batch_id),
-        ${DERIVED_BATCH_SQL}
-      ) AS "batchName",
-      (SELECT b.public_uuid FROM batches b WHERE b.id = st.batch_id) AS "batchUuid"
+      TRIM(b.name) AS "batchName",
+      b.public_uuid AS "batchUuid",
+      b.id AS "batchId"
     FROM students st
+    INNER JOIN batches b ON b.id = st.batch_id
     WHERE st.course_description = ?
       AND ${studentDepartmentMatchSql()}
-      AND (
-        ${DERIVED_BATCH_SQL} = ?
-        OR UPPER(TRIM(COALESCE(
-          (SELECT name FROM batches b WHERE b.id = st.batch_id),
-          ''
-        ))) = ?
-      )
+      AND st.batch_id = ?
       ${ownerSql}
     ORDER BY st.regn_no ASC, st.id ASC
     `,
-    [course, dept, dept, batchCode, batchCode, ...ownerParams]
+    [course, dept, dept, resolvedBatchId, ...ownerParams]
   );
 
   return (rows || []).map((r) => ({
@@ -277,6 +217,7 @@ async function listStudentsForCourseBatch(
     courseName: r.courseName ?? r.coursename ?? "",
     batchName: r.batchName ?? r.batchname ?? "",
     batchUuid: r.batchUuid ?? r.batchuuid ?? null,
+    batchId: r.batchId ?? r.batchid ?? null,
   }));
 }
 
