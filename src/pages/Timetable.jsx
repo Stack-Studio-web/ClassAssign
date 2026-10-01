@@ -40,8 +40,14 @@ const Timetable = () => {
     department: "",
     batch: "",
     batchUuid: "",
+    batchId: "",
     examType: "CAT1",
   });
+
+  const isRealBatchUuid = (value) =>
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      String(value || "")
+    );
 
   // Department -> Course -> Batch -> Students (Manual Entry)
   const [departmentOptions, setDepartmentOptions] = useState([]);
@@ -193,13 +199,16 @@ const Timetable = () => {
   }, [manualData.department, manualData.courseCode]);
 
   // Students for department + course + batch
+  // Always send batch *code* (same key as batch dropdown / studentCount).
+  // Only send batchUuid when it is a real batches.public_uuid.
   useEffect(() => {
     const dept = String(manualData.department || "").trim().toUpperCase();
     const courseCode = String(manualData.courseCode || "").trim();
     const batch = String(manualData.batch || "").trim();
     const batchUuid = String(manualData.batchUuid || "").trim();
+    const batchId = manualData.batchId;
 
-    if (!dept || !courseCode || (!batch && !batchUuid)) {
+    if (!dept || !courseCode || !batch) {
       setPreviewStudents([]);
       setStudentsLoading(false);
       return;
@@ -215,7 +224,9 @@ const Timetable = () => {
           params: {
             department: dept,
             courseCode,
-            ...(batchUuid ? { batchUuid } : { batch }),
+            batch,
+            ...(isRealBatchUuid(batchUuid) ? { batchUuid } : {}),
+            ...(batchId != null && batchId !== "" ? { batchId } : {}),
           },
         });
         if (requestId !== studentsRequestIdRef.current) return;
@@ -229,7 +240,7 @@ const Timetable = () => {
         if (requestId === studentsRequestIdRef.current) setStudentsLoading(false);
       }
     })();
-  }, [manualData.department, manualData.courseCode, manualData.batch, manualData.batchUuid]);
+  }, [manualData.department, manualData.courseCode, manualData.batch, manualData.batchUuid, manualData.batchId]);
 
   // Fetch schedules
   const fetchSchedules = async () => {
@@ -373,6 +384,7 @@ const Timetable = () => {
       courseName: selectedCourse?.courseName || "",
       batch: "",
       batchUuid: "",
+      batchId: "",
     }));
     setPreviewStudents([]);
   };
@@ -385,6 +397,7 @@ const Timetable = () => {
       courseName: "",
       batch: "",
       batchUuid: "",
+      batchId: "",
     }));
     setAvailableCourses([]);
     setBatchOptions([]);
@@ -436,6 +449,7 @@ const Timetable = () => {
         department: "",
         batch: "",
         batchUuid: "",
+        batchId: "",
         examType: "CAT1",
       });
       setAvailableCourses([]);
@@ -767,10 +781,14 @@ const Timetable = () => {
                     onChange={(e) => {
                       const name = e.target.value;
                       const found = batchOptions.find((b) => b.name === name);
+                      const uuid = found?.uuid || "";
                       setManualData((prev) => ({
                         ...prev,
                         batch: name,
-                        batchUuid: found?.uuid || "",
+                        // Only keep a real batches.public_uuid — derived codes
+                        // like "24BCS" must not be sent as batchUuid.
+                        batchUuid: isRealBatchUuid(uuid) ? uuid : "",
+                        batchId: found?.id ?? "",
                       }));
                     }}
                     disabled={
