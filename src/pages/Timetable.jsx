@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
 import api from "../lib/api";
-import { logger } from "../lib/logger";
 import { TrashIcon, FunnelIcon, XMarkIcon, CalendarDaysIcon, DocumentArrowDownIcon } from "@heroicons/react/24/outline";
 import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
@@ -25,8 +24,10 @@ const Timetable = () => {
   const [importPreview, setImportPreview] = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
 
-  // ✅ NEW: Available courses from students table
+  // ✅ Available courses for selected department (Add Schedule)
   const [availableCourses, setAvailableCourses] = useState([]);
+  const [coursesLoading, setCoursesLoading] = useState(false);
+  const courseRequestIdRef = useRef(0);
 
   // Manual Entry State
   const [manualData, setManualData] = useState({
@@ -42,11 +43,14 @@ const Timetable = () => {
     examType: "CAT1",
   });
 
-  // Department -> Batch dropdowns (Manual Entry)
+  // Department -> Course -> Batch -> Students (Manual Entry)
   const [departmentOptions, setDepartmentOptions] = useState([]);
   const [batchOptions, setBatchOptions] = useState([]);
   const [batchLoading, setBatchLoading] = useState(false);
   const batchRequestIdRef = useRef(0);
+  const [previewStudents, setPreviewStudents] = useState([]);
+  const [studentsLoading, setStudentsLoading] = useState(false);
+  const studentsRequestIdRef = useRef(0);
 
   // Filter State
   const [filters, setFilters] = useState({
@@ -92,22 +96,7 @@ const Timetable = () => {
     }
   }, []);
 
-  // ✅ NEW: Fetch available courses from students table
-  useEffect(() => {
-    const fetchCourses = async () => {
-      try {
-        const res = await api.get("/students/courses");
-        setAvailableCourses(res.data);
-        logger.log('✅ Loaded courses from students table:', res.data.length);
-      } catch (err) {
-        console.error("Failed to fetch courses:", err);
-        setMessage("⚠️ Failed to load course list");
-      }
-    };
-    fetchCourses();
-  }, []);
-
-  // ✅ NEW: Load Department options for Manual Entry
+  // ✅ Load Department options for Manual Entry
   useEffect(() => {
     const fetchDepartments = async () => {
       try {
@@ -122,91 +111,125 @@ const Timetable = () => {
     fetchDepartments();
   }, []);
 
-  // ✅ NEW: Load batches only when Department changes
+  // Courses for selected department (after Date + Start Time)
   useEffect(() => {
     const dept = String(manualData.department || "").trim().toUpperCase();
+    const canLoad = Boolean(dept && manualData.date && manualData.startTime);
 
-    // No department selected: disable batch dropdown
-    if (!dept) {
+    if (!canLoad) {
+      setAvailableCourses([]);
+      setCoursesLoading(false);
+      return;
+    }
+
+    const requestId = ++courseRequestIdRef.current;
+    setCoursesLoading(true);
+    setAvailableCourses([]);
+
+    (async () => {
+      try {
+        const res = await api.get("/timetable/form-options/courses", {
+          params: { department: dept },
+        });
+        if (requestId !== courseRequestIdRef.current) return;
+        const courses = res?.data?.courses ?? [];
+        setAvailableCourses(
+          (Array.isArray(courses) ? courses : []).map((c) => ({
+            courseDescription: c.courseCode || c.courseDescription || "",
+            courseName: c.courseName || "",
+            count: c.count,
+          }))
+        );
+      } catch (err) {
+        if (requestId !== courseRequestIdRef.current) return;
+        console.error("Failed to load courses:", err);
+        setAvailableCourses([]);
+      } finally {
+        if (requestId === courseRequestIdRef.current) setCoursesLoading(false);
+      }
+    })();
+  }, [manualData.department, manualData.date, manualData.startTime]);
+
+  // Batches for selected department + course (student count = enrolled in that course)
+  useEffect(() => {
+    const dept = String(manualData.department || "").trim().toUpperCase();
+    const courseCode = String(manualData.courseCode || "").trim();
+
+    if (!dept || !courseCode) {
       setBatchOptions([]);
       setBatchLoading(false);
       return;
     }
 
-    // Clear selected batch when department changes
-    setManualData((prev) => ({ ...prev, batch: "", batchUuid: "" }));
-    setBatchOptions([]);
-    setBatchLoading(true);
-
     const requestId = ++batchRequestIdRef.current;
+    setBatchLoading(true);
+    setBatchOptions([]);
 
-    const fetchBatches = async () => {
-      const toOptions = (rows) => {
-        const names = new Set();
-        (rows || []).forEach((row) => {
-          const name = String(row?.name || row?.regnNo || row?.regnno || "")
-            .toUpperCase()
-            .trim();
-          const match = name.match(/^(\d{2}[A-Z]+)/);
-          const batchName = row?.name && /^\d{2}[A-Z]+$/.test(String(row.name).toUpperCase())
-            ? String(row.name).toUpperCase()
-            : match?.[1];
-          if (batchName && batchName.endsWith(dept)) names.add(batchName);
-        });
-        return [...names].sort().reverse().map((name) => ({ name, uuid: name }));
-      };
-
+    (async () => {
       try {
-        const res = await api.get(
-          `/students/batches-by-department/${encodeURIComponent(dept)}`
-        );
-        const body = res?.data?.data ?? res?.data ?? {};
-        const batches = body.batches ?? (Array.isArray(body) ? body : []);
-        const options = (Array.isArray(batches) ? batches : [])
-          .map((b) => ({
-            name: String(b.name || b.uuid || "").toUpperCase(),
-            uuid: b.uuid || b.name || null,
-          }))
-          .filter((b) => b.name);
-
+        const res = await api.get("/timetable/form-options/batches", {
+          params: { department: dept, courseCode },
+        });
         if (requestId !== batchRequestIdRef.current) return;
-
-        if (options.length > 0) {
-          setBatchOptions(options);
-          return;
-        }
-
-        const studentsRes = await api.get(
-          `/students/department/${encodeURIComponent(dept)}`
+        const batches = res?.data?.batches ?? [];
+        setBatchOptions(
+          (Array.isArray(batches) ? batches : [])
+            .map((b) => ({
+              name: String(b.name || "").toUpperCase(),
+              uuid: b.uuid || null,
+              id: b.id ?? null,
+              studentCount: Number(b.studentCount ?? 0),
+            }))
+            .filter((b) => b.name)
         );
-        const students = Array.isArray(studentsRes.data)
-          ? studentsRes.data
-          : studentsRes.data?.data ?? [];
-        if (requestId !== batchRequestIdRef.current) return;
-        setBatchOptions(toOptions(students));
       } catch (err) {
-        try {
-          const studentsRes = await api.get(
-            `/students/department/${encodeURIComponent(dept)}`
-          );
-          const students = Array.isArray(studentsRes.data)
-            ? studentsRes.data
-            : studentsRes.data?.data ?? [];
-          if (requestId !== batchRequestIdRef.current) return;
-          setBatchOptions(toOptions(students));
-        } catch (fallbackErr) {
-          if (requestId !== batchRequestIdRef.current) return;
-          console.error("Failed to load batches:", err, fallbackErr);
-          setBatchOptions([]);
-        }
-      } finally {
         if (requestId !== batchRequestIdRef.current) return;
-        setBatchLoading(false);
+        console.error("Failed to load batches:", err);
+        setBatchOptions([]);
+      } finally {
+        if (requestId === batchRequestIdRef.current) setBatchLoading(false);
       }
-    };
+    })();
+  }, [manualData.department, manualData.courseCode]);
 
-    fetchBatches();
-  }, [manualData.department]);
+  // Students for department + course + batch
+  useEffect(() => {
+    const dept = String(manualData.department || "").trim().toUpperCase();
+    const courseCode = String(manualData.courseCode || "").trim();
+    const batch = String(manualData.batch || "").trim();
+    const batchUuid = String(manualData.batchUuid || "").trim();
+
+    if (!dept || !courseCode || (!batch && !batchUuid)) {
+      setPreviewStudents([]);
+      setStudentsLoading(false);
+      return;
+    }
+
+    const requestId = ++studentsRequestIdRef.current;
+    setStudentsLoading(true);
+    setPreviewStudents([]);
+
+    (async () => {
+      try {
+        const res = await api.get("/timetable/form-options/students", {
+          params: {
+            department: dept,
+            courseCode,
+            ...(batchUuid ? { batchUuid } : { batch }),
+          },
+        });
+        if (requestId !== studentsRequestIdRef.current) return;
+        const students = res?.data?.students ?? [];
+        setPreviewStudents(Array.isArray(students) ? students : []);
+      } catch (err) {
+        if (requestId !== studentsRequestIdRef.current) return;
+        console.error("Failed to load students:", err);
+        setPreviewStudents([]);
+      } finally {
+        if (requestId === studentsRequestIdRef.current) setStudentsLoading(false);
+      }
+    })();
+  }, [manualData.department, manualData.courseCode, manualData.batch, manualData.batchUuid]);
 
   // Fetch schedules
   const fetchSchedules = async () => {
@@ -338,22 +361,34 @@ const Timetable = () => {
     }
   };
 
-  // ✅ UPDATED: Handle course selection - auto-fill course name
+  // Handle course selection — auto-fill name; reset batch + students
   const handleCourseSelect = (courseCode) => {
     const selectedCourse = availableCourses.find(
-      c => c.courseDescription === courseCode
+      (c) => c.courseDescription === courseCode
     );
 
-    setManualData({
-      ...manualData,
-      courseCode: courseCode,
-      courseName: selectedCourse?.courseName || ''
-    });
+    setManualData((prev) => ({
+      ...prev,
+      courseCode,
+      courseName: selectedCourse?.courseName || "",
+      batch: "",
+      batchUuid: "",
+    }));
+    setPreviewStudents([]);
+  };
 
-    logger.log('📚 Selected course:', {
-      code: courseCode,
-      name: selectedCourse?.courseName
-    });
+  const handleDepartmentSelect = (department) => {
+    setManualData((prev) => ({
+      ...prev,
+      department: (department || "").toUpperCase(),
+      courseCode: "",
+      courseName: "",
+      batch: "",
+      batchUuid: "",
+    }));
+    setAvailableCourses([]);
+    setBatchOptions([]);
+    setPreviewStudents([]);
   };
 
   // Manual submit
@@ -370,9 +405,20 @@ const Timetable = () => {
       !manualData.courseCode ||
       !manualData.courseName ||
       !manualData.department ||
-      !manualData.batch
+      !manualData.batch ||
+      !manualData.examType
     ) {
       setMessage("⚠️ Please fill all required fields");
+      return;
+    }
+
+    if (studentsLoading) {
+      setMessage("⚠️ Wait for the student list to finish loading");
+      return;
+    }
+
+    if (previewStudents.length === 0) {
+      setMessage("⚠️ No students found for this course and batch");
       return;
     }
 
@@ -392,6 +438,9 @@ const Timetable = () => {
         batchUuid: "",
         examType: "CAT1",
       });
+      setAvailableCourses([]);
+      setBatchOptions([]);
+      setPreviewStudents([]);
       fetchSchedules();
     } catch (err) {
       setMessage(
@@ -618,18 +667,6 @@ const Timetable = () => {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-600 mb-2">Session *</label>
-                  <select
-                    value={manualData.session}
-                    onChange={(e) => setManualData({ ...manualData, session: e.target.value })}
-                    disabled={!hasWriteAccess}
-                    className="w-full h-11 md:h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed bg-white"
-                  >
-                    <option value="FN">FN</option>
-                    <option value="AN">AN</option>
-                  </select>
-                </div>
-                <div>
                   <label className="block text-sm font-medium text-gray-600 mb-2">Start Time *</label>
                   <input
                     type="time"
@@ -649,26 +686,70 @@ const Timetable = () => {
                     className="w-full h-11 md:h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed"
                   />
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-600 mb-2">Session *</label>
+                  <select
+                    value={manualData.session}
+                    onChange={(e) => setManualData({ ...manualData, session: e.target.value })}
+                    disabled={!hasWriteAccess}
+                    className="w-full h-11 md:h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed bg-white"
+                  >
+                    <option value="FN">FN</option>
+                    <option value="AN">AN</option>
+                  </select>
+                </div>
+
+                <div className="sm:col-span-2">
+                  <label className="block text-sm font-medium text-gray-600 mb-2">Department *</label>
+                  <select
+                    value={manualData.department}
+                    onChange={(e) => handleDepartmentSelect(e.target.value)}
+                    disabled={
+                      !hasWriteAccess || !manualData.date || !manualData.startTime
+                    }
+                    className="w-full h-11 md:h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed bg-white"
+                  >
+                    <option value="">
+                      {!manualData.date || !manualData.startTime
+                        ? "Select Date & Start Time first"
+                        : "-- Select Department --"}
+                    </option>
+                    {departmentOptions.map((d) => (
+                      <option key={d} value={d}>
+                        {d}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
                 <div className="sm:col-span-2">
                   <label className="block text-sm font-medium text-gray-600 mb-2">Course Code *</label>
                   <select
                     value={manualData.courseCode}
                     onChange={(e) => handleCourseSelect(e.target.value)}
-                    disabled={!hasWriteAccess}
+                    disabled={!hasWriteAccess || !manualData.department || coursesLoading}
                     className="w-full h-11 md:h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed bg-white"
                   >
-                    <option value="">-- Select Course --</option>
-                    {availableCourses.map((course) => (
-                      <option key={course.courseDescription} value={course.courseDescription}>
-                        {course.courseDescription} - {course.courseName}
-                      </option>
-                    ))}
+                    <option value="">
+                      {!manualData.department
+                        ? "Select Department first"
+                        : coursesLoading
+                          ? "Loading courses..."
+                          : "-- Select Course --"}
+                    </option>
+                    {!coursesLoading &&
+                      availableCourses.map((course) => (
+                        <option key={course.courseDescription} value={course.courseDescription}>
+                          {course.courseDescription} - {course.courseName}
+                        </option>
+                      ))}
                   </select>
-                  {availableCourses.length === 0 && (
-                    <p className="text-xs text-red-600 mt-1">No courses in students table</p>
+                  {!coursesLoading && manualData.department && availableCourses.length === 0 && (
+                    <p className="text-xs text-red-600 mt-1">No courses found for this department.</p>
                   )}
                 </div>
-                <div>
+
+                <div className="sm:col-span-2">
                   <label className="block text-sm font-medium text-gray-600 mb-2">Course Name *</label>
                   <input
                     type="text"
@@ -678,31 +759,8 @@ const Timetable = () => {
                     placeholder="Auto-filled"
                   />
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-600 mb-2">Department *</label>
-                  <select
-                    value={manualData.department}
-                    onChange={(e) =>
-                      setManualData((prev) => ({
-                        ...prev,
-                        department: (e.target.value || "").toUpperCase(),
-                        batch: "",
-                        batchUuid: "",
-                      }))
-                    }
-                    disabled={!hasWriteAccess}
-                    className="w-full h-11 md:h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed bg-white"
-                  >
-                    <option value="">-- Select Department --</option>
-                    {departmentOptions.map((d) => (
-                      <option key={d} value={d}>
-                        {d}
-                      </option>
-                    ))}
-                  </select>
-                </div>
 
-                <div>
+                <div className="sm:col-span-2">
                   <label className="block text-sm font-medium text-gray-600 mb-2">Batch *</label>
                   <select
                     value={manualData.batch}
@@ -715,27 +773,70 @@ const Timetable = () => {
                         batchUuid: found?.uuid || "",
                       }));
                     }}
-                    disabled={!hasWriteAccess || !manualData.department || batchLoading}
+                    disabled={
+                      !hasWriteAccess ||
+                      !manualData.courseCode ||
+                      batchLoading
+                    }
                     className="w-full h-11 md:h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed bg-white"
                   >
                     <option value="">
-                      {manualData.department
-                        ? batchLoading
-                          ? "Loading..."
-                          : "-- Select Batch --"
-                        : "Select Department First"}
+                      {!manualData.courseCode
+                        ? "Select Course first"
+                        : batchLoading
+                          ? "Loading batches..."
+                          : "-- Select Batch --"}
                     </option>
                     {!batchLoading &&
                       batchOptions.map((b) => (
-                        <option key={b.name} value={b.name}>
+                        <option key={b.uuid || b.name} value={b.name}>
                           {b.name}
+                          {b.studentCount != null ? ` (${b.studentCount} students)` : ""}
                         </option>
                       ))}
                   </select>
-                  {!batchLoading && manualData.department && batchOptions.length === 0 && (
-                    <p className="text-xs text-red-600 mt-1">No batches found</p>
+                  {!batchLoading && manualData.courseCode && batchOptions.length === 0 && (
+                    <p className="text-xs text-red-600 mt-1">No batches found for this course.</p>
                   )}
                 </div>
+
+                <div className="sm:col-span-2">
+                  <label className="block text-sm font-medium text-gray-600 mb-2">Students</label>
+                  <div className="rounded-xl border border-gray-200 overflow-hidden max-h-56 overflow-y-auto bg-white">
+                    {studentsLoading ? (
+                      <p className="px-4 py-6 text-sm text-gray-500">Loading students...</p>
+                    ) : !manualData.batch ? (
+                      <p className="px-4 py-6 text-sm text-gray-500">Select a batch to load students.</p>
+                    ) : previewStudents.length === 0 ? (
+                      <p className="px-4 py-6 text-sm text-red-600">
+                        No students found for this course and batch.
+                      </p>
+                    ) : (
+                      <table className="min-w-full text-left text-sm">
+                        <thead className="sticky top-0 bg-gray-50 border-b border-gray-200">
+                          <tr>
+                            <th className="px-4 py-2 font-semibold text-gray-700">Reg. No.</th>
+                            <th className="px-4 py-2 font-semibold text-gray-700">Student Name</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {previewStudents.map((s) => (
+                            <tr key={s.uuid || s.regnNo}>
+                              <td className="px-4 py-2 font-medium text-blue-600">{s.regnNo}</td>
+                              <td className="px-4 py-2 text-gray-800">{s.studentName || "—"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                  {previewStudents.length > 0 && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      {previewStudents.length} student{previewStudents.length === 1 ? "" : "s"} enrolled
+                    </p>
+                  )}
+                </div>
+
                 <div>
                   <label className="block text-sm font-medium text-gray-600 mb-2">Exam Type *</label>
                   <select
@@ -752,7 +853,20 @@ const Timetable = () => {
               </div>
               <button
                 onClick={handleManualSubmit}
-                disabled={loading || !hasWriteAccess}
+                disabled={
+                  loading ||
+                  !hasWriteAccess ||
+                  studentsLoading ||
+                  !manualData.date ||
+                  !manualData.startTime ||
+                  !manualData.endTime ||
+                  !manualData.department ||
+                  !manualData.courseCode ||
+                  !manualData.courseName ||
+                  !manualData.batch ||
+                  !manualData.examType ||
+                  previewStudents.length === 0
+                }
                 className="mt-4 w-full h-12 rounded-xl bg-green-600 hover:bg-green-700 text-white font-semibold shadow-sm hover:shadow-md transition-all duration-200 disabled:bg-gray-300 disabled:cursor-not-allowed"
               >
                 Add Schedule

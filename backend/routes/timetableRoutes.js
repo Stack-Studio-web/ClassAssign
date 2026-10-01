@@ -571,4 +571,111 @@ router.post("/bulk-delete",
   }
 );
 
+
+/* =====================================================
+    TIMETABLE ADD-SCHEDULE FORM OPTIONS (Timetable-only)
+    Prefers students.batch_id → batches + course_description.
+===================================================== */
+const {
+  listCoursesByDepartment,
+  listBatchesForCourse,
+  listStudentsForCourseBatch,
+} = require("../utils/timetableFormOptions");
+
+router.get(
+  "/form-options/courses",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge", "hod"]),
+  async (req, res) => {
+    try {
+      const department = String(req.query.department || "").trim();
+      if (!department) {
+        return res.status(400).json({ error: "department is required" });
+      }
+      if (
+        req.user?.role === "hod" &&
+        req.user?.department &&
+        department.toUpperCase() !== String(req.user.department).toUpperCase()
+      ) {
+        return res.status(403).json({ error: "You can only view courses for your own department." });
+      }
+      const courses = await listCoursesByDepartment(department, await resolveOwnerOpts(req));
+      return res.json({ courses });
+    } catch (err) {
+      console.error("TIMETABLE FORM COURSES ERROR:", err);
+      return res.status(500).json({ error: "Failed to load courses", details: err.message });
+    }
+  }
+);
+
+router.get(
+  "/form-options/batches",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge", "hod"]),
+  async (req, res) => {
+    try {
+      const department = String(req.query.department || "").trim();
+      const courseCode = String(req.query.courseCode || "").trim();
+      if (!department || !courseCode) {
+        return res.status(400).json({ error: "department and courseCode are required" });
+      }
+      if (
+        req.user?.role === "hod" &&
+        req.user?.department &&
+        department.toUpperCase() !== String(req.user.department).toUpperCase()
+      ) {
+        return res.status(403).json({ error: "You can only view batches for your own department." });
+      }
+      const batches = await listBatchesForCourse(department, courseCode, await resolveOwnerOpts(req));
+      return res.json({ batches });
+    } catch (err) {
+      console.error("TIMETABLE FORM BATCHES ERROR:", err);
+      return res.status(500).json({ error: "Failed to load batches", details: err.message });
+    }
+  }
+);
+
+router.get(
+  "/form-options/students",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge", "hod"]),
+  async (req, res) => {
+    try {
+      const department = String(req.query.department || "").trim();
+      const courseCode = String(req.query.courseCode || "").trim();
+      const batchUuid = String(req.query.batchUuid || "").trim() || null;
+      const batch = String(req.query.batch || "").trim() || null;
+      const batchIdRaw = req.query.batchId;
+      const batchId =
+        batchIdRaw != null && batchIdRaw !== "" ? Number(batchIdRaw) : null;
+      if (!department || !courseCode || (!batchUuid && !batch && batchId == null)) {
+        return res.status(400).json({
+          error: "department, courseCode, and batch (or batchUuid/batchId) are required",
+        });
+      }
+      if (
+        req.user?.role === "hod" &&
+        req.user?.department &&
+        department.toUpperCase() !== String(req.user.department).toUpperCase()
+      ) {
+        return res.status(403).json({ error: "You can only view students for your own department." });
+      }
+      const students = await listStudentsForCourseBatch(
+        {
+          department,
+          courseCode,
+          batchUuid,
+          batchName: batch,
+          batchId: Number.isFinite(batchId) ? batchId : null,
+        },
+        await resolveOwnerOpts(req)
+      );
+      return res.json({ students, count: students.length });
+    } catch (err) {
+      console.error("TIMETABLE FORM STUDENTS ERROR:", err);
+      return res.status(500).json({ error: "Failed to load students", details: err.message });
+    }
+  }
+);
+
 module.exports = router;
