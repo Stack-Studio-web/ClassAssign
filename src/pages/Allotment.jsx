@@ -39,7 +39,33 @@ const normalizeCourse = (c) => ({
   examType: c.examType ?? c.examtype ?? "",
   batchName: c.batchName ?? c.batchname ?? c.batch ?? "",
   batchId: c.batchId ?? c.batchid ?? c.batch_id ?? null,
+  batchUuid: c.batchUuid ?? c.batchuuid ?? null,
 });
+
+const isRegnBatchCode = (value) => /^[0-9]{2}[A-Z]+$/.test(String(value || "").trim().toUpperCase());
+
+/** Filter students to a timetable batch. Prefer batch_id; never treat year-range names as regn prefixes. */
+const filterStudentsForTimetableBatch = (students, course) => {
+  const list = Array.isArray(students) ? students : [];
+  const batchId = course.batchId != null && course.batchId !== "" ? Number(course.batchId) : null;
+  if (Number.isFinite(batchId)) {
+    return list.filter((s) => Number(s.batchId ?? s.batchid ?? s.batch_id) === batchId);
+  }
+  const batchUuid = String(course.batchUuid || "").trim();
+  if (batchUuid) {
+    return list.filter(
+      (s) => String(s.batchUuid ?? s.batchuuid ?? "").trim().toLowerCase() === batchUuid.toLowerCase()
+    );
+  }
+  const batchName = String(course.batchName || "").trim().toUpperCase();
+  if (!batchName) return list;
+  if (isRegnBatchCode(batchName)) {
+    return list.filter((s) => String(s.regnNo || "").toUpperCase().startsWith(batchName));
+  }
+  return list.filter(
+    (s) => String(s.batchName ?? s.batchname ?? "").trim().toUpperCase() === batchName
+  );
+};
 
 // Compute session duration in hours from "HH:mm" start/end
 const getSessionDurationHours = (start, end) => {
@@ -387,33 +413,55 @@ const Allotment = () => {
         });
  
         const studentsData = {};
-        // Cache by course+department to avoid duplicate API calls
-        const studentsCacheByCourseDept = {};
+        // Cache by course+department+batch (batch_id / uuid / name) — same source as Timetable form
+        const studentsCacheByCourseBatch = {};
        
         for (const course of effectiveCourses) {
           try {
-            logger.log(`\n📋 Fetching students for: ${course.courseCode} - ${course.department}`);
+            const batchName = String(course.batchName || "").trim().toUpperCase();
+            const batchUuid = String(course.batchUuid || "").trim();
+            const batchId = course.batchId != null && course.batchId !== "" ? Number(course.batchId) : null;
+            logger.log(
+              `\n📋 Fetching students for: ${course.courseCode} - ${course.department} (batch: ${batchName || batchUuid || batchId || "all"})`
+            );
 
-            const courseDeptKey = `${course.courseCode}-${course.department}`;
-            if (!studentsCacheByCourseDept[courseDeptKey]) {
-              const studentsRes = await api.get(
-                `/ineligibility/students/${encodeURIComponent(course.courseCode)}/${course.department}`
-              );
-              studentsCacheByCourseDept[courseDeptKey] = (studentsRes.data || []).map(normalizeStudent);
+            const cacheKey = [
+              course.courseCode,
+              course.department,
+              Number.isFinite(batchId) ? `id:${batchId}` : "",
+              batchUuid ? `uuid:${batchUuid}` : "",
+              batchName ? `name:${batchName}` : "",
+            ].join("|");
+
+            if (!studentsCacheByCourseBatch[cacheKey]) {
+              let students = [];
+              if (Number.isFinite(batchId) || batchUuid || batchName) {
+                // Prefer formal Batch membership (students.batch_id), not regn prefix
+                const studentsRes = await api.get("/timetable/form-options/students", {
+                  params: {
+                    department: course.department,
+                    courseCode: course.courseCode,
+                    ...(Number.isFinite(batchId) ? { batchId } : {}),
+                    ...(batchUuid ? { batchUuid } : {}),
+                    ...(batchName ? { batch: course.batchName } : {}),
+                  },
+                });
+                students = (studentsRes.data?.students || []).map(normalizeStudent);
+              } else {
+                // Legacy timetable rows without batch: department match only
+                const studentsRes = await api.get(
+                  `/ineligibility/students/${encodeURIComponent(course.courseCode)}/${encodeURIComponent(course.department)}`
+                );
+                students = (studentsRes.data || []).map(normalizeStudent);
+              }
+              studentsCacheByCourseBatch[cacheKey] = students;
             }
 
-            const students = studentsCacheByCourseDept[courseDeptKey];
-            const batchName = String(course.batchName || "").trim().toUpperCase();
-
-            // Batch-specific seating: keep only students belonging to the selected batch
-            const batchFilteredStudents = batchName
-              ? students.filter((s) =>
-                  String(s.regnNo || "").toUpperCase().startsWith(batchName)
-                )
-              : students;
+            const students = studentsCacheByCourseBatch[cacheKey];
+            const batchFilteredStudents = filterStudentsForTimetableBatch(students, course);
 
             logger.log(
-              `✅ Loaded ${students.length} students for ${course.courseCode} - ${course.department} (batch filter: ${batchName || "all"}) => ${batchFilteredStudents.length}`
+              `✅ Loaded ${students.length} students for ${course.courseCode} - ${course.department} (batch: ${batchName || "all"}) => ${batchFilteredStudents.length}`
             );
 
             const uniqueKey = `${course.courseCode}-${course.department}-${batchName}`;
@@ -483,14 +531,18 @@ const Allotment = () => {
 
             const ineligibleListRaw = ineligibleCacheByExamCourse[cacheKey];
             const batchName = String(course.batchName || "").trim().toUpperCase();
-
-            const ineligibleList = batchName
-              ? ineligibleListRaw.filter((s) =>
-                  String(s.regnNo || "").toUpperCase().startsWith(batchName)
-                )
-              : ineligibleListRaw;
-
             const uniqueKey = `${course.courseCode}-${course.department}-${batchName}`;
+            const courseStudentRegns = new Set(
+              (studentsByCourse[uniqueKey] || []).map((s) => String(s.regnNo || "").toUpperCase())
+            );
+
+            // Limit ineligible marks to students actually in this course+batch (not regn prefix of batch name)
+            const ineligibleList =
+              courseStudentRegns.size > 0
+                ? ineligibleListRaw.filter((s) =>
+                    courseStudentRegns.has(String(s.regnNo || "").toUpperCase())
+                  )
+                : filterStudentsForTimetableBatch(ineligibleListRaw, course);
 
             ineligibleMap[uniqueKey] = new Set(
               ineligibleList.map((s) => s.regnNo ?? "")
@@ -518,7 +570,7 @@ const Allotment = () => {
     };
  
     fetchIneligibleStudents();
-  }, [examDate, examType, timetableCourses]);
+  }, [examDate, examType, timetableCourses, studentsByCourse]);
  
   // Refresh Allocated/Remaining from backend + time-conflict for this exam slot
   useEffect(() => {
