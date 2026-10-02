@@ -478,6 +478,13 @@ export default function ActiveAttendance() {
               )
             )}
             <Link
+              to="/attendance/export"
+              className="inline-flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-xl shadow-sm"
+            >
+              <ArrowDownTrayIcon className="h-4 w-4" />
+              Export Attendance
+            </Link>
+            <Link
               to="/attendance/completed"
               className="inline-flex items-center gap-2 px-4 py-2.5 bg-white text-gray-700 text-sm font-semibold rounded-xl border border-gray-200 hover:bg-gray-50"
             >

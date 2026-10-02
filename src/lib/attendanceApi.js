@@ -123,4 +123,62 @@ export async function downloadAbsenteesExport(params = {}) {
   URL.revokeObjectURL(url);
 }
 
+/** Consolidated Absentees DOCX export — filter options */
+export async function fetchAttendanceExportOptions(params = {}) {
+  const res = await api.get("/attendance/export/options", { params });
+  const body = res.data || {};
+  return {
+    departments: Array.isArray(body.departments) ? body.departments : [],
+    courses: Array.isArray(body.courses) ? body.courses : [],
+    batches: Array.isArray(body.batches) ? body.batches : [],
+  };
+}
+
+/** Consolidated Absentees DOCX export — preview */
+export async function previewAttendanceExport(params = {}) {
+  const res = await api.get("/attendance/export/preview", { params });
+  const body = res.data || {};
+  return {
+    meta: body.meta || {},
+    rows: Array.isArray(body.rows) ? body.rows : [],
+    empty: Boolean(body.empty),
+  };
+}
+
+/** Consolidated Absentees DOCX download */
+export async function downloadAttendanceExportDocx(payload = {}) {
+  const res = await api.post("/attendance/export/docx", payload, {
+    responseType: "blob",
+  });
+  const contentType = res.headers["content-type"] || "";
+  if (
+    contentType.includes("application/json") ||
+    (typeof Blob !== "undefined" &&
+      res.data instanceof Blob &&
+      res.data.type &&
+      res.data.type.includes("json"))
+  ) {
+    const text = await res.data.text();
+    let message = "Failed to export DOCX";
+    try {
+      const parsed = JSON.parse(text);
+      message = parsed.message || parsed.error || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  const blob = new Blob([res.data], {
+    type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  const cd = res.headers["content-disposition"];
+  const match = cd?.match(/filename="?([^";]+)"?/);
+  a.download = match?.[1] || "Hallora_Consolidated_Absentees.docx";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export const EXAM_TYPES = ["CAT 1", "CAT 2", "Model", "Semester", "Retest"];

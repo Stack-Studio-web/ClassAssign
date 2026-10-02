@@ -23,7 +23,6 @@ import { CourseStudentTable } from "../Components/student-browser/CourseStudentT
 import { StudentDrawer } from "../Components/student-browser/StudentDrawer";
 import { getSortFromPreset } from "../Components/student-browser/StudentFilterToolbar";
 import { StudentEmptyState } from "../Components/student-browser/StudentEmptyState";
-import { isBatchActive } from "../lib/batchStatus";
 import { Search, ArrowLeft } from "lucide-react";
 import { Input } from "../Components/ui/Input";
 import { Button } from "../Components/ui/Button";
@@ -187,11 +186,6 @@ export default function StudentBrowserPage() {
     hasPrevious: false,
   };
 
-  const activeBatches = useMemo(
-    () => batches.filter((b) => isBatchActive(b)),
-    [batches]
-  );
-
   const departmentOptions = useMemo(() => {
     const fromApi = filterOptions.departments ?? [];
     return [...new Set(fromApi.map((d) => String(d).toUpperCase()).filter(Boolean))].sort();
@@ -346,7 +340,6 @@ export default function StudentBrowserPage() {
             <StudentStatsCards
               studentsLabel={studentsLabel}
               totalStudents={statsTotal}
-              activeBatches={activeBatches.length}
               courseCount={courses.length}
             />
 

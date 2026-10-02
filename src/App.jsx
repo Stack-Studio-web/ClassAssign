@@ -33,6 +33,7 @@ import FacultyAttendance from './pages/FacultyAttendance';
 import AttendanceReports from './pages/AttendanceReports';
 import ActiveAttendance from './pages/ActiveAttendance';
 import CompletedAttendance from './pages/CompletedAttendance';
+import AttendanceExport from './pages/AttendanceExport';
 import NotificationManagement from './pages/NotificationManagement';
 import FacultyTransferRequests from './pages/FacultyTransferRequests';
 import FacultyChange from './pages/FacultyChange';
@@ -196,6 +197,15 @@ function App() {
         element={
           <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod', 'faculty']}>
             <Layout><ActiveAttendance /></Layout>
+          </AuthGuard>
+        }
+      />
+
+      <Route
+        path="/attendance/export"
+        element={
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod', 'faculty']}>
+            <Layout><AttendanceExport /></Layout>
           </AuthGuard>
         }
       />

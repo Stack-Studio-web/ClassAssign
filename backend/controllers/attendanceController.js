@@ -638,6 +638,78 @@ const AttendanceController = {
     }
   },
 
+  getConsolidatedExportOptions: async (req, res) => {
+    try {
+      const ConsolidatedAbsenteeExportService = require("../services/consolidatedAbsenteeExportService");
+      const options = await ConsolidatedAbsenteeExportService.getOptions(
+        req.user,
+        req.user.role,
+        {
+          department: req.query.department || null,
+          courseCode: req.query.courseCode || req.query.course || null,
+        }
+      );
+      return res.json({ success: true, ...options });
+    } catch (err) {
+      return Api.fromError(res, err, "Failed to load attendance export options");
+    }
+  },
+
+  previewConsolidatedExport: async (req, res) => {
+    try {
+      const ConsolidatedAbsenteeExportService = require("../services/consolidatedAbsenteeExportService");
+      const preview = await ConsolidatedAbsenteeExportService.preview(
+        req.user,
+        req.user.role,
+        {
+          department: req.query.department || req.body?.department,
+          dateFrom: req.query.dateFrom || req.query.date_from || req.body?.dateFrom,
+          dateTo: req.query.dateTo || req.query.date_to || req.body?.dateTo,
+          courseCode: req.query.courseCode || req.query.course || req.body?.courseCode,
+          batchUuid: req.query.batchUuid || req.query.batch || req.body?.batchUuid,
+        }
+      );
+      return res.json({ success: true, ...preview });
+    } catch (err) {
+      if (err.statusCode === 400) {
+        return Api.validationError(res, err.message);
+      }
+      return Api.fromError(res, err, "Failed to preview attendance export");
+    }
+  },
+
+  exportConsolidatedDocx: async (req, res) => {
+    try {
+      const ConsolidatedAbsenteeExportService = require("../services/consolidatedAbsenteeExportService");
+      const body = req.body || {};
+      const { buffer, filename } = await ConsolidatedAbsenteeExportService.exportDocx(
+        req.user,
+        req.user.role,
+        {
+          department: body.department || req.query.department,
+          dateFrom: body.dateFrom || body.date_from || req.query.dateFrom,
+          dateTo: body.dateTo || body.date_to || req.query.dateTo,
+          courseCode: body.courseCode || body.course || req.query.courseCode,
+          batchUuid: body.batchUuid || body.batch || req.query.batchUuid,
+        }
+      );
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      );
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      return res.send(buffer);
+    } catch (err) {
+      if (err.statusCode === 400) {
+        return Api.validationError(res, err.message);
+      }
+      if (err.statusCode === 404) {
+        return Api.notFound(res, err.message);
+      }
+      return Api.fromError(res, err, "Failed to export consolidated absentees DOCX");
+    }
+  },
+
   getCompletedDetail: async (req, res) => {
     try {
       const detail = await AttendanceLifecycleService.getCompletedSessionDetail(

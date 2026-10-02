@@ -56,6 +56,30 @@ router.get(
 );
 
 router.get(
+  "/export/options",
+  sessionAuth,
+  checkRole(VIEW_ATTENDANCE_ROLES),
+  requireFacultyProfile,
+  AttendanceController.getConsolidatedExportOptions
+);
+
+router.get(
+  "/export/preview",
+  sessionAuth,
+  checkRole(VIEW_ATTENDANCE_ROLES),
+  requireFacultyProfile,
+  AttendanceController.previewConsolidatedExport
+);
+
+router.post(
+  "/export/docx",
+  sessionAuth,
+  checkRole(VIEW_ATTENDANCE_ROLES),
+  requireFacultyProfile,
+  AttendanceController.exportConsolidatedDocx
+);
+
+router.get(
   "/completed/:sessionUuid",
   sessionAuth,
   checkRole(VIEW_ATTENDANCE_ROLES),

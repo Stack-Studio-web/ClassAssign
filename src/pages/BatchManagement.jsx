@@ -167,7 +167,7 @@ export default function BatchManagementPage() {
             Batch Management
           </h1>
           <p className="mt-1 text-sm text-gray-500">
-            Create or select a batch for this academic year and semester, then import students. Batches are identified by immutable UUID.
+            Create or select a batch for this academic year and semester, then import students.
           </p>
         </div>
       </div>

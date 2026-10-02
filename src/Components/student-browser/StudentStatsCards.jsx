@@ -1,6 +1,6 @@
 import React from "react";
 import { motion } from "framer-motion";
-import { Users, Layers, BookOpen, TrendingUp } from "lucide-react";
+import { Users, BookOpen, TrendingUp } from "lucide-react";
 import { cn } from "../../lib/utils";
 
 function StatCard({ icon: Icon, label, value, hint, accent = "blue", className }) {
@@ -47,7 +47,6 @@ function StatCard({ icon: Icon, label, value, hint, accent = "blue", className }
 export function StudentStatsCards({
   studentsLabel,
   totalStudents,
-  activeBatches = 0,
   courseCount = 0,
   growthHint,
   className,
@@ -55,7 +54,7 @@ export function StudentStatsCards({
   return (
     <div
       className={cn(
-        "grid gap-3 sm:grid-cols-2 lg:grid-cols-3",
+        "grid gap-3 sm:grid-cols-2",
         className
       )}
       aria-label="Student statistics"
@@ -67,7 +66,6 @@ export function StudentStatsCards({
         hint={growthHint}
         accent="blue"
       />
-      <StatCard icon={Layers} label="Active Batches" value={activeBatches.toLocaleString()} accent="violet" />
       <StatCard icon={BookOpen} label="Courses" value={courseCount.toLocaleString()} accent="amber" />
     </div>
   );

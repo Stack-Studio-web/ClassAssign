@@ -442,11 +442,6 @@ export default function StudentImportCard() {
             <div>
               <dt className="text-[10px] font-bold uppercase tracking-wider text-blue-500">Batch</dt>
               <dd className="font-semibold text-gray-900">{selectedBatch?.name || "—"}</dd>
-              {selectedBatch?.uuid && (
-                <dd className="mt-0.5 truncate font-mono text-[10px] text-blue-400" title={selectedBatch.uuid}>
-                  UUID {selectedBatch.uuid}
-                </dd>
-              )}
             </div>
           </dl>
         </div>

@@ -45,6 +45,7 @@ export default function Faculty() {
 
   /* -------- Search & Sort State -------- */
   const [searchQuery, setSearchQuery] = useState("");
+  const [departmentFilter, setDepartmentFilter] = useState("");
   const [sortOrder, setSortOrder] = useState("asc");
 
   /* ================= FETCH DATA ================= */
@@ -274,18 +275,31 @@ export default function Faculty() {
 
   /* ================= FILTER & SORT ================= */
   const filteredFaculty = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    const deptFilter = departmentFilter.trim().toUpperCase();
     return faculty
-      .filter(
-        (f) =>
-          f.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          f.email.toLowerCase().includes(searchQuery.toLowerCase())
-      )
+      .filter((f) => {
+        const matchesSearch =
+          !q ||
+          String(f.name || "")
+            .toLowerCase()
+            .includes(q) ||
+          String(f.email || "")
+            .toLowerCase()
+            .includes(q) ||
+          String(f.department || "")
+            .toLowerCase()
+            .includes(q);
+        const dept = String(f.department || "").trim().toUpperCase() || "UNASSIGNED";
+        const matchesDept = !deptFilter || dept === deptFilter;
+        return matchesSearch && matchesDept;
+      })
       .sort((a, b) =>
         sortOrder === "asc"
           ? a.name.localeCompare(b.name)
           : b.name.localeCompare(a.name)
       );
-  }, [faculty, searchQuery, sortOrder]);
+  }, [faculty, searchQuery, departmentFilter, sortOrder]);
 
   const departmentCounts = useMemo(() => {
     const counts = new Map();
@@ -344,10 +358,19 @@ export default function Faculty() {
 
         {departmentCounts.map(({ department, count }, index) => {
           const colors = DEPT_ICON_COLORS[index % DEPT_ICON_COLORS.length];
+          const isActive = departmentFilter === department;
           return (
-            <div
+            <button
+              type="button"
               key={department}
-              className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 md:p-5 hover:shadow-md transition-all duration-200"
+              onClick={() => {
+                setActiveTab("all");
+                setDepartmentFilter((prev) => (prev === department ? "" : department));
+              }}
+              className={`text-left bg-white rounded-2xl shadow-sm border p-4 md:p-5 hover:shadow-md transition-all duration-200 ${
+                isActive ? "border-blue-400 ring-2 ring-blue-100" : "border-gray-100"
+              }`}
+              title={isActive ? "Clear department filter" : `Filter All Faculty by ${department}`}
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
@@ -363,7 +386,7 @@ export default function Faculty() {
                   <BuildingOffice2Icon className={`h-5 w-5 ${colors.text}`} />
                 </div>
               </div>
-            </div>
+            </button>
           );
         })}
       </div>
@@ -495,6 +518,19 @@ export default function Faculty() {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
             <h2 className="text-lg font-semibold text-gray-800">All Faculty</h2>
             <div className="flex flex-wrap items-center gap-3">
+              <select
+                value={departmentFilter}
+                onChange={(e) => setDepartmentFilter(e.target.value)}
+                className="w-full sm:w-44 md:w-52 h-11 md:h-12 px-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm bg-white"
+                aria-label="Filter by department"
+              >
+                <option value="">All Departments</option>
+                {departmentCounts.map(({ department }) => (
+                  <option key={department} value={department}>
+                    {department}
+                  </option>
+                ))}
+              </select>
               <input
                 placeholder="Search by name or email..."
                 value={searchQuery}

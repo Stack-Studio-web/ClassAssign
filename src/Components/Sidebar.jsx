@@ -39,7 +39,7 @@ const ADMIN_NAV = [
   { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
   { to: "/Hall", label: "Hall Allotment", icon: BuildingOfficeIcon },
   { to: "/admin/notifications", label: "Hall Notifications", icon: BellAlertIcon },
-  { to: "/admin/attendance/transfers", label: "Mutual Faculty Requests", icon: ArrowsRightLeftIcon },
+  { to: "/admin/attendance/transfers", label: "Faculty Requests", icon: ArrowsRightLeftIcon },
   { to: "/change", label: "Change Faculty", icon: UserPlusIcon },
   { to: "/attendance", label: "Active Attendance", icon: UserGroupIcon },
   { to: "/attendance/completed", label: "Completed Attendance", icon: CheckCircleIcon },
