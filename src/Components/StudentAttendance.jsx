@@ -5,6 +5,10 @@ import { PrinterIcon, ArrowDownTrayIcon } from "@heroicons/react/24/outline";
 import AttendanceSheetPrintView, {
   ATTENDANCE_SHEET_PRINT_STYLES,
 } from "./AttendanceSheetPrintView";
+import {
+  generateAttendanceSheetPdfBlob,
+  preloadAttendanceLogos,
+} from "../lib/generateAttendanceSheetPdf";
 
 const normalizeDateToYYYYMMDD = (dateInput) => {
   if (!dateInput) return null;
@@ -47,7 +51,6 @@ export const StudentAttendance = () => {
   });
 
   const printRef = useRef();
-  const zipCaptureRef = useRef();
 
   const handlePrint = useReactToPrint({
     contentRef: printRef,
@@ -299,7 +302,15 @@ export const StudentAttendance = () => {
 
   const handleDownloadZip = async () => {
     let data = sheets.length
-      ? { sheets, failures, examDate: filters.date, examSession: filters.session, examType: filters.examType, startTime: filters.examTime.split("-")[0], endTime: filters.examTime.split("-")[1] }
+      ? {
+          sheets,
+          failures,
+          examDate: filters.date,
+          examSession: filters.session,
+          examType: filters.examType,
+          startTime: filters.examTime.split("-")[0],
+          endTime: filters.examTime.split("-")[1],
+        }
       : await fetchBulkSheets();
 
     if (!data?.sheets?.length) return;
@@ -307,13 +318,11 @@ export const StudentAttendance = () => {
     setZipping(true);
     setError(null);
     try {
-      const [{ default: JSZip }, { default: html2canvas }, { jsPDF }, { saveAs }] =
-        await Promise.all([
-          import("jszip"),
-          import("html2canvas"),
-          import("jspdf"),
-          import("file-saver"),
-        ]);
+      const [{ default: JSZip }, { saveAs }, logos] = await Promise.all([
+        import("jszip"),
+        import("file-saver"),
+        preloadAttendanceLogos(),
+      ]);
 
       const zip = new JSZip();
       const [startTime, endTime] = filters.examTime.split("-");
@@ -324,93 +333,26 @@ export const StudentAttendance = () => {
         `${safeFilePart(startTime)}-${safeFilePart(endTime)}`,
       ].join("_");
       const folder = zip.folder(folderName);
-
-      const host = zipCaptureRef.current;
-      if (!host) throw new Error("Capture container missing");
+      const category = filters.examType || data.examType || categoryLabel;
 
       for (const sheet of data.sheets) {
-        host.innerHTML = "";
-        const wrap = document.createElement("div");
-        wrap.style.width = "210mm";
-        wrap.style.background = "#ffffff";
-        wrap.style.padding = "8mm";
-        wrap.setAttribute("data-hall", sheet.hallNo);
-        host.appendChild(wrap);
-
-        // Render existing print view into host via React root
-        const { createRoot } = await import("react-dom/client");
-        const root = createRoot(wrap);
-        await new Promise((resolve) => {
-          root.render(
-            <div className="attendance-sheet-root">
-              <style>{ATTENDANCE_SHEET_PRINT_STYLES}</style>
-              <AttendanceSheetPrintView
-                attendanceData={sheet}
-                category={filters.examType || sheet.examType || categoryLabel}
-              />
-            </div>
+        try {
+          // Native text/vector PDF — same layout, no page screenshot
+          const pdfBlob = await generateAttendanceSheetPdfBlob(sheet, category, logos);
+          const fileName = `${safeFilePart(sheet.hallNo)}_Attendance_Sheet.pdf`;
+          folder.file(fileName, pdfBlob);
+        } catch (venueErr) {
+          console.error(`Failed PDF for ${sheet.hallNo}:`, venueErr);
+          folder.file(
+            `_ERROR_${safeFilePart(sheet.hallNo)}.txt`,
+            `Failed to generate attendance sheet for ${sheet.hallNo}.\n${venueErr.message || ""}`
           );
-          // Allow layout/images to settle
-          requestAnimationFrame(() => setTimeout(resolve, 120));
-        });
-
-        const canvas = await html2canvas(wrap, {
-          scale: 2,
-          useCORS: true,
-          backgroundColor: "#ffffff",
-          logging: false,
-          // Tailwind v4 uses oklch(); html2canvas cannot parse it.
-          // Strip inherited stylesheets and keep only plain attendance CSS.
-          onclone: (clonedDoc, clonedElement) => {
-            const head = clonedDoc.head;
-            if (head) {
-              Array.from(head.querySelectorAll('link[rel="stylesheet"], style')).forEach(
-                (node) => node.remove()
-              );
-              const style = clonedDoc.createElement("style");
-              style.textContent = ATTENDANCE_SHEET_PRINT_STYLES;
-              head.appendChild(style);
-            }
-            // Neutralize any inline oklch left on ancestors
-            let el = clonedElement;
-            while (el) {
-              if (el.style) {
-                el.style.color = "#000000";
-                el.style.backgroundColor = "#ffffff";
-                el.style.background = "#ffffff";
-              }
-              el = el.parentElement;
-            }
-          },
-        });
-
-        const pdf = new jsPDF({
-          orientation: "portrait",
-          unit: "mm",
-          format: "a4",
-        });
-        const pageWidth = pdf.internal.pageSize.getWidth();
-        const pageHeight = pdf.internal.pageSize.getHeight();
-        const imgWidth = pageWidth;
-        const imgHeight = (canvas.height * imgWidth) / canvas.width;
-        let heightLeft = imgHeight;
-        let position = 0;
-        const imgData = canvas.toDataURL("image/png");
-
-        pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
-        heightLeft -= pageHeight;
-        while (heightLeft > 0) {
-          position = heightLeft - imgHeight;
-          pdf.addPage();
-          pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
-          heightLeft -= pageHeight;
+          setError((prev) =>
+            [prev, `Failed to generate attendance sheet for ${sheet.hallNo}.`]
+              .filter(Boolean)
+              .join(" ")
+          );
         }
-
-        const pdfBlob = pdf.output("blob");
-        const fileName = `${safeFilePart(sheet.hallNo)}_Attendance_Sheet.pdf`;
-        folder.file(fileName, pdfBlob);
-        root.unmount();
-        host.innerHTML = "";
       }
 
       if (data.failures?.length) {
@@ -422,18 +364,15 @@ export const StudentAttendance = () => {
       saveAs(zipBlob, `${folderName}.zip`);
 
       if (data.failures?.length) {
-        setError(
-          data.failures.map((f) => f.error).join(" ")
+        setError((prev) =>
+          [prev, ...data.failures.map((f) => f.error)].filter(Boolean).join(" ")
         );
       }
     } catch (err) {
       console.error("ZIP generation failed:", err);
-      setError(
-        err.message || "Failed to generate attendance sheet ZIP."
-      );
+      setError(err.message || "Failed to generate attendance sheet ZIP.");
     } finally {
       setZipping(false);
-      if (zipCaptureRef.current) zipCaptureRef.current.innerHTML = "";
     }
   };
 
@@ -693,13 +632,6 @@ export const StudentAttendance = () => {
           </div>
         )}
       </div>
-
-      {/* Off-screen capture host for ZIP PDFs (same print view) */}
-      <div
-        ref={zipCaptureRef}
-        aria-hidden
-        className="fixed left-[-10000px] top-0 w-[210mm] bg-white pointer-events-none"
-      />
     </div>
   );
 };
