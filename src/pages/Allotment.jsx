@@ -1793,16 +1793,22 @@ const Allotment = () => {
                     Manual
                   </button>
                 </div>
-                {seatingMode === "auto" ? (
-                  <p className="text-sm font-medium text-gray-600">
-                    All venues that are Available for the selected date and time will be used.
-                    Occupied venues for this time interval are skipped.
-                    {isCheckingVenueSlots ? " Checking availability…" : ""}
-                    {examDate && examStartTime && examEndTime
-                      ? ` (${availableVenuesForSlot.length} available of ${venues.length})`
-                      : ""}
-                  </p>
-                ) : (
+                {seatingMode === "auto" &&
+                examDate &&
+                examStartTime &&
+                examEndTime &&
+                !isCheckingVenueSlots &&
+                venues.length > 0 &&
+                availableVenuesForSlot.length === 0 ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5">
+                    <p className="text-sm font-semibold text-amber-900">No venues available</p>
+                    <p className="text-sm text-amber-800 mt-0.5">
+                      All venues in the allotment pool are occupied for this date and time. Change
+                      the time or wait for another slot.
+                    </p>
+                  </div>
+                ) : null}
+                {seatingMode === "manual" ? (
                   <div className="space-y-2">
                     {!examDate || !examStartTime || !examEndTime ? (
                       <p className="text-sm text-gray-500">
@@ -1944,11 +1950,6 @@ const Allotment = () => {
                     Manual
                   </button>
                 </div>
-                {facultyMode === "AUTO" && (
-                  <p className="text-sm font-medium text-gray-600">
-                    Faculty are assigned using capacity and the start-time occupancy window (latest end time among exams that share this date and start time). Rooms without eligible faculty are marked Needs Faculty.
-                  </p>
-                )}
                 {facultyMode === "MANUAL" && generatedSeating && (
                   <p className="text-xs font-medium text-gray-600">
                     Select one or more invigilators for each room in the Seating Layout Preview below.
