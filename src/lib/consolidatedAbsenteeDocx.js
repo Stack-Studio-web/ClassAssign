@@ -1,9 +1,8 @@
 /**
- * Server-side Consolidated Absentees List DOCX (editable Word table + text).
+ * Client-side Consolidated Absentees List DOCX (editable Word table).
+ * Mirrors the attendance export server layout; uses frontend `docx` package.
  */
-const fs = require("fs");
-const path = require("path");
-const {
+import {
   AlignmentType,
   BorderStyle,
   Document,
@@ -17,27 +16,23 @@ const {
   VerticalAlign,
   WidthType,
   convertInchesToTwip,
-} = require("docx");
+} from "docx";
+import { saveAs } from "file-saver";
+import logoKctUrl from "../assets/logo.png";
+import logoKsiUrl from "../assets/logo KSI.png";
 
 const THIN = { style: BorderStyle.SINGLE, size: 8, color: "000000" };
 const BORDERS = { top: THIN, bottom: THIN, left: THIN, right: THIN };
+const COL_WIDTHS = [1400, 900, 1400, 2200, 1100, 2600];
 
-const COL_WIDTHS = [1400, 900, 1400, 2200, 1100, 2600]; // ~9600 DXA total
-
-function loadLogoBytes() {
-  const candidates = [
-    path.join(__dirname, "../../src/assets/logo.png"),
-    path.join(__dirname, "../../src/assets/logo KSI.png"),
-    path.join(__dirname, "../../mobile-app/assets/logo.png"),
-  ];
-  for (const p of candidates) {
-    try {
-      if (fs.existsSync(p)) return fs.readFileSync(p);
-    } catch {
-      /* try next */
-    }
+async function fetchImageBytes(url) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return new Uint8Array(await res.arrayBuffer());
+  } catch {
+    return null;
   }
-  return null;
 }
 
 function formatGeneratedAt(isoOrDate) {
@@ -78,12 +73,7 @@ function p(text, opts = {}) {
 }
 
 function cell(text, opts = {}) {
-  const {
-    bold = false,
-    center = true,
-    width = 1500,
-    fontSize = 16,
-  } = opts;
+  const { bold = false, center = true, width = 1500, fontSize = 16 } = opts;
   return new TableCell({
     borders: BORDERS,
     width: { size: width, type: WidthType.DXA },
@@ -152,14 +142,31 @@ function buildDataTable(rows) {
   });
 }
 
+function sanitizeFilename(name) {
+  return String(name || "Hallora_Consolidated_Absentees")
+    .replace(/[^A-Za-z0-9._-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_|_$/g, "")
+    .slice(0, 120);
+}
+
+function dateForFilename(value) {
+  const raw = String(value || "").slice(0, 10);
+  const [y, m, d] = raw.split("-");
+  if (!y || !m || !d) return "date";
+  return `${d}-${m}-${y}`;
+}
+
 /**
- * @param {{ meta: object, rows: object[], verification: { verificationId, generatedAt } }} payload
- * @returns {Promise<Buffer>}
+ * @param {{ meta: object, rows: object[], verification?: { verificationId, generatedAt }, logoChoice?: "KCT"|"KSI" }} payload
+ * @returns {Promise<{ blob: Blob, filename: string }>}
  */
-async function buildConsolidatedAbsenteeDocx(payload) {
-  const { meta, rows, verification } = payload;
+export async function buildConsolidatedAbsenteeDocxBlob(payload) {
+  const { meta, rows, verification, logoChoice = "KCT" } = payload;
   const children = [];
-  const logoBytes = loadLogoBytes();
+  const logoBytes = await fetchImageBytes(
+    logoChoice === "KSI" ? logoKsiUrl : logoKctUrl
+  );
 
   if (logoBytes) {
     children.push(
@@ -172,7 +179,7 @@ async function buildConsolidatedAbsenteeDocx(payload) {
             data: logoBytes,
             transformation: { width: 72, height: 72 },
             altText: {
-              title: "KCT",
+              title: "Logo",
               description: "College logo",
               name: "logo",
             },
@@ -182,6 +189,14 @@ async function buildConsolidatedAbsenteeDocx(payload) {
     );
   }
 
+  const deptHeader =
+    meta?.departmentHeader ||
+    (meta?.department
+      ? /^DEPARTMENT\s+OF/i.test(meta.department)
+        ? meta.department
+        : `DEPARTMENT OF ${meta.department}`
+      : "—");
+
   children.push(
     p("KUMARAGURU COLLEGE OF TECHNOLOGY", { bold: true, size: 26, after: 40 })
   );
@@ -189,32 +204,22 @@ async function buildConsolidatedAbsenteeDocx(payload) {
     p("KUMARAGURU SCHOOL OF INNOVATION", { bold: true, size: 22, after: 120 })
   );
   children.push(
-    p(`Academic year (${meta.academicYear || "—"})`, {
+    p(`Academic year (${meta?.academicYear || "—"})`, {
       bold: true,
       size: 20,
       after: 80,
     })
   );
+  children.push(p(deptHeader, { bold: true, size: 22, after: 80 }));
   children.push(
-    p(meta.departmentHeader || `DEPARTMENT OF ${meta.department || ""}`, {
-      bold: true,
-      size: 22,
-      after: 80,
-    })
-  );
-  children.push(
-    p(`Consolidated Absentees List – ${meta.yearSemester || "—"}`, {
+    p(`Consolidated Absentees List – ${meta?.yearSemester || "—"}`, {
       bold: true,
       size: 22,
       after: 60,
     })
   );
-  children.push(
-    p(meta.examType || "—", { bold: true, size: 22, after: 200 })
-  );
-
+  children.push(p(meta?.examType || "—", { bold: true, size: 22, after: 200 }));
   children.push(buildDataTable(rows));
-
   children.push(new Paragraph({ text: "", spacing: { before: 280 } }));
   children.push(
     p("Generated and E-Verified by HALLORA", {
@@ -258,9 +263,20 @@ async function buildConsolidatedAbsenteeDocx(payload) {
     ],
   });
 
-  return Packer.toBuffer(doc).then((out) =>
-    Buffer.isBuffer(out) ? out : Buffer.from(out)
-  );
+  const blob = await Packer.toBlob(doc);
+  const deptShort = sanitizeFilename(meta?.department || "DEPT").slice(0, 20);
+  const examShort = sanitizeFilename(meta?.examType || "Exam");
+  const from = dateForFilename(meta?.dateFrom);
+  const to = dateForFilename(meta?.dateTo);
+  const filename = meta?.courseCode
+    ? `${sanitizeFilename(`Hallora_Absentees_${meta.courseCode}_${examShort}_${from}_to_${to}`)}.docx`
+    : `${sanitizeFilename(`Hallora_Consolidated_Absentees_${deptShort}_${examShort}_${from}_to_${to}`)}.docx`;
+
+  return { blob, filename };
 }
 
-module.exports = { buildConsolidatedAbsenteeDocx };
+export async function downloadConsolidatedAbsenteeDocx(payload) {
+  const { blob, filename } = await buildConsolidatedAbsenteeDocxBlob(payload);
+  saveAs(blob, filename);
+  return { blob, filename };
+}

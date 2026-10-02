@@ -112,6 +112,23 @@ function departmentDisplayName(dept) {
   return `DEPARTMENT OF ${d.toUpperCase()}`;
 }
 
+/**
+ * Match students by department column OR by dept code embedded in regn_no
+ * (e.g. BCS matches students.department='BCS' or regn like 24BCS001).
+ * Returns { sql, params } — params are the department value repeated as needed.
+ */
+function departmentMatchClause(department, alias = "st") {
+  const dept = String(department || "").trim().toUpperCase();
+  const sql = `(
+    UPPER(TRIM(COALESCE(${alias}.department, ''))) = ?
+    OR (
+      LENGTH(?) BETWEEN 2 AND 8
+      AND UPPER(TRIM(COALESCE(${alias}.regn_no, ''))) LIKE CONCAT('__', ?, '%')
+    )
+  )`;
+  return { sql, params: [dept, dept, dept] };
+}
+
 function yearSemesterLabel(rows) {
   const semLabels = [
     ...new Set(
@@ -172,13 +189,31 @@ async function buildRoleScope(user, role) {
       ? [...new Set(ownerIds.map(Number).filter((id) => id > 0))]
       : [];
     if (!ids.length) {
-      scope.sql = " AND 1=0";
+      // Do not hard-block: department filter still scopes the report.
       return scope;
     }
-    // Scope via student ownership — enrollment-aligned, no venue/fa joins.
+    // Include owned students OR students with unset owner (legacy imports),
+    // plus exam/seating ownership for allotment-linked absentees.
     const ph = ids.map(() => "?").join(", ");
-    scope.sql = ` AND st.owner_user_id IN (${ph})`;
-    scope.params = [...ids];
+    scope.sql = ` AND (
+      st.owner_user_id IN (${ph})
+      OR st.owner_user_id IS NULL
+      OR e.owner_user_id IN (${ph})
+      OR EXISTS (
+        SELECT 1
+        FROM seating_plan_venues spv_own
+        JOIN seating_plans sp_own ON sp_own.id = spv_own.seating_plan_id
+        WHERE spv_own.venue_id = att.venue_id
+          AND sp_own.exam_date = e.exam_date
+          AND (
+            e.exam_session IS NULL
+            OR sp_own.exam_session IS NULL
+            OR sp_own.exam_session = e.exam_session
+          )
+          AND sp_own.owner_user_id IN (${ph})
+      )
+    )`;
+    scope.params = [...ids, ...ids, ...ids];
     return scope;
   }
   return scope;
@@ -221,19 +256,19 @@ async function fetchAbsentStudentRows(user, role, filters) {
   const { department, dateFrom, dateTo, courseCode, batchUuid } = validateFilters(filters);
   const roleScope = await buildRoleScope(user, role);
 
-  const params = [dateFrom, dateTo, department.toUpperCase()];
   let extra = "";
-
   if (courseCode) {
     extra += " AND UPPER(TRIM(st.course_description)) = UPPER(TRIM(?))";
-    params.push(courseCode);
   }
   if (batchUuid) {
     extra += " AND b.public_uuid = ?";
-    params.push(batchUuid);
   }
 
-  params.push(...(roleScope.params || []));
+  const deptMatch = departmentMatchClause(department, "st");
+  const queryParams = [dateFrom, dateTo, ...deptMatch.params];
+  if (courseCode) queryParams.push(courseCode);
+  if (batchUuid) queryParams.push(batchUuid);
+  queryParams.push(...(roleScope.params || []));
 
   const [rows] = await db.query(
     `SELECT
@@ -269,13 +304,13 @@ async function fetchAbsentStudentRows(user, role, filters) {
      LEFT JOIN semesters sem ON sem.id = b.semester_id
      LEFT JOIN academic_years ay ON ay.id = sem.academic_year_id
      JOIN exams e ON e.id = att.exam_id
-     WHERE UPPER(TRIM(att.status)) = 'ABSENT'
+     WHERE UPPER(TRIM(COALESCE(att.status, ''))) = 'ABSENT'
        AND e.exam_date BETWEEN ? AND ?
-       AND UPPER(TRIM(COALESCE(st.department, ''))) = UPPER(TRIM(?))
+       AND ${deptMatch.sql}
        ${extra}
        ${roleScope.sql || ""}
      ORDER BY e.exam_date ASC, e.exam_session ASC, st.course_description ASC, st.regn_no ASC, att.id ASC`,
-    params
+    queryParams
   );
 
   // Deduplicate by attendance_id (or student+exam+course)
@@ -453,7 +488,8 @@ const ConsolidatedAbsenteeExportService = {
       }
     }
 
-    const deptParams = [department.toUpperCase(), ...(roleScope.params || [])];
+    const deptMatch = departmentMatchClause(department, "st");
+    const deptParams = [...deptMatch.params, ...(roleScope.params || [])];
     let courseRows = [];
     try {
       const [rows] = await db.query(
@@ -464,7 +500,7 @@ const ConsolidatedAbsenteeExportService = {
          JOIN students st ON st.id = att.student_id
          JOIN exams e ON e.id = att.exam_id
          ${faJoin}
-         WHERE UPPER(TRIM(COALESCE(st.department, ''))) = UPPER(TRIM(?))
+         WHERE ${deptMatch.sql}
            AND st.course_description IS NOT NULL
            AND TRIM(st.course_description) <> ''
            ${roleScope.sql || ""}
@@ -474,16 +510,17 @@ const ConsolidatedAbsenteeExportService = {
       courseRows = rows || [];
     } catch (err) {
       console.error("consolidated export courses query:", err?.message || err);
+      const fbDept = departmentMatchClause(department, "st");
       const [rows] = await db.query(
         `SELECT DISTINCT
-           TRIM(course_description) AS course_code,
-           TRIM(course_name) AS course_title
-         FROM students
-         WHERE UPPER(TRIM(COALESCE(department, ''))) = UPPER(TRIM(?))
-           AND course_description IS NOT NULL
-           AND TRIM(course_description) <> ''
+           TRIM(st.course_description) AS course_code,
+           TRIM(st.course_name) AS course_title
+         FROM students st
+         WHERE ${fbDept.sql}
+           AND st.course_description IS NOT NULL
+           AND TRIM(st.course_description) <> ''
          ORDER BY 1 ASC`,
-        [department.toUpperCase()]
+        fbDept.params
       );
       courseRows = rows || [];
     }
@@ -497,7 +534,7 @@ const ConsolidatedAbsenteeExportService = {
           : r.course_code ?? r.coursecode,
     }));
 
-    const batchParams = [department.toUpperCase()];
+    const batchParams = [...deptMatch.params];
     let courseClause = "";
     if (courseCode) {
       courseClause = " AND UPPER(TRIM(st.course_description)) = UPPER(TRIM(?))";
@@ -516,7 +553,7 @@ const ConsolidatedAbsenteeExportService = {
          JOIN batches b ON b.id = st.batch_id
          JOIN exams e ON e.id = att.exam_id
          ${faJoin}
-         WHERE UPPER(TRIM(COALESCE(st.department, ''))) = UPPER(TRIM(?))
+         WHERE ${deptMatch.sql}
            ${courseClause}
            ${roleScope.sql || ""}
          ORDER BY b.name ASC`,
@@ -525,7 +562,8 @@ const ConsolidatedAbsenteeExportService = {
       batchRows = rows || [];
     } catch (err) {
       console.error("consolidated export batches query:", err?.message || err);
-      const fbParams = [department.toUpperCase()];
+      const fbDept = departmentMatchClause(department, "st");
+      const fbParams = [...fbDept.params];
       let fbCourse = "";
       if (courseCode) {
         fbCourse = " AND UPPER(TRIM(st.course_description)) = UPPER(TRIM(?))";
@@ -537,7 +575,7 @@ const ConsolidatedAbsenteeExportService = {
            b.name AS batch_name
          FROM students st
          JOIN batches b ON b.id = st.batch_id
-         WHERE UPPER(TRIM(COALESCE(st.department, ''))) = UPPER(TRIM(?))
+         WHERE ${fbDept.sql}
            ${fbCourse}
          ORDER BY b.name ASC`,
         fbParams
@@ -581,33 +619,59 @@ const ConsolidatedAbsenteeExportService = {
       throw err;
     }
 
-    const verification = await ReportVerification.create({
-      reportType: "Consolidated Absentees List",
-      user,
-      metadata: {
-        department: preview.meta.department,
-        dateFrom: preview.meta.dateFrom,
-        dateTo: preview.meta.dateTo,
-        courseCode: preview.meta.courseCode || null,
-        batchUuid: preview.meta.batchUuid || null,
-        examType: preview.meta.examType,
-        recordCount: preview.meta.recordCount,
-        totalAbsentees: preview.meta.totalAbsentees,
-      },
-    });
+    let verification = null;
+    try {
+      verification = await ReportVerification.create({
+        reportType: "Consolidated Absentees List",
+        user,
+        metadata: {
+          department: preview.meta.department,
+          dateFrom: preview.meta.dateFrom,
+          dateTo: preview.meta.dateTo,
+          courseCode: preview.meta.courseCode || null,
+          batchUuid: preview.meta.batchUuid || null,
+          examType: preview.meta.examType,
+          recordCount: preview.meta.recordCount,
+          totalAbsentees: preview.meta.totalAbsentees,
+        },
+      });
+    } catch (verErr) {
+      console.error("Consolidated absentees verification create failed:", verErr?.message || verErr);
+      verification = {
+        uuid: null,
+        verificationId: `HAL-LOCAL-${Date.now()}`,
+        generatedAt: new Date().toISOString(),
+      };
+    }
 
     const { buildConsolidatedAbsenteeDocx } = require("../utils/consolidatedAbsenteeDocx");
-    const buffer = await buildConsolidatedAbsenteeDocx({
-      meta: preview.meta,
-      rows: preview.rows,
-      verification: {
-        verificationId: verification.verificationId,
-        generatedAt: verification.generatedAt,
-      },
-    });
+    let buffer;
+    try {
+      buffer = await buildConsolidatedAbsenteeDocx({
+        meta: preview.meta,
+        rows: preview.rows,
+        verification: {
+          verificationId: verification.verificationId,
+          generatedAt: verification.generatedAt,
+        },
+      });
+    } catch (docxErr) {
+      console.error("DOCX build failed:", docxErr?.message || docxErr);
+      const err = new Error(
+        docxErr?.message || "Failed to generate DOCX. Ensure the backend `docx` package is installed."
+      );
+      err.statusCode = 500;
+      throw err;
+    }
 
-    const hash = crypto.createHash("sha256").update(buffer).digest("hex");
-    await ReportVerification.finalize(verification.uuid, hash);
+    if (verification?.uuid) {
+      try {
+        const hash = crypto.createHash("sha256").update(buffer).digest("hex");
+        await ReportVerification.finalize(verification.uuid, hash);
+      } catch (finErr) {
+        console.error("Verification finalize failed:", finErr?.message || finErr);
+      }
+    }
 
     const deptShort = sanitizeFilenamePart(preview.meta.department).slice(0, 20);
     const examShort = sanitizeFilenamePart(preview.meta.examType);

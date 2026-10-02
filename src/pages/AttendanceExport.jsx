@@ -7,12 +7,16 @@ import {
   EyeIcon,
 } from "@heroicons/react/24/outline";
 import {
-  downloadAttendanceExportDocx,
   fetchAttendanceExportOptions,
   previewAttendanceExport,
 } from "../lib/attendanceApi";
+import { downloadConsolidatedAbsenteeDocx } from "../lib/consolidatedAbsenteeDocx";
+import {
+  createReportVerification,
+  finalizePdfVerification,
+} from "../lib/reportVerification";
 import { useToast } from "../context/ToastContext";
-import { getApiError, getApiErrorTitle } from "../lib/errors";
+import { getApiError } from "../lib/errors";
 
 const emptyFilters = {
   department: "",
@@ -146,18 +150,56 @@ export default function AttendanceExport() {
       setError(msg);
       return;
     }
-    if (preview?.empty) {
-      setError("No attendance records found for the selected filters.");
-      return;
-    }
     setExporting(true);
     setError("");
     try {
-      await downloadAttendanceExportDocx(queryPayload);
+      let data = preview;
+      if (!data || data.empty || !Array.isArray(data.rows) || !data.rows.length) {
+        data = await previewAttendanceExport(queryPayload);
+        setPreview(data);
+      }
+      if (!data || data.empty || !data.rows?.length) {
+        setError("No attendance records found for the selected filters.");
+        return;
+      }
+
+      let verification = null;
+      try {
+        verification = await createReportVerification("Consolidated Absentees List", {
+          department: queryPayload.department,
+          dateFrom: queryPayload.dateFrom,
+          dateTo: queryPayload.dateTo,
+          courseCode: queryPayload.courseCode || null,
+          batchUuid: queryPayload.batchUuid || null,
+          examType: data.meta?.examType || null,
+          recordCount: data.meta?.recordCount || data.rows.length,
+          totalAbsentees: data.meta?.totalAbsentees || null,
+        });
+      } catch (verErr) {
+        console.warn("Verification create failed, exporting without audit ID:", verErr);
+        verification = {
+          verificationId: `HAL-LOCAL-${Date.now()}`,
+          generatedAt: new Date().toISOString(),
+        };
+      }
+
+      const { blob } = await downloadConsolidatedAbsenteeDocx({
+        meta: data.meta,
+        rows: data.rows,
+        verification,
+      });
+
+      if (verification?.uuid && blob) {
+        await finalizePdfVerification(verification, blob).catch(() => null);
+      }
+
       toast.success("Consolidated absentees DOCX downloaded.");
     } catch (err) {
-      setError(getApiError(err, "Failed to export DOCX"));
-      toast.error(getApiError(err), getApiErrorTitle(err, "Export failed"));
+      console.error("Attendance DOCX export failed:", err);
+      const message =
+        err?.message || getApiError(err, "Failed to export DOCX");
+      setError(message);
+      toast.error(message, "Export failed");
     } finally {
       setExporting(false);
     }

@@ -709,13 +709,21 @@ const AttendanceController = {
       res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
       return res.send(buffer);
     } catch (err) {
+      console.error("exportConsolidatedDocx ERROR:", err?.message || err);
+      if (err?.stack) console.error(err.stack);
       if (err.statusCode === 400) {
         return Api.validationError(res, err.message);
       }
       if (err.statusCode === 404) {
         return Api.notFound(res, err.message);
       }
-      return Api.fromError(res, err, "Failed to export consolidated absentees DOCX");
+      return Api.fail(
+        res,
+        500,
+        "SERVER_ERROR",
+        err.message || "Failed to export consolidated absentees DOCX",
+        err.message || "Unexpected error occurred."
+      );
     }
   },
 
