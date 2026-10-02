@@ -98,10 +98,14 @@ function buildStudentListQuery(filters = {}, opts = {}) {
     params.push(`${yearVal}%`);
   }
 
-  const department = String(filters.department || "").trim();
+  const department = String(filters.department || "").trim().toUpperCase();
   if (department) {
-    conditions.push("UPPER(st.regn_no) LIKE ?");
-    params.push(`%${department.toUpperCase()}%`);
+    // Match students.department column OR register-number department segment (e.g. 24BCS001 → BCS)
+    conditions.push(`(
+      UPPER(TRIM(COALESCE(st.department, ''))) = ?
+      OR UPPER((regexp_match(UPPER(TRIM(st.regn_no)), '^[0-9]{2}([A-Z]+)'))[1]) = ?
+    )`);
+    params.push(department, department);
   }
 
   const section = String(filters.section || "").trim();

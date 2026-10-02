@@ -76,22 +76,27 @@ export function useStudentCourseStats({
   page = 1,
   limit = 12,
   batchId,
+  department = "",
   contextReady = false,
   enabled = true,
 } = {}) {
   return useQuery({
-    queryKey: [STUDENTS_QUERY_KEY, "course-stats", { page, limit, batchId: batchId ?? "all" }],
-    queryFn: () => fetchStudentCourseStats({ page, limit, batchId }),
+    queryKey: [
+      STUDENTS_QUERY_KEY,
+      "course-stats",
+      { page, limit, batchId: batchId ?? "all", department: department || "all" },
+    ],
+    queryFn: () => fetchStudentCourseStats({ page, limit, batchId, department }),
     enabled: enabled && (Boolean(batchId) || contextReady),
     staleTime: 60_000,
     placeholderData: keepPreviousData,
   });
 }
 
-export function useStudentStatsTotal(batchId, enabled = true, contextReady = false) {
+export function useStudentStatsTotal(batchId, enabled = true, contextReady = false, department = "") {
   return useQuery({
-    queryKey: [STUDENTS_QUERY_KEY, "stats", batchId ?? "all"],
-    queryFn: () => fetchStudentStatsTotal(batchId),
+    queryKey: [STUDENTS_QUERY_KEY, "stats", batchId ?? "all", department || "all"],
+    queryFn: () => fetchStudentStatsTotal(batchId, department),
     enabled: enabled && (Boolean(batchId) || contextReady),
     staleTime: 60_000,
   });

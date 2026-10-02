@@ -464,13 +464,24 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
 });
 
 /* =====================================================
-   VENUE BULK IMPORT — validate preview then atomic import
-   Excel: Venue Name | Type | Rows | Columns | Bench Config
+   VENUE BULK IMPORT — Phase 2
+   Excel: Block Code | Block Name | Venue Name | Venue Type |
+          Rows | Columns | Bench Configuration | Available
+   Block must already exist. createdBy = authenticated user only.
 ===================================================== */
-async function runVenueValidation(data) {
+async function runVenueValidation(data, req) {
   const { validateVenueRows } = require("../utils/venueBulkImport");
+  const Block = require("../models/Block");
+  const user = {
+    id: req.user?.id,
+    role: req.user?.role,
+    department: req.user?.department ?? null,
+  };
   return validateVenueRows(data, {
-    venueExists: (name, type) => Venue.existsByNameAndType(name, type),
+    findBlockByCode: (code) => Block.findByCode(code),
+    findExistingVenue: (name, type) => Venue.findByNameAndType(name, type),
+    canManageVenue: (u, row) => Venue.canManageVenue(u, row),
+    user,
   });
 }
 
@@ -490,7 +501,7 @@ router.post(
       const workbook = xlsx.readFile(req.file.path);
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       const data = xlsx.utils.sheet_to_json(sheet);
-      const result = await runVenueValidation(data);
+      const result = await runVenueValidation(data, req);
 
       return res.json({
         message: result.message,
@@ -526,7 +537,7 @@ router.post(
       const workbook = xlsx.readFile(req.file.path);
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       const data = xlsx.utils.sheet_to_json(sheet);
-      const result = await runVenueValidation(data);
+      const result = await runVenueValidation(data, req);
 
       if (!result.canImport) {
         return res.status(400).json({
@@ -535,17 +546,20 @@ router.post(
           rows: result.rows,
           validCount: result.validCount,
           errorCount: result.errorCount,
+          duplicateCount: result.duplicateCount,
           total: result.total,
           canImport: false,
         });
       }
 
+      // createdBy / owner_user_id ALWAYS from session — never from Excel
       const ownerOpts = await resolveOwnerOpts(req);
       let insertedCount = 0;
       const duplicates = [];
       const skippedRecords = [];
 
       for (const venue of result.rows) {
+        if (venue.status !== "VALID") continue;
         try {
           const venueId = await Venue.create(
             {
@@ -554,6 +568,9 @@ router.post(
               benchesRow: venue.benchesRow,
               benchesCol: venue.benchesCol,
               benchConfig: venue.benchConfig,
+              blockId: venue.blockId,
+              code: venue.name,
+              isAvailable: venue.isAvailable !== false,
             },
             ownerOpts
           );
@@ -585,6 +602,7 @@ router.post(
         skipped: 0,
         validCount: result.validCount,
         errorCount: 0,
+        duplicateCount: 0,
         canImport: true,
       });
     } catch (error) {

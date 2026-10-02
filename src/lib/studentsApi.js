@@ -78,6 +78,7 @@ export async function fetchStudentCourseStats(params = {}) {
       page: params.page ?? 1,
       limit: params.limit ?? 12,
       ...(params.batchId ? { batchId: params.batchId } : {}),
+      ...(params.department ? { department: params.department } : {}),
     },
   });
   const body = res.data?.data ?? res.data ?? {};
@@ -115,9 +116,12 @@ export async function fetchStudentCourseStats(params = {}) {
   return { courses: [], pagination: defaultPagination };
 }
 
-export async function fetchStudentStatsTotal(batchId) {
+export async function fetchStudentStatsTotal(batchId, department) {
   const res = await api.get("/students/stats", {
-    params: batchId ? { batchId } : undefined,
+    params: {
+      ...(batchId ? { batchId } : {}),
+      ...(department ? { department } : {}),
+    },
   });
   return res.data?.totalStudents ?? res.data?.data?.totalStudents ?? 0;
 }

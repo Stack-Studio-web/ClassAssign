@@ -1,10 +1,19 @@
 import React, { useState, useEffect, useMemo } from "react";
 import api from "../lib/api";
-import { UserGroupIcon } from "@heroicons/react/24/outline";
+import { UserGroupIcon, BuildingOffice2Icon } from "@heroicons/react/24/outline";
 import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
 import { downloadTemplate } from "../lib/downloadTemplate";
+
+const DEPT_ICON_COLORS = [
+  { bg: "bg-emerald-100", text: "text-emerald-600" },
+  { bg: "bg-violet-100", text: "text-violet-600" },
+  { bg: "bg-amber-100", text: "text-amber-600" },
+  { bg: "bg-rose-100", text: "text-rose-600" },
+  { bg: "bg-cyan-100", text: "text-cyan-600" },
+  { bg: "bg-indigo-100", text: "text-indigo-600" },
+];
 
 export default function Faculty() {
   const toast = useToast();
@@ -278,6 +287,17 @@ export default function Faculty() {
       );
   }, [faculty, searchQuery, sortOrder]);
 
+  const departmentCounts = useMemo(() => {
+    const counts = new Map();
+    for (const f of faculty) {
+      const dept = String(f.department || "").trim().toUpperCase() || "UNASSIGNED";
+      counts.set(dept, (counts.get(dept) || 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([department, count]) => ({ department, count }))
+      .sort((a, b) => a.department.localeCompare(b.department));
+  }, [faculty]);
+
   return (
     <div className="min-h-screen bg-gray-50 font-[Inter,sans-serif]">
       {/* Header — Venue style */}
@@ -308,19 +328,44 @@ export default function Faculty() {
         </div>
       )}
 
-      {/* Stats — Venue style cards */}
-      <div className="px-4 md:px-8 mb-6 grid grid-cols-1 sm:grid-cols-2 gap-4 md:gap-6">
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 md:p-6 hover:shadow-md transition-all duration-200">
-          <div className="flex items-start justify-between">
-            <div>
+      {/* Stats — Total + per-department cards */}
+      <div className="px-4 md:px-8 mb-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 md:gap-4">
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 md:p-5 hover:shadow-md transition-all duration-200">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
               <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Total Faculty</p>
               <p className="text-2xl md:text-3xl font-bold text-gray-800 mt-1">{totalFaculty}</p>
             </div>
-            <div className="w-12 h-12 rounded-2xl bg-blue-100 flex items-center justify-center shrink-0">
-              <UserGroupIcon className="h-6 w-6 text-blue-600" />
+            <div className="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center shrink-0">
+              <UserGroupIcon className="h-5 w-5 text-blue-600" />
             </div>
           </div>
         </div>
+
+        {departmentCounts.map(({ department, count }, index) => {
+          const colors = DEPT_ICON_COLORS[index % DEPT_ICON_COLORS.length];
+          return (
+            <div
+              key={department}
+              className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 md:p-5 hover:shadow-md transition-all duration-200"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wide truncate" title={department}>
+                    {department}
+                  </p>
+                  <p className="text-2xl md:text-3xl font-bold text-gray-800 mt-1">{count}</p>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    {count === 1 ? "member" : "members"}
+                  </p>
+                </div>
+                <div className={`w-10 h-10 rounded-xl ${colors.bg} flex items-center justify-center shrink-0`}>
+                  <BuildingOffice2Icon className={`h-5 w-5 ${colors.text}`} />
+                </div>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {/* Tabs — Venue style, scroll on mobile */}

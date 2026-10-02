@@ -110,6 +110,9 @@ router.get("/course-stats", sessionAuth, checkRole(["admin", "faculty_incharge",
       if (!batchInternalId) return Api.notFound(res, "Batch not found");
       listFilters.batchId = batchInternalId;
     }
+    if (req.query.department) {
+      listFilters.department = String(req.query.department).trim();
+    }
     const result = await Student.getCourseStats(await resolveOwnerOpts(req), {
       page: req.query.page,
       limit: req.query.limit,
@@ -130,9 +133,20 @@ router.get("/stats", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]
       if (!batchInternalId) return res.status(404).json({ message: "Batch not found" });
       filters.batchId = batchInternalId;
     }
-    const totalStudents = filters.batchId
-      ? await Student.countInBatch(filters.batchId, await resolveOwnerOpts(req))
-      : await Student.count(await resolveOwnerOpts(req));
+    if (req.query.department) {
+      filters.department = String(req.query.department).trim();
+    }
+    const ownerOpts = await resolveOwnerOpts(req);
+    let totalStudents;
+    if (filters.department || !filters.batchId) {
+      const page = await Student.listPaginated(
+        { ...filters, page: 1, limit: 1 },
+        ownerOpts
+      );
+      totalStudents = page?.pagination?.totalItems ?? 0;
+    } else {
+      totalStudents = await Student.countInBatch(filters.batchId, ownerOpts);
+    }
     res.status(200).json({ totalStudents });
   } catch (error) {
     console.error("❌ Error fetching student stats:", error);

@@ -20,6 +20,7 @@ const ensureSeatingReportSchema = require("./utils/ensureSeatingReportSchema");
 const ensureSeatingVenueFacultySchema = require("./utils/ensureSeatingVenueFacultySchema");
 const ensureInvigilationEmailSchema = require("./utils/ensureInvigilationEmailSchema");
 const ensureUuidSchema = require("./utils/ensureUuidSchema");
+const ensureBlockVenueSchema = require("./utils/ensureBlockVenueSchema");
 const SessionStore = require("./utils/sessionStore");
 const sessionAuth = require("./middleware/sessionAuth");
 const checkRole = require("./middleware/checkRole");
@@ -169,6 +170,7 @@ async function start() {
       await ensureMentorSchema();
       await ensureMentorAuthSchema();
       await ensureStudentIndexes();
+      await ensureBlockVenueSchema();
       await ensureUuidSchema();
       await ensureTimetableSchema();
       await ensureFacultyActiveSchema();

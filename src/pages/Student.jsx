@@ -8,6 +8,7 @@ import { ReadOnlyBanner } from "../Components/rbac/ReadOnlyBanner";
 import CompletedSemesterBanner from "../Components/CompletedSemesterBanner";
 import {
   useStudentsQuery,
+  useStudentFilterOptions,
   useStudentCourseStats,
   useStudentStatsTotal,
 } from "../hooks/useStudents";
@@ -15,6 +16,7 @@ import StudentPagination from "../Components/StudentPagination";
 import Loader from "../Components/Loader";
 import { StudentManagementNav } from "../Components/StudentManagementNav";
 import { StudentBrowserBreadcrumb } from "../Components/student-browser/StudentBrowserBreadcrumb";
+import { StudentBrowserFilters } from "../Components/student-browser/StudentBrowserFilters";
 import { StudentStatsCards } from "../Components/student-browser/StudentStatsCards";
 import { CourseSummary } from "../Components/student-browser/CourseSummary";
 import { CourseStudentTable } from "../Components/student-browser/CourseStudentTable";
@@ -41,10 +43,14 @@ export default function StudentBrowserPage() {
   const toast = useToast();
   const { isReadOnly, isAdmin, isFacultyIncharge, isHod } = useAuth();
   const {
+    years,
+    semesters,
     batches,
     selectedYear,
     selectedSemester,
     selectedBatch,
+    selectYear,
+    selectSemester,
     selectBatch,
     isYearSemesterComplete,
     isSelectedSemesterCompleted,
@@ -63,12 +69,14 @@ export default function StudentBrowserPage() {
   const debouncedSearch = useDebouncedValue(searchQuery, 400);
   const { sortBy, sortOrder } = getSortFromPreset(sortPreset);
 
-  const effectiveBatchId = filters.batchUuid || selectedBatch?.uuid || null;
+  // Batch filter default = All (empty). Do not force selectedBatch.
+  const effectiveBatchId = filters.batchUuid || null;
   const contextReady = isYearSemesterComplete;
   const canBrowse = contextReady || isReadOnly;
 
   const selectedCourseCode = filters.courseDescription || "";
   const courseSelected = Boolean(selectedCourseCode);
+  const departmentFilter = filters.department || "";
 
   const showCreatedBy = isAdmin || isHod;
 
@@ -96,23 +104,41 @@ export default function StudentBrowserPage() {
     setSelectedStudentUuid(null);
     setFilters((prev) => ({
       ...prev,
+      batchUuid: "",
       courseDescription: "",
       courseName: "",
     }));
-  }, [effectiveBatchId, selectedYear?.uuid, selectedSemester?.uuid]);
+  }, [selectedYear?.uuid, selectedSemester?.uuid]);
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, pageSize]);
+    setSearchQuery("");
+    setSelectedStudentUuid(null);
+    setFilters((prev) => ({
+      ...prev,
+      courseDescription: "",
+      courseName: "",
+    }));
+  }, [effectiveBatchId]);
 
   useEffect(() => {
-    if (filters.batchUuid && filters.batchUuid !== selectedBatch?.uuid) {
-      const batch = batches.find((b) => b.uuid === filters.batchUuid);
-      if (batch) selectBatch(batch);
-    }
+    setPage(1);
+  }, [debouncedSearch, pageSize, departmentFilter]);
+
+  useEffect(() => {
+    if (!filters.batchUuid) return;
+    if (filters.batchUuid === selectedBatch?.uuid) return;
+    const batch = batches.find((b) => b.uuid === filters.batchUuid);
+    if (batch) selectBatch(batch);
   }, [filters.batchUuid, batches, selectedBatch?.uuid, selectBatch]);
 
   const { data: statsTotal = 0 } = useStudentStatsTotal(
+    effectiveBatchId,
+    canBrowse,
+    contextReady,
+    departmentFilter
+  );
+  const { data: filterOptions = {} } = useStudentFilterOptions(
     effectiveBatchId,
     canBrowse,
     contextReady
@@ -121,6 +147,7 @@ export default function StudentBrowserPage() {
     page: 1,
     limit: 50,
     batchId: effectiveBatchId,
+    department: departmentFilter,
     contextReady,
     enabled: canBrowse,
   });
@@ -165,6 +192,11 @@ export default function StudentBrowserPage() {
     [batches]
   );
 
+  const departmentOptions = useMemo(() => {
+    const fromApi = filterOptions.departments ?? [];
+    return [...new Set(fromApi.map((d) => String(d).toUpperCase()).filter(Boolean))].sort();
+  }, [filterOptions.departments]);
+
   const courses = courseStatsData?.courses ?? [];
   const selectedCourse = useMemo(
     () => courses.find((c) => c.courseCode === selectedCourseCode) || null,
@@ -176,6 +208,60 @@ export default function StudentBrowserPage() {
       toast.error(getApiError(studentsQueryError, "Failed to load students"), "Load failed");
     }
   }, [studentsError, studentsQueryError, toast]);
+
+  const handleYearChange = (uuid) => {
+    const year = years.find((y) => y.uuid === uuid) || null;
+    setFilters((prev) => ({
+      ...prev,
+      batchUuid: "",
+      courseDescription: "",
+      courseName: "",
+    }));
+    setSelectedStudentUuid(null);
+    setPage(1);
+    selectYear(year);
+  };
+
+  const handleSemesterChange = (uuid) => {
+    const sem = semesters.find((s) => s.uuid === uuid) || null;
+    setFilters((prev) => ({
+      ...prev,
+      batchUuid: "",
+      courseDescription: "",
+      courseName: "",
+    }));
+    setSelectedStudentUuid(null);
+    setPage(1);
+    selectSemester(sem);
+  };
+
+  const handleBatchChange = (uuid) => {
+    setFilters((prev) => ({
+      ...prev,
+      batchUuid: uuid || "",
+      courseDescription: "",
+      courseName: "",
+    }));
+    setSelectedStudentUuid(null);
+    setPage(1);
+    if (!uuid) {
+      selectBatch(null);
+      return;
+    }
+    const batch = batches.find((b) => b.uuid === uuid) || null;
+    if (batch) selectBatch(batch);
+  };
+
+  const handleDepartmentChange = (dept) => {
+    setFilters((prev) => ({
+      ...prev,
+      department: dept || "",
+      courseDescription: "",
+      courseName: "",
+    }));
+    setSelectedStudentUuid(null);
+    setPage(1);
+  };
 
   const handleCourseSelect = (courseCode) => {
     const course = courses.find((c) => c.courseCode === courseCode);
@@ -226,7 +312,7 @@ export default function StudentBrowserPage() {
             Student Browser
           </h1>
           <p className="mt-1 text-sm text-gray-600">
-            Browse, search and manage students for the selected Academic Year, Semester, and Batch.
+            Browse and filter students by academic year, semester, batch, and department.
           </p>
         </div>
 
@@ -235,6 +321,21 @@ export default function StudentBrowserPage() {
         )}
 
         {isSelectedSemesterCompleted && <CompletedSemesterBanner />}
+
+        <StudentBrowserFilters
+          years={years}
+          semesters={semesters}
+          batches={batches}
+          departments={departmentOptions}
+          selectedYearUuid={selectedYear?.uuid || ""}
+          selectedSemesterUuid={selectedSemester?.uuid || ""}
+          batchUuid={filters.batchUuid || ""}
+          department={departmentFilter}
+          onYearChange={handleYearChange}
+          onSemesterChange={handleSemesterChange}
+          onBatchChange={handleBatchChange}
+          onDepartmentChange={handleDepartmentChange}
+        />
 
         {!canBrowse ? (
           <p className="text-sm text-gray-500">
@@ -261,7 +362,7 @@ export default function StudentBrowserPage() {
                 {!courseStatsFetching && courses.length === 0 && (
                   <StudentEmptyState
                     importPath={readOnly ? undefined : importPath}
-                    message="No courses with students found for the selected academic context."
+                    message="No courses with students found for the selected filters."
                   />
                 )}
               </>

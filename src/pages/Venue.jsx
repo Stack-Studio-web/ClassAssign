@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import api from "../lib/api";
 import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
@@ -13,26 +13,49 @@ import {
   ArrowLeftIcon,
   InformationCircleIcon,
   Squares2X2Icon,
+  PlusIcon,
+  XMarkIcon,
 } from "@heroicons/react/24/outline";
+
+const BLOCK_STATUSES = [
+  { value: "ACTIVE", label: "Active" },
+  { value: "INACTIVE", label: "Inactive" },
+  { value: "MAINTENANCE", label: "Maintenance" },
+];
 
 export default function AddVenue() {
   const toast = useToast();
   const showConfirm = useConfirm();
   const [totalVenues, setTotalVenues] = useState(0);
   const [totalCapacity, setTotalCapacity] = useState(0);
+  const [totalBlocks, setTotalBlocks] = useState(0);
   const [activeTab, setActiveTab] = useState("basic");
   const [venues, setVenues] = useState([]);
+  const [blocks, setBlocks] = useState([]);
   const [editingId, setEditingId] = useState(null);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [sortOrder, setSortOrder] = useState("lowToHigh");
+  const [filterBlock, setFilterBlock] = useState("");
 
   const [form, setForm] = useState({
     name: "",
     type: "",
     benchesRow: "",
     benchesCol: "",
+    blockUuid: "",
   });
+
+  const [showBlockModal, setShowBlockModal] = useState(false);
+  const [editingBlockUuid, setEditingBlockUuid] = useState(null);
+  const [blockForm, setBlockForm] = useState({
+    name: "",
+    code: "",
+    description: "",
+    status: "ACTIVE",
+  });
+  const [savingBlock, setSavingBlock] = useState(false);
+  const [deletingBlockId, setDeletingBlockId] = useState(null);
 
   const [benchConfig, setBenchConfig] = useState([]);
   const [configMode, setConfigMode] = useState("uniform");
@@ -93,6 +116,7 @@ export default function AddVenue() {
       const res = await api.get("/venues/stats");
       setTotalVenues(res.data.totalVenues);
       setTotalCapacity(res.data.totalCapacity);
+      setTotalBlocks(res.data.totalBlocks ?? 0);
     } catch (err) {
       if (err.response?.status !== 401) console.error("Failed to fetch stats", err);
     }
@@ -107,6 +131,16 @@ export default function AddVenue() {
     }
   };
 
+  const fetchBlocks = async () => {
+    try {
+      const res = await api.get("/venues/blocks");
+      setBlocks(Array.isArray(res.data) ? res.data : []);
+    } catch (err) {
+      if (err.response?.status !== 401) console.error("Failed to fetch blocks", err);
+      setBlocks([]);
+    }
+  };
+
   const checkLastImport = async () => {
     try {
       const res = await api.get("/import/last-venue-import");
@@ -116,9 +150,12 @@ export default function AddVenue() {
     }
   };
 
+  const refresh = async () => {
+    await Promise.all([fetchStats(), fetchVenues(), fetchBlocks()]);
+  };
+
   useEffect(() => {
-    fetchStats();
-    fetchVenues();
+    refresh();
     checkLastImport();
   }, []);
 
@@ -140,8 +177,8 @@ export default function AddVenue() {
     setError("");
     setIsDuplicateError(false);
 
-    if (!form.name || !form.type || !form.benchesRow || !form.benchesCol) {
-      setError("All fields are required.");
+    if (!form.name || !form.type || !form.benchesRow || !form.benchesCol || !form.blockUuid) {
+      setError("All fields are required, including Block.");
       return;
     }
 
@@ -151,10 +188,12 @@ export default function AddVenue() {
     }
 
     const payload = {
-      ...form,
+      name: form.name,
+      type: form.type,
       benchesRow: Number(form.benchesRow),
       benchesCol: Number(form.benchesCol),
       benchConfig: benchConfig,
+      blockUuid: form.blockUuid,
     };
 
     try {
@@ -167,11 +206,12 @@ export default function AddVenue() {
         toast.success("Venue added successfully.");
       }
       handleReset();
-      fetchStats();
-      fetchVenues();
+      await refresh();
     } catch (err) {
       if (err.response?.status === 401) return;
-      if (err.response?.data?.error === "Duplicate venue") {
+      if (err.response?.status === 403) {
+        setError("Only the creator can edit this venue.");
+      } else if (err.response?.data?.error === "Duplicate venue") {
         setIsDuplicateError(true);
         setError(`A venue named "${form.name}" with type "${form.type}" already exists.`);
       } else {
@@ -182,14 +222,13 @@ export default function AddVenue() {
     }
   };
 
-  const handleToggleVenueAvailability = async (venue) => {
+  const handleToggleVenueAvailability = async (venue, checked) => {
+    if (!venue.canManage) return;
     const id = venue.uuid;
-    const on = venue.isAvailable !== false;
     setTogglingVenueId(id);
     try {
-      await api.put(`/venues/${id}/availability`, { isAvailable: !on });
-      fetchStats();
-      fetchVenues();
+      await api.put(`/venues/${id}/availability`, { isAvailable: checked });
+      await refresh();
     } catch (err) {
       if (err.response?.status !== 401) {
         toast.error(getApiError(err), "Could not update availability");
@@ -210,8 +249,7 @@ export default function AddVenue() {
     try {
       await api.delete(`/venues/${id}`);
       toast.success("Venue deleted successfully.");
-      fetchStats();
-      fetchVenues();
+      await refresh();
     } catch (err) {
       if (err.response?.status === 401) return;
       toast.error(getApiError(err), getApiErrorTitle(err, "Cannot delete venue"));
@@ -221,11 +259,16 @@ export default function AddVenue() {
   };
 
   const handleEdit = (venue) => {
+    if (!venue.canManage) {
+      toast.error("Only the creator can edit this venue.");
+      return;
+    }
     setForm({
       name: venue.name,
       type: venue.type,
       benchesRow: venue.benchesRow,
       benchesCol: venue.benchesCol,
+      blockUuid: venue.blockUuid || "",
     });
     setBenchConfig(venue.benchConfig || Array(venue.benchesCol).fill(2));
     setConfigMode("custom");
@@ -235,7 +278,7 @@ export default function AddVenue() {
   };
 
   const handleReset = () => {
-    setForm({ name: "", type: "", benchesRow: "", benchesCol: "" });
+    setForm({ name: "", type: "", benchesRow: "", benchesCol: "", blockUuid: "" });
     setBenchConfig([]);
     setConfigMode("uniform");
     setUniformSeats(2);
@@ -243,6 +286,75 @@ export default function AddVenue() {
     setEditingId(null);
     setError("");
     setIsDuplicateError(false);
+  };
+
+  const openCreateBlock = () => {
+    setEditingBlockUuid(null);
+    setBlockForm({ name: "", code: "", description: "", status: "ACTIVE" });
+    setShowBlockModal(true);
+  };
+
+  const openEditBlock = (block) => {
+    if (!block.canManage) {
+      toast.error("Only the creator can edit this block.");
+      return;
+    }
+    setEditingBlockUuid(block.uuid);
+    setBlockForm({
+      name: block.name || "",
+      code: block.code || "",
+      description: block.description || "",
+      status: block.status || "ACTIVE",
+    });
+    setShowBlockModal(true);
+  };
+
+  const handleSaveBlock = async (e) => {
+    e.preventDefault();
+    if (!blockForm.name.trim() || !blockForm.code.trim()) {
+      toast.error("Block name and code are required.");
+      return;
+    }
+    setSavingBlock(true);
+    try {
+      if (editingBlockUuid) {
+        await api.patch(`/venues/blocks/${editingBlockUuid}`, blockForm);
+        toast.success("Block updated.");
+      } else {
+        await api.post("/venues/blocks", blockForm);
+        toast.success("Block created.");
+      }
+      setShowBlockModal(false);
+      await refresh();
+    } catch (err) {
+      if (err.response?.status === 401) return;
+      toast.error(getApiError(err), getApiErrorTitle(err, "Block save failed"));
+    } finally {
+      setSavingBlock(false);
+    }
+  };
+
+  const handleDeleteBlock = async (block) => {
+    if (!block.canManage) {
+      toast.error("Only the creator can delete this block.");
+      return;
+    }
+    const ok = await showConfirm(
+      `Delete block "${block.name}"? Venues must be reassigned first.`
+    );
+    if (!ok) return;
+    setDeletingBlockId(block.uuid);
+    try {
+      await api.delete(`/venues/blocks/${block.uuid}`);
+      toast.success("Block deleted.");
+      if (filterBlock === block.uuid) setFilterBlock("");
+      await refresh();
+    } catch (err) {
+      if (err.response?.status === 401) return;
+      toast.error(getApiError(err), getApiErrorTitle(err, "Cannot delete block"));
+    } finally {
+      setDeletingBlockId(null);
+    }
   };
 
   const handleFileSelect = async (e) => {
@@ -308,8 +420,7 @@ export default function AddVenue() {
       setSelectedFile(null);
       setImportPreview(null);
       document.getElementById("venue-file-input").value = "";
-      await fetchStats();
-      await fetchVenues();
+      await refresh();
       await checkLastImport();
     } catch (err) {
       if (err.response?.status === 401) return;
@@ -332,8 +443,7 @@ export default function AddVenue() {
     try {
       const res = await api.post("/import/undo-venue-import");
       toast.success(res.data.message || res.data.data?.message || "Import undone successfully.");
-      await fetchStats();
-      await fetchVenues();
+      await refresh();
       await checkLastImport();
     } catch (err) {
       if (err.response?.status === 401) return;
@@ -351,15 +461,37 @@ export default function AddVenue() {
   const handleSort = () =>
     setSortOrder((prev) => (prev === "highToLow" ? "lowToHigh" : "highToLow"));
 
-  const filteredVenues = venues
-    .filter(
-      (v) =>
-        v.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        v.type.toLowerCase().includes(searchQuery.toLowerCase())
-    )
-    .sort((a, b) =>
-      sortOrder === "highToLow" ? b.capacity - a.capacity : a.capacity - b.capacity
-    );
+  const unassignedVenues = useMemo(
+    () => venues.filter((v) => !v.blockUuid),
+    [venues]
+  );
+
+  const filteredVenues = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return venues
+      .filter((v) => {
+        if (filterBlock === "__none__") {
+          if (v.blockUuid) return false;
+        } else if (filterBlock) {
+          if (v.blockUuid !== filterBlock) return false;
+        }
+        if (!q) return true;
+        const hay = [
+          v.name,
+          v.code,
+          v.type,
+          v.blockName,
+          v.blockCode,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        return hay.includes(q);
+      })
+      .sort((a, b) =>
+        sortOrder === "highToLow" ? b.capacity - a.capacity : a.capacity - b.capacity
+      );
+  }, [venues, searchQuery, sortOrder, filterBlock]);
 
   const rows = Number(form.benchesRow) || 0;
   const cols = Number(form.benchesCol) || 0;
@@ -387,13 +519,23 @@ export default function AddVenue() {
       </div>
 
       {/* ========== STATS CARDS ========== */}
-      <div className="px-4 md:px-8 mb-6 grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
+      <div className="px-4 md:px-8 mb-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-all duration-200">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Total Blocks</p>
+              <p className="text-2xl md:text-3xl font-bold text-gray-800 mt-1">{totalBlocks}</p>
+            </div>
+            <div className="w-12 h-12 rounded-2xl bg-emerald-100 flex items-center justify-center shrink-0">
+              <Squares2X2Icon className="h-6 w-6 text-emerald-600" />
+            </div>
+          </div>
+        </div>
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-all duration-200">
           <div className="flex items-start justify-between">
             <div>
               <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Total Venues</p>
               <p className="text-2xl md:text-3xl font-bold text-gray-800 mt-1">{totalVenues}</p>
-              <p className="text-sm text-gray-400 mt-1">—</p>
             </div>
             <div className="w-12 h-12 rounded-2xl bg-blue-100 flex items-center justify-center shrink-0">
               <BuildingOffice2Icon className="h-6 w-6 text-blue-600" />
@@ -405,11 +547,96 @@ export default function AddVenue() {
             <div>
               <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Total Capacity</p>
               <p className="text-2xl md:text-3xl font-bold text-gray-800 mt-1">{totalCapacity.toLocaleString()}</p>
-              <p className="text-sm text-gray-400 mt-1">—</p>
             </div>
             <div className="w-12 h-12 rounded-2xl bg-violet-100 flex items-center justify-center shrink-0">
               <UserGroupIcon className="h-6 w-6 text-violet-600" />
             </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ========== CAMPUS BLOCKS ========== */}
+      <div className="px-4 md:px-8 mb-6">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-800">Campus Blocks</h2>
+            <p className="text-sm text-gray-500">Shared across Faculty In-Charges. Edit/Delete only for the creator.</p>
+          </div>
+          <button
+            type="button"
+            onClick={openCreateBlock}
+            className="inline-flex items-center gap-2 h-11 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold shadow-sm transition-all"
+          >
+            <PlusIcon className="h-4 w-4" />
+            Add Block
+          </button>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {blocks.map((block) => (
+            <div
+              key={block.uuid}
+              className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 hover:shadow-md transition-all duration-200"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-bold uppercase tracking-wide text-blue-600">{block.code}</p>
+                  <h3 className="text-lg font-bold text-gray-900 truncate">{block.name}</h3>
+                  <p className="text-xs font-medium text-emerald-600 mt-0.5">
+                    {block.status === "ACTIVE" ? "Active" : block.status}
+                  </p>
+                </div>
+              </div>
+              {block.description ? (
+                <p className="mt-3 text-sm text-gray-500 line-clamp-2">{block.description}</p>
+              ) : (
+                <p className="mt-3 text-sm text-gray-400 italic">No description</p>
+              )}
+              <p className="mt-4 text-sm font-semibold text-gray-800">
+                {block.venueCount} {block.venueCount === 1 ? "Venue" : "Venues"} •{" "}
+                {Number(block.totalCapacity || 0).toLocaleString()} Cap.
+              </p>
+              <p className="mt-1 text-xs text-gray-500">
+                Created by: {block.createdBy || (block.createdByUserId ? `User #${block.createdByUserId}` : "—")}
+              </p>
+              {block.canManage && (
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => openEditBlock(block)}
+                    className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    disabled={deletingBlockId === block.uuid}
+                    onClick={() => handleDeleteBlock(block)}
+                    className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium"
+                  >
+                    {deletingBlockId === block.uuid ? "Deleting…" : "Delete"}
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+
+          <div className="bg-white rounded-2xl shadow-sm border border-dashed border-gray-200 p-5">
+            <p className="text-xs font-bold uppercase tracking-wide text-gray-400">—</p>
+            <h3 className="text-lg font-bold text-gray-800">Unassigned / No Block</h3>
+            <p className="mt-1 text-xs font-medium text-gray-500">Legacy venues without a block</p>
+            <p className="mt-4 text-sm font-semibold text-gray-800">
+              {unassignedVenues.length} {unassignedVenues.length === 1 ? "Venue" : "Venues"}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setFilterBlock("__none__");
+                setActiveTab("hall");
+              }}
+              className="mt-4 text-sm font-semibold text-blue-600 hover:underline"
+            >
+              View venues
+            </button>
           </div>
         </div>
       </div>
@@ -476,6 +703,28 @@ export default function AddVenue() {
                     {error}
                   </div>
                 )}
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-600 mb-2">Block *</label>
+                  <select
+                    name="blockUuid"
+                    value={form.blockUuid}
+                    onChange={handleChange}
+                    className="w-full h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all bg-white"
+                  >
+                    <option value="">Select Block</option>
+                    {blocks.map((b) => (
+                      <option key={b.uuid} value={b.uuid}>
+                        {b.code} — {b.name}
+                      </option>
+                    ))}
+                  </select>
+                  {blocks.length === 0 && (
+                    <p className="mt-1 text-xs text-amber-700">
+                      Create a Campus Block first before adding venues.
+                    </p>
+                  )}
+                </div>
 
                 <div>
                   <label className="block text-sm font-medium text-gray-600 mb-2">Venue Name</label>
@@ -677,7 +926,9 @@ export default function AddVenue() {
                 <div>
                   <h3 className="font-semibold text-blue-900 mb-2">Download Template First</h3>
                   <p className="text-sm text-blue-800 mb-4">
-                    Use our template to ensure your data is formatted correctly.
+                    Columns: Block Code, Block Name, Venue Name, Venue Type, Rows, Columns,
+                    Bench Configuration, Available. Create Campus Blocks before importing.
+                    Example rows in the template are samples — replace them with real data.
                   </p>
                   <button
                     type="button"
@@ -721,7 +972,14 @@ export default function AddVenue() {
               <div className="rounded-2xl border border-gray-200 overflow-hidden mb-6">
                 <div className="flex flex-wrap items-center justify-between gap-2 bg-gray-50 px-4 py-2.5 text-xs font-semibold text-gray-600">
                   <span>
-                    Preview — {importPreview.validCount} valid, {importPreview.errorCount} error(s)
+                    Preview — Total: {importPreview.total ?? importPreview.rows.length}
+                    {" · "}Valid: {importPreview.validCount ?? 0}
+                    {" · "}Invalid:{" "}
+                    {Math.max(
+                      0,
+                      (importPreview.errorCount ?? 0) - (importPreview.duplicateCount ?? 0)
+                    )}
+                    {" · "}Duplicate: {importPreview.duplicateCount ?? 0}
                   </span>
                   <span className={importPreview.canImport ? "text-green-700" : "text-red-700"}>
                     {importPreview.canImport
@@ -734,11 +992,13 @@ export default function AddVenue() {
                     <thead className="sticky top-0 bg-white border-b border-gray-100 text-left text-gray-500">
                       <tr>
                         <th className="px-3 py-2">Row</th>
+                        <th className="px-3 py-2">Block</th>
                         <th className="px-3 py-2">Name</th>
                         <th className="px-3 py-2">Type</th>
                         <th className="px-3 py-2">Rows×Cols</th>
                         <th className="px-3 py-2">Bench Config</th>
                         <th className="px-3 py-2">Capacity</th>
+                        <th className="px-3 py-2">Available</th>
                         <th className="px-3 py-2">Status</th>
                       </tr>
                     </thead>
@@ -747,12 +1007,17 @@ export default function AddVenue() {
                         <tr
                           key={`venue-preview-${row.rowNum}`}
                           className={
-                            row.status === "ERROR"
+                            row.status === "ERROR" || row.status === "DUPLICATE"
                               ? "bg-red-50/70 border-b border-red-100"
                               : "border-b border-gray-50"
                           }
                         >
                           <td className="px-3 py-2">{row.rowNum}</td>
+                          <td className="px-3 py-2">
+                            {row.blockCode
+                              ? `${row.blockCode}${row.blockName ? ` · ${row.blockName}` : ""}`
+                              : "—"}
+                          </td>
                           <td className="px-3 py-2 font-medium">{row.name || "—"}</td>
                           <td className="px-3 py-2">{row.type || "—"}</td>
                           <td className="px-3 py-2">
@@ -767,12 +1032,17 @@ export default function AddVenue() {
                           </td>
                           <td className="px-3 py-2">{row.capacity || "—"}</td>
                           <td className="px-3 py-2">
+                            {row.isAvailable === false ? "FALSE" : "TRUE"}
+                          </td>
+                          <td className="px-3 py-2">
                             {row.status === "VALID" ? (
                               <span className="font-semibold text-green-700">VALID</span>
                             ) : (
                               <div>
-                                <span className="font-semibold text-red-700">ERROR</span>
-                                <p className="mt-0.5 text-red-700 font-normal max-w-[260px]">
+                                <span className="font-semibold text-red-700">
+                                  {row.status === "DUPLICATE" ? "DUPLICATE" : "ERROR"}
+                                </span>
+                                <p className="mt-0.5 text-red-700 font-normal max-w-[280px]">
                                   {row.error || row.errors?.[0]}
                                 </p>
                               </div>
@@ -838,13 +1108,34 @@ export default function AddVenue() {
             <div className="bg-gray-50 rounded-2xl p-6 border border-gray-100">
               <h3 className="font-semibold text-gray-800 mb-3">Excel Format Required</h3>
               <ul className="space-y-2 text-sm text-gray-600">
-                <li><strong>Column Headers:</strong> Venue Name | Type | Rows | Columns | Bench Config</li>
-                <li><strong>Example Row:</strong> AD101 | classroom | 10 | 5 | 2,2,3,3,2</li>
-                <li><strong>Valid Types:</strong> classroom, lab, hall</li>
-                <li><strong>Bench Config:</strong> comma-separated 2 or 3 only; length must equal Columns</li>
-                <li><strong>Validation:</strong> file is validated first; Import is blocked until every row is VALID</li>
-                <li><strong>Bench Config:</strong> Comma-separated seats per column (2 or 3 only)</li>
-                <li><strong>Note:</strong> Bench config length must match number of columns</li>
+                <li>
+                  <strong>Column Headers:</strong> Block Code | Block Name | Venue Name | Venue Type |
+                  Rows | Columns | Bench Configuration | Available
+                </li>
+                <li>
+                  <strong>Example Row:</strong> AD | Academic Block | AD401 | Classroom | 7 | 5 | 2,2,2,2,2 | TRUE
+                </li>
+                <li>
+                  <strong>Block Code:</strong> Must already exist in Campus Blocks (blocks are not created from Excel)
+                </li>
+                <li>
+                  <strong>Valid Types:</strong> Classroom, Lab, Hall
+                </li>
+                <li>
+                  <strong>Bench Configuration:</strong> comma-separated 2 or 3 only; length must equal Columns
+                </li>
+                <li>
+                  <strong>Available:</strong> TRUE/FALSE or Yes/No
+                </li>
+                <li>
+                  <strong>Capacity:</strong> calculated automatically from Rows × Bench Configuration
+                </li>
+                <li>
+                  <strong>Validation:</strong> file is validated first; Import is blocked until every row is VALID
+                </li>
+                <li>
+                  <strong>Ownership:</strong> imported venues belong to the user who uploads; block ownership is unchanged
+                </li>
               </ul>
             </div>
           </div>
@@ -859,11 +1150,25 @@ export default function AddVenue() {
             <div className="flex flex-wrap items-center gap-3">
               <input
                 type="text"
-                placeholder="Search by name or type..."
+                placeholder="Search by venue, block, code..."
                 value={searchQuery}
                 onChange={handleSearch}
                 className="w-full md:w-64 h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
               />
+              <select
+                value={filterBlock}
+                onChange={(e) => setFilterBlock(e.target.value)}
+                className="h-12 px-4 rounded-xl border border-gray-200 bg-white text-sm font-medium text-gray-700 outline-none focus:ring-2 focus:ring-blue-500"
+                aria-label="Filter by block"
+              >
+                <option value="">All Blocks</option>
+                {blocks.map((b) => (
+                  <option key={b.uuid} value={b.uuid}>
+                    {b.name}
+                  </option>
+                ))}
+                <option value="__none__">Unassigned / No Block</option>
+              </select>
               <button
                 type="button"
                 onClick={handleSort}
@@ -874,82 +1179,184 @@ export default function AddVenue() {
             </div>
           </div>
 
-          {venues.length === 0 ? (
+          {filteredVenues.length === 0 ? (
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center text-gray-500">
               No venues found.
             </div>
           ) : (
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
               <div className="overflow-x-auto">
-                <table className="min-w-[900px] md:min-w-full">
+                <table className="min-w-[1000px] md:min-w-full">
                   <thead>
                     <tr className="bg-gray-50 border-b border-gray-100">
+                      <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Block</th>
                       <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Name</th>
                       <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Type</th>
                       <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Capacity</th>
                       <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Rows × Cols</th>
                       <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Bench Config</th>
-                      <th className="px-6 py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide">Available</th>
+                      <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Available</th>
                       <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {filteredVenues.map((venue) => (
-                      <tr key={venue.uuid} className="hover:bg-gray-50/50 transition-colors">
-                        <td className="px-6 py-4 font-medium text-gray-800">{venue.name}</td>
-                        <td className="px-6 py-4 text-gray-600 capitalize">{venue.type}</td>
-                        <td className="px-6 py-4 font-medium text-gray-800">{venue.capacity}</td>
-                        <td className="px-6 py-4 text-gray-600">
-                          {venue.benchesRow} × {venue.benchesCol}
-                        </td>
-                        <td className="px-6 py-4 text-sm font-mono text-gray-500">
-                          [{venue.benchConfig?.join(", ") || "N/A"}]
-                        </td>
-                        <td className="px-6 py-4 text-center">
-                          <button
-                            type="button"
-                            role="switch"
-                            aria-checked={venue.isAvailable !== false}
-                            aria-label={venue.isAvailable !== false ? "Mark unavailable" : "Mark available"}
-                            disabled={togglingVenueId === (venue.uuid)}
-                            onClick={() => handleToggleVenueAvailability(venue)}
-                            className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 ${
-                              venue.isAvailable !== false ? "bg-emerald-500" : "bg-gray-300"
-                            }`}
-                          >
-                            <span
-                              className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
-                                venue.isAvailable !== false ? "translate-x-6" : "translate-x-1"
+                    {filteredVenues.map((venue) => {
+                      const available = venue.isAvailable !== false;
+                      const canManage = Boolean(venue.canManage);
+                      return (
+                        <tr key={venue.uuid} className="hover:bg-gray-50/50 transition-colors">
+                          <td className="px-6 py-4 text-gray-700">
+                            {venue.blockName || (
+                              <span className="text-gray-400 italic">Unassigned</span>
+                            )}
+                          </td>
+                          <td className="px-6 py-4 font-medium text-gray-800">{venue.name}</td>
+                          <td className="px-6 py-4 text-gray-600 capitalize">{venue.type}</td>
+                          <td className="px-6 py-4 font-medium text-gray-800">{venue.capacity}</td>
+                          <td className="px-6 py-4 text-gray-600">
+                            {venue.benchesRow} × {venue.benchesCol}
+                          </td>
+                          <td className="px-6 py-4 text-sm font-mono text-gray-500">
+                            [{venue.benchConfig?.join(", ") || "N/A"}]
+                          </td>
+                          <td className="px-6 py-4">
+                            <label
+                              className={`inline-flex items-center gap-2 text-sm font-medium text-gray-700 ${
+                                canManage ? "cursor-pointer" : "cursor-not-allowed opacity-70"
                               }`}
-                            />
-                          </button>
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="flex flex-wrap gap-2">
-                            <button
-                              type="button"
-                              onClick={() => handleEdit(venue)}
-                              className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium transition-all duration-200"
                             >
-                              Edit
-                            </button>
-                            <button
-                              type="button"
-                              disabled={deletingId === (venue.uuid)}
-                              onClick={() => handleDelete(venue.uuid)}
-                              className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium transition-all duration-200"
-                            >
-                              {deletingId === (venue.uuid) ? "Deleting..." : "Delete"}
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                              <input
+                                type="checkbox"
+                                checked={available}
+                                disabled={!canManage || togglingVenueId === venue.uuid}
+                                onChange={(e) =>
+                                  handleToggleVenueAvailability(venue, e.target.checked)
+                                }
+                                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed"
+                                aria-label="Available"
+                              />
+                              Available
+                            </label>
+                          </td>
+                          <td className="px-6 py-4">
+                            {canManage ? (
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleEdit(venue)}
+                                  className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium transition-all duration-200"
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={deletingId === venue.uuid}
+                                  onClick={() => handleDelete(venue.uuid)}
+                                  className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium transition-all duration-200"
+                                >
+                                  {deletingId === venue.uuid ? "Deleting..." : "Delete"}
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="text-xs text-gray-400">View only</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ========== ADD / EDIT BLOCK MODAL ========== */}
+      {showBlockModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+          <div
+            className="absolute inset-0"
+            onClick={() => !savingBlock && setShowBlockModal(false)}
+            aria-hidden
+          />
+          <div className="relative w-full max-w-md bg-white rounded-2xl shadow-xl border border-gray-100 p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-gray-900">
+                {editingBlockUuid ? "Edit Block" : "Add Block"}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowBlockModal(false)}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100"
+                aria-label="Close"
+              >
+                <XMarkIcon className="h-5 w-5" />
+              </button>
+            </div>
+            <form onSubmit={handleSaveBlock} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1.5">Block Name *</label>
+                <input
+                  value={blockForm.name}
+                  onChange={(e) => setBlockForm((f) => ({ ...f, name: e.target.value }))}
+                  placeholder="e.g. Academic Block"
+                  className="w-full h-11 px-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1.5">Block Code *</label>
+                <input
+                  value={blockForm.code}
+                  onChange={(e) => setBlockForm((f) => ({ ...f, code: e.target.value }))}
+                  placeholder="e.g. AD"
+                  className="w-full h-11 px-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1.5">Description</label>
+                <textarea
+                  value={blockForm.description}
+                  onChange={(e) => setBlockForm((f) => ({ ...f, description: e.target.value }))}
+                  rows={3}
+                  placeholder="Optional"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none resize-none"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1.5">Status</label>
+                <select
+                  value={blockForm.status}
+                  onChange={(e) => setBlockForm((f) => ({ ...f, status: e.target.value }))}
+                  className="w-full h-11 px-3 rounded-xl border border-gray-200 bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                >
+                  {BLOCK_STATUSES.map((s) => (
+                    <option key={s.value} value={s.value}>
+                      {s.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowBlockModal(false)}
+                  className="h-11 px-4 rounded-xl border border-gray-200 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingBlock}
+                  className="h-11 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold"
+                >
+                  {savingBlock ? "Saving…" : editingBlockUuid ? "Update Block" : "Create Block"}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>
