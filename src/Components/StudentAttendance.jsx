@@ -47,6 +47,7 @@ export const StudentAttendance = () => {
   const [loadingSheets, setLoadingSheets] = useState(false);
   const [zipping, setZipping] = useState(false);
   const [error, setError] = useState(null);
+  const [showPreview, setShowPreview] = useState(false);
   const [previewVerification, setPreviewVerification] = useState(null);
 
   const [filters, setFilters] = useState({
