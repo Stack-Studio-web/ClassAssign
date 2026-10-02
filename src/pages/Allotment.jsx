@@ -50,6 +50,17 @@ const getSessionDurationHours = (start, end) => {
   return mins <= 0 ? null : (mins / 60).toFixed(1);
 };
 
+const toTimeInputValue = (t) => {
+  if (!t) return "";
+  const s = String(t).trim();
+  const m = s.match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return s;
+  return `${m[1].padStart(2, "0")}:${m[2]}`;
+};
+
+const slotKey = (start, end, session) =>
+  `${toTimeInputValue(start)}|${toTimeInputValue(end)}|${session || ""}`;
+
 // Merge faculty list with availability API status (capacity + time conflict)
 const mergeFacultyWithAvailability = (list, statusList) =>
   list.map((f) => {
@@ -163,6 +174,8 @@ const Allotment = () => {
   const [loading, setLoading] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isFetchingCourses, setIsFetchingCourses] = useState(false);
+  const [savedTimetableSlots, setSavedTimetableSlots] = useState([]);
+  const [isFetchingTimetableSlots, setIsFetchingTimetableSlots] = useState(false);
  
   const [examDate, setExamDate] = useState("");
   const [examSession, setExamSession] = useState("FN");
@@ -271,6 +284,49 @@ const Allotment = () => {
     };
     fetchData();
   }, []);
+
+  useEffect(() => {
+    const fetchSavedTimetableSlots = async () => {
+      if (!examDate) {
+        setSavedTimetableSlots([]);
+        return;
+      }
+      if (!hasWriteAccess) {
+        return;
+      }
+
+      setIsFetchingTimetableSlots(true);
+      try {
+        const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
+        const res = await api.get("/timetable/slots-by-date", {
+          params: { date: dateOnly, session: examSession },
+        });
+        setSavedTimetableSlots(Array.isArray(res.data) ? res.data : []);
+      } catch (err) {
+        console.error("Error fetching saved timetable slots:", err);
+        setSavedTimetableSlots([]);
+      } finally {
+        setIsFetchingTimetableSlots(false);
+      }
+    };
+
+    fetchSavedTimetableSlots();
+  }, [examDate, examSession, hasWriteAccess]);
+
+  const activeTimetableSlotKey =
+    examStartTime && examEndTime
+      ? slotKey(examStartTime, examEndTime, examSession)
+      : null;
+
+  const applySavedTimetableSlot = (slot) => {
+    const start = toTimeInputValue(slot.startTime);
+    const end = toTimeInputValue(slot.endTime);
+    if (slot.session && slot.session !== examSession) {
+      setExamSession(slot.session);
+    }
+    setExamStartTime(start);
+    setExamEndTime(end);
+  };
 
   // ✅ Fetch courses AND students from timetable when date/time/session change
   useEffect(() => {
@@ -1247,6 +1303,59 @@ const Allotment = () => {
                       <option value="AN">Afternoon Session (AN)</option>
                     </select>
                   </div>
+                  {examDate ? (
+                    <div className="rounded-lg border border-gray-200 bg-gray-50/80 p-3">
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <span className="text-xs font-semibold text-gray-700">
+                          Saved timetable ({examSession})
+                        </span>
+                        {isFetchingTimetableSlots ? (
+                          <span className="text-[10px] text-gray-500">Loading…</span>
+                        ) : null}
+                      </div>
+                      {isFetchingTimetableSlots ? (
+                        <p className="text-xs text-gray-500">Fetching slots for this date…</p>
+                      ) : savedTimetableSlots.length === 0 ? (
+                        <p className="text-xs text-gray-500">
+                          No timetable entries for this date and session in your shared context.
+                          Enter start and end time manually.
+                        </p>
+                      ) : (
+                        <ul className="space-y-1.5 max-h-36 overflow-y-auto">
+                          {savedTimetableSlots.map((slot) => {
+                            const start = toTimeInputValue(slot.startTime);
+                            const end = toTimeInputValue(slot.endTime);
+                            const key = slotKey(start, end, slot.session);
+                            const isActive = activeTimetableSlotKey === key;
+                            return (
+                              <li key={key}>
+                                <button
+                                  type="button"
+                                  disabled={!hasWriteAccess}
+                                  onClick={() => applySavedTimetableSlot(slot)}
+                                  className={`w-full text-left px-3 py-2 rounded-lg border text-xs font-medium transition-colors ${
+                                    isActive
+                                      ? "border-blue-600 bg-blue-50 text-blue-900"
+                                      : "border-gray-200 bg-white text-gray-800 hover:border-blue-300 hover:bg-blue-50/50"
+                                  } ${!hasWriteAccess ? "opacity-60 cursor-not-allowed" : ""}`}
+                                >
+                                  <span className="font-semibold">
+                                    {start} – {end}
+                                  </span>
+                                  <span className="text-gray-500 font-normal">
+                                    {" "}
+                                    · {slot.courseCount ?? 0} course
+                                    {(slot.courseCount ?? 0) === 1 ? "" : "s"}
+                                    {slot.examType ? ` · ${slot.examType}` : ""}
+                                  </span>
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </div>
+                  ) : null}
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="text-xs font-semibold text-gray-700 mb-1 block">Start Time</label>

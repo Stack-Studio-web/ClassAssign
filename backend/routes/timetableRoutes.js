@@ -88,6 +88,39 @@ router.get("/by-exam-details",
 );
 
 /* =====================================================
+    GET: SAVED TIMETABLE SLOTS FOR A DATE (allotment)
+    Scoped to FI / HOD shared academic context via resolveOwnerOpts
+===================================================== */
+router.get("/slots-by-date",
+  sessionAuth,
+  checkRole(['admin', 'faculty_incharge', 'hod']),
+  async (req, res) => {
+    try {
+      const { date, session } = req.query;
+      if (!date) {
+        return res.status(400).json({
+          error: "Missing required parameters",
+          details: "date is required (YYYY-MM-DD)",
+        });
+      }
+
+      const slots = await Timetable.getSlotsForDate(
+        { date, session: session || null },
+        await resolveOwnerOpts(req)
+      );
+
+      res.json(slots);
+    } catch (err) {
+      console.error("FETCH TIMETABLE SLOTS BY DATE ERROR:", err);
+      res.status(500).json({
+        error: "Failed to fetch timetable slots",
+        details: err.message,
+      });
+    }
+  }
+);
+
+/* =====================================================
     GET: COE export schedule month options
 ===================================================== */
 router.get(

@@ -87,6 +87,49 @@ const Timetable = {
   },
 
   /* ===============================
+      DISTINCT TIME SLOTS FOR A DATE (allotment picker)
+  =============================== */
+  getSlotsForDate: async ({ date, session }, opts = {}) => {
+    const { sql: ownerSql, params: ownerParams } = ownerAndFromOpts(opts, "");
+    let sessionSql = "";
+    const params = [date, ...ownerParams];
+    if (session) {
+      sessionSql = " AND session = ?";
+      params.splice(1, 0, session);
+    }
+
+    const [rows] = await db.query(
+      `SELECT
+        start_time AS startTime,
+        end_time AS endTime,
+        session,
+        MIN(exam_type) AS examType,
+        COUNT(*)::int AS courseCount
+       FROM timetable
+       WHERE date = ?${sessionSql}${ownerSql}
+       GROUP BY start_time, end_time, session
+       ORDER BY start_time ASC, end_time ASC`,
+      params
+    );
+
+    const trimTime = (t) => {
+      if (t == null || t === "") return "";
+      const s = String(t).trim();
+      const m = s.match(/^(\d{1,2}):(\d{2})/);
+      if (m) return `${m[1].padStart(2, "0")}:${m[2]}`;
+      return s;
+    };
+
+    return (rows || []).map((row) => ({
+      startTime: trimTime(row.starttime ?? row.startTime),
+      endTime: trimTime(row.endtime ?? row.endTime),
+      session: row.session ?? "",
+      examType: row.examtype ?? row.examType ?? "",
+      courseCount: Number(row.coursecount ?? row.courseCount ?? 0),
+    }));
+  },
+
+  /* ===============================
       CREATE SCHEDULE
   =============================== */
   create: async (data, opts = {}) => {
