@@ -342,7 +342,7 @@ export const StudentAttendance = () => {
         const root = createRoot(wrap);
         await new Promise((resolve) => {
           root.render(
-            <div className="bg-white">
+            <div className="attendance-sheet-root">
               <style>{ATTENDANCE_SHEET_PRINT_STYLES}</style>
               <AttendanceSheetPrintView
                 attendanceData={sheet}
@@ -359,6 +359,29 @@ export const StudentAttendance = () => {
           useCORS: true,
           backgroundColor: "#ffffff",
           logging: false,
+          // Tailwind v4 uses oklch(); html2canvas cannot parse it.
+          // Strip inherited stylesheets and keep only plain attendance CSS.
+          onclone: (clonedDoc, clonedElement) => {
+            const head = clonedDoc.head;
+            if (head) {
+              Array.from(head.querySelectorAll('link[rel="stylesheet"], style')).forEach(
+                (node) => node.remove()
+              );
+              const style = clonedDoc.createElement("style");
+              style.textContent = ATTENDANCE_SHEET_PRINT_STYLES;
+              head.appendChild(style);
+            }
+            // Neutralize any inline oklch left on ancestors
+            let el = clonedElement;
+            while (el) {
+              if (el.style) {
+                el.style.color = "#000000";
+                el.style.backgroundColor = "#ffffff";
+                el.style.background = "#ffffff";
+              }
+              el = el.parentElement;
+            }
+          },
         });
 
         const pdf = new jsPDF({
@@ -654,7 +677,7 @@ export const StudentAttendance = () => {
       </div>
 
       {/* PRINTABLE AREA — existing format, one sheet per venue */}
-      <div ref={printRef} className="print:m-0 bg-white">
+      <div ref={printRef} className="print:m-0 attendance-sheet-root bg-white">
         <style>{ATTENDANCE_SHEET_PRINT_STYLES}</style>
         {showPreview &&
           sheets.map((sheet) => (
