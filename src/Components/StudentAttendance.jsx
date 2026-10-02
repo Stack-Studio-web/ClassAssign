@@ -1,40 +1,53 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useMemo } from "react";
 import api from "../lib/api";
 import { useReactToPrint } from "react-to-print";
-import { PrinterIcon } from "@heroicons/react/24/outline";
-import KCT from "../assets/logo.png";
-import KSI from '../assets/KSI logo.png';
+import { PrinterIcon, ArrowDownTrayIcon } from "@heroicons/react/24/outline";
+import AttendanceSheetPrintView, {
+  ATTENDANCE_SHEET_PRINT_STYLES,
+} from "./AttendanceSheetPrintView";
 
 const normalizeDateToYYYYMMDD = (dateInput) => {
   if (!dateInput) return null;
   let dateObj = dateInput instanceof Date ? dateInput : new Date(dateInput);
   if (isNaN(dateObj)) return null;
   const year = dateObj.getFullYear();
-  const month = String(dateObj.getMonth() + 1).padStart(2, '0');
-  const day = String(dateObj.getDate()).padStart(2, '0');
+  const month = String(dateObj.getMonth() + 1).padStart(2, "0");
+  const day = String(dateObj.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 };
 
+const normalizeTime = (t) => {
+  if (!t) return "";
+  const m = String(t).trim().match(/(\d{1,2}):(\d{2})/);
+  if (!m) return String(t).slice(0, 5);
+  return `${m[1].padStart(2, "0")}:${m[2]}`;
+};
+
+const safeFilePart = (value) =>
+  String(value || "")
+    .trim()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-zA-Z0-9._-]/g, "");
+
 export const StudentAttendance = () => {
   const [seatingPlans, setSeatingPlans] = useState([]);
-  const [attendanceData, setAttendanceData] = useState(null);
+  const [sheets, setSheets] = useState([]);
+  const [failures, setFailures] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadingSheets, setLoadingSheets] = useState(false);
+  const [zipping, setZipping] = useState(false);
   const [error, setError] = useState(null);
+  const [showPreview, setShowPreview] = useState(false);
 
-  const [filters, setFilters] = useState({ 
-    date: "", 
-    session: "", 
-    examTime: "", 
-    venue: "" 
+  const [filters, setFilters] = useState({
+    examType: "",
+    date: "",
+    session: "",
+    examTime: "",
   });
-  const [category, setCategory] = useState("CAT 1");
-  
-  const [availableDates, setAvailableDates] = useState([]);
-  const [availableSessions, setAvailableSessions] = useState([]);
-  const [availableExamTimes, setAvailableExamTimes] = useState([]);
-  const [availableVenues, setAvailableVenues] = useState([]);
 
   const printRef = useRef();
+  const zipCaptureRef = useRef();
 
   const handlePrint = useReactToPrint({
     contentRef: printRef,
@@ -54,10 +67,9 @@ export const StudentAttendance = () => {
           page-break-inside: avoid;
         }
       }
-    `
+    `,
   });
 
-  // Session validated by AuthGuard; fetch plans on mount
   useEffect(() => {
     const fetchPlans = async () => {
       try {
@@ -65,10 +77,8 @@ export const StudentAttendance = () => {
         const res = await api.get("/seating");
         const plans = Array.isArray(res.data) ? res.data : [];
         setSeatingPlans(plans);
-        const dates = [...new Set(plans.map(p => normalizeDateToYYYYMMDD(p.examDate ?? p.examdate)))].filter(Boolean).sort();
-        setAvailableDates(dates);
       } catch (err) {
-        console.error("❌ Fetch error:", err);
+        console.error("Fetch error:", err);
         setError(err.response?.data?.error || "Failed to load seating plans");
       } finally {
         setLoading(false);
@@ -77,75 +87,332 @@ export const StudentAttendance = () => {
     fetchPlans();
   }, []);
 
-  // Date -> Sessions
-  useEffect(() => {
-    if (!filters.date) {
-      setAvailableSessions([]);
-      return;
-    }
-    const plans = seatingPlans.filter(p => normalizeDateToYYYYMMDD(p.examDate ?? p.examdate) === filters.date);
-    setAvailableSessions([...new Set(plans.map(p => p.examSession ?? p.examsession))].filter(Boolean).sort());
-    setFilters(f => ({ ...f, session: "", examTime: "", venue: "" }));
-  }, [filters.date, seatingPlans]);
+  const availableExamTypes = useMemo(() => {
+    return [...new Set(seatingPlans.map((p) => p.examType ?? p.examtype).filter(Boolean))].sort();
+  }, [seatingPlans]);
 
-  // Session -> Times
-  useEffect(() => {
-    if (!filters.date || !filters.session) {
-      setAvailableExamTimes([]);
-      return;
+  const availableDates = useMemo(() => {
+    let plans = seatingPlans;
+    if (filters.examType) {
+      plans = plans.filter(
+        (p) => String(p.examType ?? p.examtype ?? "") === filters.examType
+      );
     }
-    const plans = seatingPlans.filter(p => 
-      normalizeDateToYYYYMMDD(p.examDate ?? p.examdate) === filters.date && 
-      (p.examSession ?? p.examsession) === filters.session
+    return [
+      ...new Set(plans.map((p) => normalizeDateToYYYYMMDD(p.examDate ?? p.examdate))),
+    ]
+      .filter(Boolean)
+      .sort();
+  }, [seatingPlans, filters.examType]);
+
+  const availableSessions = useMemo(() => {
+    if (!filters.date) return [];
+    let plans = seatingPlans.filter(
+      (p) => normalizeDateToYYYYMMDD(p.examDate ?? p.examdate) === filters.date
     );
-    const times = [...new Set(plans.map(p => `${p.examStartTime ?? p.examstarttime ?? ""}-${p.examEndTime ?? p.examendtime ?? ""}`))].filter(Boolean).sort();
-    setAvailableExamTimes(times);
-    setFilters(f => ({ ...f, examTime: "", venue: "" }));
-  }, [filters.session]);
-
-  // Time -> Venues
-  useEffect(() => {
-    if (!filters.examTime) {
-      setAvailableVenues([]);
-      return;
+    if (filters.examType) {
+      plans = plans.filter(
+        (p) => String(p.examType ?? p.examtype ?? "") === filters.examType
+      );
     }
-    const [start, end] = filters.examTime.split('-');
-    const plans = seatingPlans.filter(p => 
-      normalizeDateToYYYYMMDD(p.examDate ?? p.examdate) === filters.date && 
-      (p.examStartTime ?? p.examstarttime) === start && 
-      (p.examEndTime ?? p.examendtime) === end
+    return [
+      ...new Set(plans.map((p) => p.examSession ?? p.examsession).filter(Boolean)),
+    ].sort();
+  }, [seatingPlans, filters.date, filters.examType]);
+
+  const availableExamTimes = useMemo(() => {
+    if (!filters.date || !filters.session) return [];
+    let plans = seatingPlans.filter(
+      (p) =>
+        normalizeDateToYYYYMMDD(p.examDate ?? p.examdate) === filters.date &&
+        (p.examSession ?? p.examsession) === filters.session
     );
-    let venues = [];
-    plans.forEach(p => p.venuesUsed?.forEach(v => venues.push(v.venueName ?? v.venue_name ?? "")));
-    setAvailableVenues([...new Set(venues)].sort());
-    setFilters(f => ({ ...f, venue: "" }));
-  }, [filters.examTime]);
+    if (filters.examType) {
+      plans = plans.filter(
+        (p) => String(p.examType ?? p.examtype ?? "") === filters.examType
+      );
+    }
+    return [
+      ...new Set(
+        plans.map(
+          (p) =>
+            `${normalizeTime(p.examStartTime ?? p.examstarttime)}-${normalizeTime(
+              p.examEndTime ?? p.examendtime
+            )}`
+        )
+      ),
+    ]
+      .filter((t) => t !== "-")
+      .sort();
+  }, [seatingPlans, filters.date, filters.session, filters.examType]);
 
-  // Fetch Attendance
+  /** Venues from matching saved allotment (client list for UI). */
+  const allotmentVenues = useMemo(() => {
+    if (!filters.date || !filters.session || !filters.examTime) return [];
+    const [start, end] = filters.examTime.split("-");
+    let plans = seatingPlans.filter(
+      (p) =>
+        normalizeDateToYYYYMMDD(p.examDate ?? p.examdate) === filters.date &&
+        (p.examSession ?? p.examsession) === filters.session &&
+        normalizeTime(p.examStartTime ?? p.examstarttime) === normalizeTime(start) &&
+        normalizeTime(p.examEndTime ?? p.examendtime) === normalizeTime(end)
+    );
+    if (filters.examType) {
+      plans = plans.filter(
+        (p) => String(p.examType ?? p.examtype ?? "") === filters.examType
+      );
+    }
+    const venues = [];
+    plans.forEach((p) => {
+      (p.venuesUsed || []).forEach((v) => {
+        const name = v.venueName ?? v.venue_name ?? "";
+        if (name) venues.push(name);
+      });
+    });
+    return [...new Set(venues)].sort();
+  }, [seatingPlans, filters]);
+
+  const categoryLabel =
+    filters.examType ||
+    sheets[0]?.examType ||
+    "CAT 1";
+
+  const studentTotal = useMemo(
+    () => sheets.reduce((sum, s) => sum + (s.studentCount ?? 0), 0),
+    [sheets]
+  );
+
+  const slotReady =
+    Boolean(filters.examType) &&
+    Boolean(filters.date) &&
+    Boolean(filters.session) &&
+    Boolean(filters.examTime);
+
   useEffect(() => {
-    const { date, session, examTime, venue } = filters;
-    if (!date || !session || !examTime || !venue) {
-      setAttendanceData(null);
+    if (!slotReady) {
+      setSheets([]);
+      setFailures([]);
+      setShowPreview(false);
       return;
     }
-
-    const fetchAttendance = async () => {
+    let cancelled = false;
+    (async () => {
+      const [startTime, endTime] = filters.examTime.split("-");
+      setLoadingSheets(true);
+      setError(null);
       try {
-        const [startTime, endTime] = examTime.split('-');
-        const res = await api.get("/seating/attendance", {
-          params: { date, session, startTime, endTime, venue }
+        const res = await api.get("/seating/attendance/bulk", {
+          params: {
+            date: filters.date,
+            session: filters.session,
+            startTime,
+            endTime,
+            examType: filters.examType,
+          },
         });
-        setAttendanceData(res.data);
-        setError(null);
+        if (cancelled) return;
+        const list = Array.isArray(res.data?.sheets) ? res.data.sheets : [];
+        setSheets(list);
+        setFailures(Array.isArray(res.data?.failures) ? res.data.failures : []);
+        if (!list.length) {
+          setError(
+            res.data?.error ||
+              "No venues with assigned students found for this allotment."
+          );
+        }
       } catch (err) {
-        console.error("❌ Attendance fetch error:", err);
-        setError(err.response?.data?.error || "Seating plan not found for selection.");
-        setAttendanceData(null);
+        if (cancelled) return;
+        setSheets([]);
+        setFailures([]);
+        setError(
+          err.response?.data?.error ||
+            "No saved allotment found for this exam slot."
+        );
+      } finally {
+        if (!cancelled) setLoadingSheets(false);
       }
+    })();
+    return () => {
+      cancelled = true;
     };
+  }, [slotReady, filters.examType, filters.date, filters.session, filters.examTime]);
 
-    fetchAttendance();
-  }, [filters]);
+  const fetchBulkSheets = async () => {
+    if (!slotReady) {
+      setError("Select Exam Type, Date, Session, and Exam Time.");
+      return null;
+    }
+    if (sheets.length) {
+      return {
+        sheets,
+        failures,
+        examDate: filters.date,
+        examSession: filters.session,
+        examType: filters.examType,
+        startTime: filters.examTime.split("-")[0],
+        endTime: filters.examTime.split("-")[1],
+      };
+    }
+    const [startTime, endTime] = filters.examTime.split("-");
+    setLoadingSheets(true);
+    setError(null);
+    try {
+      const res = await api.get("/seating/attendance/bulk", {
+        params: {
+          date: filters.date,
+          session: filters.session,
+          startTime,
+          endTime,
+          examType: filters.examType,
+        },
+      });
+      const list = Array.isArray(res.data?.sheets) ? res.data.sheets : [];
+      setSheets(list);
+      setFailures(Array.isArray(res.data?.failures) ? res.data.failures : []);
+      if (!list.length) {
+        setError(
+          res.data?.error ||
+            "No venues with assigned students found for this allotment."
+        );
+      }
+      return res.data;
+    } catch (err) {
+      console.error("Bulk attendance fetch error:", err);
+      setSheets([]);
+      setFailures([]);
+      setError(
+        err.response?.data?.error ||
+          "No saved allotment found for this exam slot."
+      );
+      return null;
+    } finally {
+      setLoadingSheets(false);
+    }
+  };
+
+  const handlePreview = async () => {
+    const data = await fetchBulkSheets();
+    if (data?.sheets?.length) {
+      setShowPreview(true);
+    }
+  };
+
+  const handleDownloadZip = async () => {
+    let data = sheets.length
+      ? { sheets, failures, examDate: filters.date, examSession: filters.session, examType: filters.examType, startTime: filters.examTime.split("-")[0], endTime: filters.examTime.split("-")[1] }
+      : await fetchBulkSheets();
+
+    if (!data?.sheets?.length) return;
+
+    setZipping(true);
+    setError(null);
+    try {
+      const [{ default: JSZip }, { default: html2canvas }, { jsPDF }, { saveAs }] =
+        await Promise.all([
+          import("jszip"),
+          import("html2canvas"),
+          import("jspdf"),
+          import("file-saver"),
+        ]);
+
+      const zip = new JSZip();
+      const [startTime, endTime] = filters.examTime.split("-");
+      const folderName = [
+        safeFilePart(filters.examType || data.examType || "Exam"),
+        safeFilePart(filters.date),
+        safeFilePart(filters.session),
+        `${safeFilePart(startTime)}-${safeFilePart(endTime)}`,
+      ].join("_");
+      const folder = zip.folder(folderName);
+
+      const host = zipCaptureRef.current;
+      if (!host) throw new Error("Capture container missing");
+
+      for (const sheet of data.sheets) {
+        host.innerHTML = "";
+        const wrap = document.createElement("div");
+        wrap.style.width = "210mm";
+        wrap.style.background = "#ffffff";
+        wrap.style.padding = "8mm";
+        wrap.setAttribute("data-hall", sheet.hallNo);
+        host.appendChild(wrap);
+
+        // Render existing print view into host via React root
+        const { createRoot } = await import("react-dom/client");
+        const root = createRoot(wrap);
+        await new Promise((resolve) => {
+          root.render(
+            <div className="bg-white">
+              <style>{ATTENDANCE_SHEET_PRINT_STYLES}</style>
+              <AttendanceSheetPrintView
+                attendanceData={sheet}
+                category={filters.examType || sheet.examType || categoryLabel}
+              />
+            </div>
+          );
+          // Allow layout/images to settle
+          requestAnimationFrame(() => setTimeout(resolve, 120));
+        });
+
+        const canvas = await html2canvas(wrap, {
+          scale: 2,
+          useCORS: true,
+          backgroundColor: "#ffffff",
+          logging: false,
+        });
+
+        const pdf = new jsPDF({
+          orientation: "portrait",
+          unit: "mm",
+          format: "a4",
+        });
+        const pageWidth = pdf.internal.pageSize.getWidth();
+        const pageHeight = pdf.internal.pageSize.getHeight();
+        const imgWidth = pageWidth;
+        const imgHeight = (canvas.height * imgWidth) / canvas.width;
+        let heightLeft = imgHeight;
+        let position = 0;
+        const imgData = canvas.toDataURL("image/png");
+
+        pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+        heightLeft -= pageHeight;
+        while (heightLeft > 0) {
+          position = heightLeft - imgHeight;
+          pdf.addPage();
+          pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+          heightLeft -= pageHeight;
+        }
+
+        const pdfBlob = pdf.output("blob");
+        const fileName = `${safeFilePart(sheet.hallNo)}_Attendance_Sheet.pdf`;
+        folder.file(fileName, pdfBlob);
+        root.unmount();
+        host.innerHTML = "";
+      }
+
+      if (data.failures?.length) {
+        const notes = data.failures.map((f) => f.error || f.venue).join("\n");
+        folder.file("_ERRORS.txt", notes);
+      }
+
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      saveAs(zipBlob, `${folderName}.zip`);
+
+      if (data.failures?.length) {
+        setError(
+          data.failures.map((f) => f.error).join(" ")
+        );
+      }
+    } catch (err) {
+      console.error("ZIP generation failed:", err);
+      setError(
+        err.message || "Failed to generate attendance sheet ZIP."
+      );
+    } finally {
+      setZipping(false);
+      if (zipCaptureRef.current) zipCaptureRef.current.innerHTML = "";
+    }
+  };
 
   if (loading) {
     return (
@@ -157,305 +424,259 @@ export const StudentAttendance = () => {
 
   return (
     <div className="p-6 max-w-7xl mx-auto font-sans">
-      {/* FILTER PANEL - Hidden when printing */}
       <div className="mb-8 bg-white border border-gray-200 rounded-2xl shadow-sm print:hidden">
         <div className="px-4 md:px-6 pt-4 pb-3">
-          <h2 className="flex items-center gap-2 text-lg md:text-xl font-semibold text-gray-800">
-            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-blue-600 text-lg">📋</span>
+          <h2 className="text-lg md:text-xl font-semibold text-gray-800">
             Generate Attendance Sheet
           </h2>
+          <p className="text-sm text-gray-500 mt-1">
+            Select an exam slot to generate attendance sheets for every venue in
+            the saved allotment (existing Hallora format).
+          </p>
         </div>
-        <div className="px-4 md:px-6 pb-4 space-y-3">
-          <div className="flex flex-col lg:flex-row lg:items-center gap-3">
-            <div className="flex-1 min-w-[140px]">
-              <label className="block text-xs font-medium text-gray-600 mb-1">Category</label>
+
+        <div className="px-4 md:px-6 pb-4 space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">
+                Exam Type
+              </label>
               <select
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
+                value={filters.examType}
+                onChange={(e) => {
+                  setFilters({
+                    examType: e.target.value,
+                    date: "",
+                    session: "",
+                    examTime: "",
+                  });
+                  setSheets([]);
+                  setFailures([]);
+                  setShowPreview(false);
+                  setError(null);
+                }}
                 className="w-full border border-gray-300 px-3 py-2 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
               >
-                <option value="CAT 1">CAT 1</option>
-                <option value="CAT 2">CAT 2</option>
+                <option value="">-- Select Exam Type --</option>
+                {availableExamTypes.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
               </select>
             </div>
-            <div className="flex-1 min-w-[140px]">
-              <label className="block text-xs font-medium text-gray-600 mb-1">Date</label>
-              <select 
-                value={filters.date} 
-                onChange={(e) => setFilters({ ...filters, date: e.target.value })} 
-                className="w-full border border-gray-300 px-3 py-2 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">
+                Date
+              </label>
+              <select
+                disabled={!filters.examType}
+                value={filters.date}
+                onChange={(e) => {
+                  setFilters((f) => ({
+                    ...f,
+                    date: e.target.value,
+                    session: "",
+                    examTime: "",
+                  }));
+                  setSheets([]);
+                  setFailures([]);
+                  setShowPreview(false);
+                  setError(null);
+                }}
+                className="w-full border border-gray-300 px-3 py-2 rounded-lg text-sm disabled:bg-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
               >
                 <option value="">-- Select Date --</option>
-                {availableDates.map(d => <option key={d} value={d}>{d}</option>)}
+                {availableDates.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
               </select>
             </div>
-            <div className="flex-1 min-w-[120px]">
-              <label className="block text-xs font-medium text-gray-600 mb-1">Session</label>
-              <select 
-                disabled={!filters.date} 
-                value={filters.session} 
-                onChange={(e) => setFilters({ ...filters, session: e.target.value })} 
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">
+                Session
+              </label>
+              <select
+                disabled={!filters.date}
+                value={filters.session}
+                onChange={(e) => {
+                  setFilters((f) => ({
+                    ...f,
+                    session: e.target.value,
+                    examTime: "",
+                  }));
+                  setSheets([]);
+                  setFailures([]);
+                  setShowPreview(false);
+                  setError(null);
+                }}
                 className="w-full border border-gray-300 px-3 py-2 rounded-lg text-sm disabled:bg-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
               >
                 <option value="">-- Select Session --</option>
-                {availableSessions.map(s => <option key={s} value={s}>{s}</option>)}
+                {availableSessions.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
               </select>
             </div>
-            <div className="flex-1 min-w-[160px]">
-              <label className="block text-xs font-medium text-gray-600 mb-1">Exam Time</label>
-              <select 
-                disabled={!filters.session} 
-                value={filters.examTime} 
-                onChange={(e) => setFilters({ ...filters, examTime: e.target.value })} 
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">
+                Exam Time
+              </label>
+              <select
+                disabled={!filters.session}
+                value={filters.examTime}
+                onChange={(e) => {
+                  setFilters((f) => ({ ...f, examTime: e.target.value }));
+                  setSheets([]);
+                  setFailures([]);
+                  setShowPreview(false);
+                  setError(null);
+                }}
                 className="w-full border border-gray-300 px-3 py-2 rounded-lg text-sm disabled:bg-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
               >
                 <option value="">-- Select Time --</option>
-                {availableExamTimes.map(t => <option key={t} value={t}>{t}</option>)}
+                {availableExamTimes.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
               </select>
             </div>
-            <div className="flex-1 min-w-[160px]">
-              <label className="block text-xs font-medium text-gray-600 mb-1">Venue</label>
-              <select 
-                disabled={!filters.examTime} 
-                value={filters.venue} 
-                onChange={(e) => setFilters({ ...filters, venue: e.target.value })} 
-                className="w-full border border-gray-300 px-3 py-2 rounded-lg text-sm disabled:bg-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+          </div>
+
+          {slotReady && (
+            <div className="rounded-xl border border-gray-100 bg-gray-50/80 px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                Venues in this Allotment
+              </p>
+              {allotmentVenues.length === 0 ? (
+                <p className="text-sm text-gray-600">
+                  No venues found for this allotment.
+                </p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {allotmentVenues.map((name) => {
+                    const sheet = sheets.find((s) => s.hallNo === name);
+                    const fail = failures.find((f) => f.venue === name);
+                    return (
+                      <li
+                        key={name}
+                        className="flex items-center justify-between text-sm text-gray-800"
+                      >
+                        <span className="font-semibold">{name}</span>
+                        <span className="text-gray-600">
+                          {sheet
+                            ? `${sheet.studentCount} Students`
+                            : fail
+                              ? fail.error
+                              : "—"}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              {sheets.length > 0 && (
+                <p className="mt-3 text-sm font-medium text-gray-700">
+                  {sheets.length} Venue{sheets.length === 1 ? "" : "s"} ·{" "}
+                  {studentTotal} Students
+                </p>
+              )}
+            </div>
+          )}
+
+          <div className="flex flex-col sm:flex-row gap-2">
+            <button
+              type="button"
+              onClick={handlePreview}
+              disabled={!slotReady || loadingSheets || zipping}
+              className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm py-2.5 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+            >
+              <PrinterIcon className="h-5 w-5" />
+              {loadingSheets ? "Loading…" : "Preview"}
+            </button>
+            <button
+              type="button"
+              onClick={handleDownloadZip}
+              disabled={!slotReady || loadingSheets || zipping}
+              className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl border border-blue-600 text-blue-700 hover:bg-blue-50 font-semibold text-sm py-2.5 disabled:border-gray-300 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors"
+            >
+              <ArrowDownTrayIcon className="h-5 w-5" />
+              {zipping ? "Creating ZIP…" : "Download ZIP"}
+            </button>
+          </div>
+
+          {showPreview && sheets.length > 0 && (
+            <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 space-y-1">
+              <p className="font-semibold">Attendance Sheets</p>
+              <p>
+                {filters.examType} · {filters.date} · {filters.session} ·{" "}
+                {filters.examTime}
+              </p>
+              {sheets.map((s) => (
+                <p key={s.hallNo}>
+                  {s.hallNo} — {s.studentCount} students
+                </p>
+              ))}
+              <p className="font-medium pt-1">
+                Total: {sheets.length} attendance sheet
+                {sheets.length === 1 ? "" : "s"} · {studentTotal} students
+              </p>
+              <button
+                type="button"
+                onClick={handlePrint}
+                className="mt-2 inline-flex items-center gap-2 text-sm font-semibold text-blue-700 hover:text-blue-900"
               >
-                <option value="">-- Select Venue --</option>
-                {availableVenues.map(v => <option key={v} value={v}>{v}</option>)}
-              </select>
+                <PrinterIcon className="h-4 w-4" />
+                Print all sheets (existing format)
+              </button>
             </div>
-          </div>
-          <button 
-            onClick={handlePrint} 
-            disabled={!attendanceData} 
-            className="w-full inline-flex items-center justify-center gap-2 rounded-b-2xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm md:text-base py-2.5 mt-1 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
-          >
-            <PrinterIcon className="h-5 w-5" />
-            Print Attendance Sheet
-          </button>
+          )}
+
+          {error && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
+              {error}
+            </div>
+          )}
+
+          {failures.length > 0 && !error && (
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-900 space-y-1">
+              {failures.map((f, i) => (
+                <p key={i}>{f.error}</p>
+              ))}
+            </div>
+          )}
         </div>
-
-        {error && (
-          <div className="px-4 md:px-6 pb-3">
-            <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
-              ⚠️ {error}
-            </div>
-          </div>
-        )}
-
-        {attendanceData && (
-          <div className="px-4 md:px-6 pb-3">
-            <div className="mt-2 p-3 bg-green-50 border border-green-200 rounded-xl text-sm text-green-700">
-              ✅ Attendance sheet ready: {(attendanceData.courses ?? []).length} course(s),{" "}
-              {(attendanceData.courses ?? []).reduce((sum, c) => sum + (c.students ?? []).length, 0)} student(s)
-            </div>
-          </div>
-        )}
       </div>
 
-      {/* PRINTABLE AREA */}
+      {/* PRINTABLE AREA — existing format, one sheet per venue */}
       <div ref={printRef} className="print:m-0 bg-white">
-        <style>{`
-          @media print {
-            @page { 
-              size: A4; 
-              margin: 10mm; 
-            }
-            .attendance-table th, 
-            .attendance-table td, 
-            .footer-table td { 
-              border: 1px solid black !important; 
-            }
-            .page-break { 
-              page-break-after: always;
-              page-break-inside: avoid;
-            }
-          }
-          .attendance-table, 
-          .footer-table { 
-            width: 100%; 
-            border-collapse: collapse; 
-            table-layout: fixed; 
-          }
-          .attendance-table td, 
-          .attendance-table th { 
-            border: 1px solid black; 
-            padding: 4px; 
-            font-size: 11px; 
-            height: 32px; 
-          }
-          .footer-table td { 
-            border: 1px solid black; 
-            padding: 6px; 
-            font-size: 11px; 
-            vertical-align: middle; 
-          }
-          .booklet-grid { 
-            display: flex; 
-            width: 100%; 
-            height: 100%; 
-          }
-          .booklet-box { 
-            flex: 1; 
-            border-right: 1px solid black; 
-            height: 24px; 
-          }
-          .booklet-box:last-child { 
-            border-right: none; 
-          }
-        `}</style>
-
-        {attendanceData && attendanceData.courses && attendanceData.courses.map((course, courseIndex) => {
-          const courseCode = course.courseCode ?? course.coursecode ?? "";
-          const courseName = course.courseName ?? course.coursename ?? "";
-          const students = course.students ?? [];
-          const studentsWithSno = students.map((s, i) => ({
-            regNo: s.regNo ?? s.regnno ?? s.regn_no ?? "",
-            name: s.name ?? s.student_name ?? "",
-            sno: i + 1
-          }));
-
-          return (
-            <div key={courseIndex} className="page-break">
-              {/* HEADER TABLE */}
-              <table className="attendance-table mb-[-1px]">
-                <tbody>
-                  <tr>
-                    <td rowSpan="2" className="w-[12%] text-center font-bold">
-                      <img src={KCT} alt="KCT Logo" width={80} />
-                    </td>
-                    <td colSpan="3" className="text-center font-bold text-sm">
-                      KUMARAGURU COLLEGE OF TECHNOLOGY, COIMBATORE - 49
-                    </td>
-                    <td rowSpan="2" className="w-[15%] text-center font-bold text-[10px]">
-                      <img src={KSI} alt="KSI Logo" width={100} height={60} />
-                    </td>
-                  </tr>
-                  <tr>
-                    <td colSpan="3" className="text-center font-bold text-sm">
-                      ATTENDANCE SHEET
-                    </td>
-                  </tr>
-                  <tr>
-                    <td colSpan="5" className="text-center font-bold py-1 bg-gray-50">
-                      {category}
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="w-[20%]">
-                      <strong>Date:</strong> {new Date(attendanceData.examDate).toLocaleDateString('en-GB')}
-                    </td>
-                    <td className="w-[20%] text-center">
-                      <strong>Session:</strong> {attendanceData.examSession}
-                    </td>
-                    <td className="w-[20%] text-center">
-                      <strong>Degree:</strong> 
-                    </td>
-                    <td colSpan="2">
-                      <strong>Branch:</strong> 
-                    </td>
-                  </tr>
-                  <tr>
-                    <td>
-                      <strong>Hall No:</strong> {attendanceData.hallNo}
-                    </td>
-                    <td colSpan="2">
-                      <strong>Course Code:</strong> {courseCode}
-                    </td>
-                    <td colSpan="2">
-                      <strong>Course Name:</strong> {courseName}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-
-              {/* STUDENT LIST TABLE */}
-              <table className="attendance-table">
-                <thead>
-                  <tr className="text-center font-bold">
-                    <th style={{ width: "5%" }}>S.No</th>
-                    <th style={{ width: "12%" }}>Roll No.</th>
-                    <th style={{ width: "23%" }}>Name of the candidate</th>
-                    <th style={{ width: "5%" }}>Sec</th>
-                    <th style={{ width: "25%" }}>Answer Booklet Number</th>
-                    <th style={{ width: "15%" }}>Signature</th>
-                    <th style={{ width: "15%" }}>Roll No. of Absentees</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {studentsWithSno.map((student) => (
-                    <tr key={student.sno}>
-                      <td className="text-center">{student.sno}</td>
-                      <td className="text-center font-mono">{student.regNo}</td>
-                      <td className="px-2 uppercase">{student.name}</td>
-                      <td></td>
-                      <td className="p-0">
-                        <div className="booklet-grid">
-                          {[...Array(9)].map((_, i) => (
-                            <div key={i} className="booklet-box" />
-                          ))}
-                        </div>
-                      </td>
-                      <td></td>
-                      <td></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-
-              {/* FOOTER TABLE */}
-              <table className="footer-table mt-[-1px]">
-                <tbody>
-                  <tr>
-                    <td className="w-[45%] font-bold">Page Total Present:</td>
-                    <td className="w-[20%] p-0">
-                      <div className="booklet-grid">
-                        {[...Array(9)].map((_, i) => (
-                          <div key={i} className="booklet-box" />
-                        ))}
-                      </div>
-                    </td>
-                    <td className="w-[35%] font-bold">
-                      Signature of Invigilator
-                    </td>
-                  </tr>
-                  <tr style={{ height: '40px' }}>
-                    <td className="font-bold">Page Total Absent:</td>
-                    <td className="p-0">
-                      <div className="booklet-grid">
-                        {[...Array(9)].map((_, i) => (
-                          <div key={i} className="booklet-box" />
-                        ))}
-                      </div>
-                    </td>
-                    <td className="font-bold">Name:</td>
-                  </tr>
-                  <tr style={{ height: '50px' }}>
-                    <td colSpan="3" className="text-center font-bold uppercase">
-                      <br />
-                      Name & Signature of Exam Co-Ordinator
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          );
-        })}
-
-        {/* NO DATA MESSAGES */}
-        {attendanceData && (!attendanceData.courses || attendanceData.courses.length === 0) && (
-          <div className="text-center p-8 text-gray-500">
-            No students found for the selected criteria.
-          </div>
-        )}
-
-        {!attendanceData && (!filters.date || !filters.session || !filters.examTime || !filters.venue) && (
-          <div className="text-center p-8 text-gray-500">
-            Please select Date, Session, Time, and Venue to view attendance sheet.
+        <style>{ATTENDANCE_SHEET_PRINT_STYLES}</style>
+        {showPreview &&
+          sheets.map((sheet) => (
+            <AttendanceSheetPrintView
+              key={sheet.hallNo}
+              attendanceData={sheet}
+              category={categoryLabel}
+            />
+          ))}
+        {!showPreview && (
+          <div className="text-center p-8 text-gray-500 print:hidden">
+            Select Exam Type, Date, Session, and Exam Time, then click Preview.
           </div>
         )}
       </div>
+
+      {/* Off-screen capture host for ZIP PDFs (same print view) */}
+      <div
+        ref={zipCaptureRef}
+        aria-hidden
+        className="fixed left-[-10000px] top-0 w-[210mm] bg-white pointer-events-none"
+      />
     </div>
   );
 };

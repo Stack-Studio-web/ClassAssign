@@ -498,18 +498,18 @@ router.post(
 );
 
 /* =====================================================
-    ✅ GET ATTENDANCE SHEET DATA V4 - FIXED WITH TIMETABLE JOIN
-    Roles: admin, faculty_incharge, hod (hod sees own department plans only)
+    ✅ GET ATTENDANCE SHEET DATA — single venue
+    Roles: admin, faculty_incharge, hod, faculty
 ===================================================== */
 router.get("/attendance", 
   sessionAuth, 
   checkRole(['admin', 'faculty_incharge', 'hod', 'faculty']),
   async (req, res) => {
     try {
-        const { date, session, startTime, endTime, venue } = req.query;
+        const { date, session, startTime, endTime, venue, examType } = req.query;
 
         console.log("\n📋 ========== ATTENDANCE REQUEST ==========");
-        console.log("Query params:", { date, session, startTime, endTime, venue });
+        console.log("Query params:", { date, session, startTime, endTime, venue, examType });
 
         if (!date || !session || !startTime || !endTime || !venue) {
             return res.status(400).json({ 
@@ -518,139 +518,38 @@ router.get("/attendance",
             });
         }
 
-        const dateOnly = date.includes("T") ? date.split("T")[0] : date;
-        const reqStart = normalizeTimeParam(startTime);
-        const reqEnd = normalizeTimeParam(endTime);
-        console.log("🗓️  Normalized date:", dateOnly);
+        const {
+          findAttendancePlan,
+          buildAttendanceSheetForVenue,
+        } = require("../utils/buildAttendanceSheet");
 
         const ownerFilter = await buildOwnerFilterForAttendance(req);
-        let ownerSql = ownerFilter.ownerSql;
-        let ownerParams = ownerFilter.ownerParams;
-
-        const [plans] = await db.query(
-            `SELECT id, exam_type, exam_date, exam_session, exam_start_time, exam_end_time 
-             FROM seating_plans 
-             WHERE exam_date = ? AND exam_session = ?${ownerSql}`,
-            [dateOnly, session, ...ownerParams]
-        );
-
-        console.log(`🔍 Found ${plans.length} plans for date=${dateOnly}, session=${session}`);
-        
-        if (plans.length > 0) {
-            console.log("📊 Available plans:");
-            plans.forEach(p => {
-                console.log(`  - Plan ID ${p.id}: ${p.exam_start_time} to ${p.exam_end_time}`);
-            });
-        }
-
-        if (plans.length === 0) {
-            let fallbackWhere = "";
-            let fallbackParams = [];
-            if (!ownerFilter.isFacultyInvigilator) {
-              const clause = whereClause(
-                req.user?.role,
-                req.user?.id,
-                "",
-                (await resolveOwnerOpts(req)).ownerIds
-              );
-              fallbackWhere = clause.sql;
-              fallbackParams = clause.params;
-            }
-            const [allPlans] = await db.query(
-                `SELECT DISTINCT exam_date, exam_session 
-                 FROM seating_plans${fallbackWhere || " WHERE 1=1"}
-                 ORDER BY exam_date DESC, exam_session`,
-                fallbackParams
-            );
-            
-            console.log("❌ No plans found. Available dates/sessions in database:");
-            allPlans.forEach(p => {
-                console.log(`  - ${p.exam_date} / ${p.exam_session}`);
-            });
-
-            return res.status(404).json({ 
-              error: "Seating plan not found",
-              searchedFor: { date: dateOnly, session },
-              availableDatesAndSessions: allPlans.map(p => ({
-                  date: p.exam_date,
-                  session: p.exam_session
-              }))
-            });
-        }
-
-        // ✅ Step 2: Find plan matching the time slot
-        console.log(`🕐 Looking for time match: ${reqStart} - ${reqEnd}`);
-        
-        const plan = plans.find(p => {
-          const planStart = normalizeTimeParam(p.exam_start_time ?? p.examstarttime ?? "");
-          const planEnd = normalizeTimeParam(p.exam_end_time ?? p.examendtime ?? "");
-          
-          console.log(`  Comparing: Plan(${planStart}-${planEnd}) vs Request(${reqStart}-${reqEnd})`);
-          
-          return planStart === reqStart && planEnd === reqEnd;
+        const found = await findAttendancePlan({
+          date,
+          session,
+          startTime,
+          endTime,
+          examType: examType || null,
+          ownerSql: ownerFilter.ownerSql,
+          ownerParams: ownerFilter.ownerParams,
         });
 
-        if (!plan) {
-            console.log("❌ No time match found!");
-            return res.status(404).json({ 
-              error: "No matching time slot found",
-              requestedTime: `${reqStart} - ${reqEnd}`,
-              availableTimes: plans.map(p => ({
-                planId: p.id,
-                start: p.exam_start_time,
-                end: p.exam_end_time
-              }))
-            });
+        if (found.error) {
+          return res.status(found.statusCode || 404).json(found.payload);
         }
 
-        const planId = plan.id ?? plan._id;
-        console.log(`✅ Matched plan ID: ${planId}`);
-
-        // ✅ Step 3: Get selected courses for this plan
-        const [planDetails] = await db.query(
-            `SELECT selected_courses FROM seating_plans WHERE id = ?`,
-            [planId]
+        const { plan, planId, venues } = found;
+        const matchedVenue = (venues || []).find(
+          (v) => (v.venue_name ?? v.venuename) === venue
         );
-
-        let selectedCourses = [];
-        const scRaw = planDetails?.[0]?.selected_courses ?? planDetails?.[0]?.selectedcourses;
-        if (scRaw) {
-            try {
-                selectedCourses = typeof scRaw === 'string' ? JSON.parse(scRaw) : scRaw;
-            } catch (e) {
-                console.error("Error parsing selected_courses:", e);
-            }
-        }
-        // Normalize: selectedCourses can be ["CS101"] or [{courseCode:"CS101"}] 
-        const selectedCourseCodes = new Set(
-            (selectedCourses || []).flatMap(c => 
-                typeof c === 'string' ? [c] : [c?.courseCode ?? c?.courseDescription ?? c].filter(Boolean)
-            )
-        );
-        console.log(`📚 Selected courses for this plan:`, [...selectedCourseCodes]);
-
-        // ✅ Step 4: Find the specific venue
-        const [venues] = await db.query(
-            `SELECT id, venue_name FROM seating_plan_venues 
-             WHERE seating_plan_id = ?`,
-            [planId]
-        );
-
-        console.log(`🏢 Found ${(venues || []).length} venues for plan ${planId}:`);
-        (venues || []).forEach(v => console.log(`  - ${v.venue_name ?? v.venuename}`));
-
-        const matchedVenue = (venues || []).find(v => (v.venue_name ?? v.venuename) === venue);
 
         if (!matchedVenue) {
-            console.log(`❌ Venue "${venue}" not found in plan`);
             return res.status(404).json({ 
               error: "Venue not found in plan",
               requestedVenue: venue,
               availableVenues: (venues || []).map(v => v.venue_name ?? v.venuename ?? "")
             });
         }
-
-        console.log(`✅ Matched venue: ${matchedVenue.venue_name ?? matchedVenue.venuename} (ID: ${matchedVenue.id})`);
 
         if (ownerFilter.isFacultyInvigilator) {
           const facultyProfile = await AttendanceService.findFacultyByUserEmail(req.user.email);
@@ -686,108 +585,101 @@ router.get("/attendance",
             });
           }
         }
-        
-        const venueId = matchedVenue.id;
-        const {
-          resolveVenueStudentsWithCourses,
-          groupStudentsByCourse,
-        } = require("../utils/venueAttendanceCourses");
 
-        const [venueMetaRows] = await db.query(
-          `SELECT seating_layout_json FROM seating_plan_venues WHERE id = ?`,
-          [venueId]
-        );
-        const layoutJson =
-          venueMetaRows?.[0]?.seating_layout_json ??
-          venueMetaRows?.[0]?.seatinglayoutjson ??
-          null;
-
-        const [arrangementRows] = await db.query(
-          `SELECT regn_no, seat_row, seat_col, seat_index
-           FROM seating_arrangements
-           WHERE seating_plan_venue_id = ?
-             AND regn_no IS NOT NULL
-             AND TRIM(regn_no) <> ''
-             AND regn_no <> '-'`,
-          [venueId]
-        );
-
-        const [planStudentRows] = await db.query(
-          `SELECT regn_no, student_name, course_description
-           FROM seating_plan_students
-           WHERE seating_plan_id = ?
-           ORDER BY id ASC`,
-          [planId]
-        );
-
-        let venueStudents = resolveVenueStudentsWithCourses({
-          layoutJson,
-          arrangementRows: arrangementRows || [],
-          planStudentRows: planStudentRows || [],
+        const result = await buildAttendanceSheetForVenue({
+          plan,
+          planId,
+          venueName: venue,
+          venueRow: matchedVenue,
         });
 
-        // Enrich names from seating_plan_students when layout omitted them
-        const nameByRegn = new Map();
-        for (const r of planStudentRows || []) {
-          const regn = String(r.regn_no ?? r.regnno ?? "").trim();
-          const name = String(r.student_name ?? r.studentname ?? "").trim();
-          if (regn && name && !nameByRegn.has(regn)) nameByRegn.set(regn, name);
-        }
-        venueStudents = venueStudents.map((s) => ({
-          ...s,
-          name: s.name || nameByRegn.get(s.regNo) || s.regNo,
-        }));
-
-        console.log(`🪑 Found ${venueStudents.length} students seated in venue ${venue}`);
-
-        // Course names from timetable when available (venue courses only — not full plan list)
-        const venueCourseCodes = [...new Set(venueStudents.map((s) => s.courseCode).filter(Boolean))];
-        const courseNameMap = {};
-        venueStudents.forEach((s) => {
-          if (s.courseCode) courseNameMap[s.courseCode] = s.courseCode;
+        // Preserve existing single-venue response shape
+        res.json({
+          examDate: result.examDate,
+          examSession: result.examSession,
+          hallNo: result.hallNo,
+          courses: result.courses,
         });
-        if (venueCourseCodes.length > 0) {
-          const placeholders = venueCourseCodes.map(() => "?").join(",");
-          const [ttRows] = await db.query(
-            `SELECT course_code, course_name FROM timetable
-             WHERE course_code IN (${placeholders})`,
-            venueCourseCodes
-          );
-          for (const t of ttRows || []) {
-            const code = t.course_code ?? t.coursecode;
-            const name = t.course_name ?? t.coursename;
-            if (code && name) courseNameMap[code] = name;
-          }
-        }
-
-        // Only keep courses actually present in this venue.
-        // Do NOT seed empty cards from plan-wide selected_courses.
-        const courses = groupStudentsByCourse(venueStudents, courseNameMap);
-
-        console.log(`📋 Venue-scoped courses: ${courses.map((c) => c.courseCode).join(", ")}`);
-
-        const result = {
-            examDate: plan.exam_date,
-            examSession: plan.exam_session,
-            hallNo: venue,
-            courses,
-        };
-
-        console.log("✅ SUCCESS! Sending attendance data:");
-        console.log(`  - ${result.courses.length} venue courses`);
-        console.log(`  - ${venueStudents.length} total students in venue`);
-        console.log("==========================================\n");
-
-        res.json(result);
 
     } catch (err) {
         console.error("❌ Attendance API Error:", err);
-        res.status(500).json({ 
-          error: "Server error", 
+        res.status(err.statusCode || 500).json({ 
+          error: err.message || "Server error", 
           details: err.message
         });
     }
 });
+
+/* =====================================================
+    GET ATTENDANCE SHEETS FOR ALL VENUES ON AN EXAM SLOT
+    Reuses the same per-venue builder as GET /attendance.
+===================================================== */
+router.get(
+  "/attendance/bulk",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge", "hod"]),
+  async (req, res) => {
+    try {
+      const { date, session, startTime, endTime, examType } = req.query;
+      if (!date || !session || !startTime || !endTime) {
+        return res.status(400).json({
+          error: "Missing required parameters",
+          details: "date, session, startTime, and endTime are required",
+        });
+      }
+
+      const { buildAttendanceSheetsForSlot } = require("../utils/buildAttendanceSheet");
+      const ownerFilter = await buildOwnerFilterForAttendance(req);
+      const result = await buildAttendanceSheetsForSlot({
+        date,
+        session,
+        startTime,
+        endTime,
+        examType: examType || null,
+        ownerSql: ownerFilter.ownerSql,
+        ownerParams: ownerFilter.ownerParams,
+      });
+
+      if (result.error) {
+        return res.status(result.statusCode || 404).json(result.payload);
+      }
+
+      if (!result.sheets.length) {
+        return res.status(404).json({
+          error:
+            result.failures?.[0]?.error ||
+            "No venues with assigned students found for this allotment.",
+          failures: result.failures || [],
+        });
+      }
+
+      return res.json({
+        examDate: result.examDate,
+        examSession: result.examSession,
+        examType: result.examType,
+        startTime: result.startTime,
+        endTime: result.endTime,
+        venueCount: result.sheets.length,
+        studentTotal: result.studentTotal,
+        sheets: result.sheets.map((s) => ({
+          examDate: s.examDate,
+          examSession: s.examSession,
+          examType: s.examType,
+          hallNo: s.hallNo,
+          courses: s.courses,
+          studentCount: s.studentCount,
+        })),
+        failures: result.failures || [],
+      });
+    } catch (err) {
+      console.error("ATTENDANCE BULK ERROR:", err);
+      return res.status(500).json({
+        error: "Failed to load attendance sheets",
+        details: err.message,
+      });
+    }
+  }
+);
 
 /* =====================================================
     POST: CHECK FACULTY AVAILABILITY
