@@ -352,8 +352,13 @@ async function loadImageAsDataUrl(src) {
   }
 }
 
+function resolveVerificationId(verification) {
+  return verification?.verificationId || verification?.verification_id || "";
+}
+
 function drawHalloraVerifyFooter(pdf, verification) {
-  if (!verification?.verificationId) return;
+  const verificationId = resolveVerificationId(verification);
+  if (!verificationId) return;
   const w = contentWidth(pdf);
   const ph = pageHeight(pdf);
   const y = ph - MARGIN - HALLORA_VERIFY_H + 1;
@@ -363,7 +368,9 @@ function drawHalloraVerifyFooter(pdf, verification) {
 
   const when = (() => {
     try {
-      const d = new Date(verification.generatedAt || Date.now());
+      const d = new Date(
+        verification.generatedAt || verification.generated_at || Date.now()
+      );
       return d.toLocaleString("en-GB", {
         day: "2-digit",
         month: "short",
@@ -387,7 +394,7 @@ function drawHalloraVerifyFooter(pdf, verification) {
     { align: "center" }
   );
   pdf.text(
-    `Verification ID: ${verification.verificationId} | Generated: ${when}`,
+    `Verification ID: ${verificationId} | Generated: ${when}`,
     MARGIN + w / 2,
     y + 7,
     { align: "center" }
@@ -396,7 +403,7 @@ function drawHalloraVerifyFooter(pdf, verification) {
 }
 
 function stampHalloraFooterOnAllPages(pdf, verification) {
-  if (!verification?.verificationId) return;
+  if (!resolveVerificationId(verification)) return;
   const total = pdf.getNumberOfPages();
   for (let i = 1; i <= total; i++) {
     pdf.setPage(i);

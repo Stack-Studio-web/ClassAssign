@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { flushSync } from "react-dom";
 import api from "../lib/api";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "../context/ToastContext";
@@ -298,8 +299,9 @@ const Report = () => {
         examType: selectedPlan?.examType || null,
         examDate: selectedPlan?.examDate || null,
       });
-      setDetailVerification(verification);
-      await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 40)));
+      flushSync(() => {
+        setDetailVerification(verification);
+      });
     } catch (err) {
       console.error("Verification create failed:", err);
     }
@@ -315,7 +317,10 @@ const Report = () => {
     );
     printWindow.document.close();
     printWindow.document.body.appendChild(componentRef.current.cloneNode(true));
-    if (verification && !printWindow.document.querySelector(".hallora-verify-footer")) {
+    if (verification?.verificationId) {
+      printWindow.document
+        .querySelectorAll(".hallora-verify-footer")
+        .forEach((el) => el.remove());
       printWindow.document.body.insertAdjacentHTML(
         "beforeend",
         halloraFooterHtml(verification)

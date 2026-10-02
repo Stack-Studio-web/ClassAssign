@@ -57,8 +57,7 @@ const ReportVerification = {
         `INSERT INTO report_verifications
            (verification_id, report_type, generated_by_user_id, generated_by_label, metadata, status)
          VALUES (?, ?, ?, ?, ?, 'VALID')
-         RETURNING id, public_uuid, verification_id, report_type,
-                   generated_by_label, generated_at, document_hash, status`,
+         RETURNING id, public_uuid, verification_id, report_type, generated_by_label, generated_at, document_hash, status`,
         [
           verificationId,
           String(reportType || "Report").slice(0, 100),
@@ -68,18 +67,39 @@ const ReportVerification = {
         ]
       );
 
-      await conn.commit();
-      const row = inserted?.[0] || inserted;
-      return {
-        id: row.id,
-        uuid: row.public_uuid ?? row.publicuuid,
-        verificationId: row.verification_id ?? row.verificationid,
-        reportType: row.report_type ?? row.reporttype,
-        generatedByLabel: row.generated_by_label ?? row.generatedbylabel,
-        generatedAt: row.generated_at ?? row.generatedat,
-        documentHash: row.document_hash ?? row.documenthash ?? null,
-        status: row.status || "VALID",
+      let row = Array.isArray(inserted) ? inserted[0] : inserted;
+      let uuid = row?.public_uuid ?? row?.publicuuid;
+      // If the DB wrapper collapsed RETURNING to { insertId }, re-read the row.
+      if (!uuid) {
+        const [found] = await conn.query(
+          `SELECT id, public_uuid, verification_id, report_type, generated_by_label,
+                  generated_at, document_hash, status
+           FROM report_verifications
+           WHERE verification_id = ?
+           LIMIT 1`,
+          [verificationId]
+        );
+        row = Array.isArray(found) ? found[0] : found;
+        uuid = row?.public_uuid ?? row?.publicuuid;
+      }
+
+      const mapped = {
+        id: row?.id,
+        uuid,
+        verificationId:
+          row?.verification_id ?? row?.verificationid ?? verificationId,
+        reportType: row?.report_type ?? row?.reporttype ?? reportType,
+        generatedByLabel:
+          row?.generated_by_label ?? row?.generatedbylabel ?? generatedByLabel,
+        generatedAt: row?.generated_at ?? row?.generatedat ?? new Date().toISOString(),
+        documentHash: row?.document_hash ?? row?.documenthash ?? null,
+        status: row?.status || "VALID",
       };
+      if (!mapped.uuid || !mapped.verificationId) {
+        throw new Error("Verification row was created but ID fields were missing from DB result");
+      }
+      await conn.commit();
+      return mapped;
     } catch (err) {
       await conn.rollback();
       throw err;

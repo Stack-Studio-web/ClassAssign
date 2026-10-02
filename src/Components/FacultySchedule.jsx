@@ -1,4 +1,5 @@
 import React, { useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { useReactToPrint } from "react-to-print";
 import LogoKSI from "../assets/logo KSI.png";
 import LogoKCT from "../assets/logo.png";
@@ -202,9 +203,9 @@ const FacultySchedule = ({ plans, onClose }) => {
       const v = await createReportVerification("Faculty Invigilation Schedule", {
         planCount: Array.isArray(plans) ? plans.length : 0,
       });
-      setVerification(v);
-      // Allow footer to render, then print
-      await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 50)));
+      flushSync(() => {
+        setVerification(v);
+      });
       handlePrint();
       // Audit fingerprint of printable HTML (browser Save-as-PDF has no byte access)
       if (printRef.current && v?.uuid) {

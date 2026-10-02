@@ -75,7 +75,9 @@ function extractRowCount(results, metadata) {
 }
 
 function returningColumnCount(sql) {
-  const match = String(sql).match(/RETURNING\s+(.+?)(?:;|\s*$)/i);
+  // [\s\S] so multiline RETURNING clauses (common in models) are counted correctly.
+  // A count of 0 incorrectly collapses INSERT results to { insertId } only.
+  const match = String(sql).match(/RETURNING\s+([\s\S]+?)(?:;|\s*$)/i);
   if (!match) return 0;
   return match[1].split(",").map((s) => s.trim()).filter(Boolean).length;
 }
@@ -100,7 +102,13 @@ async function runQuery(sql, params, transaction) {
     if (Array.isArray(results) && results[0]) {
       const row = results[0];
       const insertId = row.id ?? row.ID ?? (Array.isArray(row) ? row[0] : null);
-      if (returningColumnCount(finalSql) > 1) {
+      const colCount = returningColumnCount(finalSql);
+      const rowKeys = row && typeof row === "object" && !Array.isArray(row)
+        ? Object.keys(row)
+        : [];
+      // Keep full RETURNING payload (e.g. verification_id, public_uuid). Collapsing to
+      // { insertId } drops those fields and breaks Hallora e-verify PDF footers.
+      if (colCount > 1 || rowKeys.length > 1) {
         return [results, []];
       }
       return [{ insertId, affectedRows: 1 }, []];

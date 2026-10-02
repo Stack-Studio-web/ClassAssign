@@ -6,7 +6,8 @@ import { halloraFooterLines } from "../lib/reportVerification";
  * Does not redesign the report — sits below existing content (and fixed on print pages).
  */
 export default function HalloraVerifiedFooter({ verification, className = "" }) {
-  if (!verification?.verificationId) return null;
+  const id = verification?.verificationId || verification?.verification_id;
+  if (!id) return null;
   const { line1, line2 } = halloraFooterLines(verification);
   return (
     <div className={`hallora-verify-footer ${className}`.trim()}>

@@ -1,5 +1,6 @@
 // StudentArrangement.jsx - UPDATED WITH AUTH, RBAC & IMPROVED NOTIFICATION FEEDBACK
 import React, { useEffect, useState, useRef } from "react";
+import { flushSync } from "react-dom";
 import { Link } from "react-router-dom";
 import api from "../lib/api";
 import { useReactToPrint } from "react-to-print";
@@ -136,8 +137,9 @@ const ExamHallAllotment = () => {
         date: filters?.date || null,
         session: filters?.session || null,
       });
-      setVerification(v);
-      await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 50)));
+      flushSync(() => {
+        setVerification(v);
+      });
       handlePrint();
       if (printRef.current && v?.uuid) {
         const hash = await sha256Hex(printRef.current.innerHTML || "");

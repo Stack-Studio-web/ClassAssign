@@ -5,6 +5,8 @@ const db = require("../config/db");
 
 async function ensureReportVerificationSchema() {
   try {
+    // Needed for public_uuid DEFAULT gen_random_uuid()
+    await db.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
     await db.query(`
       CREATE TABLE IF NOT EXISTS report_verifications (
         id SERIAL PRIMARY KEY,

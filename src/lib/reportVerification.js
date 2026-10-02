@@ -17,9 +17,28 @@ export function formatHalloraGeneratedAt(isoOrDate) {
   });
 }
 
+/** Normalize API / DB shapes so footers always see verificationId. */
+export function normalizeVerification(data) {
+  if (!data || typeof data !== "object") return null;
+  const verificationId = data.verificationId || data.verification_id || "";
+  if (!verificationId) return null;
+  return {
+    ...data,
+    uuid: data.uuid || data.public_uuid || data.publicUuid || null,
+    verificationId,
+    generatedAt:
+      data.generatedAt || data.generated_at || new Date().toISOString(),
+    reportType: data.reportType || data.report_type || null,
+    generatedByLabel:
+      data.generatedByLabel || data.generated_by_label || null,
+    status: data.status || "VALID",
+  };
+}
+
 export function halloraFooterLines(verification) {
-  const id = verification?.verificationId || "";
-  const when = formatHalloraGeneratedAt(verification?.generatedAt);
+  const v = normalizeVerification(verification) || verification;
+  const id = v?.verificationId || v?.verification_id || "";
+  const when = formatHalloraGeneratedAt(v?.generatedAt || v?.generated_at);
   return {
     line1: "Generated and E-Verified by HALLORA | Exam Management System",
     line2: `Verification ID: ${id} | Generated: ${when}`,
@@ -38,12 +57,15 @@ export function halloraFooterHtml(verification) {
 
 export const HALLORA_VERIFY_PRINT_CSS = `
 @media print {
+  @page {
+    margin-bottom: 16mm;
+  }
   .hallora-verify-footer {
     position: fixed;
     left: 0;
     right: 0;
     bottom: 0;
-    padding: 4px 12mm 6px;
+    padding: 4px 10mm 5px;
     border-top: 1px solid #888;
     background: #fff;
     color: #333;
@@ -52,6 +74,8 @@ export const HALLORA_VERIFY_PRINT_CSS = `
     line-height: 1.35;
     text-align: center;
     z-index: 9999;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
   .hallora-verify-line { margin: 0; }
   body { padding-bottom: 14mm !important; }
@@ -75,7 +99,11 @@ export async function createReportVerification(reportType, metadata = null) {
     reportType,
     ...(metadata ? { metadata } : {}),
   });
-  return res.data;
+  const verification = normalizeVerification(res.data);
+  if (!verification?.verificationId) {
+    throw new Error("Server did not return a Hallora Verification ID");
+  }
+  return verification;
 }
 
 /**
