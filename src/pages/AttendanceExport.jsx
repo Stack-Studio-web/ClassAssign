@@ -32,77 +32,118 @@ export default function AttendanceExport() {
   const [departments, setDepartments] = useState([]);
   const [courses, setCourses] = useState([]);
   const [batches, setBatches] = useState([]);
-  const [loadingOptions, setLoadingOptions] = useState(true);
-  const [loadingCourses, setLoadingCourses] = useState(false);
+  const [loadingOptions, setLoadingOptions] = useState(false);
+  const [optionsMessage, setOptionsMessage] = useState("");
   const [previewing, setPreviewing] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState("");
 
+  const datesReady =
+    Boolean(filters.dateFrom) &&
+    Boolean(filters.dateTo) &&
+    filters.dateTo >= filters.dateFrom;
+
   const setFilter = (key, value) => {
-    setFilters((prev) => ({ ...prev, [key]: value }));
+    setFilters((prev) => {
+      const next = { ...prev, [key]: value };
+      if (key === "dateFrom" || key === "dateTo") {
+        next.department = "";
+        next.courseCode = "";
+        next.batchUuid = "";
+      }
+      return next;
+    });
     setPreview(null);
     setError("");
   };
 
+  // Date range → departments + courses + batches from actual attendance
   useEffect(() => {
     let cancelled = false;
+
+    if (!datesReady) {
+      setDepartments([]);
+      setCourses([]);
+      setBatches([]);
+      setOptionsMessage("");
+      setLoadingOptions(false);
+      return undefined;
+    }
+
     (async () => {
       setLoadingOptions(true);
       try {
-        const data = await fetchAttendanceExportOptions({});
-        if (!cancelled) {
-          setDepartments(data.departments);
-          setError("");
-        }
+        const data = await fetchAttendanceExportOptions({
+          dateFrom: filters.dateFrom,
+          dateTo: filters.dateTo,
+          department: filters.department || undefined,
+          courseCode: filters.courseCode || undefined,
+        });
+        if (cancelled) return;
+
+        setDepartments(data.departments);
+        setCourses(data.courses);
+        setBatches(data.batches);
+        setOptionsMessage(data.message || "");
+
+        // Drop selections that are no longer in the option lists
+        setFilters((prev) => {
+          let changed = false;
+          const next = { ...prev };
+          if (
+            prev.department &&
+            data.departments.length &&
+            !data.departments.includes(prev.department)
+          ) {
+            next.department = "";
+            next.courseCode = "";
+            next.batchUuid = "";
+            changed = true;
+          }
+          if (
+            prev.courseCode &&
+            data.courses.length &&
+            !data.courses.some((c) => c.code === prev.courseCode)
+          ) {
+            next.courseCode = "";
+            next.batchUuid = "";
+            changed = true;
+          }
+          if (
+            prev.batchUuid &&
+            data.batches.length &&
+            !data.batches.some((b) => b.uuid === prev.batchUuid)
+          ) {
+            next.batchUuid = "";
+            changed = true;
+          }
+          return changed ? next : prev;
+        });
       } catch (err) {
         if (!cancelled) {
           setDepartments([]);
-          setError(getApiError(err, "Failed to load departments"));
+          setCourses([]);
+          setBatches([]);
+          setOptionsMessage(getApiError(err, "Failed to load filter options"));
         }
       } finally {
         if (!cancelled) setLoadingOptions(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
-  useEffect(() => {
-    if (!filters.department) {
-      setCourses([]);
-      setBatches([]);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      setLoadingCourses(true);
-      try {
-        const data = await fetchAttendanceExportOptions({
-          department: filters.department,
-          courseCode: filters.courseCode || undefined,
-        });
-        if (cancelled) return;
-        setCourses(data.courses);
-        setBatches(data.batches);
-      } catch (err) {
-        if (!cancelled) {
-          setCourses([]);
-          setBatches([]);
-          toast.error(getApiError(err), getApiErrorTitle(err, "Options failed"));
-        }
-      } finally {
-        if (!cancelled) setLoadingCourses(false);
-      }
-    })();
     return () => {
       cancelled = true;
     };
-  }, [filters.department, filters.courseCode, toast]);
+  }, [
+    datesReady,
+    filters.dateFrom,
+    filters.dateTo,
+    filters.department,
+    filters.courseCode,
+  ]);
 
   const validate = useCallback(() => {
-    if (!filters.department) return "Department must be selected.";
     if (!filters.dateFrom) return "Date From must be selected.";
     if (!filters.dateTo) return "Date To must be selected.";
     if (filters.dateTo < filters.dateFrom) {
@@ -113,7 +154,7 @@ export default function AttendanceExport() {
 
   const queryPayload = useMemo(
     () => ({
-      department: filters.department,
+      department: filters.department || undefined,
       dateFrom: filters.dateFrom,
       dateTo: filters.dateTo,
       courseCode: filters.courseCode || undefined,
@@ -166,7 +207,7 @@ export default function AttendanceExport() {
       let verification = null;
       try {
         verification = await createReportVerification("Consolidated Absentees List", {
-          department: queryPayload.department,
+          department: queryPayload.department || "All Departments",
           dateFrom: queryPayload.dateFrom,
           dateTo: queryPayload.dateTo,
           courseCode: queryPayload.courseCode || null,
@@ -207,6 +248,30 @@ export default function AttendanceExport() {
 
   const showPreviewTable = preview && !preview.empty && Array.isArray(preview.rows);
 
+  const departmentPlaceholder = !datesReady
+    ? "Select dates first"
+    : loadingOptions
+      ? "Loading…"
+      : departments.length === 0
+        ? "No departments found"
+        : "All Departments";
+
+  const coursePlaceholder = !datesReady
+    ? "Select dates first"
+    : loadingOptions
+      ? "Loading…"
+      : courses.length === 0
+        ? "No courses found"
+        : "All Courses";
+
+  const batchPlaceholder = !datesReady
+    ? "Select dates first"
+    : loadingOptions
+      ? "Loading…"
+      : batches.length === 0
+        ? "No batches found"
+        : "All Batches";
+
   return (
     <div className="min-h-screen bg-gray-50 font-[Inter,sans-serif]">
       <div className="px-4 md:px-8 py-6 md:py-8 max-w-6xl mx-auto space-y-6">
@@ -241,35 +306,13 @@ export default function AttendanceExport() {
               </div>
             )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <label className="text-sm text-gray-600 space-y-1.5">
-                <span className="font-medium text-gray-700">Department</span>
-                <select
-                  value={filters.department}
-                  onChange={(e) => {
-                    setFilters((prev) => ({
-                      ...prev,
-                      department: e.target.value,
-                      courseCode: "",
-                      batchUuid: "",
-                    }));
-                    setPreview(null);
-                    setError("");
-                  }}
-                  disabled={loadingOptions}
-                  className="w-full h-11 px-3 rounded-xl border border-gray-200 bg-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none disabled:bg-gray-50"
-                >
-                  <option value="">
-                    {loadingOptions ? "Loading…" : "Select Department"}
-                  </option>
-                  {departments.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
-                </select>
-              </label>
+            {!error && optionsMessage && datesReady && (
+              <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl text-sm">
+                {optionsMessage}
+              </div>
+            )}
 
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <label className="text-sm text-gray-600 space-y-1.5">
                 <span className="font-medium text-gray-700">Date From</span>
                 <input
@@ -291,6 +334,32 @@ export default function AttendanceExport() {
               </label>
 
               <label className="text-sm text-gray-600 space-y-1.5">
+                <span className="font-medium text-gray-700">Department</span>
+                <select
+                  value={filters.department}
+                  onChange={(e) => {
+                    setFilters((prev) => ({
+                      ...prev,
+                      department: e.target.value,
+                      courseCode: "",
+                      batchUuid: "",
+                    }));
+                    setPreview(null);
+                    setError("");
+                  }}
+                  disabled={!datesReady || loadingOptions}
+                  className="w-full h-11 px-3 rounded-xl border border-gray-200 bg-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none disabled:bg-gray-50"
+                >
+                  <option value="">{departmentPlaceholder}</option>
+                  {departments.map((d) => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="text-sm text-gray-600 space-y-1.5">
                 <span className="font-medium text-gray-700">Course</span>
                 <select
                   value={filters.courseCode}
@@ -303,10 +372,10 @@ export default function AttendanceExport() {
                     setPreview(null);
                     setError("");
                   }}
-                  disabled={!filters.department || loadingCourses}
+                  disabled={!datesReady || loadingOptions}
                   className="w-full h-11 px-3 rounded-xl border border-gray-200 bg-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none disabled:bg-gray-50"
                 >
-                  <option value="">All Courses</option>
+                  <option value="">{coursePlaceholder}</option>
                   {courses.map((c) => (
                     <option key={c.code} value={c.code}>
                       {c.label || c.code}
@@ -320,10 +389,10 @@ export default function AttendanceExport() {
                 <select
                   value={filters.batchUuid}
                   onChange={(e) => setFilter("batchUuid", e.target.value)}
-                  disabled={!filters.department || loadingCourses}
+                  disabled={!datesReady || loadingOptions}
                   className="w-full h-11 px-3 rounded-xl border border-gray-200 bg-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none disabled:bg-gray-50"
                 >
-                  <option value="">All Batches</option>
+                  <option value="">{batchPlaceholder}</option>
                   {batches.map((b) => (
                     <option key={b.uuid} value={b.uuid}>
                       {b.name}
@@ -337,7 +406,7 @@ export default function AttendanceExport() {
               <button
                 type="button"
                 onClick={handlePreview}
-                disabled={previewing}
+                disabled={previewing || !datesReady}
                 className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-semibold shadow-sm"
               >
                 <EyeIcon className="h-4 w-4" />
@@ -346,7 +415,7 @@ export default function AttendanceExport() {
               <button
                 type="button"
                 onClick={handleExport}
-                disabled={exporting}
+                disabled={exporting || !datesReady}
                 className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white border border-gray-200 hover:bg-gray-50 disabled:opacity-50 text-gray-800 text-sm font-semibold shadow-sm"
               >
                 <ArrowDownTrayIcon className="h-4 w-4" />

@@ -131,6 +131,7 @@ export async function fetchAttendanceExportOptions(params = {}) {
     departments: Array.isArray(body.departments) ? body.departments : [],
     courses: Array.isArray(body.courses) ? body.courses : [],
     batches: Array.isArray(body.batches) ? body.batches : [],
+    message: body.message || body.warning || null,
   };
 }
 

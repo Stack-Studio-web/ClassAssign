@@ -645,6 +645,8 @@ const AttendanceController = {
         req.user,
         req.user.role,
         {
+          dateFrom: req.query.dateFrom || req.query.date_from || null,
+          dateTo: req.query.dateTo || req.query.date_to || null,
           department: req.query.department || null,
           courseCode: req.query.courseCode || req.query.course || null,
         }

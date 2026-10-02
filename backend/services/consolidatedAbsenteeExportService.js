@@ -107,26 +107,44 @@ function dateForFilename(value) {
 
 function departmentDisplayName(dept) {
   const d = String(dept || "").trim();
-  if (!d) return "";
+  if (!d || /^all\s+departments$/i.test(d)) return "ALL DEPARTMENTS";
   if (/^DEPARTMENT\s+OF\s+/i.test(d)) return d.toUpperCase();
   return `DEPARTMENT OF ${d.toUpperCase()}`;
 }
 
+/** Program code from regn_no, e.g. 24BCS002 → BCS (matches Student.deriveDepartmentFromRegnNo). */
+const PROGRAM_FROM_REGN_SQL = (alias = "st") =>
+  `UPPER((regexp_match(UPPER(TRIM(COALESCE(${alias}.regn_no, ''))), '^[0-9]{2}([A-Z]+)'))[1])`;
+
+const HAS_PROGRAM_REGN_SQL = (alias = "st") =>
+  `${alias}.regn_no ~ '^[0-9]{2}[A-Z]+'`;
+
 /**
- * Match students by department column OR by dept code embedded in regn_no
- * (e.g. BCS matches students.department='BCS' or regn like 24BCS001).
- * Returns { sql, params } — params are the department value repeated as needed.
+ * Match students by program code in regn_no (canonical for Hallora).
+ * Also allows students.department when it equals the same program code
+ * (never treats org labels like KSI/KCT as student departments).
  */
 function departmentMatchClause(department, alias = "st") {
   const dept = String(department || "").trim().toUpperCase();
+  if (!dept || dept === "ALL" || dept === "ALL DEPARTMENTS") {
+    return { sql: "TRUE", params: [] };
+  }
+  const programExpr = PROGRAM_FROM_REGN_SQL(alias);
   const sql = `(
-    UPPER(TRIM(COALESCE(${alias}.department, ''))) = ?
+    ${programExpr} = ?
     OR (
-      LENGTH(?) BETWEEN 2 AND 8
-      AND UPPER(TRIM(COALESCE(${alias}.regn_no, ''))) LIKE CONCAT('__', ?, '%')
+      UPPER(TRIM(COALESCE(${alias}.department, ''))) = ?
+      AND UPPER(TRIM(COALESCE(${alias}.department, ''))) !~ '^(KSI|KCT)$'
+      AND LENGTH(UPPER(TRIM(COALESCE(${alias}.department, '')))) BETWEEN 2 AND 8
     )
   )`;
-  return { sql, params: [dept, dept, dept] };
+  return { sql, params: [dept, dept] };
+}
+
+function parseDateParam(value) {
+  const raw = String(value || "").trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return "";
+  return raw;
 }
 
 function yearSemesterLabel(rows) {
@@ -226,11 +244,6 @@ function validateFilters(filters = {}) {
   const courseCode = String(filters.courseCode || filters.course || "").trim();
   const batchUuid = String(filters.batchUuid || filters.batch || "").trim();
 
-  if (!department) {
-    const err = new Error("Department is required");
-    err.statusCode = 400;
-    throw err;
-  }
   if (!dateFrom || !dateTo) {
     const err = new Error("Date From and Date To are required");
     err.statusCode = 400;
@@ -265,10 +278,14 @@ async function fetchAbsentStudentRows(user, role, filters) {
   }
 
   const deptMatch = departmentMatchClause(department, "st");
-  const queryParams = [dateFrom, dateTo, ...deptMatch.params];
+  const queryParams = [dateFrom, dateTo];
+  if (deptMatch.params.length) queryParams.push(...deptMatch.params);
   if (courseCode) queryParams.push(courseCode);
   if (batchUuid) queryParams.push(batchUuid);
   queryParams.push(...(roleScope.params || []));
+
+  const deptSql =
+    deptMatch.sql === "TRUE" ? "" : `AND ${deptMatch.sql}`;
 
   const [rows] = await db.query(
     `SELECT
@@ -277,7 +294,7 @@ async function fetchAbsentStudentRows(user, role, filters) {
        st.student_name,
        st.course_description AS course_code,
        st.course_name AS course_title,
-       st.department AS student_department,
+       ${PROGRAM_FROM_REGN_SQL("st")} AS student_department,
        b.public_uuid AS batch_uuid,
        b.name AS batch_name,
        e.exam_date,
@@ -306,7 +323,7 @@ async function fetchAbsentStudentRows(user, role, filters) {
      JOIN exams e ON e.id = att.exam_id
      WHERE UPPER(TRIM(COALESCE(att.status, ''))) = 'ABSENT'
        AND e.exam_date BETWEEN ? AND ?
-       AND ${deptMatch.sql}
+       ${deptSql}
        ${extra}
        ${roleScope.sql || ""}
      ORDER BY e.exam_date ASC, e.exam_session ASC, st.course_description ASC, st.regn_no ASC, att.id ASC`,
@@ -406,9 +423,10 @@ function aggregateReportRows(absentRows) {
 
 function buildMeta(filters, absentRows, reportRows) {
   const ayFromData = absentRows.find((r) => r.academicYearLabel)?.academicYearLabel;
+  const deptLabel = filters.department || "All Departments";
   return {
-    department: filters.department,
-    departmentHeader: departmentDisplayName(filters.department),
+    department: deptLabel,
+    departmentHeader: departmentDisplayName(deptLabel),
     dateFrom: filters.dateFrom,
     dateTo: filters.dateTo,
     dateFromDisplay: formatDateSlash(filters.dateFrom),
@@ -430,13 +448,16 @@ function buildMeta(filters, absentRows, reportRows) {
 
 const ConsolidatedAbsenteeExportService = {
   /**
-   * Cascading filter options.
-   * GET without department → departments list.
-   * With department → courses (+ batches if course also set).
+   * Cascading filter options from ACTUAL attendance records in a date range.
+   * Departments = program codes from student regn_no (BCS/BIT/…), never org KSI.
+   * Query: dateFrom, dateTo, department?, courseCode?
    */
   getOptions: async (user, role, query = {}) => {
+    const dateFrom = parseDateParam(query.dateFrom || query.date_from);
+    const dateTo = parseDateParam(query.dateTo || query.date_to);
     const department = String(query.department || "").trim();
     const courseCode = String(query.courseCode || query.course || "").trim();
+
     let roleScope;
     try {
       roleScope = await buildRoleScope(user, role);
@@ -444,54 +465,57 @@ const ConsolidatedAbsenteeExportService = {
       console.error("consolidated export buildRoleScope:", err?.message || err);
       roleScope = { sql: "", params: [], needFaJoin: false };
     }
-    const faJoin = ""; // role scope no longer requires fa/v joins
 
-    // Prefer student enrollment department from any attendance mark (not only Absent),
-    // so the Department dropdown is usable before absentees exist.
-    if (!department) {
-      try {
-        const [deptRows] = await db.query(
-          `SELECT DISTINCT UPPER(TRIM(st.department)) AS department
-           FROM attendance att
-           JOIN students st ON st.id = att.student_id
-           JOIN exams e ON e.id = att.exam_id
-           ${faJoin}
-           WHERE st.department IS NOT NULL
-             AND TRIM(st.department) <> ''
-             ${roleScope.sql || ""}
-           ORDER BY 1 ASC`,
-          roleScope.params || []
-        );
-        const departments = (deptRows || [])
-          .map((r) => r.department)
-          .filter(Boolean);
-        return { departments, courses: [], batches: [] };
-      } catch (err) {
-        console.error("consolidated export departments query:", err?.message || err);
-        // Fallback: departments from students table
-        try {
-          const [fallback] = await db.query(
-            `SELECT DISTINCT UPPER(TRIM(department)) AS department
-             FROM students
-             WHERE department IS NOT NULL AND TRIM(department) <> ''
-             ORDER BY 1 ASC`
-          );
-          return {
-            departments: (fallback || []).map((r) => r.department).filter(Boolean),
-            courses: [],
-            batches: [],
-          };
-        } catch (err2) {
-          console.error("consolidated export departments fallback:", err2?.message || err2);
-          return { departments: [], courses: [], batches: [] };
-        }
-      }
+    if (!dateFrom || !dateTo) {
+      return {
+        departments: [],
+        courses: [],
+        batches: [],
+        message: "Select Date From and Date To to load filter options.",
+      };
+    }
+    if (dateTo < dateFrom) {
+      return {
+        departments: [],
+        courses: [],
+        batches: [],
+        message: "Date To cannot be before Date From.",
+      };
     }
 
+    const programExpr = PROGRAM_FROM_REGN_SQL("st");
+    const hasProgram = HAS_PROGRAM_REGN_SQL("st");
     const deptMatch = departmentMatchClause(department, "st");
-    const deptParams = [...deptMatch.params, ...(roleScope.params || [])];
+    const deptSql = deptMatch.sql === "TRUE" ? "" : `AND ${deptMatch.sql}`;
+
+    // --- Departments (program codes present in attendance for the date range) ---
+    let departments = [];
+    try {
+      const [deptRows] = await db.query(
+        `SELECT DISTINCT ${programExpr} AS department
+         FROM attendance att
+         JOIN students st ON st.id = att.student_id
+         JOIN exams e ON e.id = att.exam_id
+         WHERE e.exam_date BETWEEN ? AND ?
+           AND ${hasProgram}
+           AND ${programExpr} IS NOT NULL
+           AND ${programExpr} !~ '^(KSI|KCT)$'
+           ${roleScope.sql || ""}
+         ORDER BY 1 ASC`,
+        [dateFrom, dateTo, ...(roleScope.params || [])]
+      );
+      departments = (deptRows || [])
+        .map((r) => r.department)
+        .filter((d) => d && !/^(KSI|KCT)$/i.test(d));
+    } catch (err) {
+      console.error("consolidated export departments query:", err?.message || err);
+      departments = [];
+    }
+
+    // --- Courses (attendance in range, optional department) ---
     let courseRows = [];
     try {
+      const courseParams = [dateFrom, dateTo, ...deptMatch.params, ...(roleScope.params || [])];
       const [rows] = await db.query(
         `SELECT DISTINCT
            TRIM(st.course_description) AS course_code,
@@ -499,51 +523,44 @@ const ConsolidatedAbsenteeExportService = {
          FROM attendance att
          JOIN students st ON st.id = att.student_id
          JOIN exams e ON e.id = att.exam_id
-         ${faJoin}
-         WHERE ${deptMatch.sql}
+         WHERE e.exam_date BETWEEN ? AND ?
+           ${deptSql}
            AND st.course_description IS NOT NULL
            AND TRIM(st.course_description) <> ''
            ${roleScope.sql || ""}
          ORDER BY 1 ASC`,
-        deptParams
+        courseParams
       );
       courseRows = rows || [];
     } catch (err) {
       console.error("consolidated export courses query:", err?.message || err);
-      const fbDept = departmentMatchClause(department, "st");
-      const [rows] = await db.query(
-        `SELECT DISTINCT
-           TRIM(st.course_description) AS course_code,
-           TRIM(st.course_name) AS course_title
-         FROM students st
-         WHERE ${fbDept.sql}
-           AND st.course_description IS NOT NULL
-           AND TRIM(st.course_description) <> ''
-         ORDER BY 1 ASC`,
-        fbDept.params
-      );
-      courseRows = rows || [];
+      courseRows = [];
     }
 
-    const courses = (courseRows || []).map((r) => ({
-      code: r.course_code ?? r.coursecode,
-      title: (r.course_title ?? r.coursetitle) || "",
-      label:
-        (r.course_title ?? r.coursetitle)
-          ? `${r.course_code ?? r.coursecode} — ${r.course_title ?? r.coursetitle}`
-          : r.course_code ?? r.coursecode,
-    }));
+    const courses = (courseRows || [])
+      .map((r) => {
+        const code = r.course_code ?? r.coursecode;
+        const title = (r.course_title ?? r.coursetitle) || "";
+        if (!code) return null;
+        return {
+          code,
+          title,
+          label: title ? `${code} — ${title}` : code,
+        };
+      })
+      .filter(Boolean);
 
-    const batchParams = [...deptMatch.params];
-    let courseClause = "";
-    if (courseCode) {
-      courseClause = " AND UPPER(TRIM(st.course_description)) = UPPER(TRIM(?))";
-      batchParams.push(courseCode);
-    }
-    batchParams.push(...(roleScope.params || []));
-
+    // --- Batches (academic batch names from batches table via student.batch_id) ---
     let batchRows = [];
     try {
+      const batchParams = [dateFrom, dateTo, ...deptMatch.params];
+      let courseClause = "";
+      if (courseCode) {
+        courseClause = " AND UPPER(TRIM(st.course_description)) = UPPER(TRIM(?))";
+        batchParams.push(courseCode);
+      }
+      batchParams.push(...(roleScope.params || []));
+
       const [rows] = await db.query(
         `SELECT DISTINCT
            b.public_uuid AS batch_uuid,
@@ -552,9 +569,12 @@ const ConsolidatedAbsenteeExportService = {
          JOIN students st ON st.id = att.student_id
          JOIN batches b ON b.id = st.batch_id
          JOIN exams e ON e.id = att.exam_id
-         ${faJoin}
-         WHERE ${deptMatch.sql}
+         WHERE e.exam_date BETWEEN ? AND ?
+           ${deptSql}
            ${courseClause}
+           AND b.public_uuid IS NOT NULL
+           AND b.name IS NOT NULL
+           AND TRIM(b.name) <> ''
            ${roleScope.sql || ""}
          ORDER BY b.name ASC`,
         batchParams
@@ -562,33 +582,25 @@ const ConsolidatedAbsenteeExportService = {
       batchRows = rows || [];
     } catch (err) {
       console.error("consolidated export batches query:", err?.message || err);
-      const fbDept = departmentMatchClause(department, "st");
-      const fbParams = [...fbDept.params];
-      let fbCourse = "";
-      if (courseCode) {
-        fbCourse = " AND UPPER(TRIM(st.course_description)) = UPPER(TRIM(?))";
-        fbParams.push(courseCode);
-      }
-      const [rows] = await db.query(
-        `SELECT DISTINCT
-           b.public_uuid AS batch_uuid,
-           b.name AS batch_name
-         FROM students st
-         JOIN batches b ON b.id = st.batch_id
-         WHERE ${fbDept.sql}
-           ${fbCourse}
-         ORDER BY b.name ASC`,
-        fbParams
-      );
-      batchRows = rows || [];
+      batchRows = [];
     }
 
-    const batches = (batchRows || []).map((r) => ({
-      uuid: r.batch_uuid ?? r.batchuuid,
-      name: r.batch_name ?? r.batchname,
-    }));
+    const batches = (batchRows || [])
+      .map((r) => ({
+        uuid: r.batch_uuid ?? r.batchuuid,
+        name: r.batch_name ?? r.batchname,
+      }))
+      .filter((b) => b.uuid && b.name);
 
-    return { departments: [department], courses, batches };
+    return {
+      departments,
+      courses,
+      batches,
+      message:
+        departments.length === 0
+          ? "No attendance records found for the selected date range."
+          : null,
+    };
   },
 
   preview: async (user, role, filters = {}) => {
