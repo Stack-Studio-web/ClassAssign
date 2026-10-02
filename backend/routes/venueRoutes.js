@@ -315,16 +315,27 @@ router.put(
   sessionAuth,
   checkRole(VENUE_ROLES),
   resolveEntity(TABLE.venues),
-  auditLogger("UPDATE_VENUE_AVAILABILITY", "Venue"),
+  auditLogger("UPDATE_VENUE_USE_IT", "Venue"),
   async (req, res) => {
     try {
-      const { isAvailable } = req.body || {};
-      if (typeof isAvailable !== "boolean") {
+      const { isAvailable, isActive } = req.body || {};
+      const value =
+        typeof isAvailable === "boolean"
+          ? isAvailable
+          : typeof isActive === "boolean"
+            ? isActive
+            : null;
+      if (typeof value !== "boolean") {
         return res.status(400).json({ error: "isAvailable (boolean) is required" });
       }
       const user = currentUser(req);
-      await Venue.setAvailability(req.internalId, isAvailable, user);
-      res.json({ message: "Availability updated", uuid: req.publicUuid, isAvailable });
+      await Venue.setAvailability(req.internalId, value, user);
+      res.json({
+        message: "Use It updated",
+        uuid: req.publicUuid,
+        isAvailable: value,
+        isActive: value,
+      });
     } catch (err) {
       res.status(err.statusCode || 500).json({ error: err.message || "Server error" });
     }
@@ -336,16 +347,59 @@ router.patch(
   sessionAuth,
   checkRole(VENUE_ROLES),
   resolveEntity(TABLE.venues),
-  auditLogger("UPDATE_VENUE_AVAILABILITY", "Venue"),
+  auditLogger("UPDATE_VENUE_USE_IT", "Venue"),
   async (req, res) => {
     try {
-      const { isAvailable } = req.body || {};
-      if (typeof isAvailable !== "boolean") {
+      const { isAvailable, isActive } = req.body || {};
+      const value =
+        typeof isAvailable === "boolean"
+          ? isAvailable
+          : typeof isActive === "boolean"
+            ? isActive
+            : null;
+      if (typeof value !== "boolean") {
         return res.status(400).json({ error: "isAvailable (boolean) is required" });
       }
       const user = currentUser(req);
-      await Venue.setAvailability(req.internalId, isAvailable, user);
-      res.json({ message: "Availability updated", uuid: req.publicUuid, isAvailable });
+      await Venue.setAvailability(req.internalId, value, user);
+      res.json({
+        message: "Use It updated",
+        uuid: req.publicUuid,
+        isAvailable: value,
+        isActive: value,
+      });
+    } catch (err) {
+      res.status(err.statusCode || 500).json({ error: err.message || "Server error" });
+    }
+  }
+);
+
+/** Date/time schedule availability (reads seating plans + venue_sessions). */
+router.get(
+  "/:uuid/availability",
+  sessionAuth,
+  checkRole(VENUE_ROLES),
+  resolveEntity(TABLE.venues),
+  async (req, res) => {
+    try {
+      const date = req.query.date;
+      if (!date) {
+        return res.status(400).json({ error: "date query parameter is required (YYYY-MM-DD)" });
+      }
+      const startTime = req.query.startTime || req.query.start_time || null;
+      const endTime = req.query.endTime || req.query.end_time || null;
+      if ((startTime && !endTime) || (!startTime && endTime)) {
+        return res.status(400).json({
+          error: "Provide both startTime and endTime, or neither",
+        });
+      }
+      const result = await Venue.getScheduleAvailability(req.internalId, {
+        date,
+        startTime,
+        endTime,
+      });
+      if (!result) return res.status(404).json({ error: "Venue not found" });
+      res.json(result);
     } catch (err) {
       res.status(err.statusCode || 500).json({ error: err.message || "Server error" });
     }

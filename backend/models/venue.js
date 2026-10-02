@@ -36,6 +36,8 @@ function toVenueRow(row, { canManage = false } = {}) {
     benchesRow,
     benchesCol,
     isAvailable: row.isavailable ?? row.isAvailable ?? true,
+    /** Alias of isAvailable — global "Use It" enable flag (not date availability). */
+    isActive: (row.isavailable ?? row.isAvailable ?? true) !== false,
     blockId: row.block_id ?? row.blockid ?? null,
     blockUuid: row.block_uuid ?? row.blockuuid ?? null,
     blockName: row.block_name ?? row.blockname ?? null,
@@ -53,6 +55,17 @@ function toSessionRow(row) {
     startTime: row.starttime ?? row.startTime,
     endTime: row.endtime ?? row.endTime,
   };
+}
+
+function formatTimeValue(t) {
+  if (t == null || t === "") return "";
+  if (typeof t === "string") return t.length >= 5 ? t.slice(0, 5) : t;
+  if (t instanceof Date) {
+    const hh = String(t.getHours()).padStart(2, "0");
+    const mm = String(t.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}`;
+  }
+  return String(t).slice(0, 5);
 }
 
 const Venue = {
@@ -350,13 +363,14 @@ const Venue = {
   },
 
   /**
-   * Creator-only (or admin). Does NOT use owner scope lists — explicit creator check.
+   * Creator-only (or admin). Updates global "Use It" flag (is_available).
+   * This is NOT date-specific schedule availability.
    */
   setAvailability: async (id, isAvailable, user) => {
     const row = await Venue.findById(id);
     if (!row) return false;
     if (!canManageVenue(user, row)) {
-      const err = new Error("Only the creator can update venue availability");
+      const err = new Error("Only the creator can change Use It for this venue");
       err.statusCode = 403;
       throw err;
     }
@@ -365,6 +379,179 @@ const Venue = {
       [isAvailable, id]
     );
     return true;
+  },
+
+  /**
+   * Date/time schedule availability from seating plans + venue_sessions.
+   * Does not invent data. Timetable rows enrich course labels when times match.
+   */
+  getScheduleAvailability: async (venueId, { date, startTime = null, endTime = null } = {}) => {
+    const venueRow = await Venue.findById(venueId);
+    if (!venueRow) return null;
+
+    const isActive = (venueRow.is_available ?? venueRow.isavailable ?? true) !== false;
+    const dateOnly = String(date || "").includes("T")
+      ? String(date).split("T")[0]
+      : String(date || "").trim();
+
+    const conflicts = [];
+
+    // 1) Seating plans that use this venue on the date
+    const timeClause =
+      startTime && endTime
+        ? ` AND NOT (sp.exam_end_time <= ? OR sp.exam_start_time >= ?)`
+        : "";
+    const seatingParams =
+      startTime && endTime
+        ? [venueId, dateOnly, startTime, endTime]
+        : [venueId, dateOnly];
+
+    const [seatingRows] = await db.query(
+      `SELECT
+         sp.public_uuid AS plan_uuid,
+         sp.exam_date,
+         sp.exam_session,
+         sp.exam_type,
+         sp.exam_start_time,
+         sp.exam_end_time,
+         sp.selected_courses,
+         spv.venue_name
+       FROM seating_plan_venues spv
+       JOIN seating_plans sp ON sp.id = spv.seating_plan_id
+       WHERE spv.venue_id = ?
+         AND sp.exam_date = ?
+         ${timeClause}
+       ORDER BY sp.exam_start_time ASC NULLS LAST, sp.id ASC`,
+      seatingParams
+    );
+
+    for (const row of seatingRows || []) {
+      const start = formatTimeValue(row.exam_start_time ?? row.examstarttime);
+      const end = formatTimeValue(row.exam_end_time ?? row.examendtime);
+      const session = row.exam_session ?? row.examsession ?? "";
+      const examType = row.exam_type ?? row.examtype ?? "";
+      let courses = [];
+      try {
+        const raw = row.selected_courses ?? row.selectedcourses;
+        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+        if (Array.isArray(parsed)) courses = parsed;
+      } catch {
+        courses = [];
+      }
+
+      // Enrich from timetable when possible
+      let ttCourses = [];
+      if (start && end && session) {
+        const [ttRows] = await db.query(
+          `SELECT course_code, course_name, exam_type, start_time, end_time, session
+           FROM timetable
+           WHERE date = ?
+             AND start_time = ?
+             AND end_time = ?
+             AND session = ?
+           ORDER BY course_code`,
+          [dateOnly, start, end, session]
+        );
+        ttCourses = ttRows || [];
+      }
+
+      if (ttCourses.length > 0) {
+        for (const t of ttCourses) {
+          conflicts.push({
+            source: "seating_plan",
+            courseCode: t.course_code ?? t.coursecode ?? "",
+            courseName: t.course_name ?? t.coursename ?? "",
+            startTime: formatTimeValue(t.start_time ?? t.starttime) || start,
+            endTime: formatTimeValue(t.end_time ?? t.endtime) || end,
+            examType: t.exam_type ?? t.examtype ?? examType,
+            session,
+          });
+        }
+      } else if (courses.length > 0) {
+        for (const c of courses) {
+          conflicts.push({
+            source: "seating_plan",
+            courseCode: c.courseCode || c.course_code || c.code || "",
+            courseName: c.courseName || c.course_name || c.name || "",
+            startTime: start,
+            endTime: end,
+            examType,
+            session,
+          });
+        }
+      } else {
+        conflicts.push({
+          source: "seating_plan",
+          courseCode: "",
+          courseName: "Scheduled exam seating",
+          startTime: start,
+          endTime: end,
+          examType,
+          session,
+        });
+      }
+    }
+
+    // 2) venue_sessions bookings (allotment locks) not already covered
+    const vsTimeClause =
+      startTime && endTime
+        ? ` AND NOT (end_time <= ? OR start_time >= ?)`
+        : "";
+    const vsParams =
+      startTime && endTime
+        ? [venueId, dateOnly, startTime, endTime]
+        : [venueId, dateOnly];
+
+    const [sessionRows] = await db.query(
+      `SELECT session_date, start_time, end_time
+       FROM venue_sessions
+       WHERE venue_id = ?
+         AND session_date = ?
+         ${vsTimeClause}
+       ORDER BY start_time ASC`,
+      vsParams
+    );
+
+    for (const s of sessionRows || []) {
+      const start = formatTimeValue(s.start_time ?? s.starttime);
+      const end = formatTimeValue(s.end_time ?? s.endtime);
+      const already = conflicts.some(
+        (c) => c.startTime === start && c.endTime === end
+      );
+      if (already) continue;
+      conflicts.push({
+        source: "venue_session",
+        courseCode: "",
+        courseName: "Booked session",
+        startTime: start,
+        endTime: end,
+        examType: "",
+        session: "",
+      });
+    }
+
+    let status = "AVAILABLE";
+    if (!isActive) status = "DISABLED";
+    else if (conflicts.length > 0) status = "OCCUPIED";
+
+    return {
+      venue: {
+        uuid: venueRow.public_uuid ?? venueRow.publicuuid,
+        name: venueRow.name,
+        code: venueRow.code || venueRow.name,
+        type: venueRow.type,
+        blockName: venueRow.block_name ?? venueRow.blockname ?? null,
+        blockCode: venueRow.block_code ?? venueRow.blockcode ?? null,
+        isActive,
+        isAvailable: isActive,
+      },
+      date: dateOnly,
+      startTime: startTime || null,
+      endTime: endTime || null,
+      status,
+      available: status === "AVAILABLE",
+      conflicts,
+    };
   },
 
   updateDetails: async (id, data, user) => {

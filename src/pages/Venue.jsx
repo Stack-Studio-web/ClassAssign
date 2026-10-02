@@ -15,6 +15,8 @@ import {
   Squares2X2Icon,
   PlusIcon,
   XMarkIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
 } from "@heroicons/react/24/outline";
 
 const BLOCK_STATUSES = [
@@ -76,6 +78,15 @@ export default function AddVenue() {
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
   const [isUndoing, setIsUndoing] = useState(false);
+
+  const [availabilityVenue, setAvailabilityVenue] = useState(null);
+  const [availabilityDate, setAvailabilityDate] = useState("");
+  const [availabilityStart, setAvailabilityStart] = useState("");
+  const [availabilityEnd, setAvailabilityEnd] = useState("");
+  const [availabilityResult, setAvailabilityResult] = useState(null);
+  const [availabilityLoading, setAvailabilityLoading] = useState(false);
+  const [availabilityError, setAvailabilityError] = useState("");
+  const [collapsedBlocks, setCollapsedBlocks] = useState({});
 
   const venueTypes = [
     { value: "", label: "Select Type" },
@@ -231,10 +242,59 @@ export default function AddVenue() {
       await refresh();
     } catch (err) {
       if (err.response?.status !== 401) {
-        toast.error(getApiError(err), "Could not update availability");
+        toast.error(getApiError(err), "Could not update Use It");
       }
     } finally {
       setTogglingVenueId(null);
+    }
+  };
+
+  const openAvailabilityCheck = (venue) => {
+    const today = new Date();
+    const ymd = [
+      today.getFullYear(),
+      String(today.getMonth() + 1).padStart(2, "0"),
+      String(today.getDate()).padStart(2, "0"),
+    ].join("-");
+    setAvailabilityVenue(venue);
+    setAvailabilityDate(ymd);
+    setAvailabilityStart("");
+    setAvailabilityEnd("");
+    setAvailabilityResult(null);
+    setAvailabilityError("");
+  };
+
+  const closeAvailabilityCheck = () => {
+    setAvailabilityVenue(null);
+    setAvailabilityResult(null);
+    setAvailabilityError("");
+  };
+
+  const runAvailabilityCheck = async () => {
+    if (!availabilityVenue?.uuid || !availabilityDate) {
+      setAvailabilityError("Select a date to check.");
+      return;
+    }
+    if ((availabilityStart && !availabilityEnd) || (!availabilityStart && availabilityEnd)) {
+      setAvailabilityError("Provide both start and end time, or leave both empty.");
+      return;
+    }
+    setAvailabilityLoading(true);
+    setAvailabilityError("");
+    try {
+      const params = { date: availabilityDate };
+      if (availabilityStart && availabilityEnd) {
+        params.startTime = availabilityStart;
+        params.endTime = availabilityEnd;
+      }
+      const res = await api.get(`/venues/${availabilityVenue.uuid}/availability`, { params });
+      setAvailabilityResult(res.data);
+    } catch (err) {
+      if (err.response?.status === 401) return;
+      setAvailabilityResult(null);
+      setAvailabilityError(getApiError(err, "Failed to check availability"));
+    } finally {
+      setAvailabilityLoading(false);
     }
   };
 
@@ -493,8 +553,52 @@ export default function AddVenue() {
       );
   }, [venues, searchQuery, sortOrder, filterBlock]);
 
+  const venuesByBlock = useMemo(() => {
+    const map = new Map();
+    for (const b of blocks) {
+      map.set(b.uuid, {
+        key: b.uuid,
+        code: b.code,
+        name: b.name,
+        venueCount: 0,
+        totalCapacity: 0,
+        venues: [],
+      });
+    }
+    const unassigned = {
+      key: "__none__",
+      code: "—",
+      name: "Unassigned / No Block",
+      venueCount: 0,
+      totalCapacity: 0,
+      venues: [],
+    };
+
+    for (const v of filteredVenues) {
+      const target =
+        v.blockUuid && map.has(v.blockUuid) ? map.get(v.blockUuid) : unassigned;
+      target.venues.push(v);
+      target.venueCount += 1;
+      target.totalCapacity += Number(v.capacity) || 0;
+    }
+
+    const groups = [...map.values()].filter((g) => g.venues.length > 0);
+    if (unassigned.venues.length > 0) groups.push(unassigned);
+    return groups;
+  }, [blocks, filteredVenues]);
+
   const rows = Number(form.benchesRow) || 0;
   const cols = Number(form.benchesCol) || 0;
+
+  const formatDisplayTime = (t) => {
+    if (!t) return "—";
+    const s = String(t).slice(0, 5);
+    const [hh, mm] = s.split(":").map(Number);
+    if (Number.isNaN(hh)) return s;
+    const period = hh >= 12 ? "PM" : "AM";
+    const h12 = ((hh + 11) % 12) + 1;
+    return `${h12}:${String(mm || 0).padStart(2, "0")} ${period}`;
+  };
 
   return (
     <div className="min-h-screen bg-gray-50 font-[Inter,sans-serif]">
@@ -1144,8 +1248,8 @@ export default function AddVenue() {
 
       {/* ========== ALL VENUES TAB ========== */}
       {activeTab === "hall" && (
-        <div className="px-4 md:px-8 py-6 md:py-8">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+        <div className="px-4 md:px-8 py-6 md:py-8 space-y-5">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
             <h2 className="text-lg font-semibold text-gray-800">All Venues</h2>
             <div className="flex flex-wrap items-center gap-3">
               <input
@@ -1179,96 +1283,306 @@ export default function AddVenue() {
             </div>
           </div>
 
-          {filteredVenues.length === 0 ? (
+          {venuesByBlock.length === 0 ? (
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center text-gray-500">
               No venues found.
             </div>
           ) : (
-            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="min-w-[1000px] md:min-w-full">
-                  <thead>
-                    <tr className="bg-gray-50 border-b border-gray-100">
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Block</th>
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Name</th>
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Type</th>
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Capacity</th>
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Rows × Cols</th>
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Bench Config</th>
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Available</th>
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {filteredVenues.map((venue) => {
-                      const available = venue.isAvailable !== false;
-                      const canManage = Boolean(venue.canManage);
-                      return (
-                        <tr key={venue.uuid} className="hover:bg-gray-50/50 transition-colors">
-                          <td className="px-6 py-4 text-gray-700">
-                            {venue.blockName || (
-                              <span className="text-gray-400 italic">Unassigned</span>
-                            )}
-                          </td>
-                          <td className="px-6 py-4 font-medium text-gray-800">{venue.name}</td>
-                          <td className="px-6 py-4 text-gray-600 capitalize">{venue.type}</td>
-                          <td className="px-6 py-4 font-medium text-gray-800">{venue.capacity}</td>
-                          <td className="px-6 py-4 text-gray-600">
-                            {venue.benchesRow} × {venue.benchesCol}
-                          </td>
-                          <td className="px-6 py-4 text-sm font-mono text-gray-500">
-                            [{venue.benchConfig?.join(", ") || "N/A"}]
-                          </td>
-                          <td className="px-6 py-4">
-                            <label
-                              className={`inline-flex items-center gap-2 text-sm font-medium text-gray-700 ${
-                                canManage ? "cursor-pointer" : "cursor-not-allowed opacity-70"
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={available}
-                                disabled={!canManage || togglingVenueId === venue.uuid}
-                                onChange={(e) =>
-                                  handleToggleVenueAvailability(venue, e.target.checked)
-                                }
-                                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed"
-                                aria-label="Available"
-                              />
-                              Available
-                            </label>
-                          </td>
-                          <td className="px-6 py-4">
-                            {canManage ? (
-                              <div className="flex flex-wrap gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => handleEdit(venue)}
-                                  className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium transition-all duration-200"
-                                >
-                                  Edit
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={deletingId === venue.uuid}
-                                  onClick={() => handleDelete(venue.uuid)}
-                                  className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium transition-all duration-200"
-                                >
-                                  {deletingId === venue.uuid ? "Deleting..." : "Delete"}
-                                </button>
+            <div className="space-y-4">
+              {venuesByBlock.map((group) => {
+                const collapsed = Boolean(collapsedBlocks[group.key]);
+                return (
+                  <section
+                    key={group.key}
+                    className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden"
+                  >
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCollapsedBlocks((prev) => ({
+                          ...prev,
+                          [group.key]: !prev[group.key],
+                        }))
+                      }
+                      className="w-full flex flex-wrap items-center justify-between gap-2 px-4 sm:px-5 py-3 bg-gray-50/90 border-b border-gray-100 text-left"
+                    >
+                      <div>
+                        <h3 className="text-base font-bold text-gray-900 flex items-center gap-2">
+                          {collapsed ? (
+                            <ChevronRightIcon className="h-4 w-4 text-gray-400 shrink-0" />
+                          ) : (
+                            <ChevronDownIcon className="h-4 w-4 text-gray-400 shrink-0" />
+                          )}
+                          <span>
+                            {group.name}
+                            {group.code && group.code !== "—" ? (
+                              <span className="ml-2 text-sm font-semibold text-blue-600">
+                                ({group.code})
+                              </span>
+                            ) : null}
+                          </span>
+                        </h3>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          {group.venueCount} {group.venueCount === 1 ? "Venue" : "Venues"} ·{" "}
+                          {group.totalCapacity.toLocaleString()} Capacity
+                        </p>
+                      </div>
+                    </button>
+
+                    {!collapsed && (
+                      <ul className="divide-y divide-gray-100">
+                        {group.venues.map((venue) => {
+                          const useIt = venue.isAvailable !== false;
+                          const canManage = Boolean(venue.canManage);
+                          return (
+                            <li key={venue.uuid} className="px-4 sm:px-5 py-4">
+                              <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
+                                <div className="min-w-0">
+                                  <p className="text-base font-bold text-gray-900">{venue.name}</p>
+                                  <p className="text-sm text-gray-600 capitalize mt-0.5">
+                                    {venue.type}
+                                    <span className="text-gray-400"> · </span>
+                                    Capacity: {venue.capacity}
+                                    <span className="text-gray-400"> · </span>
+                                    {venue.benchesRow} × {venue.benchesCol}
+                                  </p>
+
+                                  <div className="mt-3 flex items-center gap-3">
+                                    <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                      Use It
+                                    </span>
+                                    <button
+                                      type="button"
+                                      role="switch"
+                                      aria-checked={useIt}
+                                      aria-label={`Use It ${useIt ? "on" : "off"}`}
+                                      disabled={!canManage || togglingVenueId === venue.uuid}
+                                      onClick={() =>
+                                        handleToggleVenueAvailability(venue, !useIt)
+                                      }
+                                      className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed ${
+                                        useIt ? "bg-emerald-500" : "bg-gray-300"
+                                      } ${canManage ? "cursor-pointer" : "cursor-not-allowed"}`}
+                                    >
+                                      <span
+                                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
+                                          useIt ? "translate-x-6" : "translate-x-1"
+                                        }`}
+                                      />
+                                    </button>
+                                    <span
+                                      className={`text-xs font-semibold ${
+                                        useIt ? "text-emerald-700" : "text-gray-500"
+                                      }`}
+                                    >
+                                      {useIt ? "ON" : "OFF"}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <div className="flex flex-wrap gap-2 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => openAvailabilityCheck(venue)}
+                                    className="px-3 py-1.5 rounded-xl border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 text-sm font-medium transition-all"
+                                  >
+                                    Check Availability
+                                  </button>
+                                  {canManage && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleEdit(venue)}
+                                        className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium transition-all"
+                                      >
+                                        Edit
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={deletingId === venue.uuid}
+                                        onClick={() => handleDelete(venue.uuid)}
+                                        className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium transition-all"
+                                      >
+                                        {deletingId === venue.uuid ? "Deleting..." : "Delete"}
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
                               </div>
-                            ) : (
-                              <span className="text-xs text-gray-400">View only</span>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </section>
+                );
+              })}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ========== CHECK AVAILABILITY MODAL ========== */}
+      {availabilityVenue && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+          <div className="absolute inset-0" onClick={closeAvailabilityCheck} aria-hidden />
+          <div className="relative w-full max-w-lg bg-white rounded-2xl shadow-xl border border-gray-100 p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-bold text-gray-900">Check Venue Availability</h3>
+                <p className="text-sm text-gray-500 mt-0.5">Date-specific schedule check</p>
+              </div>
+              <button
+                type="button"
+                onClick={closeAvailabilityCheck}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100"
+                aria-label="Close"
+              >
+                <XMarkIcon className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="rounded-xl bg-gray-50 border border-gray-100 px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Venue</p>
+              <p className="text-base font-bold text-gray-900 mt-0.5">{availabilityVenue.name}</p>
+              <p className="text-sm text-gray-600">
+                {availabilityVenue.blockName || "Unassigned / No Block"}
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-600 mb-1.5">Select Date</label>
+              <input
+                type="date"
+                value={availabilityDate}
+                onChange={(e) => {
+                  setAvailabilityDate(e.target.value);
+                  setAvailabilityResult(null);
+                }}
+                className="w-full h-11 px-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1.5">
+                  Start Time <span className="text-gray-400 font-normal">(optional)</span>
+                </label>
+                <input
+                  type="time"
+                  value={availabilityStart}
+                  onChange={(e) => {
+                    setAvailabilityStart(e.target.value);
+                    setAvailabilityResult(null);
+                  }}
+                  className="w-full h-11 px-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1.5">
+                  End Time <span className="text-gray-400 font-normal">(optional)</span>
+                </label>
+                <input
+                  type="time"
+                  value={availabilityEnd}
+                  onChange={(e) => {
+                    setAvailabilityEnd(e.target.value);
+                    setAvailabilityResult(null);
+                  }}
+                  className="w-full h-11 px-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={runAvailabilityCheck}
+              disabled={availabilityLoading || !availabilityDate}
+              className="w-full h-11 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold"
+            >
+              {availabilityLoading ? "Checking…" : "Check"}
+            </button>
+
+            {availabilityError && (
+              <p className="text-sm text-red-700 bg-red-50 border border-red-100 rounded-xl px-3 py-2">
+                {availabilityError}
+              </p>
+            )}
+
+            {availabilityResult && (
+              <div className="rounded-xl border border-gray-100 p-4 space-y-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Status</p>
+                {availabilityResult.status === "DISABLED" && (
+                  <div className="rounded-xl bg-gray-100 border border-gray-200 px-4 py-3">
+                    <p className="text-sm font-bold text-gray-700">DISABLED</p>
+                    <p className="text-sm text-gray-600 mt-1">
+                      This venue is currently disabled (Use It is OFF) and cannot be used for new
+                      allocations.
+                    </p>
+                  </div>
+                )}
+                {availabilityResult.status === "AVAILABLE" && (
+                  <div className="rounded-xl bg-emerald-50 border border-emerald-100 px-4 py-3">
+                    <p className="text-sm font-bold text-emerald-800">AVAILABLE</p>
+                    <p className="text-sm text-emerald-700 mt-1">
+                      No timetable/exam session is scheduled for this venue on this date
+                      {availabilityStart && availabilityEnd
+                        ? ` between ${formatDisplayTime(availabilityStart)} and ${formatDisplayTime(availabilityEnd)}`
+                        : ""}
+                      .
+                    </p>
+                  </div>
+                )}
+                {availabilityResult.status === "OCCUPIED" && (
+                  <div className="space-y-3">
+                    <div className="rounded-xl bg-red-50 border border-red-100 px-4 py-3">
+                      <p className="text-sm font-bold text-red-800">OCCUPIED</p>
+                      <p className="text-sm text-red-700 mt-1">
+                        Scheduled session{(availabilityResult.conflicts || []).length === 1 ? "" : "s"} for
+                        this venue.
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                        Scheduled Session{(availabilityResult.conflicts || []).length === 1 ? "" : "s"}
+                      </p>
+                      <ul className="space-y-2">
+                        {(availabilityResult.conflicts || []).map((c, idx) => (
+                          <li
+                            key={`${c.startTime}-${c.courseCode}-${idx}`}
+                            className="rounded-xl border border-gray-100 bg-white px-3 py-2.5 text-sm"
+                          >
+                            <p className="font-semibold text-gray-900">
+                              {formatDisplayTime(c.startTime)} – {formatDisplayTime(c.endTime)}
+                            </p>
+                            {(c.courseCode || c.courseName) && (
+                              <p className="text-gray-700 mt-0.5">
+                                {c.courseCode ? `${c.courseCode} — ` : ""}
+                                {c.courseName || "Course"}
+                              </p>
+                            )}
+                            {c.examType ? (
+                              <p className="text-gray-500 text-xs mt-0.5">Exam: {c.examType}</p>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-end pt-1">
+              <button
+                type="button"
+                onClick={closeAvailabilityCheck}
+                className="h-11 px-4 rounded-xl border border-gray-200 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+              >
+                Close
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
