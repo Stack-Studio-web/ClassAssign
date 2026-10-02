@@ -294,16 +294,7 @@ const Allotment = () => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [vRes, fRes] = await Promise.all([
-          api.get("/venues"),
-          api.get("/faculty")
-        ]);
-
-        setVenues(
-          (vRes.data || []).filter(
-            (v) => v.isAvailable !== false && v.useForAllotment !== false
-          )
-        );
+        const fRes = await api.get("/faculty");
         setAllFaculty(fRes.data);
       } catch (err) {
         if (err.response?.status === 401) {
@@ -664,61 +655,74 @@ const Allotment = () => {
     return `${d}/${mo}/${y}`;
   };
 
-  // Time-slot venue availability for the selected exam window (not whole-day block)
+  // Time-slot availability for the global Use-for-Allotment pool (not whole-day block)
   useEffect(() => {
     const checkVenueSlots = async () => {
-      if (!examDate || !examStartTime || !examEndTime || !hasWriteAccess) {
+      if (!hasWriteAccess) {
         setVenueSlotStatus({});
         setVenueSlotWarning(null);
-        return;
-      }
-      if (venues.length === 0) {
-        setVenueSlotStatus({});
         return;
       }
 
       setIsCheckingVenueSlots(true);
       try {
-        const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
-        const res = await api.post("/venues/check-slot-availability", {
-          date: dateOnly,
-          startTime: examStartTime,
-          endTime: examEndTime,
-          venueUuids: venues.map((v) => v.uuid),
-        });
+        const dateOnly =
+          examDate && examDate.includes("T") ? examDate.split("T")[0] : examDate || null;
+        const params = {};
+        if (dateOnly) params.date = dateOnly;
+        if (examStartTime && examEndTime) {
+          params.startTime = examStartTime;
+          params.endTime = examEndTime;
+        }
+
+        const res = await api.get("/venues/allotment", { params });
+        const list = Array.isArray(res.data?.venues) ? res.data.venues : [];
+        setVenues(list);
+
         const map = {};
-        for (const row of res.data?.venues || []) {
-          map[row.uuid] = row;
+        for (const row of list) {
+          map[row.uuid] = {
+            uuid: row.uuid,
+            name: row.name,
+            capacity: row.capacity,
+            status: row.status,
+            available: row.available === true,
+            occupiedFrom: row.occupiedFrom,
+            occupiedUntil: row.occupiedUntil,
+            conflicts: row.conflicts || [],
+            message: row.message,
+          };
         }
         setVenueSlotStatus(map);
 
         const dropped = selectedVenues.filter(
           (v) => map[v.uuid] && map[v.uuid].available === false
         );
-        if (dropped.length > 0) {
+        if (dropped.length > 0 && dateOnly && examStartTime && examEndTime) {
           const st = map[dropped[0].uuid];
-          const conflict = st?.conflicts?.[0];
           setVenueSlotWarning({
             venueName: dropped[0].name,
             date: dateOnly,
-            startTime: conflict?.startTime || examStartTime,
-            endTime: conflict?.endTime || examEndTime,
-            examType: conflict?.examType || "",
+            startTime: st?.occupiedFrom || examStartTime,
+            endTime: st?.occupiedUntil || examEndTime,
+            examType: st?.conflicts?.[0]?.examType || "",
             message: st?.message,
           });
         } else {
           setVenueSlotWarning(null);
         }
 
-        // Drop occupied venues from manual selection
         setSelectedVenues((prev) =>
           prev.filter((v) => {
+            const stillInPool = list.some((x) => String(x.uuid) === String(v.uuid));
             const st = map[v.uuid];
-            return !st || st.available;
+            if (!stillInPool) return false;
+            if (st && st.available === false) return false;
+            return true;
           })
         );
       } catch (err) {
-        console.error("Venue slot availability check failed:", err);
+        console.error("Venue allotment pool / slot check failed:", err);
         setVenueSlotStatus({});
         setVenueSlotWarning(null);
       } finally {
@@ -727,7 +731,7 @@ const Allotment = () => {
     };
 
     checkVenueSlots();
-  }, [examDate, examStartTime, examEndTime, venues, hasWriteAccess]);
+  }, [examDate, examStartTime, examEndTime, hasWriteAccess]);
 
   const availableVenuesForSlot = useMemo(
     () =>
@@ -1338,19 +1342,32 @@ const Allotment = () => {
       setError("");
       setSelectedVenues([]);
 
-      // Refresh venue time-slot status so newly saved allotments show as Occupied
+      // Refresh global allotment pool / time-slot status after save
       try {
         const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
-        if (dateOnly && examStartTime && examEndTime && venues.length) {
-          const slotRes = await api.post("/venues/check-slot-availability", {
-            date: dateOnly,
-            startTime: examStartTime,
-            endTime: examEndTime,
-            venueUuids: venues.map((v) => v.uuid),
+        if (dateOnly && examStartTime && examEndTime) {
+          const slotRes = await api.get("/venues/allotment", {
+            params: {
+              date: dateOnly,
+              startTime: examStartTime,
+              endTime: examEndTime,
+            },
           });
+          const list = Array.isArray(slotRes.data?.venues) ? slotRes.data.venues : [];
+          setVenues(list);
           const map = {};
-          for (const row of slotRes.data?.venues || []) {
-            map[row.uuid] = row;
+          for (const row of list) {
+            map[row.uuid] = {
+              uuid: row.uuid,
+              name: row.name,
+              capacity: row.capacity,
+              status: row.status,
+              available: row.available === true,
+              occupiedFrom: row.occupiedFrom,
+              occupiedUntil: row.occupiedUntil,
+              conflicts: row.conflicts || [],
+              message: row.message,
+            };
           }
           setVenueSlotStatus(map);
         }
@@ -1820,6 +1837,12 @@ const Allotment = () => {
                       </div>
                     ) : null}
                     <div className="space-y-2 max-h-56 overflow-y-auto">
+                      {venues.length === 0 ? (
+                        <p className="text-sm text-gray-500">
+                          No venues in the global Use for Allotment pool. Enable venues in Venue
+                          Management (Use It ON and Use for Allotment checked).
+                        </p>
+                      ) : null}
                       {venues.map((v) => {
                         const isChecked = selectedVenues.some((vx) => vx.uuid === v.uuid);
                         const st = venueSlotStatus[v.uuid];
@@ -1856,9 +1879,11 @@ const Allotment = () => {
                                 occupied ? (
                                   <p className="text-xs font-semibold text-red-700 mt-1">
                                     Occupied
-                                    {conflict?.startTime && conflict?.endTime
-                                      ? ` · ${formatSlotTime(conflict.startTime)} – ${formatSlotTime(conflict.endTime)}`
-                                      : ""}
+                                    {st?.occupiedFrom && st?.occupiedUntil
+                                      ? ` · ${formatSlotTime(st.occupiedFrom)} – ${formatSlotTime(st.occupiedUntil)}`
+                                      : conflict?.startTime && conflict?.endTime
+                                        ? ` · ${formatSlotTime(conflict.startTime)} – ${formatSlotTime(conflict.endTime)}`
+                                        : ""}
                                   </p>
                                 ) : (
                                   <p className="text-xs font-semibold text-emerald-700 mt-1">

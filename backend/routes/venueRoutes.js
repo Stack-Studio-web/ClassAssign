@@ -374,7 +374,39 @@ router.patch(
   }
 );
 
-/** Use for Allotment eligibility (does not reserve a time slot). */
+/** Global Use for Allotment pool for Allotment module (all FIs share this list). */
+router.get("/allotment", sessionAuth, checkRole(VENUE_ROLES), async (req, res) => {
+  try {
+    const date = req.query.date || null;
+    const startTime = req.query.startTime || req.query.start_time || null;
+    const endTime = req.query.endTime || req.query.end_time || null;
+    if ((startTime && !endTime) || (!startTime && endTime)) {
+      return res.status(400).json({
+        error: "Provide both startTime and endTime, or neither",
+      });
+    }
+    if ((startTime || endTime) && !date) {
+      return res.status(400).json({
+        error: "date is required when startTime/endTime are provided",
+      });
+    }
+    const result = await Venue.getAllotmentPool({
+      date,
+      startTime,
+      endTime,
+      user: currentUser(req),
+    });
+    res.json(result);
+  } catch (err) {
+    console.error("ALLOTMENT VENUE POOL ERROR:", err);
+    res.status(500).json({
+      error: "Failed to load allotment venues",
+      details: err.message,
+    });
+  }
+});
+
+/** Use for Allotment — GLOBAL venue flag (any admin / faculty_incharge). */
 router.put(
   "/:uuid/use-for-allotment",
   sessionAuth,
@@ -427,8 +459,7 @@ router.patch(
 
 /**
  * Batch time-slot availability for Allotment venue list.
- * Body: { date, startTime, endTime, venueUuids?: string[] }
- * Occupied only when an existing saved allotment overlaps the requested interval.
+ * Same global pool as GET /venues/allotment (Use It + Use for Allotment).
  */
 router.post(
   "/check-slot-availability",
@@ -436,49 +467,38 @@ router.post(
   checkRole(VENUE_ROLES),
   async (req, res) => {
     try {
-      const { date, startTime, endTime, venueUuids } = req.body || {};
+      const { date, startTime, endTime } = req.body || {};
       if (!date || !startTime || !endTime) {
         return res.status(400).json({
           error: "date, startTime, and endTime are required",
         });
       }
 
-      const dateOnly = String(date).includes("T") ? String(date).split("T")[0] : String(date);
-      const allVenues = await Venue.getAll({ user: currentUser(req) });
-      const wanted =
-        Array.isArray(venueUuids) && venueUuids.length > 0
-          ? new Set(venueUuids.map((u) => String(u)))
-          : null;
+      const result = await Venue.getAllotmentPool({
+        date,
+        startTime,
+        endTime,
+        user: currentUser(req),
+      });
 
-      const results = [];
-      for (const v of allVenues) {
-        if (wanted && !wanted.has(String(v.uuid))) continue;
-        if (v.isAvailable === false) continue;
-        if (v.useForAllotment === false) continue;
-
-        const venueId = await resolveInternalId(TABLE.venues, v.uuid);
-        if (venueId == null) continue;
-
-        const check = await Venue.checkAllotmentSlot(
-          venueId,
-          dateOnly,
-          startTime,
-          endTime
-        );
-        results.push({
+      res.json({
+        date: result.date,
+        startTime: result.startTime,
+        endTime: result.endTime,
+        venues: (result.venues || []).map((v) => ({
           uuid: v.uuid,
           name: v.name,
           capacity: v.capacity,
-          useIt: v.isAvailable !== false,
-          useForAllotment: v.useForAllotment !== false,
-          status: check.status,
-          available: check.ok,
-          conflicts: check.conflicts,
-          message: check.message,
-        });
-      }
-
-      res.json({ date: dateOnly, startTime, endTime, venues: results });
+          useIt: true,
+          useForAllotment: true,
+          status: v.status,
+          available: v.available === true,
+          occupiedFrom: v.occupiedFrom,
+          occupiedUntil: v.occupiedUntil,
+          conflicts: v.conflicts,
+          message: v.message,
+        })),
+      });
     } catch (err) {
       console.error("CHECK SLOT AVAILABILITY ERROR:", err);
       res.status(500).json({

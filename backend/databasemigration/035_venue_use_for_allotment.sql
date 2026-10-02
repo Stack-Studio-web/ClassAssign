@@ -1,8 +1,5 @@
--- Use for Allotment: eligibility for seating generation (does NOT reserve a time slot).
--- Reservation comes only from saved seating plans + venue_sessions time intervals.
+-- Use for Allotment: GLOBAL venue flag for Allotment module pool.
+-- Does NOT reserve a time slot. Default OFF — must be explicitly enabled.
+-- Not creator-owned and not per-faculty.
 ALTER TABLE venues
-  ADD COLUMN IF NOT EXISTS use_for_allotment BOOLEAN NOT NULL DEFAULT TRUE;
-
-UPDATE venues
-SET use_for_allotment = TRUE
-WHERE use_for_allotment IS NULL;
+  ADD COLUMN IF NOT EXISTS use_for_allotment BOOLEAN NOT NULL DEFAULT FALSE;

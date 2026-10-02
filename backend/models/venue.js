@@ -28,8 +28,10 @@ function toVenueRow(row, { canManage = false } = {}) {
   const benchesRow = Number(row.benchesrow ?? row.benchesRow ?? 0) || 1;
   const benchesCol = Number(row.benchescol ?? row.benchesCol ?? 0) || 1;
   const isAvailable = (row.isavailable ?? row.isAvailable ?? true) !== false;
-  const useForAllotment =
-    (row.use_for_allotment ?? row.useforallotment ?? row.useForAllotment ?? true) !== false;
+  // Strict: only explicit true is in the global allotment pool (default OFF)
+  const useForAllotment = Boolean(
+    row.use_for_allotment ?? row.useforallotment ?? row.useForAllotment ?? false
+  );
   return {
     uuid: row.public_uuid ?? row.publicuuid ?? row.uuid,
     name: row.name,
@@ -86,7 +88,7 @@ const Venue = {
       benchesCol,
       benchConfig,
       isAvailable = true,
-      useForAllotment = true,
+      useForAllotment = false,
       sessions = [],
       blockId,
       code,
@@ -113,7 +115,7 @@ const Venue = {
       benchesRow,
       benchesCol,
       isAvailable !== false,
-      useForAllotment !== false,
+      useForAllotment === true,
       blockId || null,
       code || name,
     ];
@@ -233,7 +235,7 @@ const Venue = {
         v.benches_row AS benchesRow,
         v.benches_col AS benchesCol,
         v.is_available AS isAvailable,
-        COALESCE(v.use_for_allotment, TRUE) AS useForAllotment,
+        COALESCE(v.use_for_allotment, FALSE) AS useForAllotment,
         v.block_id,
         v.owner_user_id,
         u.username AS creator_username,
@@ -395,7 +397,7 @@ const Venue = {
   /** Lock venue row so concurrent saves serialize conflict checks. */
   lockForUpdate: async (venueId, executor) => {
     const [rows] = await executor.query(
-      `SELECT id, name, is_available, COALESCE(use_for_allotment, TRUE) AS use_for_allotment
+      `SELECT id, name, is_available, COALESCE(use_for_allotment, FALSE) AS use_for_allotment
        FROM venues WHERE id = ? FOR UPDATE`,
       [venueId]
     );
@@ -422,8 +424,9 @@ const Venue = {
 
     const venueName = venueRow.name || "";
     const useIt = (venueRow.is_available ?? venueRow.isavailable ?? true) !== false;
-    const useForAllotment =
-      (venueRow.use_for_allotment ?? venueRow.useforallotment ?? true) !== false;
+    const useForAllotment = Boolean(
+      venueRow.use_for_allotment ?? venueRow.useforallotment ?? false
+    );
 
     if (!useIt) {
       return {
@@ -441,7 +444,7 @@ const Venue = {
         status: "NOT_ELIGIBLE",
         conflicts: [],
         venueName,
-        message: `${venueName} is not marked Use for Allotment.`,
+        message: `${venueName} is not in the global Use for Allotment pool.`,
       };
     }
 
@@ -562,22 +565,122 @@ const Venue = {
   },
 
   /**
-   * Creator-only (or admin). Updates "Use for Allotment" eligibility.
-   * Does not reserve any date/time slot.
+   * Global "Use for Allotment" flag — venue-level, shared by all Faculty Incharges.
+   * Any authorized Venue Management role (admin / faculty_incharge) may toggle.
+   * Not creator-owned. Does not reserve a date/time slot.
    */
   setUseForAllotment: async (id, useForAllotment, user) => {
     const row = await Venue.findById(id);
     if (!row) return false;
-    if (!canManageVenue(user, row)) {
-      const err = new Error("Only the creator can change Use for Allotment for this venue");
+    const role = user?.role;
+    if (role !== "admin" && role !== "faculty_incharge") {
+      const err = new Error("Not authorized to change Use for Allotment");
       err.statusCode = 403;
       throw err;
     }
     await db.query(
       `UPDATE venues SET use_for_allotment = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-      [useForAllotment !== false, id]
+      [useForAllotment === true, id]
     );
     return true;
+  },
+
+  /**
+   * Global allotment venue pool: Use It ON + Use for Allotment ON.
+   * Optionally annotate each venue with time-slot availability for date/start/end.
+   * Shared by all Faculty Incharges — not creator-scoped.
+   */
+  getAllotmentPool: async ({ date = null, startTime = null, endTime = null, user = null } = {}) => {
+    const all = await Venue.getAll({ user });
+    const pool = (all || []).filter(
+      (v) => v.isAvailable !== false && v.useForAllotment === true
+    );
+
+    const dateOnly = date
+      ? String(date).includes("T")
+        ? String(date).split("T")[0]
+        : String(date).trim()
+      : null;
+    const hasSlot = Boolean(dateOnly && startTime && endTime);
+
+    const uuidToId = new Map();
+    if (pool.length > 0) {
+      const placeholders = pool.map(() => "?").join(", ");
+      const [idRows] = await db.query(
+        `SELECT id, public_uuid FROM venues WHERE public_uuid IN (${placeholders})`,
+        pool.map((v) => v.uuid)
+      );
+      for (const r of idRows || []) {
+        uuidToId.set(String(r.public_uuid ?? r.publicuuid), r.id);
+      }
+    }
+
+    const results = [];
+    for (const v of pool) {
+      const venueId = uuidToId.get(String(v.uuid));
+      if (venueId == null) continue;
+
+      if (!hasSlot) {
+        results.push({
+          uuid: v.uuid,
+          name: v.name,
+          capacity: v.capacity,
+          type: v.type,
+          benchesRow: v.benchesRow,
+          benchesCol: v.benchesCol,
+          benchConfig: v.benchConfig,
+          blockUuid: v.blockUuid,
+          blockName: v.blockName,
+          blockCode: v.blockCode,
+          isAvailable: true,
+          isActive: true,
+          useForAllotment: true,
+          available: null,
+          status: "PENDING_SLOT",
+          occupiedFrom: null,
+          occupiedUntil: null,
+          conflicts: [],
+          message: "Select date and time to check availability",
+        });
+        continue;
+      }
+
+      const check = await Venue.checkAllotmentSlot(
+        venueId,
+        dateOnly,
+        startTime,
+        endTime
+      );
+      const first = check.conflicts?.[0];
+      results.push({
+        uuid: v.uuid,
+        name: v.name,
+        capacity: v.capacity,
+        type: v.type,
+        benchesRow: v.benchesRow,
+        benchesCol: v.benchesCol,
+        benchConfig: v.benchConfig,
+        blockUuid: v.blockUuid,
+        blockName: v.blockName,
+        blockCode: v.blockCode,
+        isAvailable: true,
+        isActive: true,
+        useForAllotment: true,
+        available: check.ok,
+        status: check.status,
+        occupiedFrom: first?.startTime || null,
+        occupiedUntil: first?.endTime || null,
+        conflicts: check.conflicts,
+        message: check.message,
+      });
+    }
+
+    return {
+      date: dateOnly,
+      startTime: hasSlot ? formatTimeValue(startTime) : null,
+      endTime: hasSlot ? formatTimeValue(endTime) : null,
+      venues: results,
+    };
   },
 
   /**
@@ -590,8 +693,9 @@ const Venue = {
     if (!venueRow) return null;
 
     const isActive = (venueRow.is_available ?? venueRow.isavailable ?? true) !== false;
-    const useForAllotment =
-      (venueRow.use_for_allotment ?? venueRow.useforallotment ?? true) !== false;
+    const useForAllotment = Boolean(
+      venueRow.use_for_allotment ?? venueRow.useforallotment ?? false
+    );
     const dateOnly = String(date || "").includes("T")
       ? String(date).split("T")[0]
       : String(date || "").trim();

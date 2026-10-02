@@ -87,6 +87,7 @@ export default function AddVenue() {
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [availabilityError, setAvailabilityError] = useState("");
   const [collapsedBlocks, setCollapsedBlocks] = useState({});
+  const [canToggleUseForAllotment, setCanToggleUseForAllotment] = useState(false);
 
   const venueTypes = [
     { value: "", label: "Select Type" },
@@ -94,6 +95,16 @@ export default function AddVenue() {
     { value: "lab", label: "Lab" },
     { value: "hall", label: "Hall" },
   ];
+
+  useEffect(() => {
+    try {
+      const user = JSON.parse(sessionStorage.getItem("user") || "null");
+      const role = user?.role;
+      setCanToggleUseForAllotment(role === "admin" || role === "faculty_incharge");
+    } catch {
+      setCanToggleUseForAllotment(false);
+    }
+  }, []);
 
   useEffect(() => {
     const rows = Number(form.benchesRow) || 0;
@@ -250,7 +261,7 @@ export default function AddVenue() {
   };
 
   const handleToggleUseForAllotment = async (venue, checked) => {
-    if (!venue.canManage) return;
+    if (!canToggleUseForAllotment) return;
     const id = venue.uuid;
     setTogglingVenueId(id);
     try {
@@ -1349,7 +1360,7 @@ export default function AddVenue() {
                       <ul className="divide-y divide-gray-100">
                         {group.venues.map((venue) => {
                           const useIt = venue.isAvailable !== false;
-                          const useForAllotment = venue.useForAllotment !== false;
+                          const useForAllotment = venue.useForAllotment === true;
                           const canManage = Boolean(venue.canManage);
                           return (
                             <li key={venue.uuid} className="px-4 sm:px-5 py-4">
@@ -1399,16 +1410,17 @@ export default function AddVenue() {
 
                                     <label
                                       className={`inline-flex items-center gap-2 text-xs font-semibold text-gray-700 ${
-                                        !canManage || !useIt
+                                        !canToggleUseForAllotment || !useIt
                                           ? "opacity-60 cursor-not-allowed"
                                           : "cursor-pointer"
                                       }`}
+                                      title="Global allotment pool — all Faculty Incharges share this setting"
                                     >
                                       <input
                                         type="checkbox"
                                         checked={useForAllotment}
                                         disabled={
-                                          !canManage ||
+                                          !canToggleUseForAllotment ||
                                           !useIt ||
                                           togglingVenueId === venue.uuid
                                         }
@@ -1421,9 +1433,9 @@ export default function AddVenue() {
                                     </label>
                                   </div>
                                   <p className="mt-1.5 text-[11px] text-gray-500 max-w-md">
-                                    Use for Allotment only allows seating generation. It does not
-                                    reserve the venue. A time slot is reserved only after Save
-                                    Allotment.
+                                    Use for Allotment is global: any Faculty Incharge can enable it,
+                                    and all Faculty Incharges then see the venue in Allotment.
+                                    It does not reserve a time slot.
                                   </p>
                                 </div>
 

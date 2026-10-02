@@ -100,8 +100,16 @@ async function ensureBlockVenueSchema() {
   await ensureColumn(
     "venues",
     "use_for_allotment",
-    "use_for_allotment BOOLEAN NOT NULL DEFAULT TRUE"
+    "use_for_allotment BOOLEAN NOT NULL DEFAULT FALSE"
   );
+
+  try {
+    await db.query(
+      `ALTER TABLE venues ALTER COLUMN use_for_allotment SET DEFAULT FALSE`
+    );
+  } catch {
+    /* ignore */
+  }
 
   try {
     await db.query(`CREATE INDEX IF NOT EXISTS idx_venues_block_id ON venues (block_id)`);
