@@ -2,6 +2,13 @@ import React, { useMemo, useRef, useState } from "react";
 import { useReactToPrint } from "react-to-print";
 import LogoKSI from "../assets/logo KSI.png";
 import LogoKCT from "../assets/logo.png";
+import HalloraVerifiedFooter from "./HalloraVerifiedFooter";
+import {
+  createReportVerification,
+  HALLORA_VERIFY_PRINT_CSS,
+  sha256Hex,
+  finalizeReportVerification,
+} from "../lib/reportVerification";
 
 const currentYear = new Date().getFullYear();
 const AY_OPTIONS = Array.from({ length: 6 }, (_, i) => currentYear - 2 + i);
@@ -181,10 +188,37 @@ const FacultySchedule = ({ plans, onClose }) => {
 
   const currentLogo = logoType === "KCT" ? LogoKCT : LogoKSI;
 
+  const [verification, setVerification] = useState(null);
+  const [verifying, setVerifying] = useState(false);
+
   const handlePrint = useReactToPrint({
     contentRef: printRef,
     documentTitle: "Faculty_Invigilation_Schedule",
   });
+
+  const runVerifiedPrint = async () => {
+    setVerifying(true);
+    try {
+      const v = await createReportVerification("Faculty Invigilation Schedule", {
+        planCount: Array.isArray(plans) ? plans.length : 0,
+      });
+      setVerification(v);
+      // Allow footer to render, then print
+      await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 50)));
+      handlePrint();
+      // Audit fingerprint of printable HTML (browser Save-as-PDF has no byte access)
+      if (printRef.current && v?.uuid) {
+        const html = printRef.current.innerHTML || "";
+        const hash = await sha256Hex(html);
+        await finalizeReportVerification(v.uuid, hash).catch(() => null);
+      }
+    } catch (err) {
+      console.error("Faculty schedule verification failed:", err);
+      handlePrint();
+    } finally {
+      setVerifying(false);
+    }
+  };
 
   const scheduleByDate = useMemo(() => buildScheduleFromPlans(plans), [plans]);
 
@@ -358,18 +392,20 @@ const FacultySchedule = ({ plans, onClose }) => {
             </select>
           </label>
           <button
-            onClick={handlePrint}
+            onClick={runVerifiedPrint}
+            disabled={verifying}
             style={{
               padding: "10px 20px",
               background: "#007bff",
               color: "white",
               border: "none",
               borderRadius: "5px",
-              cursor: "pointer",
+              cursor: verifying ? "wait" : "pointer",
               fontWeight: "bold",
+              opacity: verifying ? 0.7 : 1,
             }}
           >
-            Print Schedule
+            {verifying ? "Preparing…" : "Print Schedule"}
           </button>
           <button
             onClick={onClose}
@@ -387,6 +423,7 @@ const FacultySchedule = ({ plans, onClose }) => {
         </div>
 
         <div ref={printRef}>
+          <style>{HALLORA_VERIFY_PRINT_CSS}</style>
           <style>{`
             @media print {
               @page {
@@ -631,6 +668,7 @@ const FacultySchedule = ({ plans, onClose }) => {
               );
             })
           )}
+          {verification ? <HalloraVerifiedFooter verification={verification} /> : null}
         </div>
       </div>
     </div>

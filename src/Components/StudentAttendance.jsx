@@ -9,6 +9,12 @@ import {
   generateAttendanceSheetPdfBlob,
   preloadAttendanceLogos,
 } from "../lib/generateAttendanceSheetPdf";
+import {
+  createReportVerification,
+  finalizePdfVerification,
+  HALLORA_VERIFY_PRINT_CSS,
+} from "../lib/reportVerification";
+import HalloraVerifiedFooter from "./HalloraVerifiedFooter";
 
 const normalizeDateToYYYYMMDD = (dateInput) => {
   if (!dateInput) return null;
@@ -41,7 +47,7 @@ export const StudentAttendance = () => {
   const [loadingSheets, setLoadingSheets] = useState(false);
   const [zipping, setZipping] = useState(false);
   const [error, setError] = useState(null);
-  const [showPreview, setShowPreview] = useState(false);
+  const [previewVerification, setPreviewVerification] = useState(null);
 
   const [filters, setFilters] = useState({
     examType: "",
@@ -296,6 +302,19 @@ export const StudentAttendance = () => {
   const handlePreview = async () => {
     const data = await fetchBulkSheets();
     if (data?.sheets?.length) {
+      try {
+        const v = await createReportVerification("Attendance Sheet", {
+          examType: filters.examType,
+          date: filters.date,
+          session: filters.session,
+          examTime: filters.examTime,
+          venueCount: data.sheets.length,
+        });
+        setPreviewVerification(v);
+      } catch (err) {
+        console.error("Verification create failed:", err);
+        setPreviewVerification(null);
+      }
       setShowPreview(true);
     }
   };
@@ -337,8 +356,22 @@ export const StudentAttendance = () => {
 
       for (const sheet of data.sheets) {
         try {
-          // Native text/vector PDF — same layout, no page screenshot
-          const pdfBlob = await generateAttendanceSheetPdfBlob(sheet, category, logos);
+          const verification = await createReportVerification("Attendance Sheet", {
+            hallNo: sheet.hallNo,
+            examType: category,
+            date: filters.date,
+            session: filters.session,
+            examTime: filters.examTime,
+          });
+
+          const pdfBlob = await generateAttendanceSheetPdfBlob(
+            sheet,
+            category,
+            logos,
+            verification
+          );
+          await finalizePdfVerification(verification, pdfBlob);
+
           const fileName = `${safeFilePart(sheet.hallNo)}_Attendance_Sheet.pdf`;
           folder.file(fileName, pdfBlob);
         } catch (venueErr) {
@@ -618,6 +651,7 @@ export const StudentAttendance = () => {
       {/* PRINTABLE AREA — existing format, one sheet per venue */}
       <div ref={printRef} className="print:m-0 attendance-sheet-root bg-white">
         <style>{ATTENDANCE_SHEET_PRINT_STYLES}</style>
+        <style>{HALLORA_VERIFY_PRINT_CSS}</style>
         {showPreview &&
           sheets.map((sheet) => (
             <AttendanceSheetPrintView
@@ -626,6 +660,9 @@ export const StudentAttendance = () => {
               category={categoryLabel}
             />
           ))}
+        {showPreview && previewVerification ? (
+          <HalloraVerifiedFooter verification={previewVerification} />
+        ) : null}
         {!showPreview && (
           <div className="text-center p-8 text-gray-500 print:hidden">
             Select Exam Type, Date, Session, and Exam Time, then click Preview.

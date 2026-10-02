@@ -6,6 +6,13 @@ import { useReactToPrint } from "react-to-print";
 import { useAcademicSession } from "../context/AcademicSessionContext";
 import LogoKCT from "../assets/logo.png";
 import LogoKSI from "../assets/logo KSI.png";
+import HalloraVerifiedFooter from "../Components/HalloraVerifiedFooter";
+import {
+  createReportVerification,
+  finalizeReportVerification,
+  HALLORA_VERIFY_PRINT_CSS,
+  sha256Hex,
+} from "../lib/reportVerification";
 
 const getNumericPart = (rollNo) => {
   if (!rollNo) return NaN;
@@ -114,11 +121,35 @@ const ExamHallAllotment = () => {
   const currentLogo = logoType === "KSI" ? LogoKSI : LogoKCT;
 
   const printRef = useRef();
+  const [verification, setVerification] = useState(null);
+  const [exporting, setExporting] = useState(false);
 
   const handlePrint = useReactToPrint({
     contentRef: printRef,
     documentTitle: "Exam_Hall_Allotment",
   });
+
+  const runVerifiedExport = async () => {
+    setExporting(true);
+    try {
+      const v = await createReportVerification("Exam Hall Allotment", {
+        date: filters?.date || null,
+        session: filters?.session || null,
+      });
+      setVerification(v);
+      await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 50)));
+      handlePrint();
+      if (printRef.current && v?.uuid) {
+        const hash = await sha256Hex(printRef.current.innerHTML || "");
+        await finalizeReportVerification(v.uuid, hash).catch(() => null);
+      }
+    } catch (err) {
+      console.error("Hall export verification failed:", err);
+      handlePrint();
+    } finally {
+      setExporting(false);
+    }
+  };
 
   useEffect(() => {
     // ✅ 3. Identify role from session
@@ -314,11 +345,11 @@ const ExamHallAllotment = () => {
         {/* Buttons — left aligned, same container, small gap, margin-top/bottom */}
         <div className="flex flex-wrap gap-2 items-center mt-4 mb-4">
           <button
-            onClick={handlePrint}
-            disabled={filteredHalls.length === 0}
+            onClick={runVerifiedExport}
+            disabled={filteredHalls.length === 0 || exporting}
             className="bg-blue-600 text-white px-4 py-2 rounded-md shadow hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2 min-h-[40px]"
           >
-            📄 Export as PDF
+            {exporting ? "Preparing…" : "Export as PDF"}
           </button>
         </div>
 
@@ -367,6 +398,7 @@ const ExamHallAllotment = () => {
       </div>
 
         <div ref={printRef}>
+        <style>{HALLORA_VERIFY_PRINT_CSS}</style>
         <div className="text-center mb-4">
           <img src={currentLogo} alt="Logo" width={240} className="mx-auto" />
           <h2 className="font-bold text-lg">Kumaraguru College of Technology</h2>
@@ -420,6 +452,7 @@ const ExamHallAllotment = () => {
             </div>
           ))
         )}
+        {verification ? <HalloraVerifiedFooter verification={verification} /> : null}
       </div>
     </div>
   );

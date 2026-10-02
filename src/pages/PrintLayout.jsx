@@ -2,8 +2,10 @@
 import React from 'react';
 import LogoKSI from "../assets/logo KSI.png";
 import LogoKCT from "../assets/logo.png";
+import HalloraVerifiedFooter from "../Components/HalloraVerifiedFooter";
+import { HALLORA_VERIFY_PRINT_CSS } from "../lib/reportVerification";
 
-const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
+const PrintLayout = React.forwardRef(({ selectedPlan, verification = null }, ref) => {
   if (!selectedPlan) {
     return <div ref={ref}>No seating plan selected for printing.</div>;
   }
@@ -303,6 +305,8 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
           </div>
         );
       })}
+      {verification ? <HalloraVerifiedFooter verification={verification} /> : null}
+      <style>{HALLORA_VERIFY_PRINT_CSS}</style>
     </div>
   );
 });

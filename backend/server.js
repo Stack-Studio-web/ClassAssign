@@ -21,6 +21,7 @@ const ensureSeatingVenueFacultySchema = require("./utils/ensureSeatingVenueFacul
 const ensureInvigilationEmailSchema = require("./utils/ensureInvigilationEmailSchema");
 const ensureUuidSchema = require("./utils/ensureUuidSchema");
 const ensureBlockVenueSchema = require("./utils/ensureBlockVenueSchema");
+const ensureReportVerificationSchema = require("./utils/ensureReportVerificationSchema");
 const SessionStore = require("./utils/sessionStore");
 const sessionAuth = require("./middleware/sessionAuth");
 const checkRole = require("./middleware/checkRole");
@@ -133,6 +134,7 @@ app.use("/api/academic-contexts", require("./routes/academicContextRoutes"));
 app.use("/api/ownership", ownershipRoutes);
 app.use("/api/qpak", qpakRoutes);
 app.use("/api/public/qpak", publicQpakRoutes);
+app.use("/api/report-verifications", require("./routes/reportVerificationRoutes"));
 app.use("/api/mentors", mentorRoutes);
 app.use("/api/auth/mentor", mentorAuthRoutes);
 app.use("/api/mentor-portal", mentorPortalRoutes);
@@ -172,6 +174,7 @@ async function start() {
       await ensureStudentIndexes();
       await ensureBlockVenueSchema();
       await ensureUuidSchema();
+      await ensureReportVerificationSchema();
       await ensureTimetableSchema();
       await ensureFacultyActiveSchema();
       await ensureFacultyEmailIdentity();
