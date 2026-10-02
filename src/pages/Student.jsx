@@ -8,7 +8,6 @@ import { ReadOnlyBanner } from "../Components/rbac/ReadOnlyBanner";
 import CompletedSemesterBanner from "../Components/CompletedSemesterBanner";
 import {
   useStudentsQuery,
-  useStudentFilterOptions,
   useStudentCourseStats,
   useStudentStatsTotal,
 } from "../hooks/useStudents";
@@ -16,7 +15,6 @@ import StudentPagination from "../Components/StudentPagination";
 import Loader from "../Components/Loader";
 import { StudentManagementNav } from "../Components/StudentManagementNav";
 import { StudentBrowserBreadcrumb } from "../Components/student-browser/StudentBrowserBreadcrumb";
-import { AcademicContextBar } from "../Components/student-browser/AcademicContextBar";
 import { StudentStatsCards } from "../Components/student-browser/StudentStatsCards";
 import { CourseSummary } from "../Components/student-browser/CourseSummary";
 import { CourseStudentTable } from "../Components/student-browser/CourseStudentTable";
@@ -41,7 +39,7 @@ const EMPTY_FILTERS = {
 
 export default function StudentBrowserPage() {
   const toast = useToast();
-  const { user, isReadOnly, isAdmin, isFacultyIncharge, isHod, department: userDepartment } = useAuth();
+  const { isReadOnly, isAdmin, isFacultyIncharge, isHod } = useAuth();
   const {
     batches,
     selectedYear,
@@ -73,7 +71,6 @@ export default function StudentBrowserPage() {
   const courseSelected = Boolean(selectedCourseCode);
 
   const showCreatedBy = isAdmin || isHod;
-  const showFacultyFilter = isAdmin || isHod;
 
   const studentsLabel = isAdmin
     ? "Total Students"
@@ -88,9 +85,6 @@ export default function StudentBrowserPage() {
       : "/report";
 
   const importPath = "/student/batches";
-
-  const currentUserLabel =
-    user?.username || user?.name || user?.email || "User";
 
   useEffect(() => {
     if (selectedSemester?.uuid) refreshBatches(selectedSemester.uuid);
@@ -119,11 +113,6 @@ export default function StudentBrowserPage() {
   }, [filters.batchUuid, batches, selectedBatch?.uuid, selectBatch]);
 
   const { data: statsTotal = 0 } = useStudentStatsTotal(
-    effectiveBatchId,
-    canBrowse,
-    contextReady
-  );
-  const { data: filterOptions = {} } = useStudentFilterOptions(
     effectiveBatchId,
     canBrowse,
     contextReady
@@ -246,22 +235,6 @@ export default function StudentBrowserPage() {
         )}
 
         {isSelectedSemesterCompleted && <CompletedSemesterBanner />}
-
-        <AcademicContextBar
-          selectedYear={selectedYear}
-          selectedSemester={selectedSemester}
-          selectedBatch={selectedBatch}
-          department={userDepartment || filters.department || "—"}
-          facultyLabel={isFacultyIncharge ? currentUserLabel : "—"}
-          currentUserLabel={currentUserLabel}
-          showFacultyFilter={showFacultyFilter}
-          facultyOwners={filterOptions.facultyOwners ?? []}
-          facultyFilter={filters.createdBy}
-          onFacultyFilterChange={(v) => setFilters((prev) => ({ ...prev, createdBy: v }))}
-          departmentFilter={filters.department}
-          onDepartmentFilterChange={(v) => setFilters((prev) => ({ ...prev, department: v }))}
-          departments={filterOptions.departments ?? []}
-        />
 
         {!canBrowse ? (
           <p className="text-sm text-gray-500">

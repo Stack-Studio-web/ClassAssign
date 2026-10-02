@@ -466,7 +466,46 @@ async function runTimetableValidation(data, ownerOpts) {
       if (!hit) return null;
       return { id: hit.batchId ?? null, name: hit.name, uuid: hit.uuid ?? hit.name };
     },
-    courseExistsForDeptBatch: async (courseCode, department, batch) => {
+    courseExistsForDeptBatch: async (courseCode, department, batch, batchId) => {
+      const db = require("../config/db");
+      const { andClause } = require("../utils/ownerFilter");
+      const { sql: ownerSql, params: ownerParams } = andClause(
+        ownerOpts.role,
+        ownerOpts.ownerUserId,
+        "st.",
+        ownerOpts.ownerIds
+      );
+
+      // Prefer formal Batch.id (same relationship as Add Schedule)
+      if (batchId != null && Number.isFinite(Number(batchId))) {
+        const [rows] = await db.query(
+          `
+          SELECT st.course_name AS "courseName"
+          FROM students st
+          WHERE st.course_description = ?
+            AND st.batch_id = ?
+            AND (
+              UPPER(TRIM(COALESCE(st.department, ''))) = ?
+              OR UPPER((regexp_match(UPPER(TRIM(st.regn_no)), '^[0-9]{2}([A-Z]+)'))[1]) = ?
+            )
+            ${ownerSql}
+          LIMIT 1
+          `,
+          [courseCode, Number(batchId), department, department, ...ownerParams]
+        );
+        if (!rows?.length) {
+          return {
+            ok: false,
+            message: `Course Code ${courseCode} is not linked to Batch ${batch} for Department ${department}.`,
+          };
+        }
+        return {
+          ok: true,
+          courseName: rows[0].courseName ?? rows[0].coursename ?? null,
+        };
+      }
+
+      // Legacy YY+Dept code fallback (e.g. 24BCS)
       const students = await Student.getByCourseAndDepartment(courseCode, department, ownerOpts);
       if (!students?.length) {
         return {
@@ -475,14 +514,16 @@ async function runTimetableValidation(data, ownerOpts) {
         };
       }
       const batchUpper = String(batch).toUpperCase();
-      const inBatch = students.some((s) =>
-        String(s.regnNo || s.regn_no || "").toUpperCase().startsWith(batchUpper)
-      );
-      if (!inBatch) {
-        return {
-          ok: false,
-          message: `Course Code ${courseCode} is not linked to Batch ${batch} for Department ${department}.`,
-        };
+      if (/^[0-9]{2}[A-Z]+$/.test(batchUpper)) {
+        const inBatch = students.some((s) =>
+          String(s.regnNo || s.regn_no || "").toUpperCase().startsWith(batchUpper)
+        );
+        if (!inBatch) {
+          return {
+            ok: false,
+            message: `Course Code ${courseCode} is not linked to Batch ${batch} for Department ${department}.`,
+          };
+        }
       }
       return {
         ok: true,

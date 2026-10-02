@@ -105,8 +105,13 @@ export function deriveSemesterDuration(year, semesterType) {
   return `Jun ${start} – Nov ${start}`;
 }
 
-export function yearCycleSubtitle(year, isFirstActive) {
+export function yearCycleSubtitle(year, options = {}) {
+  const { activeSemesterType = null, isSelected = false } = options;
   if (year?.isArchived) return "Completed Cycle";
-  if (isFirstActive) return "Primary Academic Cycle";
+  if (isSelected && activeSemesterType) {
+    const type = String(activeSemesterType).toUpperCase();
+    const label = type === "EVEN" ? "Even" : type === "ODD" ? "Odd" : String(activeSemesterType);
+    return `Current Semester: ${label}`;
+  }
   return "Academic Cycle";
 }

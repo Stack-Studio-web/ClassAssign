@@ -1,9 +1,14 @@
 /**
  * Timetable bulk-import parsing & validation.
- * Batch is required: YY + Department Code (e.g. 24BCS).
+ *
+ * Columns match Timetable → Add Schedule:
+ * Date | Start Time | End Time | Session | Department | Course Code | Course Name | Batch | Exam Type
+ *
+ * Batch is the Academic Context Batch name (e.g. 2024-2028), same as Manual Entry.
+ * Legacy YY+Dept codes (e.g. 24BCS) are still accepted when they resolve in context.
  */
 
-const BATCH_PATTERN = /^[0-9]{2}[A-Z]{3}$/;
+const LEGACY_BATCH_PATTERN = /^[0-9]{2}[A-Z]{2,10}$/;
 const TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const ALLOWED_SESSIONS = new Set(["FN", "AN"]);
@@ -73,14 +78,12 @@ function parseTimeCell(value, label) {
 
   let hhmm;
   if (typeof value === "number" && Number.isFinite(value)) {
-    // Excel time fraction of day
     const totalMinutes = Math.round(value * 24 * 60);
     const hours = Math.floor(totalMinutes / 60) % 24;
     const minutes = totalMinutes % 60;
     hhmm = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
   } else {
     const raw = String(value).trim();
-    // Accept HH:MM or HH:MM:SS
     const match = raw.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
     if (!match) return { error: `${label} must be HH:MM (24-hour).` };
     const hours = Number(match[1]);
@@ -118,9 +121,9 @@ function parseTimetableRow(row, rowNum) {
   const startRaw = cell(row, "Start Time", "startTime", "start_time");
   const endRaw = cell(row, "End Time", "endTime", "end_time");
   const sessionRaw = cell(row, "Session", "session");
+  const departmentRaw = String(cell(row, "Department", "department") || "").trim();
   const courseCode = String(cell(row, "Course Code", "courseCode", "course_code") || "").trim();
   const courseName = String(cell(row, "Course Name", "courseName", "course_name") || "").trim();
-  const departmentRaw = String(cell(row, "Department", "department") || "").trim();
   const batchRaw = String(cell(row, "Batch", "batch") || "").trim();
   const examTypeRaw = String(cell(row, "Exam Type", "examType", "exam_type") || "").trim();
 
@@ -139,7 +142,6 @@ function parseTimetableRow(row, rowNum) {
     }
   }
 
-  // Session is case-sensitive — do not uppercase before checking
   const session = String(sessionRaw);
   if (!session) {
     errors.push("Session is required.");
@@ -147,38 +149,32 @@ function parseTimetableRow(row, rowNum) {
     errors.push("Session must be FN or AN (case-sensitive).");
   }
 
-  if (!courseCode) errors.push("Course Code is required.");
-  if (!courseName) errors.push("Course Name is required.");
-
   const department = departmentRaw.toUpperCase();
   if (!departmentRaw) {
     errors.push("Department is required.");
   } else if (departmentRaw !== department) {
     errors.push(`Department must be uppercase (e.g. ${department}).`);
-  } else if (!/^[A-Z]{3}$/.test(department)) {
-    errors.push("Department must be a 3-letter uppercase code (e.g. BCS, BAD, BIT).");
+  } else if (!/^[A-Z]{2,10}$/.test(department)) {
+    errors.push("Department must be an uppercase code (e.g. BCS, BAD, BIT).");
   }
 
-  // Batch is case-sensitive uppercase pattern — reject lowercase without normalizing away the error
+  if (!courseCode) errors.push("Course Code is required.");
+  if (!courseName) errors.push("Course Name is required.");
+
+  // Batch = Academic Context batch name (e.g. 2024-2028), same as Add Schedule.
   const batch = batchRaw;
   if (!batch) {
-    errors.push("Batch is required.");
-  } else if (!BATCH_PATTERN.test(batch)) {
-    errors.push(
-      "Invalid Batch format. Expected format: YY + Department Code, for example 24BCS."
-    );
-  } else if (department && batch.slice(2) !== department) {
+    errors.push("Batch is required (use the Batch name from Batch Management, e.g. 2024-2028).");
+  } else if (LEGACY_BATCH_PATTERN.test(batch) && department && batch.slice(2) !== department) {
     errors.push(
       `Batch ${batch} does not match Department ${department}. Expected a batch such as ${batch.slice(0, 2)}${department}.`
     );
   }
 
-  // Exam type case-sensitive; allow stripping internal spaces only for display mismatch messaging
   const examType = examTypeRaw.replace(/\s+/g, "");
   if (!examTypeRaw) {
     errors.push("Exam Type is required.");
   } else if (examTypeRaw !== examType || !ALLOWED_EXAM_TYPES.has(examType)) {
-    // Reject cat1, CAT 1 (with space kept), MID, etc.
     if (ALLOWED_EXAM_TYPES.has(examType) && examTypeRaw !== examType) {
       errors.push("Exam Type must be CAT1, CAT2, or SEM (no spaces, uppercase).");
     } else if (!ALLOWED_EXAM_TYPES.has(examTypeRaw)) {
@@ -186,7 +182,6 @@ function parseTimetableRow(row, rowNum) {
     }
   }
 
-  // Session vs time soft check (existing Hallora convention)
   if (session && startResult.value && !errors.some((e) => e.includes("Session"))) {
     const startMin = timeToMinutes(startResult.value);
     if (session === "FN" && startMin >= 12 * 60) {
@@ -206,7 +201,7 @@ function parseTimetableRow(row, rowNum) {
     courseCode,
     courseName,
     department: department || departmentRaw,
-    batch: BATCH_PATTERN.test(batch) ? batch : batch,
+    batch,
     examType: ALLOWED_EXAM_TYPES.has(examTypeRaw) ? examTypeRaw : examType,
     errors,
     batchId: null,
@@ -229,7 +224,6 @@ async function validateTimetableRows(rawRows, opts = {}, helpers = {}) {
     const rowNum = i + 2;
     const parsed = parseTimetableRow(rawRows[i], rowNum);
 
-    // Skip completely empty trailing rows
     const empty =
       !parsed.date &&
       !parsed.startTime &&
@@ -241,7 +235,6 @@ async function validateTimetableRows(rawRows, opts = {}, helpers = {}) {
       !parsed.examType;
     if (empty) continue;
 
-    // HoD department isolation
     if (opts.role === "hod" && opts.department) {
       const hodDept = String(opts.department).toUpperCase().trim();
       if (parsed.department && parsed.department !== hodDept) {
@@ -263,19 +256,17 @@ async function validateTimetableRows(rawRows, opts = {}, helpers = {}) {
 
     if (
       parsed.batch &&
-      BATCH_PATTERN.test(parsed.batch) &&
-      parsed.department &&
-      parsed.batch.slice(2) === parsed.department &&
+      !parsed.errors.some((e) => e.includes("Batch")) &&
       typeof findBatchByName === "function"
     ) {
       const found = await findBatchByName(parsed.batch, parsed.department);
       if (!found) {
         parsed.errors.push(
-          `Batch ${parsed.batch} does not exist for the selected academic context.`
+          `Batch "${parsed.batch}" does not exist for the selected academic context. Use the Batch name from Batch Management (e.g. 2024-2028).`
         );
       } else {
         parsed.batchId = found.id ?? found.batchId ?? null;
-        if (found.name) parsed.batch = String(found.name).toUpperCase();
+        if (found.name) parsed.batch = String(found.name).trim();
       }
     }
 
@@ -283,14 +274,16 @@ async function validateTimetableRows(rawRows, opts = {}, helpers = {}) {
       parsed.courseCode &&
       parsed.department &&
       parsed.batch &&
-      BATCH_PATTERN.test(parsed.batch) &&
       typeof courseExistsForDeptBatch === "function" &&
-      !parsed.errors.some((e) => e.includes("Course Code") || e.includes("Department") || e.includes("Batch"))
+      !parsed.errors.some(
+        (e) => e.includes("Course Code") || e.includes("Department") || e.includes("Batch")
+      )
     ) {
       const courseCheck = await courseExistsForDeptBatch(
         parsed.courseCode,
         parsed.department,
-        parsed.batch
+        parsed.batch,
+        parsed.batchId
       );
       if (!courseCheck?.ok) {
         parsed.errors.push(
@@ -340,7 +333,8 @@ async function validateTimetableRows(rawRows, opts = {}, helpers = {}) {
 }
 
 module.exports = {
-  BATCH_PATTERN,
+  BATCH_PATTERN: LEGACY_BATCH_PATTERN,
+  LEGACY_BATCH_PATTERN,
   parseTimetableRow,
   validateTimetableRows,
   parseDateCell,

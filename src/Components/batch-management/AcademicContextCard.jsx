@@ -1,15 +1,13 @@
 import React from "react";
 import { motion } from "framer-motion";
-import { useNavigate } from "react-router-dom";
-import { Calendar, BookOpen, Users, Layers, ArrowLeftRight } from "lucide-react";
-import { Button } from "../ui/Button";
+import { Calendar, BookOpen, Users, Layers } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { StatusBadge } from "../ui/Badge";
 import { isSemesterCompleted } from "../../lib/semesterStatus";
 
 /**
  * Read-only academic year + semester banner for Batch Management.
- * Year/semester are chosen on Academic Management; change via the CTA only.
+ * Year/semester are chosen on Academic Management.
  */
 export function AcademicContextCard({
   year,
@@ -21,8 +19,6 @@ export function AcademicContextCard({
   semesterCompleted = false,
   className,
 }) {
-  const navigate = useNavigate();
-
   if (!year || !semester) return null;
 
   const completed = semesterCompleted || isSemesterCompleted(semester);
@@ -39,30 +35,20 @@ export function AcademicContextCard({
       <p className="mb-3 text-[11px] font-bold uppercase tracking-wider text-blue-600">
         Academic Context (read-only)
       </p>
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div className="grid flex-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <ContextStat icon={Calendar} label="Academic Year" value={year.label} />
-          <ContextStat
-            icon={BookOpen}
-            label="Semester"
-            value={
-              <span className="inline-flex items-center gap-2">
-                {semester.label || semester.semesterType || "—"}
-                {completed && <StatusBadge variant="completed">COMPLETED</StatusBadge>}
-              </span>
-            }
-          />
-          <ContextStat icon={Users} label={studentsLabel} value={totalStudents.toLocaleString()} />
-          <ContextStat icon={Layers} label={batchesLabel} value={String(totalBatches)} />
-        </div>
-        <Button
-          variant="outline"
-          onClick={() => navigate("/student/academic")}
-          className="shrink-0 border-blue-200 bg-white"
-        >
-          <ArrowLeftRight className="h-4 w-4" aria-hidden />
-          Change Academic Context
-        </Button>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <ContextStat icon={Calendar} label="Academic Year" value={year.label} />
+        <ContextStat
+          icon={BookOpen}
+          label="Semester"
+          value={
+            <span className="inline-flex items-center gap-2">
+              {semester.label || semester.semesterType || "—"}
+              {completed && <StatusBadge variant="completed">COMPLETED</StatusBadge>}
+            </span>
+          }
+        />
+        <ContextStat icon={Users} label={studentsLabel} value={totalStudents.toLocaleString()} />
+        <ContextStat icon={Layers} label={batchesLabel} value={String(totalBatches)} />
       </div>
     </motion.div>
   );

@@ -897,8 +897,9 @@ const Timetable = () => {
               <p className="font-semibold mb-1">Excel format</p>
               <ul className="list-disc ml-5 space-y-1 mb-3">
                 <li>Date, Start Time, End Time, Session (FN/AN)</li>
-                <li>Course Code, Course Name, Department, Batch, Exam Type</li>
-                <li>Batch format: YY + Department Code (e.g. 24BCS, 24BAD) — required</li>
+                <li>Department, Course Code, Course Name, Batch, Exam Type</li>
+                <li>Batch = Batch Management name (e.g. 2024-2028) — same as Add Schedule</li>
+                <li>Exam Type: CAT1, CAT2, or SEM</li>
               </ul>
               <button
                 type="button"

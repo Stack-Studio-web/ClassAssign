@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
-import { ArrowLeftRight } from "lucide-react";
+import { Navigate } from "react-router-dom";
 import { useAcademicContext } from "../context/AcademicContext";
 import { StudentManagementNav } from "../Components/StudentManagementNav";
 import { AcademicContextCard } from "../Components/batch-management/AcademicContextCard";
@@ -13,13 +12,11 @@ import { isBatchActive } from "../lib/batchStatus";
 import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
 import { WriteAccess } from "../Components/rbac/PermissionGate";
-import { Button } from "../Components/ui/Button";
 import { useAuth } from "../hooks/useAuth";
 import CompletedSemesterBanner from "../Components/CompletedSemesterBanner";
 import { isSemesterCompleted } from "../lib/semesterStatus";
 
 export default function BatchManagementPage() {
-  const navigate = useNavigate();
   const toast = useToast();
   const showConfirm = useConfirm();
   const { isAdmin, isFacultyIncharge, isHod } = useAuth();
@@ -173,10 +170,6 @@ export default function BatchManagementPage() {
             Create or select a batch for this academic year and semester, then import students. Batches are identified by immutable UUID.
           </p>
         </div>
-        <Button variant="outline" onClick={() => navigate("/student/academic")} className="shrink-0">
-          <ArrowLeftRight className="h-4 w-4" aria-hidden />
-          Change Academic Context
-        </Button>
       </div>
 
       <AcademicContextCard

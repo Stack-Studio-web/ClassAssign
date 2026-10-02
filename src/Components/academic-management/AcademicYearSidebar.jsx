@@ -5,8 +5,11 @@ import { cn } from "../../lib/utils";
 import { yearCycleSubtitle } from "../../lib/academicErrorMessages";
 import { SearchBar, StatusFilter } from "./SearchBar";
 
-export function AcademicYearCard({ year, selected, isPrimary, onSelect }) {
-  const subtitle = yearCycleSubtitle(year, isPrimary);
+export function AcademicYearCard({ year, selected, activeSemesterType, onSelect }) {
+  const subtitle = yearCycleSubtitle(year, {
+    isSelected: selected,
+    activeSemesterType: selected ? activeSemesterType : null,
+  });
 
   return (
     <motion.button
@@ -47,7 +50,7 @@ export function AcademicYearSidebar({
   statusFilter,
   onStatusFilterChange,
   onSelectYear,
-  primaryYearUuid,
+  activeSemesterType = null,
 }) {
   const filtered = years.filter((y) => {
     const q = search.trim().toLowerCase();
@@ -78,7 +81,7 @@ export function AcademicYearSidebar({
               key={year.uuid}
               year={year}
               selected={selectedYear?.uuid === year.uuid}
-              isPrimary={primaryYearUuid === year.uuid}
+              activeSemesterType={activeSemesterType}
               onSelect={onSelectYear}
             />
           ))
