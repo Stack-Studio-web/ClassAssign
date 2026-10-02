@@ -1907,7 +1907,7 @@ const Allotment = () => {
                       })}
                     </div>
                   </div>
-                )}
+                ) : null}
               </div>
 
               {/* Faculty Assignment */}
