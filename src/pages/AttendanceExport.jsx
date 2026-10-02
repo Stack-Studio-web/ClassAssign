@@ -47,7 +47,10 @@ export default function AttendanceExport() {
       setLoadingOptions(true);
       try {
         const data = await fetchAttendanceExportOptions({});
-        if (!cancelled) setDepartments(data.departments);
+        if (!cancelled) {
+          setDepartments(data.departments);
+          setError("");
+        }
       } catch (err) {
         if (!cancelled) {
           setDepartments([]);

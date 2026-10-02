@@ -416,6 +416,14 @@ const Report = () => {
           <ClipboardDocumentListIcon className="h-5 w-5" />
           Attendance Sheet
         </button>
+        <button
+          type="button"
+          onClick={() => navigate("/reports/faculty-invigilation")}
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-medium shadow-sm transition-all duration-200"
+        >
+          <DocumentTextIcon className="h-5 w-5" />
+          Faculty Invigilation Schedule
+        </button>
         {selectedPlans.length > 0 && (
           <>
             <button
@@ -427,10 +435,11 @@ const Report = () => {
             </button>
             <button
               onClick={handlePrintFacultySchedule}
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-medium shadow-sm transition-all duration-200"
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-700 hover:bg-red-800 text-white font-medium shadow-sm transition-all duration-200"
+              title="Print schedule for selected seating plans only"
             >
               <DocumentTextIcon className="h-5 w-5" />
-              Faculty Invigilation Schedule
+              Schedule (Selected Plans)
             </button>
             {(userRole === "admin" || userRole === "faculty_incharge") && (
               <>

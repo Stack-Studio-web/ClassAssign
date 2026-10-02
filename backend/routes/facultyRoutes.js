@@ -61,6 +61,54 @@ router.get("/schedule", sessionAuth, checkRole(["admin", "faculty_incharge", "ho
   }
 });
 
+/**
+ * GET /faculty/invigilation-schedule/options
+ */
+router.get(
+  "/invigilation-schedule/options",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge", "hod"]),
+  async (req, res) => {
+    try {
+      const options = await FacultyScheduleService.getInvigilationFilterOptions();
+      return res.json({ success: true, ...options });
+    } catch (err) {
+      console.error("GET /faculty/invigilation-schedule/options:", err?.message || err);
+      return Api.serverError(res, err, "Failed to load invigilation schedule options");
+    }
+  }
+);
+
+/**
+ * GET /faculty/invigilation-schedule/preview
+ */
+router.get(
+  "/invigilation-schedule/preview",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge", "hod"]),
+  async (req, res) => {
+    try {
+      const preview = await FacultyScheduleService.getInvigilationSchedulePreview({
+        semester: req.query.semester,
+        academicYear: req.query.academicYear || req.query.academic_year,
+        examType: req.query.examType || req.query.category,
+        department: req.query.department,
+        program1: req.query.program1 || req.query.program_1,
+        program2: req.query.program2 || req.query.program_2,
+        dateFrom: req.query.dateFrom || req.query.date_from,
+        dateTo: req.query.dateTo || req.query.date_to,
+      });
+      return res.json({ success: true, ...preview });
+    } catch (err) {
+      if (err.statusCode === 400) {
+        return Api.validationError(res, err.message);
+      }
+      console.error("GET /faculty/invigilation-schedule/preview:", err?.message || err);
+      return Api.serverError(res, err, "Failed to preview invigilation schedule");
+    }
+  }
+);
+
 router.post("/", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
   let conn;
   try {

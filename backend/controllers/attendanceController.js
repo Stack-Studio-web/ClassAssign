@@ -651,7 +651,16 @@ const AttendanceController = {
       );
       return res.json({ success: true, ...options });
     } catch (err) {
-      return Api.fromError(res, err, "Failed to load attendance export options");
+      console.error("getConsolidatedExportOptions ERROR:", err?.message || err);
+      if (err?.stack) console.error(err.stack);
+      // Never hard-fail the page load — return empty options so the UI remains usable.
+      return res.json({
+        success: true,
+        departments: [],
+        courses: [],
+        batches: [],
+        warning: err?.message || "Failed to load attendance export options",
+      });
     }
   },
 

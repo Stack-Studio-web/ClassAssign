@@ -5,7 +5,7 @@
 const db = require("../config/db");
 const crypto = require("crypto");
 const ReportVerification = require("../models/ReportVerification");
-const { buildConsolidatedAbsenteeDocx } = require("../utils/consolidatedAbsenteeDocx");
+// DOCX builder is lazy-required in exportDocx so options/preview work even if docx is missing.
 
 function normalizeSession(raw) {
   if (!raw) return "—";
@@ -163,21 +163,22 @@ async function buildRoleScope(user, role) {
   if (role === "admin") return scope;
   if (role === "faculty_incharge" || role === "hod") {
     const User = require("../models/User");
-    const { attendanceAssignmentOwnerScope } = require("../utils/attendanceOwnerScope");
     const ownerIds = await User.getWorkspaceOwnerIds({
       id: user?.id,
       role,
       created_by_hod_id: user?.createdByHodId ?? user?.created_by_hod_id ?? null,
     });
-    const owner = attendanceAssignmentOwnerScope({
-      role,
-      ownerUserId: user?.id,
-      ownerIds,
-    });
-    // Owner scope uses fa. alias — join faculty_assignments for FI/HOD
-    scope.needFaJoin = true;
-    scope.sql = owner.sql;
-    scope.params = owner.params;
+    const ids = Array.isArray(ownerIds)
+      ? [...new Set(ownerIds.map(Number).filter((id) => id > 0))]
+      : [];
+    if (!ids.length) {
+      scope.sql = " AND 1=0";
+      return scope;
+    }
+    // Scope via student ownership — enrollment-aligned, no venue/fa joins.
+    const ph = ids.map(() => "?").join(", ");
+    scope.sql = ` AND st.owner_user_id IN (${ph})`;
+    scope.params = [...ids];
     return scope;
   }
   return scope;
@@ -219,12 +220,6 @@ function validateFilters(filters = {}) {
 async function fetchAbsentStudentRows(user, role, filters) {
   const { department, dateFrom, dateTo, courseCode, batchUuid } = validateFilters(filters);
   const roleScope = await buildRoleScope(user, role);
-
-  const faJoin = roleScope.needFaJoin
-    ? `JOIN faculty_assignments fa
-         ON fa.exam_id = att.exam_id AND fa.venue_id = att.venue_id
-       JOIN venues v ON v.id = att.venue_id`
-    : "";
 
   const params = [dateFrom, dateTo, department.toUpperCase()];
   let extra = "";
@@ -274,8 +269,7 @@ async function fetchAbsentStudentRows(user, role, filters) {
      LEFT JOIN semesters sem ON sem.id = b.semester_id
      LEFT JOIN academic_years ay ON ay.id = sem.academic_year_id
      JOIN exams e ON e.id = att.exam_id
-     ${faJoin}
-     WHERE att.status = 'Absent'
+     WHERE UPPER(TRIM(att.status)) = 'ABSENT'
        AND e.exam_date BETWEEN ? AND ?
        AND UPPER(TRIM(COALESCE(st.department, ''))) = UPPER(TRIM(?))
        ${extra}
@@ -408,50 +402,91 @@ const ConsolidatedAbsenteeExportService = {
   getOptions: async (user, role, query = {}) => {
     const department = String(query.department || "").trim();
     const courseCode = String(query.courseCode || query.course || "").trim();
-    const roleScope = await buildRoleScope(user, role);
-    const faJoin = roleScope.needFaJoin
-      ? `JOIN faculty_assignments fa
-           ON fa.exam_id = att.exam_id AND fa.venue_id = att.venue_id
-         JOIN venues v ON v.id = att.venue_id`
-      : "";
+    let roleScope;
+    try {
+      roleScope = await buildRoleScope(user, role);
+    } catch (err) {
+      console.error("consolidated export buildRoleScope:", err?.message || err);
+      roleScope = { sql: "", params: [], needFaJoin: false };
+    }
+    const faJoin = ""; // role scope no longer requires fa/v joins
 
+    // Prefer student enrollment department from any attendance mark (not only Absent),
+    // so the Department dropdown is usable before absentees exist.
     if (!department) {
-      const [deptRows] = await db.query(
-        `SELECT DISTINCT UPPER(TRIM(st.department)) AS department
+      try {
+        const [deptRows] = await db.query(
+          `SELECT DISTINCT UPPER(TRIM(st.department)) AS department
+           FROM attendance att
+           JOIN students st ON st.id = att.student_id
+           JOIN exams e ON e.id = att.exam_id
+           ${faJoin}
+           WHERE st.department IS NOT NULL
+             AND TRIM(st.department) <> ''
+             ${roleScope.sql || ""}
+           ORDER BY 1 ASC`,
+          roleScope.params || []
+        );
+        const departments = (deptRows || [])
+          .map((r) => r.department)
+          .filter(Boolean);
+        return { departments, courses: [], batches: [] };
+      } catch (err) {
+        console.error("consolidated export departments query:", err?.message || err);
+        // Fallback: departments from students table
+        try {
+          const [fallback] = await db.query(
+            `SELECT DISTINCT UPPER(TRIM(department)) AS department
+             FROM students
+             WHERE department IS NOT NULL AND TRIM(department) <> ''
+             ORDER BY 1 ASC`
+          );
+          return {
+            departments: (fallback || []).map((r) => r.department).filter(Boolean),
+            courses: [],
+            batches: [],
+          };
+        } catch (err2) {
+          console.error("consolidated export departments fallback:", err2?.message || err2);
+          return { departments: [], courses: [], batches: [] };
+        }
+      }
+    }
+
+    const deptParams = [department.toUpperCase(), ...(roleScope.params || [])];
+    let courseRows = [];
+    try {
+      const [rows] = await db.query(
+        `SELECT DISTINCT
+           TRIM(st.course_description) AS course_code,
+           TRIM(st.course_name) AS course_title
          FROM attendance att
          JOIN students st ON st.id = att.student_id
          JOIN exams e ON e.id = att.exam_id
          ${faJoin}
-         WHERE att.status = 'Absent'
-           AND st.department IS NOT NULL
-           AND TRIM(st.department) <> ''
+         WHERE UPPER(TRIM(COALESCE(st.department, ''))) = UPPER(TRIM(?))
+           AND st.course_description IS NOT NULL
+           AND TRIM(st.course_description) <> ''
            ${roleScope.sql || ""}
          ORDER BY 1 ASC`,
-        roleScope.params || []
+        deptParams
       );
-      const departments = (deptRows || [])
-        .map((r) => r.department)
-        .filter(Boolean);
-      return { departments, courses: [], batches: [] };
+      courseRows = rows || [];
+    } catch (err) {
+      console.error("consolidated export courses query:", err?.message || err);
+      const [rows] = await db.query(
+        `SELECT DISTINCT
+           TRIM(course_description) AS course_code,
+           TRIM(course_name) AS course_title
+         FROM students
+         WHERE UPPER(TRIM(COALESCE(department, ''))) = UPPER(TRIM(?))
+           AND course_description IS NOT NULL
+           AND TRIM(course_description) <> ''
+         ORDER BY 1 ASC`,
+        [department.toUpperCase()]
+      );
+      courseRows = rows || [];
     }
-
-    const deptParams = [department.toUpperCase(), ...(roleScope.params || [])];
-    const [courseRows] = await db.query(
-      `SELECT DISTINCT
-         TRIM(st.course_description) AS course_code,
-         TRIM(st.course_name) AS course_title
-       FROM attendance att
-       JOIN students st ON st.id = att.student_id
-       JOIN exams e ON e.id = att.exam_id
-       ${faJoin}
-       WHERE att.status = 'Absent'
-         AND UPPER(TRIM(COALESCE(st.department, ''))) = UPPER(TRIM(?))
-         AND st.course_description IS NOT NULL
-         AND TRIM(st.course_description) <> ''
-         ${roleScope.sql || ""}
-       ORDER BY 1 ASC`,
-      deptParams
-    );
 
     const courses = (courseRows || []).map((r) => ({
       code: r.course_code ?? r.coursecode,
@@ -470,22 +505,45 @@ const ConsolidatedAbsenteeExportService = {
     }
     batchParams.push(...(roleScope.params || []));
 
-    const [batchRows] = await db.query(
-      `SELECT DISTINCT
-         b.public_uuid AS batch_uuid,
-         b.name AS batch_name
-       FROM attendance att
-       JOIN students st ON st.id = att.student_id
-       JOIN batches b ON b.id = st.batch_id
-       JOIN exams e ON e.id = att.exam_id
-       ${faJoin}
-       WHERE att.status = 'Absent'
-         AND UPPER(TRIM(COALESCE(st.department, ''))) = UPPER(TRIM(?))
-         ${courseClause}
-         ${roleScope.sql || ""}
-       ORDER BY b.name ASC`,
-      batchParams
-    );
+    let batchRows = [];
+    try {
+      const [rows] = await db.query(
+        `SELECT DISTINCT
+           b.public_uuid AS batch_uuid,
+           b.name AS batch_name
+         FROM attendance att
+         JOIN students st ON st.id = att.student_id
+         JOIN batches b ON b.id = st.batch_id
+         JOIN exams e ON e.id = att.exam_id
+         ${faJoin}
+         WHERE UPPER(TRIM(COALESCE(st.department, ''))) = UPPER(TRIM(?))
+           ${courseClause}
+           ${roleScope.sql || ""}
+         ORDER BY b.name ASC`,
+        batchParams
+      );
+      batchRows = rows || [];
+    } catch (err) {
+      console.error("consolidated export batches query:", err?.message || err);
+      const fbParams = [department.toUpperCase()];
+      let fbCourse = "";
+      if (courseCode) {
+        fbCourse = " AND UPPER(TRIM(st.course_description)) = UPPER(TRIM(?))";
+        fbParams.push(courseCode);
+      }
+      const [rows] = await db.query(
+        `SELECT DISTINCT
+           b.public_uuid AS batch_uuid,
+           b.name AS batch_name
+         FROM students st
+         JOIN batches b ON b.id = st.batch_id
+         WHERE UPPER(TRIM(COALESCE(st.department, ''))) = UPPER(TRIM(?))
+           ${fbCourse}
+         ORDER BY b.name ASC`,
+        fbParams
+      );
+      batchRows = rows || [];
+    }
 
     const batches = (batchRows || []).map((r) => ({
       uuid: r.batch_uuid ?? r.batchuuid,
@@ -538,6 +596,7 @@ const ConsolidatedAbsenteeExportService = {
       },
     });
 
+    const { buildConsolidatedAbsenteeDocx } = require("../utils/consolidatedAbsenteeDocx");
     const buffer = await buildConsolidatedAbsenteeDocx({
       meta: preview.meta,
       rows: preview.rows,
