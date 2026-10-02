@@ -374,6 +374,121 @@ router.patch(
   }
 );
 
+/** Use for Allotment eligibility (does not reserve a time slot). */
+router.put(
+  "/:uuid/use-for-allotment",
+  sessionAuth,
+  checkRole(VENUE_ROLES),
+  resolveEntity(TABLE.venues),
+  auditLogger("UPDATE_VENUE_USE_FOR_ALLOTMENT", "Venue"),
+  async (req, res) => {
+    try {
+      const { useForAllotment } = req.body || {};
+      if (typeof useForAllotment !== "boolean") {
+        return res.status(400).json({ error: "useForAllotment (boolean) is required" });
+      }
+      const user = currentUser(req);
+      await Venue.setUseForAllotment(req.internalId, useForAllotment, user);
+      res.json({
+        message: "Use for Allotment updated",
+        uuid: req.publicUuid,
+        useForAllotment,
+      });
+    } catch (err) {
+      res.status(err.statusCode || 500).json({ error: err.message || "Server error" });
+    }
+  }
+);
+
+router.patch(
+  "/:uuid/use-for-allotment",
+  sessionAuth,
+  checkRole(VENUE_ROLES),
+  resolveEntity(TABLE.venues),
+  auditLogger("UPDATE_VENUE_USE_FOR_ALLOTMENT", "Venue"),
+  async (req, res) => {
+    try {
+      const { useForAllotment } = req.body || {};
+      if (typeof useForAllotment !== "boolean") {
+        return res.status(400).json({ error: "useForAllotment (boolean) is required" });
+      }
+      const user = currentUser(req);
+      await Venue.setUseForAllotment(req.internalId, useForAllotment, user);
+      res.json({
+        message: "Use for Allotment updated",
+        uuid: req.publicUuid,
+        useForAllotment,
+      });
+    } catch (err) {
+      res.status(err.statusCode || 500).json({ error: err.message || "Server error" });
+    }
+  }
+);
+
+/**
+ * Batch time-slot availability for Allotment venue list.
+ * Body: { date, startTime, endTime, venueUuids?: string[] }
+ * Occupied only when an existing saved allotment overlaps the requested interval.
+ */
+router.post(
+  "/check-slot-availability",
+  sessionAuth,
+  checkRole(VENUE_ROLES),
+  async (req, res) => {
+    try {
+      const { date, startTime, endTime, venueUuids } = req.body || {};
+      if (!date || !startTime || !endTime) {
+        return res.status(400).json({
+          error: "date, startTime, and endTime are required",
+        });
+      }
+
+      const dateOnly = String(date).includes("T") ? String(date).split("T")[0] : String(date);
+      const allVenues = await Venue.getAll({ user: currentUser(req) });
+      const wanted =
+        Array.isArray(venueUuids) && venueUuids.length > 0
+          ? new Set(venueUuids.map((u) => String(u)))
+          : null;
+
+      const results = [];
+      for (const v of allVenues) {
+        if (wanted && !wanted.has(String(v.uuid))) continue;
+        if (v.isAvailable === false) continue;
+        if (v.useForAllotment === false) continue;
+
+        const venueId = await resolveInternalId(TABLE.venues, v.uuid);
+        if (venueId == null) continue;
+
+        const check = await Venue.checkAllotmentSlot(
+          venueId,
+          dateOnly,
+          startTime,
+          endTime
+        );
+        results.push({
+          uuid: v.uuid,
+          name: v.name,
+          capacity: v.capacity,
+          useIt: v.isAvailable !== false,
+          useForAllotment: v.useForAllotment !== false,
+          status: check.status,
+          available: check.ok,
+          conflicts: check.conflicts,
+          message: check.message,
+        });
+      }
+
+      res.json({ date: dateOnly, startTime, endTime, venues: results });
+    } catch (err) {
+      console.error("CHECK SLOT AVAILABILITY ERROR:", err);
+      res.status(500).json({
+        error: "Failed to check venue slot availability",
+        details: err.message,
+      });
+    }
+  }
+);
+
 /** Date/time schedule availability (reads seating plans + venue_sessions). */
 router.get(
   "/:uuid/availability",

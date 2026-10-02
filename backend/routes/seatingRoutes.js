@@ -155,33 +155,45 @@ router.post(
 
       const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
 
-      const venueCheckPromises = resolvedVenues.map(async (v) => {
-        const isAvailable = await Venue.isAvailable(
+      // Atomic venue eligibility + time-slot conflict check (FOR UPDATE per venue)
+      const unavailableVenues = [];
+      for (const v of resolvedVenues) {
+        const check = await Venue.checkAllotmentSlot(
           v.venueId,
           dateOnly,
           examStartTime,
           examEndTime,
-          connection
+          connection,
+          { lock: true }
         );
-        if (!isAvailable) {
-          return {
+        if (!check.ok) {
+          unavailableVenues.push({
             venueId: v.venueId,
-            venueName: v.venueName,
-            available: false
-          };
+            venueName: v.venueName || check.venueName,
+            available: false,
+            status: check.status,
+            message: check.message,
+            conflicts: check.conflicts,
+          });
         }
-        return { venueId: v.venueId, available: true };
-      });
-
-      const availabilityResults = await Promise.all(venueCheckPromises);
-      const unavailableVenues = availabilityResults.filter(r => !r.available);
+      }
 
       if (unavailableVenues.length > 0) {
         await connection.rollback();
+        const first = unavailableVenues[0];
+        const isOccupied = first.status === "OCCUPIED";
         return res.status(409).json({
-          error: "Venue conflict",
-          details: `The following venues are already booked: ${unavailableVenues.map(v => v.venueName).join(", ")}`,
-          unavailableVenues
+          error: isOccupied ? "Venue conflict" : "Venue not available",
+          details:
+            first.message ||
+            `The following venues are not available: ${unavailableVenues
+              .map((x) => x.venueName)
+              .join(", ")}`,
+          message:
+            isOccupied
+              ? `${first.venueName} is no longer available for the selected time period.`
+              : first.message,
+          unavailableVenues,
         });
       }
 

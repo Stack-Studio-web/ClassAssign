@@ -249,6 +249,22 @@ export default function AddVenue() {
     }
   };
 
+  const handleToggleUseForAllotment = async (venue, checked) => {
+    if (!venue.canManage) return;
+    const id = venue.uuid;
+    setTogglingVenueId(id);
+    try {
+      await api.put(`/venues/${id}/use-for-allotment`, { useForAllotment: checked });
+      await refresh();
+    } catch (err) {
+      if (err.response?.status !== 401) {
+        toast.error(getApiError(err), "Could not update Use for Allotment");
+      }
+    } finally {
+      setTogglingVenueId(null);
+    }
+  };
+
   const openAvailabilityCheck = (venue) => {
     const today = new Date();
     const ymd = [
@@ -1333,6 +1349,7 @@ export default function AddVenue() {
                       <ul className="divide-y divide-gray-100">
                         {group.venues.map((venue) => {
                           const useIt = venue.isAvailable !== false;
+                          const useForAllotment = venue.useForAllotment !== false;
                           const canManage = Boolean(venue.canManage);
                           return (
                             <li key={venue.uuid} className="px-4 sm:px-5 py-4">
@@ -1347,37 +1364,67 @@ export default function AddVenue() {
                                     {venue.benchesRow} × {venue.benchesCol}
                                   </p>
 
-                                  <div className="mt-3 flex items-center gap-3">
-                                    <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                                      Use It
-                                    </span>
-                                    <button
-                                      type="button"
-                                      role="switch"
-                                      aria-checked={useIt}
-                                      aria-label={`Use It ${useIt ? "on" : "off"}`}
-                                      disabled={!canManage || togglingVenueId === venue.uuid}
-                                      onClick={() =>
-                                        handleToggleVenueAvailability(venue, !useIt)
-                                      }
-                                      className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed ${
-                                        useIt ? "bg-emerald-500" : "bg-gray-300"
-                                      } ${canManage ? "cursor-pointer" : "cursor-not-allowed"}`}
-                                    >
+                                  <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+                                    <div className="flex items-center gap-3">
+                                      <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                        Use It
+                                      </span>
+                                      <button
+                                        type="button"
+                                        role="switch"
+                                        aria-checked={useIt}
+                                        aria-label={`Use It ${useIt ? "on" : "off"}`}
+                                        disabled={!canManage || togglingVenueId === venue.uuid}
+                                        onClick={() =>
+                                          handleToggleVenueAvailability(venue, !useIt)
+                                        }
+                                        className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed ${
+                                          useIt ? "bg-emerald-500" : "bg-gray-300"
+                                        } ${canManage ? "cursor-pointer" : "cursor-not-allowed"}`}
+                                      >
+                                        <span
+                                          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
+                                            useIt ? "translate-x-6" : "translate-x-1"
+                                          }`}
+                                        />
+                                      </button>
                                       <span
-                                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
-                                          useIt ? "translate-x-6" : "translate-x-1"
+                                        className={`text-xs font-semibold ${
+                                          useIt ? "text-emerald-700" : "text-gray-500"
                                         }`}
-                                      />
-                                    </button>
-                                    <span
-                                      className={`text-xs font-semibold ${
-                                        useIt ? "text-emerald-700" : "text-gray-500"
+                                      >
+                                        {useIt ? "ON" : "OFF"}
+                                      </span>
+                                    </div>
+
+                                    <label
+                                      className={`inline-flex items-center gap-2 text-xs font-semibold text-gray-700 ${
+                                        !canManage || !useIt
+                                          ? "opacity-60 cursor-not-allowed"
+                                          : "cursor-pointer"
                                       }`}
                                     >
-                                      {useIt ? "ON" : "OFF"}
-                                    </span>
+                                      <input
+                                        type="checkbox"
+                                        checked={useForAllotment}
+                                        disabled={
+                                          !canManage ||
+                                          !useIt ||
+                                          togglingVenueId === venue.uuid
+                                        }
+                                        onChange={(e) =>
+                                          handleToggleUseForAllotment(venue, e.target.checked)
+                                        }
+                                        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                      />
+                                      Use for Allotment
+                                    </label>
                                   </div>
+                                  <p className="mt-1.5 text-[11px] text-gray-500 max-w-md">
+                                    Use for Allotment only allows seating generation. It does not
+                                    reserve the venue. A time slot is reserved only after Save
+                                    Allotment.
+                                  </p>
                                 </div>
 
                                 <div className="flex flex-wrap gap-2 shrink-0">
@@ -1525,11 +1572,10 @@ export default function AddVenue() {
                   <div className="rounded-xl bg-emerald-50 border border-emerald-100 px-4 py-3">
                     <p className="text-sm font-bold text-emerald-800">AVAILABLE</p>
                     <p className="text-sm text-emerald-700 mt-1">
-                      No timetable/exam session is scheduled for this venue on this date
-                      {availabilityStart && availabilityEnd
-                        ? ` between ${formatDisplayTime(availabilityStart)} and ${formatDisplayTime(availabilityEnd)}`
-                        : ""}
-                      .
+                      {availabilityResult.message ||
+                        (availabilityStart && availabilityEnd
+                          ? `${availabilityVenue?.name || "Venue"} is available from ${formatDisplayTime(availabilityStart)} to ${formatDisplayTime(availabilityEnd)} on the selected date.`
+                          : `${availabilityVenue?.name || "Venue"} has no overlapping saved allotment for the selected criteria.`)}
                     </p>
                   </div>
                 )}
@@ -1538,13 +1584,14 @@ export default function AddVenue() {
                     <div className="rounded-xl bg-red-50 border border-red-100 px-4 py-3">
                       <p className="text-sm font-bold text-red-800">OCCUPIED</p>
                       <p className="text-sm text-red-700 mt-1">
-                        Scheduled session{(availabilityResult.conflicts || []).length === 1 ? "" : "s"} for
-                        this venue.
+                        {availabilityStart && availabilityEnd
+                          ? `${availabilityVenue?.name || "Venue"} is occupied during the requested time.`
+                          : `${availabilityVenue?.name || "Venue"} has booked time intervals on this date. Other times on the same day remain available unless they overlap.`}
                       </p>
                     </div>
                     <div>
                       <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
-                        Scheduled Session{(availabilityResult.conflicts || []).length === 1 ? "" : "s"}
+                        Booked interval{(availabilityResult.conflicts || []).length === 1 ? "" : "s"}
                       </p>
                       <ul className="space-y-2">
                         {(availabilityResult.conflicts || []).map((c, idx) => (
@@ -1558,7 +1605,7 @@ export default function AddVenue() {
                             {(c.courseCode || c.courseName) && (
                               <p className="text-gray-700 mt-0.5">
                                 {c.courseCode ? `${c.courseCode} — ` : ""}
-                                {c.courseName || "Course"}
+                                {c.courseName || "Allotment"}
                               </p>
                             )}
                             {c.examType ? (

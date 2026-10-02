@@ -97,6 +97,11 @@ async function ensureBlockVenueSchema() {
     "updated_at",
     "updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP"
   );
+  await ensureColumn(
+    "venues",
+    "use_for_allotment",
+    "use_for_allotment BOOLEAN NOT NULL DEFAULT TRUE"
+  );
 
   try {
     await db.query(`CREATE INDEX IF NOT EXISTS idx_venues_block_id ON venues (block_id)`);

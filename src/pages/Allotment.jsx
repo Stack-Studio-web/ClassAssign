@@ -192,6 +192,10 @@ const Allotment = () => {
   const [seatingMode, setSeatingMode] = useState("auto");
   const [manualVenueId, setManualVenueId] = useState("");
   const [selectedVenues, setSelectedVenues] = useState([]);
+  /** uuid -> { status, available, conflicts, message } for current exam slot */
+  const [venueSlotStatus, setVenueSlotStatus] = useState({});
+  const [venueSlotWarning, setVenueSlotWarning] = useState(null);
+  const [isCheckingVenueSlots, setIsCheckingVenueSlots] = useState(false);
  
   const [generatedSeating, setGeneratedSeating] = useState(null);
   const [allottedStudents, setAllottedStudents] = useState([]);
@@ -295,7 +299,11 @@ const Allotment = () => {
           api.get("/faculty")
         ]);
 
-        setVenues(vRes.data.filter((v) => v.isAvailable));
+        setVenues(
+          (vRes.data || []).filter(
+            (v) => v.isAvailable !== false && v.useForAllotment !== false
+          )
+        );
         setAllFaculty(fRes.data);
       } catch (err) {
         if (err.response?.status === 401) {
@@ -637,16 +645,148 @@ const Allotment = () => {
     setSelectedVenues(prev => prev.filter(v => v.uuid !== venueId));
   };
 
+  const formatSlotTime = (t) => {
+    if (!t) return "";
+    const s = String(t).trim();
+    const m = s.match(/^(\d{1,2}):(\d{2})/);
+    if (!m) return s;
+    let h = Number(m[1]);
+    const min = m[2];
+    const ampm = h >= 12 ? "PM" : "AM";
+    h = h % 12 || 12;
+    return `${h}:${min} ${ampm}`;
+  };
+
+  const formatSlotDate = (ymd) => {
+    if (!ymd) return "";
+    const [y, mo, d] = String(ymd).slice(0, 10).split("-");
+    if (!y || !mo || !d) return ymd;
+    return `${d}/${mo}/${y}`;
+  };
+
+  // Time-slot venue availability for the selected exam window (not whole-day block)
+  useEffect(() => {
+    const checkVenueSlots = async () => {
+      if (!examDate || !examStartTime || !examEndTime || !hasWriteAccess) {
+        setVenueSlotStatus({});
+        setVenueSlotWarning(null);
+        return;
+      }
+      if (venues.length === 0) {
+        setVenueSlotStatus({});
+        return;
+      }
+
+      setIsCheckingVenueSlots(true);
+      try {
+        const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
+        const res = await api.post("/venues/check-slot-availability", {
+          date: dateOnly,
+          startTime: examStartTime,
+          endTime: examEndTime,
+          venueUuids: venues.map((v) => v.uuid),
+        });
+        const map = {};
+        for (const row of res.data?.venues || []) {
+          map[row.uuid] = row;
+        }
+        setVenueSlotStatus(map);
+
+        const dropped = selectedVenues.filter(
+          (v) => map[v.uuid] && map[v.uuid].available === false
+        );
+        if (dropped.length > 0) {
+          const st = map[dropped[0].uuid];
+          const conflict = st?.conflicts?.[0];
+          setVenueSlotWarning({
+            venueName: dropped[0].name,
+            date: dateOnly,
+            startTime: conflict?.startTime || examStartTime,
+            endTime: conflict?.endTime || examEndTime,
+            examType: conflict?.examType || "",
+            message: st?.message,
+          });
+        } else {
+          setVenueSlotWarning(null);
+        }
+
+        // Drop occupied venues from manual selection
+        setSelectedVenues((prev) =>
+          prev.filter((v) => {
+            const st = map[v.uuid];
+            return !st || st.available;
+          })
+        );
+      } catch (err) {
+        console.error("Venue slot availability check failed:", err);
+        setVenueSlotStatus({});
+        setVenueSlotWarning(null);
+      } finally {
+        setIsCheckingVenueSlots(false);
+      }
+    };
+
+    checkVenueSlots();
+  }, [examDate, examStartTime, examEndTime, venues, hasWriteAccess]);
+
+  const availableVenuesForSlot = useMemo(
+    () =>
+      venues.filter((v) => {
+        const st = venueSlotStatus[v.uuid];
+        if (!st) return true;
+        return st.available === true;
+      }),
+    [venues, venueSlotStatus]
+  );
+
+  const occupiedVenueWarning = useMemo(() => {
+    if (seatingMode !== "manual") return null;
+    for (const v of selectedVenues) {
+      const st = venueSlotStatus[v.uuid];
+      if (st && !st.available) {
+        const conflict = st.conflicts?.[0];
+        return {
+          venueName: v.name,
+          date: examDate,
+          startTime: conflict?.startTime || examStartTime,
+          endTime: conflict?.endTime || examEndTime,
+          examType: conflict?.examType || "",
+          message: st.message,
+        };
+      }
+    }
+    // Also show if user checked an occupied venue attempt — use latest occupied from list when times overlap
+    return null;
+  }, [seatingMode, selectedVenues, venueSlotStatus, examDate, examStartTime, examEndTime]);
+
+  const activeVenueWarning = occupiedVenueWarning || venueSlotWarning;
+
   const toggleVenueSelection = (venue) => {
     if (!hasWriteAccess) return;
+    const st = venueSlotStatus[venue.uuid];
+    if (st && !st.available) {
+      const conflict = st.conflicts?.[0];
+      setVenueSlotWarning({
+        venueName: venue.name,
+        date: examDate,
+        startTime: conflict?.startTime || examStartTime,
+        endTime: conflict?.endTime || examEndTime,
+        examType: conflict?.examType || "",
+        message: st.message,
+      });
+      return;
+    }
     const isSelected = selectedVenues.some((v) => v.uuid === venue.uuid);
-    if (isSelected) removeManualVenue(venue.uuid);
-    else {
+    if (isSelected) {
+      removeManualVenue(venue.uuid);
+      setVenueSlotWarning(null);
+    } else {
       if (!selectedVenues.some((v) => String(v.uuid) === String(venue.uuid)))
         setSelectedVenues((prev) => [...prev, venue]);
+      setVenueSlotWarning(null);
     }
   };
- 
+
   // ✅ UPDATED: Sequential Multi-Pass Seating Algorithm with AUTO faculty assignment
   const handleGenerate = async () => {
     setError("");
@@ -670,12 +810,19 @@ const Allotment = () => {
     setIsGenerating(true);
  
     const venuesToUse = seatingMode === "auto"
-      ? [...venues].sort((a, b) => b.capacity - a.capacity)
-      : [...selectedVenues];
+      ? [...availableVenuesForSlot].sort((a, b) => b.capacity - a.capacity)
+      : [...selectedVenues].filter((v) => {
+          const st = venueSlotStatus[v.uuid];
+          return !st || st.available;
+        });
  
     if (venuesToUse.length === 0) {
       setIsGenerating(false);
-      return setError("No venues available.");
+      return setError(
+        examDate && examStartTime && examEndTime
+          ? "No venues are available for the selected date and time. Occupied venues cannot be used."
+          : "No venues available."
+      );
     }
  
     // Build student list BY COURSE-DEPARTMENT COMBINATION
@@ -1189,6 +1336,27 @@ const Allotment = () => {
       setManualFacultyAssignments({});
       setAutoPlanValidation(null);
       setError("");
+      setSelectedVenues([]);
+
+      // Refresh venue time-slot status so newly saved allotments show as Occupied
+      try {
+        const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
+        if (dateOnly && examStartTime && examEndTime && venues.length) {
+          const slotRes = await api.post("/venues/check-slot-availability", {
+            date: dateOnly,
+            startTime: examStartTime,
+            endTime: examEndTime,
+            venueUuids: venues.map((v) => v.uuid),
+          });
+          const map = {};
+          for (const row of slotRes.data?.venues || []) {
+            map[row.uuid] = row;
+          }
+          setVenueSlotStatus(map);
+        }
+      } catch {
+        /* ignore slot refresh errors */
+      }
 
       // Recalculate Allocated/Remaining and time conflicts from backend.
       try {
@@ -1610,33 +1778,103 @@ const Allotment = () => {
                 </div>
                 {seatingMode === "auto" ? (
                   <p className="text-sm font-medium text-gray-600">
-                    All available venues will be used for seating.
+                    All venues that are Available for the selected date and time will be used.
+                    Occupied venues for this time interval are skipped.
+                    {isCheckingVenueSlots ? " Checking availability…" : ""}
+                    {examDate && examStartTime && examEndTime
+                      ? ` (${availableVenuesForSlot.length} available of ${venues.length})`
+                      : ""}
                   </p>
                 ) : (
-                  <div className="space-y-2 max-h-48 overflow-y-auto">
-                    {venues.map((v) => {
-                      const isChecked = selectedVenues.some((vx) => vx.uuid === v.uuid);
-                      return (
-                        <label
-                          key={v.uuid}
-                          className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${
-                            isChecked ? "border-blue-200 bg-blue-50/50" : "border-gray-200 hover:bg-gray-50"
-                          } ${!hasWriteAccess ? "cursor-not-allowed opacity-60" : ""}`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            onChange={() => toggleVenueSelection(v)}
-                            disabled={!hasWriteAccess}
-                            className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                          />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-semibold text-gray-900">{v.name}</p>
-                            <p className="text-xs font-medium text-gray-600">Capacity: {v.capacity} students</p>
+                  <div className="space-y-2">
+                    {!examDate || !examStartTime || !examEndTime ? (
+                      <p className="text-sm text-gray-500">
+                        Select date, start time, and end time to check venue availability.
+                      </p>
+                    ) : null}
+                    {isCheckingVenueSlots ? (
+                      <p className="text-xs text-gray-500">Checking venue time slots…</p>
+                    ) : null}
+                    {activeVenueWarning ? (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 space-y-1.5">
+                        <p className="text-sm font-bold text-amber-900">Venue Already Occupied</p>
+                        <p className="text-sm text-amber-900">
+                          {activeVenueWarning.venueName} is already occupied on{" "}
+                          {formatSlotDate(activeVenueWarning.date)} from{" "}
+                          {formatSlotTime(activeVenueWarning.startTime)} to{" "}
+                          {formatSlotTime(activeVenueWarning.endTime)}.
+                        </p>
+                        {activeVenueWarning.examType ? (
+                          <div className="text-sm text-amber-800">
+                            <p className="font-semibold">Existing Exam / Allotment:</p>
+                            <p>{activeVenueWarning.examType}</p>
+                            <p>
+                              {formatSlotTime(activeVenueWarning.startTime)} –{" "}
+                              {formatSlotTime(activeVenueWarning.endTime)}
+                            </p>
                           </div>
-                        </label>
-                      );
-                    })}
+                        ) : null}
+                        <p className="text-sm text-amber-800">
+                          Please select another venue or a different time.
+                        </p>
+                      </div>
+                    ) : null}
+                    <div className="space-y-2 max-h-56 overflow-y-auto">
+                      {venues.map((v) => {
+                        const isChecked = selectedVenues.some((vx) => vx.uuid === v.uuid);
+                        const st = venueSlotStatus[v.uuid];
+                        const occupied = st && !st.available;
+                        const conflict = st?.conflicts?.[0];
+                        const canSelect =
+                          hasWriteAccess &&
+                          Boolean(examDate && examStartTime && examEndTime) &&
+                          !occupied;
+                        return (
+                          <label
+                            key={v.uuid}
+                            className={`flex items-start gap-3 p-3 rounded-xl border transition-colors ${
+                              occupied
+                                ? "border-red-200 bg-red-50/40 cursor-not-allowed opacity-90"
+                                : isChecked
+                                  ? "border-blue-200 bg-blue-50/50 cursor-pointer"
+                                  : "border-gray-200 hover:bg-gray-50 cursor-pointer"
+                            } ${!hasWriteAccess ? "cursor-not-allowed opacity-60" : ""}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => toggleVenueSelection(v)}
+                              disabled={!canSelect && !isChecked}
+                              className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-semibold text-gray-900">{v.name}</p>
+                              <p className="text-xs font-medium text-gray-600">
+                                Capacity: {v.capacity}
+                              </p>
+                              {examDate && examStartTime && examEndTime ? (
+                                occupied ? (
+                                  <p className="text-xs font-semibold text-red-700 mt-1">
+                                    Occupied
+                                    {conflict?.startTime && conflict?.endTime
+                                      ? ` · ${formatSlotTime(conflict.startTime)} – ${formatSlotTime(conflict.endTime)}`
+                                      : ""}
+                                  </p>
+                                ) : (
+                                  <p className="text-xs font-semibold text-emerald-700 mt-1">
+                                    Available
+                                  </p>
+                                )
+                              ) : (
+                                <p className="text-xs text-gray-500 mt-1">
+                                  Select date and time to check
+                                </p>
+                              )}
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
               </div>

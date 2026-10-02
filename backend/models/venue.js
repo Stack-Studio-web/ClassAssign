@@ -27,6 +27,9 @@ function toVenueRow(row, { canManage = false } = {}) {
   if (!row || typeof row !== "object") return row;
   const benchesRow = Number(row.benchesrow ?? row.benchesRow ?? 0) || 1;
   const benchesCol = Number(row.benchescol ?? row.benchesCol ?? 0) || 1;
+  const isAvailable = (row.isavailable ?? row.isAvailable ?? true) !== false;
+  const useForAllotment =
+    (row.use_for_allotment ?? row.useforallotment ?? row.useForAllotment ?? true) !== false;
   return {
     uuid: row.public_uuid ?? row.publicuuid ?? row.uuid,
     name: row.name,
@@ -35,9 +38,11 @@ function toVenueRow(row, { canManage = false } = {}) {
     capacity: Number(row.capacity ?? 0) || benchesRow * benchesCol * 2,
     benchesRow,
     benchesCol,
-    isAvailable: row.isavailable ?? row.isAvailable ?? true,
+    isAvailable,
     /** Alias of isAvailable — global "Use It" enable flag (not date availability). */
-    isActive: (row.isavailable ?? row.isAvailable ?? true) !== false,
+    isActive: isAvailable,
+    /** Eligible for allotment seating generation (does not reserve a time slot). */
+    useForAllotment,
     blockId: row.block_id ?? row.blockid ?? null,
     blockUuid: row.block_uuid ?? row.blockuuid ?? null,
     blockName: row.block_name ?? row.blockname ?? null,
@@ -81,6 +86,7 @@ const Venue = {
       benchesCol,
       benchConfig,
       isAvailable = true,
+      useForAllotment = true,
       sessions = [],
       blockId,
       code,
@@ -96,6 +102,7 @@ const Venue = {
       "benches_row",
       "benches_col",
       "is_available",
+      "use_for_allotment",
       "block_id",
       "code",
     ];
@@ -106,6 +113,7 @@ const Venue = {
       benchesRow,
       benchesCol,
       isAvailable !== false,
+      useForAllotment !== false,
       blockId || null,
       code || name,
     ];
@@ -225,6 +233,7 @@ const Venue = {
         v.benches_row AS benchesRow,
         v.benches_col AS benchesCol,
         v.is_available AS isAvailable,
+        COALESCE(v.use_for_allotment, TRUE) AS useForAllotment,
         v.block_id,
         v.owner_user_id,
         u.username AS creator_username,
@@ -295,15 +304,186 @@ const Venue = {
     return rows?.[0] || null;
   },
 
-  isAvailable: async (venueId, date, startTime, endTime, executor = db) => {
-    const [rows] = await executor.query(
-      `SELECT 1 FROM venue_sessions
-       WHERE venue_id = ?
-       AND session_date = ?
-       AND NOT (end_time <= ? OR start_time >= ?)`,
-      [venueId, date, startTime, endTime]
+  /**
+   * Time-interval overlap on the same venue + date.
+   * Conflict when: existingStart < requestedEnd AND existingEnd > requestedStart
+   * (adjacent intervals that only touch at an endpoint are NOT conflicts).
+   */
+  findSlotConflicts: async (venueId, date, startTime, endTime, executor = db) => {
+    const dateOnly = String(date || "").includes("T")
+      ? String(date).split("T")[0]
+      : String(date || "").trim();
+    const start = formatTimeValue(startTime);
+    const end = formatTimeValue(endTime);
+    if (!venueId || !dateOnly || !start || !end) return [];
+
+    const conflicts = [];
+    const seen = new Set();
+
+    const pushConflict = (c) => {
+      const key = `${c.startTime}|${c.endTime}|${c.examType || ""}|${c.source || ""}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      conflicts.push(c);
+    };
+
+    const [seatingRows] = await executor.query(
+      `SELECT
+         sp.public_uuid AS plan_uuid,
+         sp.exam_date,
+         sp.exam_session,
+         sp.exam_type,
+         sp.exam_start_time,
+         sp.exam_end_time,
+         spv.venue_name
+       FROM seating_plan_venues spv
+       JOIN seating_plans sp ON sp.id = spv.seating_plan_id
+       WHERE spv.venue_id = ?
+         AND sp.exam_date = ?
+         AND sp.exam_start_time IS NOT NULL
+         AND sp.exam_end_time IS NOT NULL
+         AND sp.exam_start_time < ?
+         AND sp.exam_end_time > ?
+       ORDER BY sp.exam_start_time ASC, sp.id ASC`,
+      [venueId, dateOnly, end, start]
     );
-    return rows.length === 0;
+
+    for (const row of seatingRows || []) {
+      pushConflict({
+        source: "seating_plan",
+        planUuid: row.plan_uuid ?? row.planuuid ?? null,
+        venueName: row.venue_name ?? row.venuename ?? "",
+        startTime: formatTimeValue(row.exam_start_time ?? row.examstarttime),
+        endTime: formatTimeValue(row.exam_end_time ?? row.examendtime),
+        examType: row.exam_type ?? row.examtype ?? "",
+        session: row.exam_session ?? row.examsession ?? "",
+        date: dateOnly,
+      });
+    }
+
+    const [sessionRows] = await executor.query(
+      `SELECT session_date, start_time, end_time
+       FROM venue_sessions
+       WHERE venue_id = ?
+         AND session_date = ?
+         AND start_time < ?
+         AND end_time > ?
+       ORDER BY start_time ASC`,
+      [venueId, dateOnly, end, start]
+    );
+
+    for (const s of sessionRows || []) {
+      const sStart = formatTimeValue(s.start_time ?? s.starttime);
+      const sEnd = formatTimeValue(s.end_time ?? s.endtime);
+      const already = conflicts.some((c) => c.startTime === sStart && c.endTime === sEnd);
+      if (already) continue;
+      pushConflict({
+        source: "venue_session",
+        planUuid: null,
+        venueName: "",
+        startTime: sStart,
+        endTime: sEnd,
+        examType: "",
+        session: "",
+        date: dateOnly,
+      });
+    }
+
+    return conflicts;
+  },
+
+  /** Lock venue row so concurrent saves serialize conflict checks. */
+  lockForUpdate: async (venueId, executor) => {
+    const [rows] = await executor.query(
+      `SELECT id, name, is_available, COALESCE(use_for_allotment, TRUE) AS use_for_allotment
+       FROM venues WHERE id = ? FOR UPDATE`,
+      [venueId]
+    );
+    return rows?.[0] || null;
+  },
+
+  /**
+   * Full allotment eligibility + time-slot check for one venue.
+   * Returns { ok, status, conflicts, venueName, message }.
+   */
+  checkAllotmentSlot: async (venueId, date, startTime, endTime, executor = db, opts = {}) => {
+    const venueRow = opts.lock
+      ? await Venue.lockForUpdate(venueId, executor)
+      : await Venue.findById(venueId);
+    if (!venueRow) {
+      return {
+        ok: false,
+        status: "NOT_FOUND",
+        conflicts: [],
+        venueName: "",
+        message: "Venue not found",
+      };
+    }
+
+    const venueName = venueRow.name || "";
+    const useIt = (venueRow.is_available ?? venueRow.isavailable ?? true) !== false;
+    const useForAllotment =
+      (venueRow.use_for_allotment ?? venueRow.useforallotment ?? true) !== false;
+
+    if (!useIt) {
+      return {
+        ok: false,
+        status: "DISABLED",
+        conflicts: [],
+        venueName,
+        message: `${venueName} is disabled (Use It is OFF) and cannot be used for allotment.`,
+      };
+    }
+
+    if (!useForAllotment) {
+      return {
+        ok: false,
+        status: "NOT_ELIGIBLE",
+        conflicts: [],
+        venueName,
+        message: `${venueName} is not marked Use for Allotment.`,
+      };
+    }
+
+    const conflicts = await Venue.findSlotConflicts(
+      venueId,
+      date,
+      startTime,
+      endTime,
+      executor
+    );
+
+    if (conflicts.length > 0) {
+      const first = conflicts[0];
+      const range = `${first.startTime} to ${first.endTime}`;
+      const examBit = first.examType ? ` (${first.examType})` : "";
+      return {
+        ok: false,
+        status: "OCCUPIED",
+        conflicts,
+        venueName,
+        message: `${venueName} is already occupied from ${range} on ${String(date).slice(0, 10)}${examBit}.`,
+      };
+    }
+
+    return {
+      ok: true,
+      status: "AVAILABLE",
+      conflicts: [],
+      venueName,
+      message: `${venueName} is available for the selected time.`,
+    };
+  },
+
+  isAvailable: async (venueId, date, startTime, endTime, executor = db) => {
+    const conflicts = await Venue.findSlotConflicts(
+      venueId,
+      date,
+      startTime,
+      endTime,
+      executor
+    );
+    return conflicts.length === 0;
   },
 
   existsByNameAndType: async (name, type) => {
@@ -382,157 +562,208 @@ const Venue = {
   },
 
   /**
+   * Creator-only (or admin). Updates "Use for Allotment" eligibility.
+   * Does not reserve any date/time slot.
+   */
+  setUseForAllotment: async (id, useForAllotment, user) => {
+    const row = await Venue.findById(id);
+    if (!row) return false;
+    if (!canManageVenue(user, row)) {
+      const err = new Error("Only the creator can change Use for Allotment for this venue");
+      err.statusCode = 403;
+      throw err;
+    }
+    await db.query(
+      `UPDATE venues SET use_for_allotment = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [useForAllotment !== false, id]
+    );
+    return true;
+  },
+
+  /**
    * Date/time schedule availability from seating plans + venue_sessions.
-   * Does not invent data. Timetable rows enrich course labels when times match.
+   * With start+end: occupied only if an existing saved allotment overlaps that interval.
+   * Without times: lists all booked intervals on that date (venue is not "whole-day blocked").
    */
   getScheduleAvailability: async (venueId, { date, startTime = null, endTime = null } = {}) => {
     const venueRow = await Venue.findById(venueId);
     if (!venueRow) return null;
 
     const isActive = (venueRow.is_available ?? venueRow.isavailable ?? true) !== false;
+    const useForAllotment =
+      (venueRow.use_for_allotment ?? venueRow.useforallotment ?? true) !== false;
     const dateOnly = String(date || "").includes("T")
       ? String(date).split("T")[0]
       : String(date || "").trim();
 
     const conflicts = [];
 
-    // 1) Seating plans that use this venue on the date
-    const timeClause =
-      startTime && endTime
-        ? ` AND NOT (sp.exam_end_time <= ? OR sp.exam_start_time >= ?)`
-        : "";
-    const seatingParams =
-      startTime && endTime
-        ? [venueId, dateOnly, startTime, endTime]
-        : [venueId, dateOnly];
-
-    const [seatingRows] = await db.query(
-      `SELECT
-         sp.public_uuid AS plan_uuid,
-         sp.exam_date,
-         sp.exam_session,
-         sp.exam_type,
-         sp.exam_start_time,
-         sp.exam_end_time,
-         sp.selected_courses,
-         spv.venue_name
-       FROM seating_plan_venues spv
-       JOIN seating_plans sp ON sp.id = spv.seating_plan_id
-       WHERE spv.venue_id = ?
-         AND sp.exam_date = ?
-         ${timeClause}
-       ORDER BY sp.exam_start_time ASC NULLS LAST, sp.id ASC`,
-      seatingParams
-    );
-
-    for (const row of seatingRows || []) {
-      const start = formatTimeValue(row.exam_start_time ?? row.examstarttime);
-      const end = formatTimeValue(row.exam_end_time ?? row.examendtime);
-      const session = row.exam_session ?? row.examsession ?? "";
-      const examType = row.exam_type ?? row.examtype ?? "";
-      let courses = [];
-      try {
-        const raw = row.selected_courses ?? row.selectedcourses;
-        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-        if (Array.isArray(parsed)) courses = parsed;
-      } catch {
-        courses = [];
+    if (startTime && endTime) {
+      const slotConflicts = await Venue.findSlotConflicts(
+        venueId,
+        dateOnly,
+        startTime,
+        endTime
+      );
+      for (const c of slotConflicts) {
+        conflicts.push({
+          source: c.source,
+          courseCode: "",
+          courseName:
+            c.source === "seating_plan"
+              ? c.examType
+                ? `Saved allotment (${c.examType})`
+                : "Saved allotment"
+              : "Booked session",
+          startTime: c.startTime,
+          endTime: c.endTime,
+          examType: c.examType || "",
+          session: c.session || "",
+        });
       }
 
-      // Enrich from timetable when possible
-      let ttCourses = [];
-      if (start && end && session) {
+      // Enrich seating_plan conflicts with timetable course labels when possible
+      for (const c of conflicts) {
+        if (c.source !== "seating_plan" || !c.startTime || !c.endTime || !c.session) continue;
         const [ttRows] = await db.query(
-          `SELECT course_code, course_name, exam_type, start_time, end_time, session
+          `SELECT course_code, course_name, exam_type
            FROM timetable
            WHERE date = ?
              AND start_time = ?
              AND end_time = ?
              AND session = ?
-           ORDER BY course_code`,
-          [dateOnly, start, end, session]
+           ORDER BY course_code
+           LIMIT 5`,
+          [dateOnly, c.startTime, c.endTime, c.session]
         );
-        ttCourses = ttRows || [];
-      }
-
-      if (ttCourses.length > 0) {
-        for (const t of ttCourses) {
-          conflicts.push({
-            source: "seating_plan",
-            courseCode: t.course_code ?? t.coursecode ?? "",
-            courseName: t.course_name ?? t.coursename ?? "",
-            startTime: formatTimeValue(t.start_time ?? t.starttime) || start,
-            endTime: formatTimeValue(t.end_time ?? t.endtime) || end,
-            examType: t.exam_type ?? t.examtype ?? examType,
-            session,
-          });
+        if (ttRows?.length) {
+          const t = ttRows[0];
+          c.courseCode = t.course_code ?? t.coursecode ?? "";
+          c.courseName = t.course_name ?? t.coursename ?? c.courseName;
+          c.examType = t.exam_type ?? t.examtype ?? c.examType;
         }
-      } else if (courses.length > 0) {
-        for (const c of courses) {
+      }
+    } else {
+      // Date-only: list all intervals that day (informational — not whole-day block)
+      const [seatingRows] = await db.query(
+        `SELECT
+           sp.public_uuid AS plan_uuid,
+           sp.exam_date,
+           sp.exam_session,
+           sp.exam_type,
+           sp.exam_start_time,
+           sp.exam_end_time,
+           sp.selected_courses,
+           spv.venue_name
+         FROM seating_plan_venues spv
+         JOIN seating_plans sp ON sp.id = spv.seating_plan_id
+         WHERE spv.venue_id = ?
+           AND sp.exam_date = ?
+         ORDER BY sp.exam_start_time ASC NULLS LAST, sp.id ASC`,
+        [venueId, dateOnly]
+      );
+
+      for (const row of seatingRows || []) {
+        const start = formatTimeValue(row.exam_start_time ?? row.examstarttime);
+        const end = formatTimeValue(row.exam_end_time ?? row.examendtime);
+        const session = row.exam_session ?? row.examsession ?? "";
+        const examType = row.exam_type ?? row.examtype ?? "";
+        let courses = [];
+        try {
+          const raw = row.selected_courses ?? row.selectedcourses;
+          const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+          if (Array.isArray(parsed)) courses = parsed;
+        } catch {
+          courses = [];
+        }
+
+        let ttCourses = [];
+        if (start && end && session) {
+          const [ttRows] = await db.query(
+            `SELECT course_code, course_name, exam_type, start_time, end_time, session
+             FROM timetable
+             WHERE date = ?
+               AND start_time = ?
+               AND end_time = ?
+               AND session = ?
+             ORDER BY course_code`,
+            [dateOnly, start, end, session]
+          );
+          ttCourses = ttRows || [];
+        }
+
+        if (ttCourses.length > 0) {
+          for (const t of ttCourses) {
+            conflicts.push({
+              source: "seating_plan",
+              courseCode: t.course_code ?? t.coursecode ?? "",
+              courseName: t.course_name ?? t.coursename ?? "",
+              startTime: formatTimeValue(t.start_time ?? t.starttime) || start,
+              endTime: formatTimeValue(t.end_time ?? t.endtime) || end,
+              examType: t.exam_type ?? t.examtype ?? examType,
+              session,
+            });
+          }
+        } else if (courses.length > 0) {
+          for (const c of courses) {
+            conflicts.push({
+              source: "seating_plan",
+              courseCode: c.courseCode || c.course_code || c.code || "",
+              courseName: c.courseName || c.course_name || c.name || "",
+              startTime: start,
+              endTime: end,
+              examType,
+              session,
+            });
+          }
+        } else {
           conflicts.push({
             source: "seating_plan",
-            courseCode: c.courseCode || c.course_code || c.code || "",
-            courseName: c.courseName || c.course_name || c.name || "",
+            courseCode: "",
+            courseName: examType ? `Saved allotment (${examType})` : "Saved allotment",
             startTime: start,
             endTime: end,
             examType,
             session,
           });
         }
-      } else {
+      }
+
+      const [sessionRows] = await db.query(
+        `SELECT session_date, start_time, end_time
+         FROM venue_sessions
+         WHERE venue_id = ?
+           AND session_date = ?
+         ORDER BY start_time ASC`,
+        [venueId, dateOnly]
+      );
+
+      for (const s of sessionRows || []) {
+        const start = formatTimeValue(s.start_time ?? s.starttime);
+        const end = formatTimeValue(s.end_time ?? s.endtime);
+        const already = conflicts.some(
+          (c) => c.startTime === start && c.endTime === end
+        );
+        if (already) continue;
         conflicts.push({
-          source: "seating_plan",
+          source: "venue_session",
           courseCode: "",
-          courseName: "Scheduled exam seating",
+          courseName: "Booked session",
           startTime: start,
           endTime: end,
-          examType,
-          session,
+          examType: "",
+          session: "",
         });
       }
     }
 
-    // 2) venue_sessions bookings (allotment locks) not already covered
-    const vsTimeClause =
-      startTime && endTime
-        ? ` AND NOT (end_time <= ? OR start_time >= ?)`
-        : "";
-    const vsParams =
-      startTime && endTime
-        ? [venueId, dateOnly, startTime, endTime]
-        : [venueId, dateOnly];
-
-    const [sessionRows] = await db.query(
-      `SELECT session_date, start_time, end_time
-       FROM venue_sessions
-       WHERE venue_id = ?
-         AND session_date = ?
-         ${vsTimeClause}
-       ORDER BY start_time ASC`,
-      vsParams
-    );
-
-    for (const s of sessionRows || []) {
-      const start = formatTimeValue(s.start_time ?? s.starttime);
-      const end = formatTimeValue(s.end_time ?? s.endtime);
-      const already = conflicts.some(
-        (c) => c.startTime === start && c.endTime === end
-      );
-      if (already) continue;
-      conflicts.push({
-        source: "venue_session",
-        courseCode: "",
-        courseName: "Booked session",
-        startTime: start,
-        endTime: end,
-        examType: "",
-        session: "",
-      });
-    }
-
     let status = "AVAILABLE";
     if (!isActive) status = "DISABLED";
-    else if (conflicts.length > 0) status = "OCCUPIED";
+    else if (startTime && endTime && conflicts.length > 0) status = "OCCUPIED";
+    else if (!startTime && !endTime && conflicts.length > 0) {
+      // Date-only view: show booked intervals, but do not treat the whole day as blocked
+      status = "OCCUPIED";
+    }
 
     return {
       venue: {
@@ -544,6 +775,7 @@ const Venue = {
         blockCode: venueRow.block_code ?? venueRow.blockcode ?? null,
         isActive,
         isAvailable: isActive,
+        useForAllotment,
       },
       date: dateOnly,
       startTime: startTime || null,
@@ -551,6 +783,18 @@ const Venue = {
       status,
       available: status === "AVAILABLE",
       conflicts,
+      message:
+        status === "DISABLED"
+          ? `${venueRow.name} is disabled (Use It is OFF).`
+          : status === "OCCUPIED" && startTime && endTime
+            ? `${venueRow.name} is occupied during the requested time.`
+            : status === "OCCUPIED"
+              ? `${venueRow.name} has booked time intervals on this date (other times remain available).`
+              : `${venueRow.name} is available${
+                  startTime && endTime
+                    ? ` from ${formatTimeValue(startTime)} to ${formatTimeValue(endTime)}`
+                    : " for new allotments on this date"
+                }.`,
     };
   },
 
