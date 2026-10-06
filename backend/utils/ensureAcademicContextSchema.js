@@ -107,20 +107,64 @@ async function ensureAcademicContextSchema() {
       console.warn("ensureAcademicContextSchema clear year ownership:", err.message);
     }
 
-    // Shared batch names within an Academic Context (HOD scope)
+    // Shared batch names within an Academic Context (HOD scope).
+    // Legacy uniqueness is (semester_id, owner_user_id, name), so after context
+    // backfill multiple FI-owned batches can share the same name + context.
+    // Never delete those rows — only create the unique index when data is clean.
     try {
-      await db.query(`
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_batches_semester_context_name
-          ON batches (semester_id, academic_context_id, name)
-          WHERE academic_context_id IS NOT NULL
-      `);
+      const [existingIdx] = await db.query(
+        `SELECT 1 AS ok
+         FROM pg_indexes
+         WHERE schemaname = 'public'
+           AND indexname = 'idx_batches_semester_context_name'
+         LIMIT 1`
+      );
+      if (existingIdx?.length) {
+        // already present
+      } else {
+        const [dupes] = await db.query(
+          `SELECT semester_id, academic_context_id, name, COUNT(*)::int AS cnt
+           FROM batches
+           WHERE academic_context_id IS NOT NULL
+           GROUP BY semester_id, academic_context_id, name
+           HAVING COUNT(*) > 1
+           ORDER BY cnt DESC
+           LIMIT 10`
+        );
+        if (dupes?.length) {
+          const sample = dupes
+            .map(
+              (d) =>
+                `(semester_id=${d.semester_id}, context=${d.academic_context_id}, name=${d.name}, count=${d.cnt})`
+            )
+            .join("; ");
+          console.warn(
+            "ensureAcademicContextSchema batch context unique: skipped — " +
+              `duplicate batch names within academic context still exist (${dupes.length}+ groups). ` +
+              `Sample: ${sample}. Keeping legacy idx_batches_semester_owner_name uniqueness.`
+          );
+        } else {
+          await db.query(`
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_batches_semester_context_name
+              ON batches (semester_id, academic_context_id, name)
+              WHERE academic_context_id IS NOT NULL
+          `);
+        }
+      }
     } catch (err) {
-      console.warn("ensureAcademicContextSchema batch context unique:", err.message);
+      console.warn(
+        "ensureAcademicContextSchema batch context unique:",
+        err.parent?.message || err.original?.message || err.message,
+        err.name || ""
+      );
     }
 
-    console.log("✅ Academic Context schema OK");
+    console.info("✅ Academic context schema OK");
   } catch (err) {
-    console.error("ensureAcademicContextSchema error:", err.message);
+    console.error(
+      "ensureAcademicContextSchema error:",
+      err.parent?.message || err.original?.message || err.message
+    );
   }
 }
 
