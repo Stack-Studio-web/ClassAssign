@@ -9,9 +9,26 @@ const ReportVerification = require("../models/ReportVerification");
 
 function normalizeSession(raw) {
   if (!raw) return "—";
-  const s = String(raw).toUpperCase();
-  if (s.includes("FN") || s === "MORNING") return "FN";
-  if (s.includes("AN") || s === "AFTERNOON") return "AN";
+  const s = String(raw).toUpperCase().trim();
+  if (!s) return "—";
+  if (
+    s === "FN" ||
+    s === "MORNING" ||
+    s === "FORENOON" ||
+    s.includes("FORENOON") ||
+    /(^|[^A-Z])FN([^A-Z]|$)/.test(s) ||
+    s.includes("MORNING")
+  ) {
+    return "FN";
+  }
+  if (
+    s === "AN" ||
+    s === "AFTERNOON" ||
+    s.includes("AFTERNOON") ||
+    /(^|[^A-Z])AN([^A-Z]|$)/.test(s)
+  ) {
+    return "AN";
+  }
   return String(raw).trim() || "—";
 }
 
@@ -58,25 +75,55 @@ function formatDateSlash(value) {
   return `${d}/${m}/${y}`;
 }
 
-/** Normalize pg DATE / Date / ISO strings to YYYY-MM-DD (never locale String(date)). */
+/**
+ * Normalize pg DATE / Date / ISO strings to YYYY-MM-DD.
+ * Prefer calendar string form. For JS Date from node-pg DATE, use LOCAL
+ * Y/M/D (not UTC) — UTC shifts IST midnights to the previous calendar day.
+ */
 function toDateKey(value) {
   if (value == null || value === "") return "";
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10);
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    const y = value.getUTCFullYear();
-    const m = String(value.getUTCMonth() + 1).padStart(2, "0");
-    const d = String(value.getUTCDate()).padStart(2, "0");
+    const y = value.getFullYear();
+    const m = String(value.getMonth() + 1).padStart(2, "0");
+    const d = String(value.getDate()).padStart(2, "0");
     return `${y}-${m}-${d}`;
   }
-  const raw = String(value).trim();
-  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10);
-  const parsed = new Date(raw);
+  const asString = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(asString)) return asString.slice(0, 10);
+  const parsed = new Date(asString);
   if (!Number.isNaN(parsed.getTime())) {
-    const y = parsed.getUTCFullYear();
-    const m = String(parsed.getUTCMonth() + 1).padStart(2, "0");
-    const d = String(parsed.getUTCDate()).padStart(2, "0");
+    const y = parsed.getFullYear();
+    const m = String(parsed.getMonth() + 1).padStart(2, "0");
+    const d = String(parsed.getDate()).padStart(2, "0");
     return `${y}-${m}-${d}`;
   }
   return "";
+}
+
+/** SQL fragment: calendar date as YYYY-MM-DD text (avoids node-pg Date TZ shift). */
+function sqlDateKey(expr) {
+  return `to_char(${expr}, 'YYYY-MM-DD')`;
+}
+
+function batchesLooselyMatch(timetableBatchName, studentBatchName) {
+  const a = String(timetableBatchName || "").trim().toUpperCase();
+  const b = String(studentBatchName || "").trim().toUpperCase();
+  if (!a || !b) return false;
+  if (a === b) return true;
+  // Ignore placeholder batch labels
+  if (/^(ALL|NA|N\/A|-|NONE)$/i.test(a)) return true;
+  // Match shared academic-year token e.g. 2025-2029
+  const yearRe = /\b(20\d{2}\s*[-–]\s*20\d{2})\b/;
+  const ma = a.match(yearRe);
+  const mb = b.match(yearRe);
+  if (ma && mb) {
+    const na = ma[1].replace(/\s+/g, "").replace("–", "-");
+    const nb = mb[1].replace(/\s+/g, "").replace("–", "-");
+    if (na === nb) return true;
+  }
+  return false;
 }
 
 /**
@@ -415,7 +462,7 @@ function trimTimePart(t) {
 async function loadTimetableIndex(dateFrom, dateTo) {
   const [rows] = await db.query(
     `SELECT
-       t.date,
+       ${sqlDateKey("t.date")} AS date,
        t.session,
        t.start_time,
        t.end_time,
@@ -456,6 +503,9 @@ async function loadTimetableIndex(dateFrom, dateTo) {
 
 /**
  * In-memory timetable validation against a preloaded index.
+ * Required: date + course (and session when both sides have one).
+ * Soft: exam type / exact time (retry without when no hit).
+ * Batch: only when timetable row actually specifies a batch; loose name match.
  */
 function isCourseScheduledInIndex(index, opts) {
   const code = String(opts.courseCode || "").trim().toUpperCase();
@@ -472,7 +522,7 @@ function isCourseScheduledInIndex(index, opts) {
   const endTime = opts.endTime || null;
   const wantType = normalizeExamTypeKey(opts.examType);
 
-  const matchRow = (row) => {
+  const matchRow = (row, { requireType = true } = {}) => {
     const rowSess = normalizeSession(row.session);
     if (
       sess &&
@@ -480,34 +530,43 @@ function isCourseScheduledInIndex(index, opts) {
       row.session != null &&
       String(row.session).trim() !== ""
     ) {
-      if (rowSess !== sess) return false;
+      if (rowSess !== sess && rowSess !== "—") return false;
     }
 
-    const timetableHasBatch = row.batchId != null || row.batchName.length > 0;
+    const rawBatchLabel = String(row.batchName || "").trim();
+    const timetableHasBatch =
+      row.batchId != null ||
+      (rawBatchLabel.length > 0 && !/^(ALL|NA|N\/A|-|NONE)$/i.test(rawBatchLabel));
     if (timetableHasBatch && (batchId != null || (batchName && String(batchName).trim()))) {
       const idMatch =
         row.batchId != null &&
         batchId != null &&
         Number(row.batchId) === Number(batchId);
-      const nameMatch =
-        row.batchName.length > 0 &&
-        batchName &&
-        row.batchName.toUpperCase() === String(batchName).trim().toUpperCase();
+      const nameMatch = batchesLooselyMatch(rawBatchLabel, batchName);
       if (!idMatch && !nameMatch) return false;
     }
 
-    const rowType = normalizeExamTypeKey(row.examType);
-    if (rowType && wantType && rowType !== wantType) return false;
+    if (requireType) {
+      const rowType = normalizeExamTypeKey(row.examType);
+      if (rowType && wantType && rowType !== wantType) return false;
+    }
     return true;
+  };
+
+  const tryPool = (pool) => {
+    if (pool.some((r) => matchRow(r, { requireType: true }))) return true;
+    // Soft type: seating/timetable labels often differ (e.g. Internal vs CAT 1)
+    if (wantType && pool.some((r) => matchRow(r, { requireType: false }))) return true;
+    return false;
   };
 
   if (startTime && endTime) {
     const timed = candidates.filter(
       (r) => r.startTime === startTime && r.endTime === endTime
     );
-    if (timed.some(matchRow)) return true;
+    if (timed.length && tryPool(timed)) return true;
   }
-  return candidates.some(matchRow);
+  return tryPool(candidates);
 }
 
 /**
@@ -549,20 +608,32 @@ async function bulkBuildVenueCourseContexts(pairs) {
        sp.exam_start_time,
        sp.exam_end_time,
        sp.exam_type,
-       sp.selected_courses
+       sp.selected_courses,
+       e.exam_session AS exam_session,
+       sp.exam_session AS plan_session
      FROM exams e
      JOIN seating_plan_venues spv ON spv.venue_id IN (${venueIds.map(() => "?").join(",")})
      JOIN seating_plans sp ON sp.id = spv.seating_plan_id
      WHERE e.id IN (${examIds.map(() => "?").join(",")})
        AND sp.exam_date = e.exam_date
-       AND (e.exam_session IS NULL OR sp.exam_session = e.exam_session)
      ORDER BY e.id ASC, spv.venue_id ASC, spv.id DESC`,
     [...venueIds, ...examIds]
   );
 
-  // Keep first (latest spv) per exam+venue
+  // Keep first (latest spv) per exam+venue with compatible session (FN/AN normalized).
   const bestSpv = new Map();
   for (const row of spvRows || []) {
+    const examSess = normalizeSession(row.exam_session ?? row.examsession);
+    const planSess = normalizeSession(row.plan_session ?? row.plansession);
+    if (
+      examSess &&
+      examSess !== "—" &&
+      planSess &&
+      planSess !== "—" &&
+      examSess !== planSess
+    ) {
+      continue;
+    }
     const key = `${row.exam_id ?? row.examid}::${row.venue_id ?? row.venueid}`;
     if (!bestSpv.has(key)) bestSpv.set(key, row);
   }
@@ -791,7 +862,7 @@ async function fetchAbsentStudentRows(user, role, filters) {
        ${PROGRAM_FROM_REGN_SQL("st")} AS student_department,
        b.public_uuid AS batch_uuid,
        b.name AS batch_name,
-       e.exam_date,
+       ${sqlDateKey("e.exam_date")} AS exam_date,
        e.exam_session,
        e.exam_name,
        e.exam_code,
@@ -805,7 +876,7 @@ async function fetchAbsentStudentRows(user, role, filters) {
      LEFT JOIN semesters sem ON sem.id = b.semester_id
      LEFT JOIN academic_years ay ON ay.id = sem.academic_year_id
      JOIN exams e ON e.id = att.exam_id
-     WHERE att.status = 'Absent'
+     WHERE UPPER(TRIM(COALESCE(att.status, ''))) = 'ABSENT'
        AND e.exam_date BETWEEN ? AND ?
        ${deptSql}
        ${extra}
@@ -814,11 +885,29 @@ async function fetchAbsentStudentRows(user, role, filters) {
     queryParams
   );
   if (debug) {
-    console.log(`[Attendance Export] attendance query: ${Date.now() - tAtt} ms (rows=${(rows || []).length})`);
+    console.info(
+      `[Attendance Export Preview] attendance query: ${Date.now() - tAtt} ms (candidates=${(rows || []).length})`
+    );
   }
 
   const rawRows = rows || [];
+  const stats = {
+    candidates: rawRows.length,
+    skippedMissingKey: 0,
+    skippedDuplicate: 0,
+    skippedNoCourse: 0,
+    skippedCourseFilter: 0,
+    withResolvedCourse: 0,
+    withResolvedBatch: 0,
+    matchedTimetable: 0,
+    rejectedTimetable: 0,
+  };
+
   if (!rawRows.length) {
+    console.warn(
+      `[Attendance Export Preview] candidate attendance records: 0 ` +
+        `(dept=${department || "ALL"} ${dateFrom}→${dateTo})`
+    );
     return { rows: [], filters: { department, dateFrom, dateTo, courseCode, batchUuid } };
   }
 
@@ -833,8 +922,8 @@ async function fetchAbsentStudentRows(user, role, filters) {
     ),
   ]);
   if (debug) {
-    console.log(
-      `[Attendance Export] bulk timetable+venue: ${Date.now() - tBulk} ms ` +
+    console.info(
+      `[Attendance Export Preview] bulk timetable+venue: ${Date.now() - tBulk} ms ` +
         `(timetableKeys=${timetableIndex.size}, venues=${venueContextMap.size})`
     );
   }
@@ -848,10 +937,16 @@ async function fetchAbsentStudentRows(user, role, filters) {
     const regn = String(r.regn_no ?? r.regnno ?? "").trim();
     const examId = r.exam_id ?? r.examid;
     const venueId = r.venue_id ?? r.venueid;
-    if (!regn || examId == null || venueId == null) continue;
+    if (!regn || examId == null || venueId == null) {
+      stats.skippedMissingKey += 1;
+      continue;
+    }
 
     const physicalKey = `${regn.toUpperCase()}::${examId}::${venueId}`;
-    if (seenPhysical.has(physicalKey)) continue;
+    if (seenPhysical.has(physicalKey)) {
+      stats.skippedDuplicate += 1;
+      continue;
+    }
 
     const venueCtx =
       venueContextMap.get(`${examId}::${venueId}`) || {
@@ -868,24 +963,13 @@ async function fetchAbsentStudentRows(user, role, filters) {
       venueCtx.courseMap.get(regn.toUpperCase()) ||
       venueCtx.courseMap.get(regn) ||
       "";
-    const course = seatedCourse || enrollmentCourse;
-    if (!course) {
-      seenPhysical.add(physicalKey);
-      continue;
-    }
-    if (courseFilter && course.toUpperCase() !== courseFilter) {
-      seenPhysical.add(physicalKey);
-      continue;
-    }
 
     const examDate = toDateKey(r.exam_date ?? r.examdate);
     const session = normalizeSession(r.exam_session ?? r.examsession);
     const batchId = r.student_batch_id ?? r.studentbatchid ?? null;
     const batchName = r.batch_name ?? r.batchname ?? null;
     const seatingExamType = venueCtx.examType;
-
-    const scheduled = isCourseScheduledInIndex(timetableIndex, {
-      courseCode: course,
+    const scheduleOpts = {
       examDate,
       session,
       batchId,
@@ -893,12 +977,55 @@ async function fetchAbsentStudentRows(user, role, filters) {
       startTime: venueCtx.startTime,
       endTime: venueCtx.endTime,
       examType: seatingExamType,
-    });
-    if (!scheduled) {
+    };
+
+    // Prefer seating course. Enrollment only when seating-authoritative
+    // (selected_courses) or when that enrollment course is actually scheduled
+    // for this slot — never attribute unscheduled multi-enrollment courses.
+    let course = seatedCourse;
+    if (!course && enrollmentCourse) {
+      const selected = (venueCtx.selectedCourses || []).map((c) =>
+        String(c).trim().toUpperCase()
+      );
+      if (selected.includes(enrollmentCourse.toUpperCase())) {
+        course = enrollmentCourse;
+      } else if (
+        isCourseScheduledInIndex(timetableIndex, {
+          ...scheduleOpts,
+          courseCode: enrollmentCourse,
+        })
+      ) {
+        course = enrollmentCourse;
+      }
+    }
+    if (!course) {
+      stats.skippedNoCourse += 1;
+      seenPhysical.add(physicalKey);
+      continue;
+    }
+    stats.withResolvedCourse += 1;
+
+    if (courseFilter && course.toUpperCase() !== courseFilter) {
+      stats.skippedCourseFilter += 1;
       seenPhysical.add(physicalKey);
       continue;
     }
 
+    if (batchId != null || (batchName && String(batchName).trim())) {
+      stats.withResolvedBatch += 1;
+    }
+
+    const scheduled = isCourseScheduledInIndex(timetableIndex, {
+      ...scheduleOpts,
+      courseCode: course,
+    });
+    if (!scheduled) {
+      stats.rejectedTimetable += 1;
+      seenPhysical.add(physicalKey);
+      continue;
+    }
+
+    stats.matchedTimetable += 1;
     seenPhysical.add(physicalKey);
     pending.push({
       attendanceId: attId,
@@ -960,10 +1087,24 @@ async function fetchAbsentStudentRows(user, role, filters) {
       studentDepartment: p.studentDepartment,
     };
   });
+
+  const summary =
+    `[Attendance Export Preview] ` +
+    `candidates=${stats.candidates} ` +
+    `withCourse=${stats.withResolvedCourse} ` +
+    `withBatch=${stats.withResolvedBatch} ` +
+    `matchedTimetable=${stats.matchedTimetable} ` +
+    `rejectedTimetable=${stats.rejectedTimetable} ` +
+    `noCourse=${stats.skippedNoCourse} ` +
+    `courseFilter=${stats.skippedCourseFilter} ` +
+    `final=${out.length}`;
+  if (out.length === 0 || debug) {
+    console.warn(summary);
+  }
   if (debug) {
-    console.log(
-      `[Attendance Export] titles+transform: ${Date.now() - tTitle} ms; ` +
-        `preview total: ${Date.now() - t0} ms (kept=${out.length})`
+    console.info(
+      `[Attendance Export Preview] titles+transform: ${Date.now() - tTitle} ms; ` +
+        `total: ${Date.now() - t0} ms`
     );
   }
 
