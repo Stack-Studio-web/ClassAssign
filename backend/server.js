@@ -151,8 +151,11 @@ const STARTUP_RETRY_DELAY_MS = 3000;
 async function start() {
   for (let attempt = 1; attempt <= STARTUP_MAX_ATTEMPTS; attempt++) {
     try {
+      console.info(`[startup] attempt ${attempt}/${STARTUP_MAX_ATTEMPTS}: connecting to database…`);
       await connectWithRetry();
+      console.info("[startup] database connected; connecting session store…");
       await SessionStore.connect();
+      console.info("[startup] running schema ensures…");
       await ensureHodSchema();
       await ensureHodWorkspaceScope();
       await ensureAttendanceSchema();
@@ -178,6 +181,7 @@ async function start() {
       await ensureTimetableSchema();
       await ensureFacultyActiveSchema();
       await ensureFacultyEmailIdentity();
+      console.info("[startup] schema ensures complete");
       break;
     } catch (e) {
       const isLast = attempt === STARTUP_MAX_ATTEMPTS;
@@ -197,7 +201,7 @@ async function start() {
 
   app.listen(PORT, "0.0.0.0", () => {
     logCorsConfig();
-    console.log(
+    console.info(
       `Server listening on 0.0.0.0:${PORT} (${process.env.NODE_ENV || "development"})`
     );
   });

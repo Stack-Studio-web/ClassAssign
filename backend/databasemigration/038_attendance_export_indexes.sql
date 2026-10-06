@@ -1,5 +1,10 @@
 -- Indexes for Attendance Export options/preview date-range queries.
--- Apply: psql -U <user> -d <db> -f 038_attendance_export_indexes.sql
+-- Apply OFFLINE (not during app boot) — CREATE INDEX locks tables and can
+-- delay Nest/Express listen, causing nginx 502s.
+--
+-- Example:
+--   docker compose exec db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+--     -f /migrations/038_attendance_export_indexes.sql
 
 CREATE INDEX IF NOT EXISTS idx_exams_exam_date ON exams (exam_date);
 
