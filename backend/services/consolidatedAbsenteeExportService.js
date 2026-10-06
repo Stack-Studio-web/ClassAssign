@@ -663,7 +663,11 @@ async function bulkBuildVenueCourseContexts(pairs) {
   return result;
 }
 
-async function bulkLookupCourseTitles(courseCodes) {
+/**
+ * Resolve course titles for a small set of codes.
+ * Prefer timetable (authoritative for exam slots), then students as fallback.
+ */
+async function bulkLookupCourseTitles(courseCodes, dateFrom = null, dateTo = null) {
   const codes = [
     ...new Set(
       (courseCodes || []).map((c) => String(c || "").trim()).filter(Boolean)
@@ -671,23 +675,83 @@ async function bulkLookupCourseTitles(courseCodes) {
   ];
   const map = new Map();
   if (!codes.length) return map;
-  const [rows] = await db.query(
-    `SELECT DISTINCT ON (UPPER(TRIM(course_description)))
-       TRIM(course_description) AS course_code,
-       TRIM(course_name) AS course_title
-     FROM students
-     WHERE UPPER(TRIM(course_description)) IN (${codes.map(() => "UPPER(TRIM(?))").join(",")})
-       AND course_name IS NOT NULL
-       AND TRIM(course_name) <> ''
-     ORDER BY UPPER(TRIM(course_description)), id ASC`,
-    codes
-  );
-  for (const r of rows || []) {
-    const code = String(r.course_code ?? r.coursecode ?? "").trim().toUpperCase();
-    const title = String(r.course_title ?? r.coursetitle ?? "").trim();
-    if (code && title) map.set(code, title);
+
+  const upperCodes = codes.map((c) => c.toUpperCase());
+
+  if (dateFrom && dateTo) {
+    try {
+      const ph = upperCodes.map(() => "?").join(", ");
+      const [ttRows] = await db.query(
+        `SELECT DISTINCT ON (UPPER(TRIM(course_code)))
+           TRIM(course_code) AS course_code,
+           TRIM(course_name) AS course_title
+         FROM timetable
+         WHERE date BETWEEN ? AND ?
+           AND UPPER(TRIM(course_code)) IN (${ph})
+           AND course_name IS NOT NULL
+           AND TRIM(course_name) <> ''
+         ORDER BY UPPER(TRIM(course_code)), id ASC`,
+        [dateFrom, dateTo, ...upperCodes]
+      );
+      for (const r of ttRows || []) {
+        const code = String(r.course_code ?? r.coursecode ?? "")
+          .trim()
+          .toUpperCase();
+        const title = String(r.course_title ?? r.coursetitle ?? "").trim();
+        if (code && title) map.set(code, title);
+      }
+    } catch (err) {
+      console.error("bulkLookupCourseTitles timetable:", err?.message || err);
+    }
+  }
+
+  const missing = upperCodes.filter((c) => !map.has(c));
+  if (!missing.length) return map;
+
+  try {
+    const ph = missing.map(() => "?").join(", ");
+    const [rows] = await db.query(
+      `SELECT DISTINCT ON (UPPER(TRIM(course_description)))
+         TRIM(course_description) AS course_code,
+         TRIM(course_name) AS course_title
+       FROM students
+       WHERE UPPER(TRIM(course_description)) IN (${ph})
+         AND course_name IS NOT NULL
+         AND TRIM(course_name) <> ''
+       ORDER BY UPPER(TRIM(course_description)), id ASC`,
+      missing
+    );
+    for (const r of rows || []) {
+      const code = String(r.course_code ?? r.coursecode ?? "")
+        .trim()
+        .toUpperCase();
+      const title = String(r.course_title ?? r.coursetitle ?? "").trim();
+      if (code && title && !map.has(code)) map.set(code, title);
+    }
+  } catch (err) {
+    console.error("bulkLookupCourseTitles students:", err?.message || err);
   }
   return map;
+}
+
+/** Parse course codes from seating_plans.selected_courses JSON/text. */
+function parseSelectedCourseCodes(raw) {
+  if (raw == null || raw === "") return [];
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((c) =>
+        String(
+          typeof c === "string"
+            ? c
+            : c?.code ?? c?.courseCode ?? c?.course_code ?? ""
+        ).trim()
+      )
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -741,7 +805,7 @@ async function fetchAbsentStudentRows(user, role, filters) {
      LEFT JOIN semesters sem ON sem.id = b.semester_id
      LEFT JOIN academic_years ay ON ay.id = sem.academic_year_id
      JOIN exams e ON e.id = att.exam_id
-     WHERE UPPER(TRIM(COALESCE(att.status, ''))) = 'ABSENT'
+     WHERE att.status = 'Absent'
        AND e.exam_date BETWEEN ? AND ?
        ${deptSql}
        ${extra}
@@ -862,7 +926,11 @@ async function fetchAbsentStudentRows(user, role, filters) {
   }
 
   const tTitle = Date.now();
-  const titleMap = await bulkLookupCourseTitles(pending.map((p) => p.courseCode));
+  const titleMap = await bulkLookupCourseTitles(
+    pending.map((p) => p.courseCode),
+    dateFrom,
+    dateTo
+  );
   const out = pending.map((p) => {
     let courseTitle = "";
     if (
@@ -1039,9 +1107,17 @@ function buildMeta(filters, absentRows, reportRows, batchSections = []) {
 
 const ConsolidatedAbsenteeExportService = {
   /**
-   * Cascading filter options from ACTUAL attendance records in a date range.
-   * Lean DISTINCT queries only — does NOT run timetable validation or full export.
-   * Departments = program codes from student regn_no (BCS/BIT/…), never org KSI.
+   * Cascading filter options for /attendance/export/options.
+   *
+   * MUST stay lean — never run preview/timetable validation / DOCX pipeline.
+   *
+   * Course identity comes from seating (regn-matched seating_plan_students),
+   * NOT from students.course_description (multi-enrollment rows).
+   *
+   * Root cause of the 47-minute query (removed):
+   *   JOIN seating_plan_students sps ON sps.seating_plan_id = sp.id
+   * without matching the attendance student's regn → cartesian explosion
+   * (attendance × every plan student), then DISTINCT/MAX + correlated titles.
    */
   getOptions: async (user, role, query = {}) => {
     const t0 = Date.now();
@@ -1090,20 +1166,22 @@ const ConsolidatedAbsenteeExportService = {
         return await fn();
       } finally {
         if (debug) {
-          console.log(`[Attendance Export] options ${label}: ${Date.now() - start} ms`);
+          console.info(
+            `[Attendance Export] options ${label}: ${Date.now() - start} ms`
+          );
         }
       }
     };
 
-    // Parallel lean DISTINCT queries — no seating cartesian, no correlated titles.
-    const [departments, enrollmentCourses, seatingCourses, batchRows] = await Promise.all([
+    // Start from exams (date filter first), then attendance — never scan all students.
+    const [departments, courseRows, batchRows] = await Promise.all([
       timed("departments", async () => {
         try {
           const [deptRows] = await db.query(
             `SELECT DISTINCT ${programExpr} AS department
-             FROM attendance att
+             FROM exams e
+             JOIN attendance att ON att.exam_id = e.id
              JOIN students st ON st.id = att.student_id
-             JOIN exams e ON e.id = att.exam_id
              WHERE e.exam_date BETWEEN ? AND ?
                AND ${hasProgram}
                AND ${programExpr} IS NOT NULL
@@ -1121,72 +1199,73 @@ const ConsolidatedAbsenteeExportService = {
         }
       }),
 
-      timed("enrollment courses", async () => {
+      // Seated course for the SAME student only (regn match). No plan-wide cartesian.
+      timed("courses", async () => {
         try {
           const [rows] = await db.query(
             `SELECT DISTINCT
-               TRIM(st.course_description) AS course_code,
-               TRIM(st.course_name) AS course_title
-             FROM attendance att
+               TRIM(sps.course_description) AS course_code
+             FROM exams e
+             JOIN attendance att ON att.exam_id = e.id
              JOIN students st ON st.id = att.student_id
-             JOIN exams e ON e.id = att.exam_id
-             WHERE e.exam_date BETWEEN ? AND ?
-               ${deptSql}
-               AND st.course_description IS NOT NULL
-               AND TRIM(st.course_description) <> ''
-               ${roleSql}
-             ORDER BY 1 ASC`,
-            baseParams
-          );
-          return rows || [];
-        } catch (err) {
-          console.error("consolidated export enrollment courses:", err?.message || err);
-          return [];
-        }
-      }),
-
-      // Courses listed on seating plans for exams that have attendance in range.
-      timed("seating courses", async () => {
-        try {
-          const [rows] = await db.query(
-            `SELECT DISTINCT sp.selected_courses AS selected_courses
-             FROM attendance att
-             JOIN students st ON st.id = att.student_id
-             JOIN exams e ON e.id = att.exam_id
              JOIN seating_plan_venues spv ON spv.venue_id = att.venue_id
              JOIN seating_plans sp
                ON sp.id = spv.seating_plan_id
               AND sp.exam_date = e.exam_date
               AND (e.exam_session IS NULL OR sp.exam_session = e.exam_session)
+             JOIN seating_plan_students sps
+               ON sps.seating_plan_id = sp.id
+              AND lower(btrim(sps.regn_no)) = lower(btrim(st.regn_no))
              WHERE e.exam_date BETWEEN ? AND ?
                ${deptSql}
-               AND sp.selected_courses IS NOT NULL
-               AND TRIM(sp.selected_courses) <> ''
-               ${roleSql}`,
+               AND sps.course_description IS NOT NULL
+               AND btrim(sps.course_description) <> ''
+               ${roleSql}
+             ORDER BY 1 ASC`,
             baseParams
           );
-          const codes = [];
-          for (const row of rows || []) {
-            const raw = row.selected_courses ?? row.selectedcourses;
-            if (!raw) continue;
-            try {
-              const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-              if (!Array.isArray(parsed)) continue;
-              for (const c of parsed) {
-                const code = String(
-                  typeof c === "string"
-                    ? c
-                    : c?.code ?? c?.courseCode ?? c?.course_code ?? ""
-                ).trim();
-                if (code) codes.push({ course_code: code });
+          let codes = (rows || [])
+            .map((r) => String(r.course_code ?? r.coursecode ?? "").trim())
+            .filter(Boolean);
+
+          // Fallback: selected_courses on plans that have dept attendance (no sps join).
+          if (!codes.length) {
+            const [selRows] = await db.query(
+              `SELECT DISTINCT sp.selected_courses AS selected_courses
+               FROM exams e
+               JOIN seating_plans sp
+                 ON sp.exam_date = e.exam_date
+                AND (e.exam_session IS NULL OR sp.exam_session = e.exam_session)
+               WHERE e.exam_date BETWEEN ? AND ?
+                 AND sp.selected_courses IS NOT NULL
+                 AND TRIM(sp.selected_courses) <> ''
+                 AND EXISTS (
+                   SELECT 1
+                   FROM attendance att
+                   JOIN students st ON st.id = att.student_id
+                   JOIN seating_plan_venues spv
+                     ON spv.seating_plan_id = sp.id
+                    AND spv.venue_id = att.venue_id
+                   WHERE att.exam_id = e.id
+                     ${deptSql}
+                     ${roleSql}
+                 )`,
+              baseParams
+            );
+            const set = new Set();
+            for (const row of selRows || []) {
+              for (const code of parseSelectedCourseCodes(
+                row.selected_courses ?? row.selectedcourses
+              )) {
+                set.add(code);
               }
-            } catch {
-              /* ignore malformed JSON */
             }
+            codes = [...set];
           }
-          return codes;
+
+          return codes.map((code) => ({ course_code: code }));
         } catch (err) {
-          console.error("consolidated export seating courses:", err?.message || err);
+          console.error("consolidated export courses query:", err?.message || err);
           return [];
         }
       }),
@@ -1195,9 +1274,22 @@ const ConsolidatedAbsenteeExportService = {
         try {
           const batchParams = [dateFrom, dateTo, ...deptMatch.params];
           let courseClause = "";
+          // Course filter via seated course (regn-matched), not enrollment column.
           if (courseCode) {
-            courseClause =
-              " AND UPPER(TRIM(st.course_description)) = UPPER(TRIM(?))";
+            courseClause = `
+              AND EXISTS (
+                SELECT 1
+                FROM seating_plan_venues spv_c
+                JOIN seating_plans sp_c
+                  ON sp_c.id = spv_c.seating_plan_id
+                 AND sp_c.exam_date = e.exam_date
+                 AND (e.exam_session IS NULL OR sp_c.exam_session = e.exam_session)
+                JOIN seating_plan_students sps_c
+                  ON sps_c.seating_plan_id = sp_c.id
+                 AND lower(btrim(sps_c.regn_no)) = lower(btrim(st.regn_no))
+                WHERE spv_c.venue_id = att.venue_id
+                  AND upper(btrim(sps_c.course_description)) = upper(btrim(?))
+              )`;
             batchParams.push(courseCode);
           }
           batchParams.push(...roleParams);
@@ -1206,10 +1298,10 @@ const ConsolidatedAbsenteeExportService = {
             `SELECT DISTINCT
                b.public_uuid AS batch_uuid,
                b.name AS batch_name
-             FROM attendance att
+             FROM exams e
+             JOIN attendance att ON att.exam_id = e.id
              JOIN students st ON st.id = att.student_id
              JOIN batches b ON b.id = st.batch_id
-             JOIN exams e ON e.id = att.exam_id
              WHERE e.exam_date BETWEEN ? AND ?
                ${deptSql}
                ${courseClause}
@@ -1228,47 +1320,29 @@ const ConsolidatedAbsenteeExportService = {
       }),
     ]);
 
-    // Merge enrollment + seating course codes; bulk-fill missing titles once.
-    const courseMap = new Map();
-    for (const r of enrollmentCourses) {
-      const code = String(r.course_code ?? r.coursecode ?? "").trim();
-      if (!code) continue;
-      const key = code.toUpperCase();
-      const title = String(r.course_title ?? r.coursetitle ?? "").trim();
-      if (!courseMap.has(key) || (title && !courseMap.get(key).title)) {
-        courseMap.set(key, { code, title });
-      }
-    }
-    for (const r of seatingCourses) {
-      const code = String(r.course_code ?? r.coursecode ?? "").trim();
-      if (!code) continue;
-      const key = code.toUpperCase();
-      if (!courseMap.has(key)) {
-        courseMap.set(key, { code, title: "" });
-      }
-    }
+    const rawCodes = (courseRows || [])
+      .map((r) => String(r.course_code ?? r.coursecode ?? "").trim())
+      .filter(Boolean);
+    const titleMap = await timed("course titles", () =>
+      bulkLookupCourseTitles(rawCodes, dateFrom, dateTo)
+    );
 
-    const missingTitles = [...courseMap.values()]
-      .filter((c) => !c.title)
-      .map((c) => c.code);
-    if (missingTitles.length) {
-      await timed("course titles", async () => {
-        const titleMap = await bulkLookupCourseTitles(missingTitles);
-        for (const [key, entry] of courseMap) {
-          if (!entry.title && titleMap.has(key)) {
-            entry.title = titleMap.get(key);
-          }
-        }
-      });
-    }
-
-    const courses = [...courseMap.values()]
-      .sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }))
-      .map((c) => ({
-        code: c.code,
-        title: c.title,
-        label: c.title ? `${c.code} — ${c.title}` : c.code,
-      }));
+    const courses = [
+      ...new Map(
+        rawCodes.map((code) => {
+          const key = code.toUpperCase();
+          const title = titleMap.get(key) || "";
+          return [
+            key,
+            {
+              code,
+              title,
+              label: title ? `${code} — ${title}` : code,
+            },
+          ];
+        })
+      ).values(),
+    ].sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
 
     const batches = (batchRows || [])
       .map((r) => ({
@@ -1278,7 +1352,7 @@ const ConsolidatedAbsenteeExportService = {
       .filter((b) => b.uuid && b.name);
 
     if (debug) {
-      console.log(
+      console.info(
         `[Attendance Export] options total: ${Date.now() - t0} ms ` +
           `(depts=${departments.length}, courses=${courses.length}, batches=${batches.length})`
       );
