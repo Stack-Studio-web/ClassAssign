@@ -44,20 +44,39 @@ function academicYearLabel(dateFrom) {
 
 function formatDateDisplay(value) {
   if (!value) return "";
-  const raw = String(value);
-  const iso = raw.includes("T") ? raw.split("T")[0] : raw.slice(0, 10);
+  const iso = toDateKey(value) || String(value);
   const [y, m, d] = iso.split("-");
-  if (!y || !m || !d) return raw;
+  if (!y || !m || !d) return String(value);
   return `${d}.${m}.${y}`;
 }
 
 function formatDateSlash(value) {
   if (!value) return "";
-  const raw = String(value);
-  const iso = raw.includes("T") ? raw.split("T")[0] : raw.slice(0, 10);
+  const iso = toDateKey(value) || String(value);
   const [y, m, d] = iso.split("-");
-  if (!y || !m || !d) return raw;
+  if (!y || !m || !d) return String(value);
   return `${d}/${m}/${y}`;
+}
+
+/** Normalize pg DATE / Date / ISO strings to YYYY-MM-DD (never locale String(date)). */
+function toDateKey(value) {
+  if (value == null || value === "") return "";
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const y = value.getUTCFullYear();
+    const m = String(value.getUTCMonth() + 1).padStart(2, "0");
+    const d = String(value.getUTCDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+  const raw = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10);
+  const parsed = new Date(raw);
+  if (!Number.isNaN(parsed.getTime())) {
+    const y = parsed.getUTCFullYear();
+    const m = String(parsed.getUTCMonth() + 1).padStart(2, "0");
+    const d = String(parsed.getUTCDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+  return "";
 }
 
 /**
@@ -384,7 +403,8 @@ function normalizeExamTypeKey(raw) {
 
 /**
  * Validate that a course is on the official timetable for this exam slot.
- * Source of truth: timetable (date + session + course + batch [+ time when available]).
+ * Required: date + course code.
+ * Soft: session, batch (only when timetable row carries a batch), exam type, exam time.
  */
 async function isCourseScheduledOnTimetable(
   {
@@ -400,7 +420,7 @@ async function isCourseScheduledOnTimetable(
   scheduleCache
 ) {
   const code = String(courseCode || "").trim().toUpperCase();
-  const dateKey = String(examDate || "").slice(0, 10);
+  const dateKey = toDateKey(examDate);
   const sess = normalizeSession(session);
   if (!code || !/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return false;
 
@@ -416,62 +436,69 @@ async function isCourseScheduledOnTimetable(
   ].join("|");
   if (scheduleCache.has(cacheKey)) return scheduleCache.get(cacheKey);
 
-  const params = [dateKey, code];
-  let sql = `
-    SELECT t.id, t.session, t.start_time, t.end_time, t.exam_type, t.batch_id, t.batch,
-           b.name AS batch_name
-    FROM timetable t
-    LEFT JOIN batches b ON b.id = t.batch_id
-    WHERE t.date = ?
-      AND UPPER(TRIM(t.course_code)) = UPPER(TRIM(?))
-  `;
-
-  // Prefer exact time-window match when seating plan times are known.
-  if (startTime && endTime) {
-    sql += ` AND to_char(t.start_time, 'HH24:MI') = ? AND to_char(t.end_time, 'HH24:MI') = ?`;
-    params.push(startTime, endTime);
-  }
-
-  const [rows] = await db.query(sql, params);
-  const candidates = rows || [];
-
-  const matched = candidates.some((row) => {
+  const matchRow = (row) => {
     const rowSess = normalizeSession(row.session);
-    if (sess && sess !== "—" && row.session != null && String(row.session).trim() !== "") {
+    if (
+      sess &&
+      sess !== "—" &&
+      row.session != null &&
+      String(row.session).trim() !== ""
+    ) {
       if (rowSess !== sess) return false;
     }
 
-    // Batch: if timetable row has a batch, student must match it.
     const tBatchId = row.batch_id ?? row.batchid ?? null;
     const tBatchName = String(
       row.batch_name ?? row.batchname ?? row.batch ?? ""
     ).trim();
-    if (tBatchId != null || tBatchName) {
-      if (tBatchId != null && batchId != null && Number(tBatchId) === Number(batchId)) {
-        // ok
-      } else if (
-        tBatchName &&
+    const timetableHasBatch = tBatchId != null || tBatchName.length > 0;
+    if (timetableHasBatch) {
+      const idMatch =
+        tBatchId != null &&
+        batchId != null &&
+        Number(tBatchId) === Number(batchId);
+      const nameMatch =
+        tBatchName.length > 0 &&
         batchName &&
-        tBatchName.toUpperCase() === String(batchName).trim().toUpperCase()
-      ) {
-        // ok
-      } else if (tBatchId != null || tBatchName) {
-        return false;
+        tBatchName.toUpperCase() === String(batchName).trim().toUpperCase();
+      // If the student has no batch info, cannot prove mismatch — allow.
+      // If student has batch, require id or name match against the timetable row.
+      if (batchId != null || (batchName && String(batchName).trim())) {
+        if (!idMatch && !nameMatch) return false;
       }
     }
 
-    // Exam type: when both sides present, require normalized match.
+    // Exam type is soft: only reject when both sides are present and disagree.
     const rowType = normalizeExamTypeKey(row.exam_type ?? row.examtype);
     const wantType = normalizeExamTypeKey(examType);
     if (rowType && wantType && rowType !== wantType) return false;
 
     return true;
-  });
+  };
 
-  // If exact time filter returned nothing, retry without time (date+course+session+batch).
-  if (!matched && startTime && endTime) {
-    const [fallbackRows] = await db.query(
-      `SELECT t.id, t.session, t.exam_type, t.batch_id, t.batch,
+  // 1) Prefer date + course + exact seating time window when known
+  let candidates = [];
+  if (startTime && endTime) {
+    const [timed] = await db.query(
+      `SELECT t.id, t.session, t.start_time, t.end_time, t.exam_type, t.batch_id, t.batch,
+              b.name AS batch_name
+       FROM timetable t
+       LEFT JOIN batches b ON b.id = t.batch_id
+       WHERE t.date = ?
+         AND UPPER(TRIM(t.course_code)) = UPPER(TRIM(?))
+         AND to_char(t.start_time, 'HH24:MI') = ?
+         AND to_char(t.end_time, 'HH24:MI') = ?`,
+      [dateKey, code, startTime, endTime]
+    );
+    candidates = timed || [];
+  }
+
+  let matched = candidates.some(matchRow);
+
+  // 2) Fallback: date + course (+ session/batch/type soft filters) — no time
+  if (!matched) {
+    const [rows] = await db.query(
+      `SELECT t.id, t.session, t.start_time, t.end_time, t.exam_type, t.batch_id, t.batch,
               b.name AS batch_name
        FROM timetable t
        LEFT JOIN batches b ON b.id = t.batch_id
@@ -479,35 +506,7 @@ async function isCourseScheduledOnTimetable(
          AND UPPER(TRIM(t.course_code)) = UPPER(TRIM(?))`,
       [dateKey, code]
     );
-    const ok = (fallbackRows || []).some((row) => {
-      const rowSess = normalizeSession(row.session);
-      if (sess && sess !== "—" && row.session != null && String(row.session).trim() !== "") {
-        if (rowSess !== sess) return false;
-      }
-      const tBatchId = row.batch_id ?? row.batchid ?? null;
-      const tBatchName = String(
-        row.batch_name ?? row.batchname ?? row.batch ?? ""
-      ).trim();
-      if (tBatchId != null || tBatchName) {
-        if (tBatchId != null && batchId != null && Number(tBatchId) === Number(batchId)) {
-          /* ok */
-        } else if (
-          tBatchName &&
-          batchName &&
-          tBatchName.toUpperCase() === String(batchName).trim().toUpperCase()
-        ) {
-          /* ok */
-        } else {
-          return false;
-        }
-      }
-      const rowType = normalizeExamTypeKey(row.exam_type ?? row.examtype);
-      const wantType = normalizeExamTypeKey(examType);
-      if (rowType && wantType && rowType !== wantType) return false;
-      return true;
-    });
-    scheduleCache.set(cacheKey, ok);
-    return ok;
+    matched = (rows || []).some(matchRow);
   }
 
   scheduleCache.set(cacheKey, matched);
@@ -648,24 +647,9 @@ async function fetchAbsentStudentRows(user, role, filters) {
       seatedMap?.get(regn) ||
       "";
 
-    // Prefer seating course. Do not invent a course from enrollment when seating
-    // has courses for this venue but this regn is not among them with that course.
-    let course = seatedCourse;
-    if (!course) {
-      // Enrollment fallback only if that course was actually selected/allotted
-      // for this seating plan, OR seating had no course metadata at all.
-      const selected = (venueCtx.selectedCourses || []).map((c) =>
-        String(c).trim().toUpperCase()
-      );
-      const seatingHasAnyCourse = seatedMap && seatedMap.size > 0;
-      if (
-        enrollmentCourse &&
-        (!seatingHasAnyCourse ||
-          selected.includes(enrollmentCourse.toUpperCase()))
-      ) {
-        course = enrollmentCourse;
-      }
-    }
+    // Prefer seating course; fall back to enrollment. Timetable validation below
+    // rejects courses that were not actually scheduled for this exam slot.
+    const course = seatedCourse || enrollmentCourse;
     if (!course) {
       seenPhysical.add(physicalKey);
       continue;
@@ -676,11 +660,12 @@ async function fetchAbsentStudentRows(user, role, filters) {
       continue;
     }
 
-    const examDate = r.exam_date ?? r.examdate;
+    const examDate = toDateKey(r.exam_date ?? r.examdate);
     const session = normalizeSession(r.exam_session ?? r.examsession);
     const batchId = r.student_batch_id ?? r.studentbatchid ?? null;
     const batchName = r.batch_name ?? r.batchname ?? null;
-    const seatingExamType = r.seating_exam_type ?? r.seatingexamtype ?? venueCtx.examType;
+    const seatingExamType =
+      r.seating_exam_type ?? r.seatingexamtype ?? venueCtx.examType;
 
     let scheduled = false;
     try {
@@ -706,7 +691,7 @@ async function fetchAbsentStudentRows(user, role, filters) {
     }
 
     if (!scheduled) {
-      // Invalid for this exam slot — do not export (attendance row is left intact).
+      // Unscheduled for this slot — exclude from export only (do not delete attendance).
       seenPhysical.add(physicalKey);
       continue;
     }
@@ -756,7 +741,7 @@ async function fetchAbsentStudentRows(user, role, filters) {
 function aggregateReportRows(absentRows) {
   const groups = new Map();
   for (const row of absentRows) {
-    const dateKey = String(row.examDate || "").slice(0, 10);
+    const dateKey = toDateKey(row.examDate) || String(row.examDate || "").slice(0, 10);
     const key = `${dateKey}|${row.session}|${row.courseCode}`;
     if (!groups.has(key)) {
       groups.set(key, {
@@ -954,29 +939,95 @@ const ConsolidatedAbsenteeExportService = {
       departments = [];
     }
 
-    // --- Courses (attendance in range, optional department) ---
+    // --- Courses (attendance in range — seating courses ∪ enrollment courses) ---
+    // Must NOT depend on timetable-validated export rows.
     let courseRows = [];
     try {
       const courseParams = [dateFrom, dateTo, ...deptMatch.params, ...(roleScope.params || [])];
       const [rows] = await db.query(
         `SELECT DISTINCT
-           TRIM(st.course_description) AS course_code,
-           TRIM(st.course_name) AS course_title
-         FROM attendance att
-         JOIN students st ON st.id = att.student_id
-         JOIN exams e ON e.id = att.exam_id
-         WHERE e.exam_date BETWEEN ? AND ?
-           ${deptSql}
-           AND st.course_description IS NOT NULL
-           AND TRIM(st.course_description) <> ''
-           ${roleScope.sql || ""}
+           TRIM(course_code) AS course_code,
+           TRIM(MAX(course_title)) AS course_title
+         FROM (
+           SELECT
+             st.course_description AS course_code,
+             st.course_name AS course_title
+           FROM attendance att
+           JOIN students st ON st.id = att.student_id
+           JOIN exams e ON e.id = att.exam_id
+           WHERE e.exam_date BETWEEN ? AND ?
+             ${deptSql}
+             AND st.course_description IS NOT NULL
+             AND TRIM(st.course_description) <> ''
+             ${roleScope.sql || ""}
+
+           UNION ALL
+
+           SELECT
+             sps.course_description AS course_code,
+             COALESCE(
+               (
+                 SELECT st2.course_name
+                 FROM students st2
+                 WHERE UPPER(TRIM(st2.course_description)) = UPPER(TRIM(sps.course_description))
+                   AND st2.course_name IS NOT NULL
+                   AND TRIM(st2.course_name) <> ''
+                 LIMIT 1
+               ),
+               sps.course_description
+             ) AS course_title
+           FROM attendance att
+           JOIN students st ON st.id = att.student_id
+           JOIN exams e ON e.id = att.exam_id
+           JOIN seating_plan_venues spv ON spv.venue_id = att.venue_id
+           JOIN seating_plans sp
+             ON sp.id = spv.seating_plan_id
+            AND sp.exam_date = e.exam_date
+            AND (e.exam_session IS NULL OR sp.exam_session = e.exam_session)
+           JOIN seating_plan_students sps ON sps.seating_plan_id = sp.id
+           WHERE e.exam_date BETWEEN ? AND ?
+             ${deptSql}
+             AND sps.course_description IS NOT NULL
+             AND TRIM(sps.course_description) <> ''
+             ${roleScope.sql || ""}
+         ) courses_src
+         WHERE course_code IS NOT NULL AND TRIM(course_code) <> ''
+         GROUP BY TRIM(course_code)
          ORDER BY 1 ASC`,
-        courseParams
+        [
+          ...courseParams,
+          dateFrom,
+          dateTo,
+          ...deptMatch.params,
+          ...(roleScope.params || []),
+        ]
       );
       courseRows = rows || [];
     } catch (err) {
       console.error("consolidated export courses query:", err?.message || err);
-      courseRows = [];
+      // Fallback: enrollment courses only
+      try {
+        const fbParams = [dateFrom, dateTo, ...deptMatch.params, ...(roleScope.params || [])];
+        const [rows] = await db.query(
+          `SELECT DISTINCT
+             TRIM(st.course_description) AS course_code,
+             TRIM(st.course_name) AS course_title
+           FROM attendance att
+           JOIN students st ON st.id = att.student_id
+           JOIN exams e ON e.id = att.exam_id
+           WHERE e.exam_date BETWEEN ? AND ?
+             ${deptSql}
+             AND st.course_description IS NOT NULL
+             AND TRIM(st.course_description) <> ''
+             ${roleScope.sql || ""}
+           ORDER BY 1 ASC`,
+          fbParams
+        );
+        courseRows = rows || [];
+      } catch (err2) {
+        console.error("consolidated export courses fallback:", err2?.message || err2);
+        courseRows = [];
+      }
     }
 
     const courses = (courseRows || [])
