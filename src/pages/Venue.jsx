@@ -15,8 +15,6 @@ import {
   Squares2X2Icon,
   PlusIcon,
   XMarkIcon,
-  ChevronDownIcon,
-  ChevronRightIcon,
 } from "@heroicons/react/24/outline";
 
 const BLOCK_STATUSES = [
@@ -86,7 +84,6 @@ export default function AddVenue() {
   const [availabilityResult, setAvailabilityResult] = useState(null);
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [availabilityError, setAvailabilityError] = useState("");
-  const [collapsedBlocks, setCollapsedBlocks] = useState({});
   const [canToggleUseForAllotment, setCanToggleUseForAllotment] = useState(false);
 
   const venueTypes = [
@@ -548,11 +545,6 @@ export default function AddVenue() {
   const handleSort = () =>
     setSortOrder((prev) => (prev === "highToLow" ? "lowToHigh" : "highToLow"));
 
-  const unassignedVenues = useMemo(
-    () => venues.filter((v) => !v.blockUuid),
-    [venues]
-  );
-
   const filteredVenues = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return venues
@@ -580,39 +572,18 @@ export default function AddVenue() {
       );
   }, [venues, searchQuery, sortOrder, filterBlock]);
 
-  const venuesByBlock = useMemo(() => {
-    const map = new Map();
-    for (const b of blocks) {
-      map.set(b.uuid, {
-        key: b.uuid,
-        code: b.code,
-        name: b.name,
-        venueCount: 0,
-        totalCapacity: 0,
-        venues: [],
-      });
-    }
-    const unassigned = {
-      key: "__none__",
-      code: "—",
-      name: "Unassigned / No Block",
-      venueCount: 0,
-      totalCapacity: 0,
-      venues: [],
-    };
+  const unassignedVenueCount = useMemo(
+    () => venues.filter((v) => !v.blockUuid).length,
+    [venues]
+  );
 
-    for (const v of filteredVenues) {
-      const target =
-        v.blockUuid && map.has(v.blockUuid) ? map.get(v.blockUuid) : unassigned;
-      target.venues.push(v);
-      target.venueCount += 1;
-      target.totalCapacity += Number(v.capacity) || 0;
-    }
-
-    const groups = [...map.values()].filter((g) => g.venues.length > 0);
-    if (unassigned.venues.length > 0) groups.push(unassigned);
-    return groups;
-  }, [blocks, filteredVenues]);
+  const selectedBlockLabel = useMemo(() => {
+    if (!filterBlock) return "All Blocks";
+    if (filterBlock === "__none__") return "Unassigned / No Block";
+    const b = blocks.find((x) => x.uuid === filterBlock);
+    if (!b) return "Selected Block";
+    return b.code ? `${b.name} (${b.code})` : b.name;
+  }, [filterBlock, blocks]);
 
   const rows = Number(form.benchesRow) || 0;
   const cols = Number(form.benchesCol) || 0;
@@ -686,92 +657,6 @@ export default function AddVenue() {
         </div>
       </div>
 
-      {/* ========== CAMPUS BLOCKS ========== */}
-      <div className="px-4 md:px-8 mb-6">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-800">Campus Blocks</h2>
-            <p className="text-sm text-gray-500">Shared across Faculty In-Charges. Edit/Delete only for the creator.</p>
-          </div>
-          <button
-            type="button"
-            onClick={openCreateBlock}
-            className="inline-flex items-center gap-2 h-11 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold shadow-sm transition-all"
-          >
-            <PlusIcon className="h-4 w-4" />
-            Add Block
-          </button>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {blocks.map((block) => (
-            <div
-              key={block.uuid}
-              className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 hover:shadow-md transition-all duration-200"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-xs font-bold uppercase tracking-wide text-blue-600">{block.code}</p>
-                  <h3 className="text-lg font-bold text-gray-900 truncate">{block.name}</h3>
-                  <p className="text-xs font-medium text-emerald-600 mt-0.5">
-                    {block.status === "ACTIVE" ? "Active" : block.status}
-                  </p>
-                </div>
-              </div>
-              {block.description ? (
-                <p className="mt-3 text-sm text-gray-500 line-clamp-2">{block.description}</p>
-              ) : (
-                <p className="mt-3 text-sm text-gray-400 italic">No description</p>
-              )}
-              <p className="mt-4 text-sm font-semibold text-gray-800">
-                {block.venueCount} {block.venueCount === 1 ? "Venue" : "Venues"} •{" "}
-                {Number(block.totalCapacity || 0).toLocaleString()} Cap.
-              </p>
-              <p className="mt-1 text-xs text-gray-500">
-                Created by: {block.createdBy || (block.createdByUserId ? `User #${block.createdByUserId}` : "—")}
-              </p>
-              {block.canManage && (
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => openEditBlock(block)}
-                    className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    disabled={deletingBlockId === block.uuid}
-                    onClick={() => handleDeleteBlock(block)}
-                    className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium"
-                  >
-                    {deletingBlockId === block.uuid ? "Deleting…" : "Delete"}
-                  </button>
-                </div>
-              )}
-            </div>
-          ))}
-
-          <div className="bg-white rounded-2xl shadow-sm border border-dashed border-gray-200 p-5">
-            <p className="text-xs font-bold uppercase tracking-wide text-gray-400">—</p>
-            <h3 className="text-lg font-bold text-gray-800">Unassigned / No Block</h3>
-            <p className="mt-1 text-xs font-medium text-gray-500">Legacy venues without a block</p>
-            <p className="mt-4 text-sm font-semibold text-gray-800">
-              {unassignedVenues.length} {unassignedVenues.length === 1 ? "Venue" : "Venues"}
-            </p>
-            <button
-              type="button"
-              onClick={() => {
-                setFilterBlock("__none__");
-                setActiveTab("hall");
-              }}
-              className="mt-4 text-sm font-semibold text-blue-600 hover:underline"
-            >
-              View venues
-            </button>
-          </div>
-        </div>
-      </div>
-
       {/* ========== TABS ========== */}
       <div className="px-4 md:px-8 border-b border-gray-200 bg-white rounded-t-2xl">
         <div className="flex overflow-x-auto scrollbar-hide -mb-px">
@@ -807,6 +692,17 @@ export default function AddVenue() {
             }`}
           >
             All Venues
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("blocks")}
+            className={`py-4 px-4 md:px-6 text-sm font-medium whitespace-nowrap border-b-2 transition-all duration-200 ${
+              activeTab === "blocks"
+                ? "border-blue-600 text-blue-600"
+                : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            All Blocks
           </button>
         </div>
       </div>
@@ -1296,6 +1192,7 @@ export default function AddVenue() {
                 {blocks.map((b) => (
                   <option key={b.uuid} value={b.uuid}>
                     {b.name}
+                    {b.code ? ` (${b.code})` : ""}
                   </option>
                 ))}
                 <option value="__none__">Unassigned / No Block</option>
@@ -1310,172 +1207,312 @@ export default function AddVenue() {
             </div>
           </div>
 
-          {venuesByBlock.length === 0 ? (
-            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center text-gray-500">
-              No venues found.
+          {/* Block selector cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            <button
+              type="button"
+              onClick={() => setFilterBlock("")}
+              className={`text-left rounded-2xl border p-4 shadow-sm transition-all ${
+                filterBlock === ""
+                  ? "border-blue-500 bg-blue-50 ring-2 ring-blue-200"
+                  : "border-gray-100 bg-white hover:border-blue-200 hover:shadow-md"
+              }`}
+            >
+              <p className="text-xs font-bold uppercase tracking-wide text-blue-600">All</p>
+              <h3 className="text-base font-bold text-gray-900 mt-0.5">All Blocks</h3>
+              <p className="text-xs text-gray-500 mt-1">
+                {venues.length} {venues.length === 1 ? "Venue" : "Venues"}
+              </p>
+            </button>
+            {blocks.map((block) => {
+              const selected = filterBlock === block.uuid;
+              const count = Number(block.venueCount) || 0;
+              return (
+                <button
+                  key={block.uuid}
+                  type="button"
+                  onClick={() => setFilterBlock(block.uuid)}
+                  className={`text-left rounded-2xl border p-4 shadow-sm transition-all ${
+                    selected
+                      ? "border-blue-500 bg-blue-50 ring-2 ring-blue-200"
+                      : "border-gray-100 bg-white hover:border-blue-200 hover:shadow-md"
+                  }`}
+                >
+                  <p className="text-xs font-bold uppercase tracking-wide text-blue-600">
+                    {block.code || "—"}
+                  </p>
+                  <h3 className="text-base font-bold text-gray-900 mt-0.5 truncate">
+                    {block.name}
+                    {block.code ? (
+                      <span className="ml-1.5 text-sm font-semibold text-blue-600">
+                        ({block.code})
+                      </span>
+                    ) : null}
+                  </h3>
+                  <p className="text-xs text-gray-500 mt-1">
+                    {count} {count === 1 ? "Venue" : "Venues"}
+                    {block.totalCapacity != null
+                      ? ` · ${Number(block.totalCapacity || 0).toLocaleString()} Cap.`
+                      : ""}
+                  </p>
+                </button>
+              );
+            })}
+            {unassignedVenueCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setFilterBlock("__none__")}
+                className={`text-left rounded-2xl border border-dashed p-4 shadow-sm transition-all ${
+                  filterBlock === "__none__"
+                    ? "border-blue-500 bg-blue-50 ring-2 ring-blue-200"
+                    : "border-gray-200 bg-white hover:border-blue-200 hover:shadow-md"
+                }`}
+              >
+                <p className="text-xs font-bold uppercase tracking-wide text-gray-400">—</p>
+                <h3 className="text-base font-bold text-gray-800 mt-0.5">
+                  Unassigned / No Block
+                </h3>
+                <p className="text-xs text-gray-500 mt-1">
+                  {unassignedVenueCount}{" "}
+                  {unassignedVenueCount === 1 ? "Venue" : "Venues"}
+                </p>
+              </button>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-medium text-gray-600">
+              Selected: <span className="text-gray-900 font-semibold">{selectedBlockLabel}</span>
+            </p>
+            <p className="text-sm text-gray-500">
+              {filteredVenues.length}{" "}
+              {filteredVenues.length === 1 ? "venue" : "venues"}
+            </p>
+          </div>
+
+          {filteredVenues.length === 0 ? (
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center">
+              <p className="text-base font-semibold text-gray-800">
+                {filterBlock && filterBlock !== ""
+                  ? "No venues in this block"
+                  : "No venues found"}
+              </p>
+              <p className="text-sm text-gray-500 mt-1">
+                {filterBlock && filterBlock !== ""
+                  ? "Add a venue to this block to begin."
+                  : "Try adjusting search or block filters."}
+              </p>
             </div>
           ) : (
-            <div className="space-y-4">
-              {venuesByBlock.map((group) => {
-                const collapsed = Boolean(collapsedBlocks[group.key]);
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {filteredVenues.map((venue) => {
+                const useIt = venue.isAvailable !== false;
+                const useForAllotment = venue.useForAllotment === true;
+                const canManage = Boolean(venue.canManage);
                 return (
-                  <section
-                    key={group.key}
-                    className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden"
+                  <article
+                    key={venue.uuid}
+                    className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 flex flex-col gap-4 hover:shadow-md transition-all duration-200"
                   >
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setCollapsedBlocks((prev) => ({
-                          ...prev,
-                          [group.key]: !prev[group.key],
-                        }))
-                      }
-                      className="w-full flex flex-wrap items-center justify-between gap-2 px-4 sm:px-5 py-3 bg-gray-50/90 border-b border-gray-100 text-left"
-                    >
-                      <div>
-                        <h3 className="text-base font-bold text-gray-900 flex items-center gap-2">
-                          {collapsed ? (
-                            <ChevronRightIcon className="h-4 w-4 text-gray-400 shrink-0" />
-                          ) : (
-                            <ChevronDownIcon className="h-4 w-4 text-gray-400 shrink-0" />
-                          )}
-                          <span>
-                            {group.name}
-                            {group.code && group.code !== "—" ? (
-                              <span className="ml-2 text-sm font-semibold text-blue-600">
-                                ({group.code})
-                              </span>
-                            ) : null}
-                          </span>
-                        </h3>
-                        <p className="text-xs text-gray-500 mt-0.5">
-                          {group.venueCount} {group.venueCount === 1 ? "Venue" : "Venues"} ·{" "}
-                          {group.totalCapacity.toLocaleString()} Capacity
+                    <div className="min-w-0">
+                      <h3 className="text-lg font-bold text-gray-900 truncate">
+                        {venue.name}
+                      </h3>
+                      <p className="text-sm text-gray-600 capitalize mt-1">{venue.type}</p>
+                      <p className="text-sm text-gray-700 mt-1">
+                        Capacity: {venue.capacity}
+                      </p>
+                      {(venue.benchesRow != null || venue.benchesCol != null) && (
+                        <p className="text-sm text-gray-500 mt-0.5">
+                          {venue.benchesRow ?? "—"} × {venue.benchesCol ?? "—"}
                         </p>
-                      </div>
-                    </button>
+                      )}
+                      {!filterBlock && (venue.blockName || venue.blockCode) && (
+                        <p className="text-xs font-medium text-blue-600 mt-2 truncate">
+                          {venue.blockName || "Block"}
+                          {venue.blockCode ? ` (${venue.blockCode})` : ""}
+                        </p>
+                      )}
+                    </div>
 
-                    {!collapsed && (
-                      <ul className="divide-y divide-gray-100">
-                        {group.venues.map((venue) => {
-                          const useIt = venue.isAvailable !== false;
-                          const useForAllotment = venue.useForAllotment === true;
-                          const canManage = Boolean(venue.canManage);
-                          return (
-                            <li key={venue.uuid} className="px-4 sm:px-5 py-4">
-                              <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
-                                <div className="min-w-0">
-                                  <p className="text-base font-bold text-gray-900">{venue.name}</p>
-                                  <p className="text-sm text-gray-600 capitalize mt-0.5">
-                                    {venue.type}
-                                    <span className="text-gray-400"> · </span>
-                                    Capacity: {venue.capacity}
-                                    <span className="text-gray-400"> · </span>
-                                    {venue.benchesRow} × {venue.benchesCol}
-                                  </p>
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        Available
+                      </span>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={useIt}
+                        aria-label={`Available ${useIt ? "on" : "off"}`}
+                        disabled={!canManage || togglingVenueId === venue.uuid}
+                        onClick={() => handleToggleVenueAvailability(venue, !useIt)}
+                        className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed ${
+                          useIt ? "bg-emerald-500" : "bg-gray-300"
+                        } ${canManage ? "cursor-pointer" : "cursor-not-allowed"}`}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
+                            useIt ? "translate-x-6" : "translate-x-1"
+                          }`}
+                        />
+                      </button>
+                      <span
+                        className={`text-xs font-semibold ${
+                          useIt ? "text-emerald-700" : "text-gray-500"
+                        }`}
+                      >
+                        {useIt ? "ON" : "OFF"}
+                      </span>
+                    </div>
 
-                                  <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-                                    <div className="flex items-center gap-3">
-                                      <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                                        Use It
-                                      </span>
-                                      <button
-                                        type="button"
-                                        role="switch"
-                                        aria-checked={useIt}
-                                        aria-label={`Use It ${useIt ? "on" : "off"}`}
-                                        disabled={!canManage || togglingVenueId === venue.uuid}
-                                        onClick={() =>
-                                          handleToggleVenueAvailability(venue, !useIt)
-                                        }
-                                        className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed ${
-                                          useIt ? "bg-emerald-500" : "bg-gray-300"
-                                        } ${canManage ? "cursor-pointer" : "cursor-not-allowed"}`}
-                                      >
-                                        <span
-                                          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
-                                            useIt ? "translate-x-6" : "translate-x-1"
-                                          }`}
-                                        />
-                                      </button>
-                                      <span
-                                        className={`text-xs font-semibold ${
-                                          useIt ? "text-emerald-700" : "text-gray-500"
-                                        }`}
-                                      >
-                                        {useIt ? "ON" : "OFF"}
-                                      </span>
-                                    </div>
+                    <label
+                      className={`inline-flex items-center gap-2 text-sm font-semibold text-gray-700 ${
+                        !canToggleUseForAllotment || !useIt
+                          ? "opacity-60 cursor-not-allowed"
+                          : "cursor-pointer"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={useForAllotment}
+                        disabled={
+                          !canToggleUseForAllotment ||
+                          !useIt ||
+                          togglingVenueId === venue.uuid
+                        }
+                        onChange={(e) =>
+                          handleToggleUseForAllotment(venue, e.target.checked)
+                        }
+                        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      Use for Allotment
+                    </label>
 
-                                    <label
-                                      className={`inline-flex items-center gap-2 text-xs font-semibold text-gray-700 ${
-                                        !canToggleUseForAllotment || !useIt
-                                          ? "opacity-60 cursor-not-allowed"
-                                          : "cursor-pointer"
-                                      }`}
-                                      title="Global allotment pool — all Faculty Incharges share this setting"
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        checked={useForAllotment}
-                                        disabled={
-                                          !canToggleUseForAllotment ||
-                                          !useIt ||
-                                          togglingVenueId === venue.uuid
-                                        }
-                                        onChange={(e) =>
-                                          handleToggleUseForAllotment(venue, e.target.checked)
-                                        }
-                                        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                                      />
-                                      Use for Allotment
-                                    </label>
-                                  </div>
-                                  <p className="mt-1.5 text-[11px] text-gray-500 max-w-md">
-                                    Use for Allotment is global: any Faculty Incharge can enable it,
-                                    and all Faculty Incharges then see the venue in Allotment.
-                                    It does not reserve a time slot.
-                                  </p>
-                                </div>
-
-                                <div className="flex flex-wrap gap-2 shrink-0">
-                                  <button
-                                    type="button"
-                                    onClick={() => openAvailabilityCheck(venue)}
-                                    className="px-3 py-1.5 rounded-xl border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 text-sm font-medium transition-all"
-                                  >
-                                    Check Availability
-                                  </button>
-                                  {canManage && (
-                                    <>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleEdit(venue)}
-                                        className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium transition-all"
-                                      >
-                                        Edit
-                                      </button>
-                                      <button
-                                        type="button"
-                                        disabled={deletingId === venue.uuid}
-                                        onClick={() => handleDelete(venue.uuid)}
-                                        className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium transition-all"
-                                      >
-                                        {deletingId === venue.uuid ? "Deleting..." : "Delete"}
-                                      </button>
-                                    </>
-                                  )}
-                                </div>
-                              </div>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    )}
-                  </section>
+                    <div className="mt-auto flex flex-wrap gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => openAvailabilityCheck(venue)}
+                        className="px-3 py-1.5 rounded-xl border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 text-sm font-medium transition-all"
+                      >
+                        Check Availability
+                      </button>
+                      {canManage && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleEdit(venue)}
+                            className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium transition-all"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            disabled={deletingId === venue.uuid}
+                            onClick={() => handleDelete(venue.uuid)}
+                            className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium transition-all"
+                          >
+                            {deletingId === venue.uuid ? "Deleting..." : "Delete"}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </article>
                 );
               })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ========== ALL BLOCKS TAB ========== */}
+      {activeTab === "blocks" && (
+        <div className="px-4 md:px-8 py-6 md:py-8">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+            <div>
+              <h2 className="text-lg font-semibold text-gray-800">All Blocks</h2>
+              <p className="text-sm text-gray-500">
+                Campus blocks for venue assignment. Shared across Faculty In-Charges. Edit/Delete
+                only for the creator.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={openCreateBlock}
+              className="inline-flex items-center gap-2 h-11 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold shadow-sm transition-all"
+            >
+              <PlusIcon className="h-4 w-4" />
+              Add Block
+            </button>
+          </div>
+          {blocks.length === 0 ? (
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center text-gray-500">
+              No campus blocks yet. Add a block before assigning venues.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {blocks.map((block) => (
+                <div
+                  key={block.uuid}
+                  className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 hover:shadow-md transition-all duration-200"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold uppercase tracking-wide text-blue-600">
+                        {block.code}
+                      </p>
+                      <h3 className="text-lg font-bold text-gray-900 truncate">{block.name}</h3>
+                      <p className="text-xs font-medium text-emerald-600 mt-0.5">
+                        {block.status === "ACTIVE" ? "Active" : block.status}
+                      </p>
+                    </div>
+                  </div>
+                  {block.description ? (
+                    <p className="mt-3 text-sm text-gray-500 line-clamp-2">{block.description}</p>
+                  ) : (
+                    <p className="mt-3 text-sm text-gray-400 italic">No description</p>
+                  )}
+                  <p className="mt-4 text-sm font-semibold text-gray-800">
+                    {block.venueCount} {block.venueCount === 1 ? "Venue" : "Venues"} •{" "}
+                    {Number(block.totalCapacity || 0).toLocaleString()} Cap.
+                  </p>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Created by:{" "}
+                    {block.createdBy ||
+                      (block.createdByUserId ? `User #${block.createdByUserId}` : "—")}
+                  </p>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFilterBlock(block.uuid);
+                        setActiveTab("hall");
+                      }}
+                      className="px-3 py-1.5 rounded-xl border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 text-sm font-medium"
+                    >
+                      View venues
+                    </button>
+                    {block.canManage && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => openEditBlock(block)}
+                          className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          disabled={deletingBlockId === block.uuid}
+                          onClick={() => handleDeleteBlock(block)}
+                          className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium"
+                        >
+                          {deletingBlockId === block.uuid ? "Deleting…" : "Delete"}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>

@@ -263,16 +263,86 @@ function validateFilters(filters = {}) {
 }
 
 /**
- * Raw absentee rows joined to student enrollment (course + batch).
+ * Resolve the course a student was seated for in a venue on an exam date/session.
+ * Canonical source: seating_layout_json / seating_plan_students (same as attendance Excel export).
+ * Enrollment course on students.course_description is only a fallback — a student may have
+ * multiple enrollment rows, and attendance.student_id can point at the wrong one.
+ */
+async function buildVenueCourseMap(examId, venueId) {
+  const { resolveVenueStudentsWithCourses } = require("../utils/venueAttendanceCourses");
+  const [spvRows] = await db.query(
+    `SELECT spv.id, spv.seating_layout_json, spv.seating_plan_id
+     FROM seating_plan_venues spv
+     JOIN seating_plans sp ON sp.id = spv.seating_plan_id
+     JOIN exams e ON e.id = ?
+     WHERE spv.venue_id = ?
+       AND sp.exam_date = e.exam_date
+       AND (e.exam_session IS NULL OR sp.exam_session = e.exam_session)
+     ORDER BY spv.id DESC
+     LIMIT 1`,
+    [examId, venueId]
+  );
+  const spv = spvRows?.[0];
+  if (!spv) return new Map();
+
+  const spvId = spv.id;
+  const planId = spv.seating_plan_id ?? spv.seatingplanid;
+  const [arrangementRows] = await db.query(
+    `SELECT regn_no, seat_row, seat_col, seat_index
+     FROM seating_arrangements
+     WHERE seating_plan_venue_id = ?
+       AND regn_no IS NOT NULL AND TRIM(regn_no) <> '' AND regn_no <> '-'`,
+    [spvId]
+  );
+  const [planStudentRows] = await db.query(
+    `SELECT regn_no, student_name, course_description
+     FROM seating_plan_students
+     WHERE seating_plan_id = ?
+     ORDER BY id ASC`,
+    [planId]
+  );
+  const students = resolveVenueStudentsWithCourses({
+    layoutJson: spv.seating_layout_json ?? spv.seatinglayoutjson,
+    arrangementRows: arrangementRows || [],
+    planStudentRows: planStudentRows || [],
+  });
+  return new Map(
+    (students || [])
+      .filter((s) => s.regNo && s.courseCode)
+      .map((s) => [String(s.regNo).trim().toUpperCase(), String(s.courseCode).trim()])
+  );
+}
+
+async function lookupCourseTitle(courseCode, titleCache) {
+  const code = String(courseCode || "").trim();
+  if (!code) return "";
+  const key = code.toUpperCase();
+  if (titleCache.has(key)) return titleCache.get(key);
+  const [rows] = await db.query(
+    `SELECT course_name
+     FROM students
+     WHERE UPPER(TRIM(course_description)) = UPPER(TRIM(?))
+       AND course_name IS NOT NULL
+       AND TRIM(course_name) <> ''
+     LIMIT 1`,
+    [code]
+  );
+  const title = String(rows?.[0]?.course_name ?? rows?.[0]?.coursename ?? "").trim();
+  titleCache.set(key, title);
+  return title;
+}
+
+/**
+ * Raw absentee rows for consolidated export.
+ * Course comes from seating (exam session truth), not from possibly-wrong enrollment row.
+ * One physical mark per (regn, exam, venue) — prevents duplicate courses from multi-enrollment student rows.
  */
 async function fetchAbsentStudentRows(user, role, filters) {
   const { department, dateFrom, dateTo, courseCode, batchUuid } = validateFilters(filters);
   const roleScope = await buildRoleScope(user, role);
 
   let extra = "";
-  if (courseCode) {
-    extra += " AND UPPER(TRIM(st.course_description)) = UPPER(TRIM(?))";
-  }
+  // Course filter applied AFTER seating course resolution (not on enrollment column).
   if (batchUuid) {
     extra += " AND b.public_uuid = ?";
   }
@@ -280,20 +350,19 @@ async function fetchAbsentStudentRows(user, role, filters) {
   const deptMatch = departmentMatchClause(department, "st");
   const queryParams = [dateFrom, dateTo];
   if (deptMatch.params.length) queryParams.push(...deptMatch.params);
-  if (courseCode) queryParams.push(courseCode);
   if (batchUuid) queryParams.push(batchUuid);
   queryParams.push(...(roleScope.params || []));
 
-  const deptSql =
-    deptMatch.sql === "TRUE" ? "" : `AND ${deptMatch.sql}`;
+  const deptSql = deptMatch.sql === "TRUE" ? "" : `AND ${deptMatch.sql}`;
 
   const [rows] = await db.query(
     `SELECT
        att.id AS attendance_id,
+       att.venue_id,
        st.regn_no,
        st.student_name,
-       st.course_description AS course_code,
-       st.course_name AS course_title,
+       st.course_description AS enrollment_course,
+       st.course_name AS enrollment_title,
        ${PROGRAM_FROM_REGN_SQL("st")} AS student_department,
        b.public_uuid AS batch_uuid,
        b.name AS batch_name,
@@ -326,27 +395,79 @@ async function fetchAbsentStudentRows(user, role, filters) {
        ${deptSql}
        ${extra}
        ${roleScope.sql || ""}
-     ORDER BY e.exam_date ASC, e.exam_session ASC, st.course_description ASC, st.regn_no ASC, att.id ASC`,
+     ORDER BY e.exam_date ASC, e.exam_session ASC, att.id ASC`,
     queryParams
   );
 
-  // Deduplicate by attendance_id (or student+exam+course)
-  const seen = new Set();
+  const venueCourseCache = new Map();
+  const titleCache = new Map();
+  // One absentee per physical exam+venue seat occupancy (regn), not per enrollment row.
+  const seenPhysical = new Set();
   const out = [];
+  const courseFilter = String(courseCode || "").trim().toUpperCase();
+
   for (const r of rows || []) {
     const attId = r.attendance_id ?? r.attendanceid;
     const regn = String(r.regn_no ?? r.regnno ?? "").trim();
     const examId = r.exam_id ?? r.examid;
-    const course = String(r.course_code ?? r.coursecode ?? "").trim();
-    const key = attId != null ? `a:${attId}` : `${regn}::${examId}::${course}`;
-    if (!regn || seen.has(key)) continue;
-    seen.add(key);
+    const venueId = r.venue_id ?? r.venueid;
+    if (!regn || examId == null || venueId == null) continue;
+
+    const physicalKey = `${regn.toUpperCase()}::${examId}::${venueId}`;
+    if (seenPhysical.has(physicalKey)) continue;
+
+    const cacheKey = `${examId}::${venueId}`;
+    if (!venueCourseCache.has(cacheKey)) {
+      try {
+        venueCourseCache.set(cacheKey, await buildVenueCourseMap(examId, venueId));
+      } catch (err) {
+        console.error(
+          "consolidated export seating course map failed:",
+          err?.message || err
+        );
+        venueCourseCache.set(cacheKey, new Map());
+      }
+    }
+    const seatedMap = venueCourseCache.get(cacheKey);
+    const enrollmentCourse = String(
+      r.enrollment_course ?? r.enrollmentcourse ?? ""
+    ).trim();
+    const seatedCourse =
+      seatedMap?.get(regn.toUpperCase()) ||
+      seatedMap?.get(regn) ||
+      "";
+    const course = seatedCourse || enrollmentCourse;
+    if (!course) continue;
+
+    if (courseFilter && course.toUpperCase() !== courseFilter) {
+      // Seated course is fixed per regn+venue; later enrollment rows won't change it.
+      seenPhysical.add(physicalKey);
+      continue;
+    }
+
+    seenPhysical.add(physicalKey);
+
+    let courseTitle = "";
+    const enrollmentTitle = String(
+      r.enrollment_title ?? r.enrollmenttitle ?? ""
+    ).trim();
+    if (
+      enrollmentCourse &&
+      course.toUpperCase() === enrollmentCourse.toUpperCase() &&
+      enrollmentTitle
+    ) {
+      courseTitle = enrollmentTitle;
+    } else {
+      courseTitle = await lookupCourseTitle(course, titleCache);
+      if (!courseTitle) courseTitle = enrollmentTitle;
+    }
 
     out.push({
+      attendanceId: attId,
       regnNo: regn,
       studentName: r.student_name ?? r.studentname ?? "",
       courseCode: course,
-      courseTitle: String(r.course_title ?? r.coursetitle ?? "").trim(),
+      courseTitle,
       batchUuid: r.batch_uuid ?? r.batchuuid ?? null,
       batchName: r.batch_name ?? r.batchname ?? null,
       examDate: r.exam_date ?? r.examdate,
@@ -362,6 +483,7 @@ async function fetchAbsentStudentRows(user, role, filters) {
       studentDepartment: r.student_department ?? r.studentdepartment ?? department,
     });
   }
+
   return { rows: out, filters: { department, dateFrom, dateTo, courseCode, batchUuid } };
 }
 
