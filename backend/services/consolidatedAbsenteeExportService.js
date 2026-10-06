@@ -107,6 +107,21 @@ function sqlDateKey(expr) {
   return `to_char(${expr}, 'YYYY-MM-DD')`;
 }
 
+function normalizeCourseCode(code) {
+  return String(code || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "");
+}
+
+function extractYearRange(label) {
+  const m = String(label || "")
+    .toUpperCase()
+    .match(/\b(20\d{2})\s*[-–]\s*(20\d{2})\b/);
+  if (!m) return "";
+  return `${m[1]}-${m[2]}`;
+}
+
 function batchesLooselyMatch(timetableBatchName, studentBatchName) {
   const a = String(timetableBatchName || "").trim().toUpperCase();
   const b = String(studentBatchName || "").trim().toUpperCase();
@@ -114,15 +129,33 @@ function batchesLooselyMatch(timetableBatchName, studentBatchName) {
   if (a === b) return true;
   // Ignore placeholder batch labels
   if (/^(ALL|NA|N\/A|-|NONE)$/i.test(a)) return true;
-  // Match shared academic-year token e.g. 2025-2029
-  const yearRe = /\b(20\d{2}\s*[-–]\s*20\d{2})\b/;
-  const ma = a.match(yearRe);
-  const mb = b.match(yearRe);
-  if (ma && mb) {
-    const na = ma[1].replace(/\s+/g, "").replace("–", "-");
-    const nb = mb[1].replace(/\s+/g, "").replace("–", "-");
-    if (na === nb) return true;
+  const ya = extractYearRange(a);
+  const yb = extractYearRange(b);
+  if (ya && yb && ya === yb) return true;
+  return false;
+}
+
+/** True only when timetable row actually restricts by academic batch. */
+function timetableRowHasBatchRestriction(row) {
+  if (row.batchId != null && row.batchId !== "" && Number.isFinite(Number(row.batchId))) {
+    return true;
   }
+  const label = String(row.batchText || row.batchName || "").trim();
+  if (!label || /^(ALL|NA|N\/A|-|NONE)$/i.test(label)) return false;
+  // Academic batch years like 2025-2029 — not department codes (BIT/BCS)
+  return Boolean(extractYearRange(label));
+}
+
+function timetableRowMatchesStudentBatch(row, batchId, batchName) {
+  if (
+    row.batchId != null &&
+    batchId != null &&
+    Number(row.batchId) === Number(batchId)
+  ) {
+    return true;
+  }
+  if (batchesLooselyMatch(row.batchName, batchName)) return true;
+  if (batchesLooselyMatch(row.batchText, batchName)) return true;
   return false;
 }
 
@@ -458,14 +491,16 @@ function trimTimePart(t) {
 
 /**
  * Load all timetable rows for a date range once (no per-row queries).
+ * Authoritative source: public.timetable (same table as Timetable module / allotment).
+ * @returns {{ byDateCourse: Map<string, object[]>, rowCount: number, sampleKeys: string[] }}
  */
 async function loadTimetableIndex(dateFrom, dateTo) {
   const [rows] = await db.query(
     `SELECT
        ${sqlDateKey("t.date")} AS date,
        t.session,
-       t.start_time,
-       t.end_time,
+       to_char(t.start_time, 'HH24:MI') AS start_time,
+       to_char(t.end_time, 'HH24:MI') AS end_time,
        t.course_code,
        t.exam_type,
        t.batch_id,
@@ -477,43 +512,57 @@ async function loadTimetableIndex(dateFrom, dateTo) {
     [dateFrom, dateTo]
   );
 
-  /** @type {Map<string, object[]>} key = YYYY-MM-DD|COURSE */
+  /** @type {Map<string, object[]>} key = YYYY-MM-DD|COURSECODE */
   const byDateCourse = new Map();
   for (const row of rows || []) {
     const dateKey = toDateKey(row.date);
-    const code = String(row.course_code ?? row.coursecode ?? "")
-      .trim()
-      .toUpperCase();
+    const code = normalizeCourseCode(row.course_code ?? row.coursecode);
     if (!dateKey || !code) continue;
     const key = `${dateKey}|${code}`;
     if (!byDateCourse.has(key)) byDateCourse.set(key, []);
+    const batchText = String(row.batch ?? "").trim();
+    const batchName = String(
+      row.batch_name ?? row.batchname ?? batchText ?? ""
+    ).trim();
     byDateCourse.get(key).push({
       session: row.session,
       startTime: trimTimePart(row.start_time ?? row.starttime),
       endTime: trimTimePart(row.end_time ?? row.endtime),
       examType: row.exam_type ?? row.examtype,
       batchId: row.batch_id ?? row.batchid ?? null,
-      batchName: String(
-        row.batch_name ?? row.batchname ?? row.batch ?? ""
-      ).trim(),
+      batchText,
+      batchName,
     });
   }
-  return byDateCourse;
+  return {
+    byDateCourse,
+    rowCount: (rows || []).length,
+    sampleKeys: [...byDateCourse.keys()].slice(0, 12),
+  };
 }
 
 /**
  * In-memory timetable validation against a preloaded index.
- * Required: date + course (and session when both sides have one).
- * Soft: exam type / exact time (retry without when no hit).
- * Batch: only when timetable row actually specifies a batch; loose name match.
+ *
+ * Required: date + course_code present on timetable.
+ * Session: when BOTH sides have FN/AN, they must agree.
+ * Batch: ONLY when timetable row has batch_id or academic year-range batch text.
+ * Exam type / exact time: preferred, never sole rejectors when date+course(+session) match.
+ *
+ * @returns {{ ok: boolean, reason: string }}
  */
-function isCourseScheduledInIndex(index, opts) {
-  const code = String(opts.courseCode || "").trim().toUpperCase();
+function diagnoseCourseScheduledInIndex(index, opts) {
+  const byDateCourse = index?.byDateCourse || index;
+  const code = normalizeCourseCode(opts.courseCode);
   const dateKey = toDateKey(opts.examDate);
-  if (!code || !dateKey) return false;
+  if (!code || !dateKey) {
+    return { ok: false, reason: "missingCourseOrDate" };
+  }
 
-  const candidates = index.get(`${dateKey}|${code}`) || [];
-  if (!candidates.length) return false;
+  const candidates = byDateCourse.get(`${dateKey}|${code}`) || [];
+  if (!candidates.length) {
+    return { ok: false, reason: "noTimetableRecord" };
+  }
 
   const sess = normalizeSession(opts.session);
   const batchId = opts.batchId;
@@ -521,52 +570,95 @@ function isCourseScheduledInIndex(index, opts) {
   const startTime = opts.startTime || null;
   const endTime = opts.endTime || null;
   const wantType = normalizeExamTypeKey(opts.examType);
+  const studentHasBatch =
+    batchId != null || (batchName && String(batchName).trim());
 
-  const matchRow = (row, { requireType = true } = {}) => {
+  let sessionMismatch = 0;
+  let batchMismatch = 0;
+  let examTypeMismatch = 0;
+
+  const matchRow = (row, { requireType = false, requireBatch = true } = {}) => {
     const rowSess = normalizeSession(row.session);
     if (
       sess &&
       sess !== "—" &&
-      row.session != null &&
-      String(row.session).trim() !== ""
+      rowSess &&
+      rowSess !== "—" &&
+      rowSess !== sess
     ) {
-      if (rowSess !== sess && rowSess !== "—") return false;
+      sessionMismatch += 1;
+      return false;
     }
 
-    const rawBatchLabel = String(row.batchName || "").trim();
-    const timetableHasBatch =
-      row.batchId != null ||
-      (rawBatchLabel.length > 0 && !/^(ALL|NA|N\/A|-|NONE)$/i.test(rawBatchLabel));
-    if (timetableHasBatch && (batchId != null || (batchName && String(batchName).trim()))) {
-      const idMatch =
-        row.batchId != null &&
-        batchId != null &&
-        Number(row.batchId) === Number(batchId);
-      const nameMatch = batchesLooselyMatch(rawBatchLabel, batchName);
-      if (!idMatch && !nameMatch) return false;
+    if (requireBatch && timetableRowHasBatchRestriction(row) && studentHasBatch) {
+      if (!timetableRowMatchesStudentBatch(row, batchId, batchName)) {
+        batchMismatch += 1;
+        return false;
+      }
     }
 
     if (requireType) {
       const rowType = normalizeExamTypeKey(row.examType);
-      if (rowType && wantType && rowType !== wantType) return false;
+      if (rowType && wantType && rowType !== wantType) {
+        examTypeMismatch += 1;
+        return false;
+      }
     }
     return true;
   };
 
-  const tryPool = (pool) => {
-    if (pool.some((r) => matchRow(r, { requireType: true }))) return true;
-    // Soft type: seating/timetable labels often differ (e.g. Internal vs CAT 1)
-    if (wantType && pool.some((r) => matchRow(r, { requireType: false }))) return true;
-    return false;
-  };
-
+  // 1) Prefer exact time window when seating times are known — then relax.
+  const pools = [];
   if (startTime && endTime) {
     const timed = candidates.filter(
       (r) => r.startTime === startTime && r.endTime === endTime
     );
-    if (timed.length && tryPool(timed)) return true;
+    if (timed.length) pools.push(timed);
   }
-  return tryPool(candidates);
+  pools.push(candidates);
+
+  for (const pool of pools) {
+    // Strictest → loosest (type optional; batch only when timetable specifies it)
+    if (pool.some((r) => matchRow(r, { requireType: true, requireBatch: true }))) {
+      return { ok: true, reason: "matched" };
+    }
+    if (pool.some((r) => matchRow(r, { requireType: false, requireBatch: true }))) {
+      return { ok: true, reason: "matched" };
+    }
+  }
+
+  // If every candidate failed only because of batch, and there exists a
+  // no-batch-restriction row we already tried — classify reason.
+  if (candidates.every((r) => !timetableRowHasBatchRestriction(r))) {
+    if (sessionMismatch > 0 && sessionMismatch >= candidates.length) {
+      return { ok: false, reason: "sessionMismatch" };
+    }
+  }
+  if (batchMismatch > 0) {
+    // Last resort: accept date+course+session when a row has NO batch restriction.
+    // (Rows WITH batch restriction that didn't match stay rejected — preserves
+    //  batch-scoped schedules. Unscheduled courses still have zero candidates.)
+    const unrestricted = candidates.filter((r) => !timetableRowHasBatchRestriction(r));
+    if (
+      unrestricted.some((r) =>
+        matchRow(r, { requireType: false, requireBatch: false })
+      )
+    ) {
+      return { ok: true, reason: "matched" };
+    }
+    return { ok: false, reason: "batchMismatch" };
+  }
+  if (sessionMismatch > 0) {
+    return { ok: false, reason: "sessionMismatch" };
+  }
+  if (examTypeMismatch > 0) {
+    return { ok: false, reason: "examTypeMismatch" };
+  }
+  return { ok: false, reason: "noTimetableRecord" };
+}
+
+function isCourseScheduledInIndex(index, opts) {
+  return diagnoseCourseScheduledInIndex(index, opts).ok;
 }
 
 /**
@@ -901,6 +993,16 @@ async function fetchAbsentStudentRows(user, role, filters) {
     withResolvedBatch: 0,
     matchedTimetable: 0,
     rejectedTimetable: 0,
+    timetableRecordsLoaded: 0,
+    rejectionReasons: {
+      dateMismatch: 0,
+      sessionMismatch: 0,
+      courseMismatch: 0,
+      batchMismatch: 0,
+      examTypeMismatch: 0,
+      noTimetableRecord: 0,
+      missingCourseOrDate: 0,
+    },
   };
 
   if (!rawRows.length) {
@@ -912,7 +1014,7 @@ async function fetchAbsentStudentRows(user, role, filters) {
   }
 
   const tBulk = Date.now();
-  const [timetableIndex, venueContextMap] = await Promise.all([
+  const [timetableLoaded, venueContextMap] = await Promise.all([
     loadTimetableIndex(dateFrom, dateTo),
     bulkBuildVenueCourseContexts(
       rawRows.map((r) => ({
@@ -921,16 +1023,19 @@ async function fetchAbsentStudentRows(user, role, filters) {
       }))
     ),
   ]);
+  const timetableIndex = timetableLoaded;
+  stats.timetableRecordsLoaded = timetableLoaded.rowCount || 0;
   if (debug) {
     console.info(
       `[Attendance Export Preview] bulk timetable+venue: ${Date.now() - tBulk} ms ` +
-        `(timetableKeys=${timetableIndex.size}, venues=${venueContextMap.size})`
+        `(timetableRows=${timetableLoaded.rowCount}, keys=${timetableLoaded.byDateCourse.size}, venues=${venueContextMap.size})`
     );
   }
 
   const seenPhysical = new Set();
   const pending = [];
-  const courseFilter = String(courseCode || "").trim().toUpperCase();
+  const courseFilter = normalizeCourseCode(courseCode);
+  let sampleLogged = false;
 
   for (const r of rawRows) {
     const attId = r.attendance_id ?? r.attendanceid;
@@ -985,9 +1090,9 @@ async function fetchAbsentStudentRows(user, role, filters) {
     let course = seatedCourse;
     if (!course && enrollmentCourse) {
       const selected = (venueCtx.selectedCourses || []).map((c) =>
-        String(c).trim().toUpperCase()
+        normalizeCourseCode(c)
       );
-      if (selected.includes(enrollmentCourse.toUpperCase())) {
+      if (selected.includes(normalizeCourseCode(enrollmentCourse))) {
         course = enrollmentCourse;
       } else if (
         isCourseScheduledInIndex(timetableIndex, {
@@ -1005,7 +1110,7 @@ async function fetchAbsentStudentRows(user, role, filters) {
     }
     stats.withResolvedCourse += 1;
 
-    if (courseFilter && course.toUpperCase() !== courseFilter) {
+    if (courseFilter && normalizeCourseCode(course) !== courseFilter) {
       stats.skippedCourseFilter += 1;
       seenPhysical.add(physicalKey);
       continue;
@@ -1015,12 +1120,61 @@ async function fetchAbsentStudentRows(user, role, filters) {
       stats.withResolvedBatch += 1;
     }
 
-    const scheduled = isCourseScheduledInIndex(timetableIndex, {
+    const verdict = diagnoseCourseScheduledInIndex(timetableIndex, {
       ...scheduleOpts,
       courseCode: course,
     });
-    if (!scheduled) {
+
+    if (!sampleLogged && (debug || !verdict.ok)) {
+      sampleLogged = true;
+      const key = `${examDate}|${normalizeCourseCode(course)}`;
+      const ttRows = timetableLoaded.byDateCourse.get(key) || [];
+      console.warn(
+        "[Attendance Export Preview] sample candidate vs timetable:",
+        JSON.stringify({
+          attendanceId: attId,
+          examId,
+          venueId,
+          examDate,
+          session,
+          course,
+          batchId,
+          batchName,
+          seatingExamType,
+          startTime: venueCtx.startTime,
+          endTime: venueCtx.endTime,
+          verdict,
+          timetableKey: key,
+          timetableCandidatesForKey: ttRows.length,
+          timetableSample: ttRows.slice(0, 3).map((t) => ({
+            session: t.session,
+            examType: t.examType,
+            batchId: t.batchId,
+            batchName: t.batchName,
+            batchText: t.batchText,
+            startTime: t.startTime,
+            endTime: t.endTime,
+          })),
+          timetableRowsLoaded: timetableLoaded.rowCount,
+          timetableSampleKeys: timetableLoaded.sampleKeys,
+        })
+      );
+    }
+
+    if (!verdict.ok) {
       stats.rejectedTimetable += 1;
+      const reason = verdict.reason || "noTimetableRecord";
+      if (reason === "courseMismatch" || reason === "dateMismatch") {
+        stats.rejectionReasons[reason] += 1;
+      } else if (stats.rejectionReasons[reason] != null) {
+        stats.rejectionReasons[reason] += 1;
+      } else {
+        stats.rejectionReasons.noTimetableRecord += 1;
+      }
+      // Map missing key to course/date buckets for clarity
+      if (reason === "noTimetableRecord") {
+        // already counted
+      }
       seenPhysical.add(physicalKey);
       continue;
     }
@@ -1093,10 +1247,12 @@ async function fetchAbsentStudentRows(user, role, filters) {
     `candidates=${stats.candidates} ` +
     `withCourse=${stats.withResolvedCourse} ` +
     `withBatch=${stats.withResolvedBatch} ` +
+    `timetableRecordsLoaded=${stats.timetableRecordsLoaded} ` +
     `matchedTimetable=${stats.matchedTimetable} ` +
     `rejectedTimetable=${stats.rejectedTimetable} ` +
     `noCourse=${stats.skippedNoCourse} ` +
     `courseFilter=${stats.skippedCourseFilter} ` +
+    `rejectionReasons=${JSON.stringify(stats.rejectionReasons)} ` +
     `final=${out.length}`;
   if (out.length === 0 || debug) {
     console.warn(summary);
