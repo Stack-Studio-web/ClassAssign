@@ -649,6 +649,7 @@ const AttendanceController = {
           dateTo: req.query.dateTo || req.query.date_to || null,
           department: req.query.department || null,
           courseCode: req.query.courseCode || req.query.course || null,
+          batchUuid: req.query.batchUuid || req.query.batch || null,
         }
       );
       return res.json({ success: true, ...options });

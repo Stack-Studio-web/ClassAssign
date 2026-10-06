@@ -47,10 +47,11 @@ export default function AttendanceExport() {
   const setFilter = (key, value) => {
     setFilters((prev) => {
       const next = { ...prev, [key]: value };
+      // Date → Department → Batch → Course
       if (key === "dateFrom" || key === "dateTo") {
         next.department = "";
-        next.courseCode = "";
         next.batchUuid = "";
+        next.courseCode = "";
       }
       return next;
     });
@@ -58,7 +59,7 @@ export default function AttendanceExport() {
     setError("");
   };
 
-  // Date range → departments + courses + batches from actual attendance
+  // Cascade options: Date → Department → Batch → Course (batchUuid filters courses).
   useEffect(() => {
     let cancelled = false;
 
@@ -79,16 +80,15 @@ export default function AttendanceExport() {
           dateFrom: filters.dateFrom,
           dateTo: filters.dateTo,
           department: filters.department || undefined,
-          courseCode: filters.courseCode || undefined,
+          batchUuid: filters.batchUuid || undefined,
         });
         if (cancelled) return;
 
         setDepartments(data.departments);
-        setCourses(data.courses);
         setBatches(data.batches);
+        setCourses(filters.batchUuid ? data.courses : []);
         setOptionsMessage(data.message || "");
 
-        // Drop selections that are no longer in the option lists
         setFilters((prev) => {
           let changed = false;
           const next = { ...prev };
@@ -98,17 +98,8 @@ export default function AttendanceExport() {
             !data.departments.includes(prev.department)
           ) {
             next.department = "";
-            next.courseCode = "";
             next.batchUuid = "";
-            changed = true;
-          }
-          if (
-            prev.courseCode &&
-            data.courses.length &&
-            !data.courses.some((c) => c.code === prev.courseCode)
-          ) {
             next.courseCode = "";
-            next.batchUuid = "";
             changed = true;
           }
           if (
@@ -117,6 +108,15 @@ export default function AttendanceExport() {
             !data.batches.some((b) => b.uuid === prev.batchUuid)
           ) {
             next.batchUuid = "";
+            next.courseCode = "";
+            changed = true;
+          }
+          if (
+            prev.courseCode &&
+            (!prev.batchUuid ||
+              !data.courses.some((c) => c.code === prev.courseCode))
+          ) {
+            next.courseCode = "";
             changed = true;
           }
           return changed ? next : prev;
@@ -146,7 +146,7 @@ export default function AttendanceExport() {
     filters.dateFrom,
     filters.dateTo,
     filters.department,
-    filters.courseCode,
+    filters.batchUuid,
   ]);
 
   const validate = useCallback(() => {
@@ -281,29 +281,39 @@ export default function AttendanceExport() {
           ]
         : [];
 
+  const departmentReady = datesReady;
+  const batchReady = datesReady && Boolean(filters.department);
+  const courseReady = batchReady && Boolean(filters.batchUuid);
+
   const departmentPlaceholder = !datesReady
     ? "Select dates first"
     : loadingOptions
       ? "Loading…"
       : departments.length === 0
         ? "No departments found"
-        : "All Departments";
-
-  const coursePlaceholder = !datesReady
-    ? "Select dates first"
-    : loadingOptions
-      ? "Loading…"
-      : courses.length === 0
-        ? "No courses found"
-        : "All Courses";
+        : "Select department";
 
   const batchPlaceholder = !datesReady
     ? "Select dates first"
-    : loadingOptions
-      ? "Loading…"
-      : batches.length === 0
-        ? "No batches found"
-        : "All Batches";
+    : !filters.department
+      ? "Select department first"
+      : loadingOptions
+        ? "Loading…"
+        : batches.length === 0
+          ? "No batches found"
+          : "Select batch";
+
+  const coursePlaceholder = !datesReady
+    ? "Select dates first"
+    : !filters.department
+      ? "Select department first"
+      : !filters.batchUuid
+        ? "Select batch first"
+        : loadingOptions
+          ? "Loading…"
+          : courses.length === 0
+            ? "No courses available for this batch"
+            : "Select course";
 
   return (
     <div className="min-h-screen bg-gray-50 font-[Inter,sans-serif]">
@@ -380,13 +390,14 @@ export default function AttendanceExport() {
                     setFilters((prev) => ({
                       ...prev,
                       department: e.target.value,
-                      courseCode: "",
                       batchUuid: "",
+                      courseCode: "",
                     }));
+                    setCourses([]);
                     setPreview(null);
                     setError("");
                   }}
-                  disabled={!datesReady || loadingOptions}
+                  disabled={!departmentReady || loadingOptions}
                   className="w-full h-11 px-3 rounded-xl border border-gray-200 bg-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none disabled:bg-gray-50"
                 >
                   <option value="">{departmentPlaceholder}</option>
@@ -399,6 +410,32 @@ export default function AttendanceExport() {
               </label>
 
               <label className="text-sm text-gray-600 space-y-1.5">
+                <span className="font-medium text-gray-700">Batch</span>
+                <select
+                  value={filters.batchUuid}
+                  onChange={(e) => {
+                    setFilters((prev) => ({
+                      ...prev,
+                      batchUuid: e.target.value,
+                      courseCode: "",
+                    }));
+                    setCourses([]);
+                    setPreview(null);
+                    setError("");
+                  }}
+                  disabled={!batchReady || loadingOptions}
+                  className="w-full h-11 px-3 rounded-xl border border-gray-200 bg-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none disabled:bg-gray-50"
+                >
+                  <option value="">{batchPlaceholder}</option>
+                  {batches.map((b) => (
+                    <option key={b.uuid} value={b.uuid}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="text-sm text-gray-600 space-y-1.5 sm:col-span-2">
                 <span className="font-medium text-gray-700">Course</span>
                 <select
                   value={filters.courseCode}
@@ -406,35 +443,17 @@ export default function AttendanceExport() {
                     setFilters((prev) => ({
                       ...prev,
                       courseCode: e.target.value,
-                      batchUuid: "",
                     }));
                     setPreview(null);
                     setError("");
                   }}
-                  disabled={!datesReady || loadingOptions}
+                  disabled={!courseReady || loadingOptions}
                   className="w-full h-11 px-3 rounded-xl border border-gray-200 bg-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none disabled:bg-gray-50"
                 >
                   <option value="">{coursePlaceholder}</option>
                   {courses.map((c) => (
                     <option key={c.code} value={c.code}>
                       {c.label || c.code}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="text-sm text-gray-600 space-y-1.5 sm:col-span-2">
-                <span className="font-medium text-gray-700">Batch</span>
-                <select
-                  value={filters.batchUuid}
-                  onChange={(e) => setFilter("batchUuid", e.target.value)}
-                  disabled={!datesReady || loadingOptions}
-                  className="w-full h-11 px-3 rounded-xl border border-gray-200 bg-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none disabled:bg-gray-50"
-                >
-                  <option value="">{batchPlaceholder}</option>
-                  {batches.map((b) => (
-                    <option key={b.uuid} value={b.uuid}>
-                      {b.name}
                     </option>
                   ))}
                 </select>

@@ -1421,7 +1421,7 @@ const ConsolidatedAbsenteeExportService = {
     const dateFrom = parseDateParam(query.dateFrom || query.date_from);
     const dateTo = parseDateParam(query.dateTo || query.date_to);
     const department = String(query.department || "").trim();
-    const courseCode = String(query.courseCode || query.course || "").trim();
+    const batchUuid = String(query.batchUuid || query.batch || "").trim();
     const debug = process.env.ATTENDANCE_EXPORT_DEBUG === "1";
 
     let roleScope;
@@ -1455,7 +1455,11 @@ const ConsolidatedAbsenteeExportService = {
     const deptSql = deptMatch.sql === "TRUE" ? "" : `AND ${deptMatch.sql}`;
     const roleSql = roleScope.sql || "";
     const roleParams = roleScope.params || [];
-    const baseParams = [dateFrom, dateTo, ...deptMatch.params, ...roleParams];
+    // Cascade: Date → Department → Batch → Course (courses require batchUuid).
+    const batchSql = batchUuid ? "AND b_opt.public_uuid = ?" : "";
+    const baseParams = [dateFrom, dateTo, ...deptMatch.params];
+    if (batchUuid) baseParams.push(batchUuid);
+    baseParams.push(...roleParams);
 
     const timed = async (label, fn) => {
       const start = Date.now();
@@ -1496,8 +1500,9 @@ const ConsolidatedAbsenteeExportService = {
         }
       }),
 
-      // Seated course for the SAME student only (regn match). No plan-wide cartesian.
+      // Courses for selected batch only (Date → Dept → Batch → Course).
       timed("courses", async () => {
+        if (!batchUuid) return [];
         try {
           const [rows] = await db.query(
             `SELECT DISTINCT
@@ -1505,6 +1510,7 @@ const ConsolidatedAbsenteeExportService = {
              FROM exams e
              JOIN attendance att ON att.exam_id = e.id
              JOIN students st ON st.id = att.student_id
+             JOIN batches b_opt ON b_opt.id = st.batch_id
              JOIN seating_plan_venues spv ON spv.venue_id = att.venue_id
              JOIN seating_plans sp
                ON sp.id = spv.seating_plan_id
@@ -1515,6 +1521,7 @@ const ConsolidatedAbsenteeExportService = {
               AND lower(btrim(sps.regn_no)) = lower(btrim(st.regn_no))
              WHERE e.exam_date BETWEEN ? AND ?
                ${deptSql}
+               ${batchSql}
                AND sps.course_description IS NOT NULL
                AND btrim(sps.course_description) <> ''
                ${roleSql}
@@ -1525,7 +1532,7 @@ const ConsolidatedAbsenteeExportService = {
             .map((r) => String(r.course_code ?? r.coursecode ?? "").trim())
             .filter(Boolean);
 
-          // Fallback: selected_courses on plans that have dept attendance (no sps join).
+          // Fallback: selected_courses on plans that have dept+batch attendance.
           if (!codes.length) {
             const [selRows] = await db.query(
               `SELECT DISTINCT sp.selected_courses AS selected_courses
@@ -1540,11 +1547,13 @@ const ConsolidatedAbsenteeExportService = {
                    SELECT 1
                    FROM attendance att
                    JOIN students st ON st.id = att.student_id
+                   JOIN batches b_opt ON b_opt.id = st.batch_id
                    JOIN seating_plan_venues spv
                      ON spv.seating_plan_id = sp.id
                     AND spv.venue_id = att.venue_id
                    WHERE att.exam_id = e.id
                      ${deptSql}
+                     ${batchSql}
                      ${roleSql}
                  )`,
               baseParams
@@ -1567,30 +1576,10 @@ const ConsolidatedAbsenteeExportService = {
         }
       }),
 
+      // Batches for date (+ department). Not filtered by course (course comes after batch).
       timed("batches", async () => {
         try {
-          const batchParams = [dateFrom, dateTo, ...deptMatch.params];
-          let courseClause = "";
-          // Course filter via seated course (regn-matched), not enrollment column.
-          if (courseCode) {
-            courseClause = `
-              AND EXISTS (
-                SELECT 1
-                FROM seating_plan_venues spv_c
-                JOIN seating_plans sp_c
-                  ON sp_c.id = spv_c.seating_plan_id
-                 AND sp_c.exam_date = e.exam_date
-                 AND (e.exam_session IS NULL OR sp_c.exam_session = e.exam_session)
-                JOIN seating_plan_students sps_c
-                  ON sps_c.seating_plan_id = sp_c.id
-                 AND lower(btrim(sps_c.regn_no)) = lower(btrim(st.regn_no))
-                WHERE spv_c.venue_id = att.venue_id
-                  AND upper(btrim(sps_c.course_description)) = upper(btrim(?))
-              )`;
-            batchParams.push(courseCode);
-          }
-          batchParams.push(...roleParams);
-
+          const batchParams = [dateFrom, dateTo, ...deptMatch.params, ...roleParams];
           const [rows] = await db.query(
             `SELECT DISTINCT
                b.public_uuid AS batch_uuid,
@@ -1601,7 +1590,6 @@ const ConsolidatedAbsenteeExportService = {
              JOIN batches b ON b.id = st.batch_id
              WHERE e.exam_date BETWEEN ? AND ?
                ${deptSql}
-               ${courseClause}
                AND b.public_uuid IS NOT NULL
                AND b.name IS NOT NULL
                AND TRIM(b.name) <> ''

@@ -656,40 +656,117 @@ const AttendanceService = {
     return rows.length > 0;
   },
 
+  /**
+   * Roster for attendance marking at an exam+venue.
+   * Student identity is seating (regn_no + course) → students enrollment row.
+   * Must not pick an arbitrary students row when the same regn_no has multiple courses
+   * (see migration 003_allow_duplicate_student_regn).
+   */
   getStudentsForExamVenue: async (examId, venueId) => {
-    const [rows] = await db.query(
-      `
-      SELECT DISTINCT
-        st.id AS student_id,
-        st.public_uuid AS student_public_uuid,
-        sa.regn_no,
-        COALESCE(st.student_name, sps.student_name, sa.regn_no) AS student_name,
-        att.status,
-        att.is_locked,
-        att.marked_time
-      FROM faculty_assignments fa
-      JOIN exams e ON e.id = fa.exam_id
-      JOIN seating_plan_venues spv
-        ON spv.venue_id = fa.venue_id AND spv.faculty_id = fa.faculty_id
-      JOIN seating_plans sp
-        ON sp.id = spv.seating_plan_id
+    const {
+      resolveVenueStudentsWithCourses,
+    } = require("../utils/venueAttendanceCourses");
+    const {
+      matchSeatedStudentsToEnrollments,
+    } = require("../utils/resolveSeatedStudentEnrollments");
+
+    const [spvRows] = await db.query(
+      `SELECT spv.id, spv.seating_layout_json, spv.seating_plan_id
+       FROM faculty_assignments fa
+       JOIN exams e ON e.id = fa.exam_id
+       JOIN seating_plan_venues spv
+         ON spv.venue_id = fa.venue_id AND spv.faculty_id = fa.faculty_id
+       JOIN seating_plans sp
+         ON sp.id = spv.seating_plan_id
         AND sp.exam_date = e.exam_date
         AND (e.exam_session IS NULL OR sp.exam_session = e.exam_session)
-      JOIN seating_arrangements sa ON sa.seating_plan_venue_id = spv.id
-      LEFT JOIN students st ON st.regn_no = sa.regn_no
-      LEFT JOIN seating_plan_students sps
-        ON sps.seating_plan_id = sp.id AND sps.regn_no = sa.regn_no
-      LEFT JOIN attendance att
-        ON att.student_id = st.id AND att.exam_id = fa.exam_id AND att.venue_id = fa.venue_id
-      WHERE fa.exam_id = ? AND fa.venue_id = ?
-        AND sa.regn_no IS NOT NULL
-        AND TRIM(sa.regn_no) <> ''
-        AND sa.regn_no <> '-'
-      ORDER BY sa.regn_no ASC
-      `,
+       WHERE fa.exam_id = ? AND fa.venue_id = ?
+       ORDER BY spv.id DESC
+       LIMIT 1`,
       [examId, venueId]
     );
-    return (rows || []).map(toStudentRow);
+    const spv = spvRows?.[0];
+    if (!spv) return [];
+
+    const spvId = spv.id;
+    const planId = spv.seating_plan_id ?? spv.seatingplanid;
+    const layoutJson = spv.seating_layout_json ?? spv.seatinglayoutjson;
+
+    const [[arrangementRows], [planStudentRows]] = await Promise.all([
+      db.query(
+        `SELECT regn_no, seat_row, seat_col, seat_index
+         FROM seating_arrangements
+         WHERE seating_plan_venue_id = ?
+           AND regn_no IS NOT NULL
+           AND TRIM(regn_no) <> ''
+           AND regn_no <> '-'`,
+        [spvId]
+      ),
+      db.query(
+        `SELECT regn_no, student_name, course_description
+         FROM seating_plan_students
+         WHERE seating_plan_id = ?
+         ORDER BY id ASC`,
+        [planId]
+      ),
+    ]);
+
+    const seated = resolveVenueStudentsWithCourses({
+      layoutJson,
+      arrangementRows: arrangementRows || [],
+      planStudentRows: planStudentRows || [],
+    });
+    if (!seated.length) return [];
+
+    const regns = [...new Set(seated.map((s) => String(s.regNo || "").trim()).filter(Boolean))];
+    if (!regns.length) return [];
+
+    const placeholders = regns.map(() => "?").join(", ");
+    const [studentRows] = await db.query(
+      `SELECT id, public_uuid, regn_no, course_description, student_name
+       FROM students
+       WHERE lower(btrim(regn_no)) IN (${placeholders})`,
+      regns.map((r) => r.toLowerCase())
+    );
+
+    const matched = matchSeatedStudentsToEnrollments(seated, studentRows || []);
+    const withIds = matched.filter((m) => m.studentId != null);
+    if (!withIds.length) return [];
+
+    const idPlaceholders = withIds.map(() => "?").join(", ");
+    const studentIds = withIds.map((m) => m.studentId);
+    const [attRows] = await db.query(
+      `SELECT student_id, status, is_locked, marked_time
+       FROM attendance
+       WHERE exam_id = ?
+         AND venue_id = ?
+         AND student_id IN (${idPlaceholders})`,
+      [examId, venueId, ...studentIds]
+    );
+
+    const attendanceByStudent = new Map();
+    for (const att of attRows || []) {
+      const sid = Number(att.student_id ?? att.studentid);
+      if (Number.isFinite(sid)) attendanceByStudent.set(sid, att);
+    }
+
+    return withIds
+      .map((m) => {
+        const att = attendanceByStudent.get(m.studentId);
+        return toStudentRow({
+          student_public_uuid: m.publicUuid,
+          regn_no: m.regnNo,
+          student_name: m.studentName,
+          status: att?.status ?? null,
+          is_locked: att?.is_locked ?? att?.islocked ?? false,
+          marked_time: att?.marked_time ?? att?.markedtime ?? null,
+        });
+      })
+      .sort((a, b) =>
+        String(a.regnNo || "").localeCompare(String(b.regnNo || ""), undefined, {
+          numeric: true,
+        })
+      );
   },
 
   /**
