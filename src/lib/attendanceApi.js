@@ -141,6 +141,7 @@ export async function previewAttendanceExport(params = {}) {
   const body = res.data || {};
   return {
     meta: body.meta || {},
+    batches: Array.isArray(body.batches) ? body.batches : [],
     rows: Array.isArray(body.rows) ? body.rows : [],
     empty: Boolean(body.empty),
   };

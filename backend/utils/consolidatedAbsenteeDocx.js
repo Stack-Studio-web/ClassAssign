@@ -1,5 +1,7 @@
 /**
  * Server-side Consolidated Absentees List DOCX (editable Word table + text).
+ * One academic batch per Word section (real page break). Each batch page has
+ * Dept. Exam coordinator + HOD. Hallora e-verify footer on the last batch only.
  */
 const fs = require("fs");
 const path = require("path");
@@ -20,9 +22,17 @@ const {
 } = require("docx");
 
 const THIN = { style: BorderStyle.SINGLE, size: 8, color: "000000" };
+const NONE = { style: BorderStyle.NONE, size: 0, color: "FFFFFF" };
 const BORDERS = { top: THIN, bottom: THIN, left: THIN, right: THIN };
+const NO_BORDERS = { top: NONE, bottom: NONE, left: NONE, right: NONE };
 
-const COL_WIDTHS = [1400, 900, 1400, 2200, 1100, 2600]; // ~9600 DXA total
+const COL_WIDTHS = [1400, 900, 1400, 2200, 1100, 2600];
+const PAGE_MARGINS = {
+  top: convertInchesToTwip(0.6),
+  bottom: convertInchesToTwip(0.6),
+  left: convertInchesToTwip(0.6),
+  right: convertInchesToTwip(0.6),
+};
 
 function loadLogoBytes() {
   const candidates = [
@@ -152,14 +162,86 @@ function buildDataTable(rows) {
   });
 }
 
-/**
- * @param {{ meta: object, rows: object[], verification: { verificationId, generatedAt } }} payload
- * @returns {Promise<Buffer>}
- */
-async function buildConsolidatedAbsenteeDocx(payload) {
-  const { meta, rows, verification } = payload;
+function buildSignatureBlock() {
+  return new Table({
+    width: { size: 9600, type: WidthType.DXA },
+    columnWidths: [4800, 4800],
+    rows: [
+      new TableRow({
+        children: [
+          new TableCell({
+            borders: NO_BORDERS,
+            width: { size: 4800, type: WidthType.DXA },
+            children: [
+              new Paragraph({
+                alignment: AlignmentType.LEFT,
+                spacing: { before: 1000, after: 40 },
+                children: [
+                  new TextRun({
+                    text: "Dept. Exam coordinator",
+                    bold: true,
+                    size: 20,
+                    font: "Times New Roman",
+                  }),
+                ],
+              }),
+            ],
+          }),
+          new TableCell({
+            borders: NO_BORDERS,
+            width: { size: 4800, type: WidthType.DXA },
+            children: [
+              new Paragraph({
+                alignment: AlignmentType.RIGHT,
+                spacing: { before: 1000, after: 40 },
+                children: [
+                  new TextRun({
+                    text: "HOD",
+                    bold: true,
+                    size: 20,
+                    font: "Times New Roman",
+                  }),
+                ],
+              }),
+            ],
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+function normalizeBatchSections(payload) {
+  const { meta, batches, rows } = payload || {};
+  if (Array.isArray(batches) && batches.length > 0) {
+    return batches.filter((b) => b && (b.rows?.length || b.batchName));
+  }
+  if (Array.isArray(rows) && rows.length > 0) {
+    return [
+      {
+        batchName:
+          meta?.batchLabel && meta.batchLabel !== "All Batches"
+            ? meta.batchLabel
+            : rows[0]?.batchName || "Batch",
+        batchUuid: meta?.batchUuid || rows[0]?.batchUuid || null,
+        rows,
+        yearSemester: meta?.yearSemester,
+        examType: meta?.examType,
+        academicYear: meta?.academicYear,
+      },
+    ];
+  }
+  return [];
+}
+
+function buildBatchSectionChildren({
+  meta,
+  batch,
+  logoBytes,
+  verification,
+  includeVerification,
+}) {
   const children = [];
-  const logoBytes = loadLogoBytes();
 
   if (logoBytes) {
     children.push(
@@ -182,6 +264,11 @@ async function buildConsolidatedAbsenteeDocx(payload) {
     );
   }
 
+  const academicYear = batch?.academicYear || meta?.academicYear || "—";
+  const yearSemester = batch?.yearSemester || meta?.yearSemester || "—";
+  const examType = batch?.examType || meta?.examType || "—";
+  const batchName = batch?.batchName || meta?.batchLabel || "—";
+
   children.push(
     p("KUMARAGURU COLLEGE OF TECHNOLOGY", { bold: true, size: 26, after: 40 })
   );
@@ -189,11 +276,7 @@ async function buildConsolidatedAbsenteeDocx(payload) {
     p("KUMARAGURU SCHOOL OF INNOVATION", { bold: true, size: 22, after: 120 })
   );
   children.push(
-    p(`Academic year (${meta.academicYear || "—"})`, {
-      bold: true,
-      size: 20,
-      after: 80,
-    })
+    p(`Academic year (${academicYear})`, { bold: true, size: 20, after: 80 })
   );
   children.push(
     p(meta.departmentHeader || `DEPARTMENT OF ${meta.department || ""}`, {
@@ -203,60 +286,87 @@ async function buildConsolidatedAbsenteeDocx(payload) {
     })
   );
   children.push(
-    p(`Consolidated Absentees List – ${meta.yearSemester || "—"}`, {
+    p(`Consolidated Absentees List – ${yearSemester}`, {
       bold: true,
       size: 22,
       after: 60,
     })
   );
-  children.push(
-    p(meta.examType || "—", { bold: true, size: 22, after: 200 })
-  );
+  children.push(p(examType, { bold: true, size: 22, after: 60 }));
+  children.push(p(`Batch: ${batchName}`, { bold: true, size: 22, after: 200 }));
 
-  children.push(buildDataTable(rows));
+  if (batch?.rows?.length) {
+    children.push(buildDataTable(batch.rows));
+  } else {
+    children.push(
+      p("No absentee records found for this batch.", {
+        italics: true,
+        size: 18,
+        after: 200,
+      })
+    );
+  }
 
-  children.push(new Paragraph({ text: "", spacing: { before: 280 } }));
-  children.push(
-    p("Generated and E-Verified by HALLORA", {
-      bold: true,
-      size: 16,
-      before: 200,
-      after: 20,
-    })
-  );
-  children.push(
-    p("Exam Management System", { size: 14, after: 60, italics: true })
-  );
-  children.push(
-    p(`Verification ID: ${verification?.verificationId || "—"}`, {
-      size: 14,
-      after: 20,
-    })
-  );
-  children.push(
-    p(`Generated: ${formatGeneratedAt(verification?.generatedAt)}`, {
-      size: 14,
-      after: 40,
-    })
-  );
+  children.push(buildSignatureBlock());
 
-  const doc = new Document({
-    sections: [
-      {
-        properties: {
-          page: {
-            margin: {
-              top: convertInchesToTwip(0.6),
-              bottom: convertInchesToTwip(0.6),
-              left: convertInchesToTwip(0.6),
-              right: convertInchesToTwip(0.6),
-            },
-          },
-        },
-        children,
+  if (includeVerification) {
+    children.push(new Paragraph({ text: "", spacing: { before: 280 } }));
+    children.push(
+      p("Generated and E-Verified by HALLORA", {
+        bold: true,
+        size: 16,
+        before: 200,
+        after: 20,
+      })
+    );
+    children.push(
+      p("Exam Management System", { size: 14, after: 60, italics: true })
+    );
+    children.push(
+      p(`Verification ID: ${verification?.verificationId || "—"}`, {
+        size: 14,
+        after: 20,
+      })
+    );
+    children.push(
+      p(`Generated: ${formatGeneratedAt(verification?.generatedAt)}`, {
+        size: 14,
+        after: 40,
+      })
+    );
+  }
+
+  return children;
+}
+
+/**
+ * @param {{ meta: object, batches?: object[], rows?: object[], verification: { verificationId, generatedAt } }} payload
+ * @returns {Promise<Buffer>}
+ */
+async function buildConsolidatedAbsenteeDocx(payload) {
+  const { meta, verification } = payload;
+  const batchSections = normalizeBatchSections(payload);
+  if (!batchSections.length) {
+    throw new Error("No absentee records found for the selected filters.");
+  }
+
+  const logoBytes = loadLogoBytes();
+  const sections = batchSections.map((batch, idx) => ({
+    properties: {
+      page: {
+        margin: PAGE_MARGINS,
       },
-    ],
-  });
+    },
+    children: buildBatchSectionChildren({
+      meta,
+      batch,
+      logoBytes,
+      verification,
+      includeVerification: idx === batchSections.length - 1,
+    }),
+  }));
+
+  const doc = new Document({ sections });
 
   return Packer.toBuffer(doc).then((out) =>
     Buffer.isBuffer(out) ? out : Buffer.from(out)

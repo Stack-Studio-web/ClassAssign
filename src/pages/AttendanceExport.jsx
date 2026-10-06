@@ -195,11 +195,19 @@ export default function AttendanceExport() {
     setError("");
     try {
       let data = preview;
-      if (!data || data.empty || !Array.isArray(data.rows) || !data.rows.length) {
+      if (
+        !data ||
+        data.empty ||
+        (!(data.batches?.length) && !(data.rows?.length))
+      ) {
         data = await previewAttendanceExport(queryPayload);
         setPreview(data);
       }
-      if (!data || data.empty || !data.rows?.length) {
+      if (
+        !data ||
+        data.empty ||
+        (!(data.batches?.length) && !(data.rows?.length))
+      ) {
         setError("No attendance records found for the selected filters.");
         return;
       }
@@ -226,6 +234,7 @@ export default function AttendanceExport() {
 
       const { blob } = await downloadConsolidatedAbsenteeDocx({
         meta: data.meta,
+        batches: data.batches,
         rows: data.rows,
         verification,
       });
@@ -246,7 +255,25 @@ export default function AttendanceExport() {
     }
   };
 
-  const showPreviewTable = preview && !preview.empty && Array.isArray(preview.rows);
+  const showPreviewTable =
+    preview &&
+    !preview.empty &&
+    ((Array.isArray(preview.batches) && preview.batches.length > 0) ||
+      (Array.isArray(preview.rows) && preview.rows.length > 0));
+
+  const previewBatches =
+    Array.isArray(preview?.batches) && preview.batches.length > 0
+      ? preview.batches
+      : preview?.rows?.length
+        ? [
+            {
+              batchName: preview.meta?.batchLabel || "Batch",
+              recordCount: preview.meta?.recordCount,
+              totalAbsentees: preview.meta?.totalAbsentees,
+              rows: preview.rows,
+            },
+          ]
+        : [];
 
   const departmentPlaceholder = !datesReady
     ? "Select dates first"
@@ -453,6 +480,12 @@ export default function AttendanceExport() {
                 <dd className="text-gray-900 font-semibold">{preview.meta.examType}</dd>
               </div>
               <div>
+                <dt className="text-gray-500 font-medium">Batches Found</dt>
+                <dd className="text-gray-900 font-semibold">
+                  {preview.meta.batchCount ?? previewBatches.length}
+                </dd>
+              </div>
+              <div>
                 <dt className="text-gray-500 font-medium">Records</dt>
                 <dd className="text-gray-900 font-semibold">{preview.meta.recordCount}</dd>
               </div>
@@ -462,35 +495,96 @@ export default function AttendanceExport() {
               </div>
             </dl>
 
-            <div className="overflow-x-auto border border-gray-200 rounded-xl">
-              <table className="min-w-[800px] w-full text-sm">
-                <thead>
-                  <tr className="bg-gray-50 border-b border-gray-200">
-                    <th className="px-3 py-2.5 text-left font-semibold text-gray-700">Date of Exam</th>
-                    <th className="px-3 py-2.5 text-left font-semibold text-gray-700">Session</th>
-                    <th className="px-3 py-2.5 text-left font-semibold text-gray-700">Course Code</th>
-                    <th className="px-3 py-2.5 text-left font-semibold text-gray-700">Course Title</th>
-                    <th className="px-3 py-2.5 text-center font-semibold text-gray-700">Total Absentees</th>
-                    <th className="px-3 py-2.5 text-left font-semibold text-gray-700">Roll No. of Absentees</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {preview.rows.map((row, idx) => (
-                    <tr key={`${row.examDate}-${row.session}-${row.courseCode}-${idx}`}>
-                      <td className="px-3 py-2.5 text-gray-800">{row.examDateDisplay}</td>
-                      <td className="px-3 py-2.5 text-gray-800">{row.session}</td>
-                      <td className="px-3 py-2.5 font-mono text-gray-800">{row.courseCode}</td>
-                      <td className="px-3 py-2.5 text-gray-700">{row.courseTitle}</td>
-                      <td className="px-3 py-2.5 text-center font-semibold text-gray-900">
-                        {row.absenteeCount}
-                      </td>
-                      <td className="px-3 py-2.5 text-gray-700 break-words max-w-xs">
-                        {row.rollNumbersDisplay}
-                      </td>
-                    </tr>
+            {previewBatches.length > 1 && (
+              <div className="rounded-xl border border-gray-100 bg-gray-50 px-4 py-3 space-y-2">
+                <p className="text-sm font-semibold text-gray-800">Batch summary</p>
+                <ul className="space-y-1.5 text-sm text-gray-700">
+                  {previewBatches.map((b) => (
+                    <li key={b.batchUuid || b.batchName}>
+                      <span className="font-semibold text-gray-900">{b.batchName}</span>
+                      {" — "}
+                      {b.recordCount ?? b.rows?.length ?? 0}{" "}
+                      {(b.recordCount ?? b.rows?.length ?? 0) === 1
+                        ? "record"
+                        : "records"}
+                      , {b.totalAbsentees ?? 0} absentees
+                    </li>
                   ))}
-                </tbody>
-              </table>
+                </ul>
+              </div>
+            )}
+
+            <div className="space-y-6">
+              {previewBatches.map((batch) => (
+                <div
+                  key={batch.batchUuid || batch.batchName}
+                  className="border border-gray-200 rounded-xl overflow-hidden"
+                >
+                  <div className="bg-gray-50 border-b border-gray-200 px-4 py-3 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-bold text-gray-900">
+                        Batch: {batch.batchName}
+                      </p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        {batch.recordCount ?? batch.rows?.length ?? 0} records ·{" "}
+                        {batch.totalAbsentees ?? 0} absentees
+                        {batch.examType ? ` · ${batch.examType}` : ""}
+                      </p>
+                    </div>
+                    <p className="text-xs font-medium text-gray-500">
+                      Dept. Exam coordinator · HOD
+                    </p>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-[800px] w-full text-sm">
+                      <thead>
+                        <tr className="bg-white border-b border-gray-200">
+                          <th className="px-3 py-2.5 text-left font-semibold text-gray-700">
+                            Date of Exam
+                          </th>
+                          <th className="px-3 py-2.5 text-left font-semibold text-gray-700">
+                            Session
+                          </th>
+                          <th className="px-3 py-2.5 text-left font-semibold text-gray-700">
+                            Course Code
+                          </th>
+                          <th className="px-3 py-2.5 text-left font-semibold text-gray-700">
+                            Course Title
+                          </th>
+                          <th className="px-3 py-2.5 text-center font-semibold text-gray-700">
+                            Total Absentees
+                          </th>
+                          <th className="px-3 py-2.5 text-left font-semibold text-gray-700">
+                            Roll No. of Absentees
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {(batch.rows || []).map((row, idx) => (
+                          <tr
+                            key={`${batch.batchName}-${row.examDate}-${row.session}-${row.courseCode}-${idx}`}
+                          >
+                            <td className="px-3 py-2.5 text-gray-800">
+                              {row.examDateDisplay}
+                            </td>
+                            <td className="px-3 py-2.5 text-gray-800">{row.session}</td>
+                            <td className="px-3 py-2.5 font-mono text-gray-800">
+                              {row.courseCode}
+                            </td>
+                            <td className="px-3 py-2.5 text-gray-700">{row.courseTitle}</td>
+                            <td className="px-3 py-2.5 text-center font-semibold text-gray-900">
+                              {row.absenteeCount}
+                            </td>
+                            <td className="px-3 py-2.5 text-gray-700 break-words max-w-xs">
+                              {row.rollNumbersDisplay}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
             </div>
 
             {error && (

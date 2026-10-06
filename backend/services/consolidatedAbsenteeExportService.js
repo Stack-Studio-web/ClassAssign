@@ -499,6 +499,7 @@ function aggregateReportRows(absentRows) {
         courseCode: row.courseCode,
         courseTitle: row.courseTitle,
         examType: row.examType,
+        batchUuid: row.batchUuid || null,
         batchName: row.batchName,
         semesterLabel: row.semesterLabel,
         semesterType: row.semesterType,
@@ -508,6 +509,8 @@ function aggregateReportRows(absentRows) {
     }
     const g = groups.get(key);
     if (!g.courseTitle && row.courseTitle) g.courseTitle = row.courseTitle;
+    if (!g.batchName && row.batchName) g.batchName = row.batchName;
+    if (!g.batchUuid && row.batchUuid) g.batchUuid = row.batchUuid;
     g.regnNos.push(row.regnNo);
   }
 
@@ -525,7 +528,8 @@ function aggregateReportRows(absentRows) {
       rollNumbers: uniqueRegns,
       rollNumbersDisplay: compactAbsenteeRolls(uniqueRegns),
       examType: g.examType,
-      batchName: g.batchName,
+      batchUuid: g.batchUuid || null,
+      batchName: g.batchName || null,
       semesterLabel: g.semesterLabel,
       semesterType: g.semesterType,
       academicYearLabel: g.academicYearLabel,
@@ -543,8 +547,55 @@ function aggregateReportRows(absentRows) {
   return reportRows;
 }
 
-function buildMeta(filters, absentRows, reportRows) {
-  const ayFromData = absentRows.find((r) => r.academicYearLabel)?.academicYearLabel;
+/**
+ * Split absentees into one report section per academic batch.
+ * Each section aggregates date|session|course with batch-scoped counts only.
+ */
+function buildBatchSections(absentRows) {
+  const byBatch = new Map();
+  for (const row of absentRows || []) {
+    const name = String(row.batchName || "").trim();
+    if (!name) continue; // no blank batch pages
+    const key = row.batchUuid || `__name__:${name}`;
+    if (!byBatch.has(key)) {
+      byBatch.set(key, {
+        batchUuid: row.batchUuid || null,
+        batchName: name,
+        absentRows: [],
+      });
+    }
+    byBatch.get(key).absentRows.push(row);
+  }
+
+  const sections = [];
+  for (const batch of byBatch.values()) {
+    const rows = aggregateReportRows(batch.absentRows);
+    if (!rows.length) continue;
+    sections.push({
+      batchUuid: batch.batchUuid,
+      batchName: batch.batchName,
+      rows,
+      recordCount: rows.length,
+      totalAbsentees: rows.reduce((sum, r) => sum + (r.absenteeCount || 0), 0),
+      yearSemester: yearSemesterLabel(batch.absentRows),
+      examType: dominantExamType(rows),
+      academicYear:
+        batch.absentRows.find((r) => r.academicYearLabel)?.academicYearLabel || null,
+    });
+  }
+
+  sections.sort((a, b) =>
+    String(a.batchName).localeCompare(String(b.batchName), undefined, {
+      numeric: true,
+    })
+  );
+  return sections;
+}
+
+function buildMeta(filters, absentRows, reportRows, batchSections = []) {
+  const ayFromData =
+    absentRows.find((r) => r.academicYearLabel)?.academicYearLabel ||
+    batchSections.find((b) => b.academicYear)?.academicYear;
   const deptLabel = filters.department || "All Departments";
   return {
     department: deptLabel,
@@ -558,13 +609,16 @@ function buildMeta(filters, absentRows, reportRows) {
     batchUuid: filters.batchUuid || "",
     batchLabel:
       filters.batchUuid
-        ? absentRows.find((r) => r.batchUuid === filters.batchUuid)?.batchName || "Selected Batch"
+        ? absentRows.find((r) => r.batchUuid === filters.batchUuid)?.batchName ||
+          batchSections[0]?.batchName ||
+          "Selected Batch"
         : "All Batches",
     academicYear: ayFromData || academicYearLabel(filters.dateFrom),
     yearSemester: yearSemesterLabel(absentRows),
     examType: dominantExamType(reportRows.length ? reportRows : absentRows),
     recordCount: reportRows.length,
     totalAbsentees: reportRows.reduce((sum, r) => sum + (r.absenteeCount || 0), 0),
+    batchCount: batchSections.length,
   };
 }
 
@@ -727,8 +781,15 @@ const ConsolidatedAbsenteeExportService = {
 
   preview: async (user, role, filters = {}) => {
     const { rows: absentRows, filters: f } = await fetchAbsentStudentRows(user, role, filters);
-    const reportRows = aggregateReportRows(absentRows);
-    const meta = buildMeta(f, absentRows, reportRows);
+    const batchSections = buildBatchSections(absentRows);
+    const reportRows = batchSections.flatMap((b) =>
+      (b.rows || []).map((row) => ({
+        ...row,
+        batchUuid: b.batchUuid,
+        batchName: b.batchName,
+      }))
+    );
+    const meta = buildMeta(f, absentRows, reportRows, batchSections);
 
     if (f.batchUuid && meta.batchLabel === "Selected Batch") {
       const [b] = await db.query(
@@ -740,8 +801,9 @@ const ConsolidatedAbsenteeExportService = {
 
     return {
       meta,
+      batches: batchSections,
       rows: reportRows,
-      empty: reportRows.length === 0,
+      empty: batchSections.length === 0,
     };
   },
 
@@ -783,6 +845,7 @@ const ConsolidatedAbsenteeExportService = {
     try {
       buffer = await buildConsolidatedAbsenteeDocx({
         meta: preview.meta,
+        batches: preview.batches,
         rows: preview.rows,
         verification: {
           verificationId: verification.verificationId,
@@ -812,10 +875,13 @@ const ConsolidatedAbsenteeExportService = {
     const from = dateForFilename(preview.meta.dateFrom);
     const to = dateForFilename(preview.meta.dateTo);
     let filename;
-    if (preview.meta.courseCode) {
+    if (preview.meta.batchUuid && preview.batches?.[0]?.batchName) {
+      const batchShort = sanitizeFilenamePart(preview.batches[0].batchName);
+      filename = `Hallora_Consolidated_Absentees_${deptShort}_${examShort}_${batchShort}_${from}_to_${to}.docx`;
+    } else if (preview.meta.courseCode) {
       filename = `Hallora_Absentees_${sanitizeFilenamePart(preview.meta.courseCode)}_${examShort}_${from}_to_${to}.docx`;
     } else {
-      filename = `Hallora_Consolidated_Absentees_${deptShort}_${examShort}_${from}_to_${to}.docx`;
+      filename = `Hallora_Consolidated_Absentees_${deptShort}_${examShort}_${from}_to_${to}_All-Batches.docx`;
     }
 
     return {

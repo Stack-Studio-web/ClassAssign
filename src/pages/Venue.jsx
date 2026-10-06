@@ -577,13 +577,32 @@ export default function AddVenue() {
     [venues]
   );
 
-  const selectedBlockLabel = useMemo(() => {
-    if (!filterBlock) return "All Blocks";
-    if (filterBlock === "__none__") return "Unassigned / No Block";
+  const selectedBlockMeta = useMemo(() => {
+    if (!filterBlock) {
+      return {
+        label: "All Blocks",
+        venueCount: venues.length,
+        capacity: venues.reduce((sum, v) => sum + (Number(v.capacity) || 0), 0),
+      };
+    }
+    if (filterBlock === "__none__") {
+      const list = venues.filter((v) => !v.blockUuid);
+      return {
+        label: "Unassigned / No Block",
+        venueCount: list.length,
+        capacity: list.reduce((sum, v) => sum + (Number(v.capacity) || 0), 0),
+      };
+    }
     const b = blocks.find((x) => x.uuid === filterBlock);
-    if (!b) return "Selected Block";
-    return b.code ? `${b.name} (${b.code})` : b.name;
-  }, [filterBlock, blocks]);
+    if (!b) {
+      return { label: "Selected Block", venueCount: filteredVenues.length, capacity: 0 };
+    }
+    return {
+      label: b.code ? `${b.name} (${b.code})` : b.name,
+      venueCount: Number(b.venueCount) || 0,
+      capacity: Number(b.totalCapacity) || 0,
+    };
+  }, [filterBlock, blocks, venues, filteredVenues.length]);
 
   const rows = Number(form.benchesRow) || 0;
   const cols = Number(form.benchesCol) || 0;
@@ -1174,133 +1193,74 @@ export default function AddVenue() {
         <div className="px-4 md:px-8 py-6 md:py-8 space-y-5">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
             <h2 className="text-lg font-semibold text-gray-800">All Venues</h2>
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3 w-full md:w-auto">
               <input
                 type="text"
                 placeholder="Search by venue, block, code..."
                 value={searchQuery}
                 onChange={handleSearch}
-                className="w-full md:w-64 h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                className="w-full sm:w-64 h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
               />
               <select
                 value={filterBlock}
                 onChange={(e) => setFilterBlock(e.target.value)}
-                className="h-12 px-4 rounded-xl border border-gray-200 bg-white text-sm font-medium text-gray-700 outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full sm:w-[260px] h-12 px-4 rounded-xl border border-gray-200 bg-white text-sm font-medium text-gray-700 outline-none focus:ring-2 focus:ring-blue-500"
                 aria-label="Filter by block"
               >
-                <option value="">All Blocks</option>
-                {blocks.map((b) => (
-                  <option key={b.uuid} value={b.uuid}>
-                    {b.name}
-                    {b.code ? ` (${b.code})` : ""}
+                <option value="">All Blocks ({venues.length})</option>
+                {blocks.map((b) => {
+                  const count = Number(b.venueCount) || 0;
+                  const label = b.code ? `${b.name} (${b.code})` : b.name;
+                  return (
+                    <option key={b.uuid} value={b.uuid}>
+                      {label} ({count})
+                    </option>
+                  );
+                })}
+                {unassignedVenueCount > 0 && (
+                  <option value="__none__">
+                    Unassigned / No Block ({unassignedVenueCount})
                   </option>
-                ))}
-                <option value="__none__">Unassigned / No Block</option>
+                )}
               </select>
               <button
                 type="button"
                 onClick={handleSort}
-                className="h-12 px-4 rounded-xl bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-medium text-sm shadow-sm transition-all duration-200"
+                className="h-12 px-4 rounded-xl bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-medium text-sm shadow-sm transition-all duration-200 whitespace-nowrap"
               >
                 Sort: Capacity {sortOrder === "highToLow" ? "High → Low" : "Low → High"}
               </button>
             </div>
           </div>
 
-          {/* Block selector cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            <button
-              type="button"
-              onClick={() => setFilterBlock("")}
-              className={`text-left rounded-2xl border p-4 shadow-sm transition-all ${
-                filterBlock === ""
-                  ? "border-blue-500 bg-blue-50 ring-2 ring-blue-200"
-                  : "border-gray-100 bg-white hover:border-blue-200 hover:shadow-md"
-              }`}
-            >
-              <p className="text-xs font-bold uppercase tracking-wide text-blue-600">All</p>
-              <h3 className="text-base font-bold text-gray-900 mt-0.5">All Blocks</h3>
-              <p className="text-xs text-gray-500 mt-1">
-                {venues.length} {venues.length === 1 ? "Venue" : "Venues"}
-              </p>
-            </button>
-            {blocks.map((block) => {
-              const selected = filterBlock === block.uuid;
-              const count = Number(block.venueCount) || 0;
-              return (
-                <button
-                  key={block.uuid}
-                  type="button"
-                  onClick={() => setFilterBlock(block.uuid)}
-                  className={`text-left rounded-2xl border p-4 shadow-sm transition-all ${
-                    selected
-                      ? "border-blue-500 bg-blue-50 ring-2 ring-blue-200"
-                      : "border-gray-100 bg-white hover:border-blue-200 hover:shadow-md"
-                  }`}
-                >
-                  <p className="text-xs font-bold uppercase tracking-wide text-blue-600">
-                    {block.code || "—"}
-                  </p>
-                  <h3 className="text-base font-bold text-gray-900 mt-0.5 truncate">
-                    {block.name}
-                    {block.code ? (
-                      <span className="ml-1.5 text-sm font-semibold text-blue-600">
-                        ({block.code})
-                      </span>
-                    ) : null}
-                  </h3>
-                  <p className="text-xs text-gray-500 mt-1">
-                    {count} {count === 1 ? "Venue" : "Venues"}
-                    {block.totalCapacity != null
-                      ? ` · ${Number(block.totalCapacity || 0).toLocaleString()} Cap.`
-                      : ""}
-                  </p>
-                </button>
-              );
-            })}
-            {unassignedVenueCount > 0 && (
-              <button
-                type="button"
-                onClick={() => setFilterBlock("__none__")}
-                className={`text-left rounded-2xl border border-dashed p-4 shadow-sm transition-all ${
-                  filterBlock === "__none__"
-                    ? "border-blue-500 bg-blue-50 ring-2 ring-blue-200"
-                    : "border-gray-200 bg-white hover:border-blue-200 hover:shadow-md"
-                }`}
-              >
-                <p className="text-xs font-bold uppercase tracking-wide text-gray-400">—</p>
-                <h3 className="text-base font-bold text-gray-800 mt-0.5">
-                  Unassigned / No Block
-                </h3>
-                <p className="text-xs text-gray-500 mt-1">
-                  {unassignedVenueCount}{" "}
-                  {unassignedVenueCount === 1 ? "Venue" : "Venues"}
-                </p>
-              </button>
-            )}
-          </div>
-
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm font-medium text-gray-600">
-              Selected: <span className="text-gray-900 font-semibold">{selectedBlockLabel}</span>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-medium text-gray-800">
+              {selectedBlockMeta.label}
             </p>
             <p className="text-sm text-gray-500">
               {filteredVenues.length}{" "}
-              {filteredVenues.length === 1 ? "venue" : "venues"}
+              {filteredVenues.length === 1 ? "Venue" : "Venues"}
+              {filterBlock && selectedBlockMeta.capacity > 0
+                ? ` · ${selectedBlockMeta.capacity.toLocaleString()} Capacity`
+                : ""}
             </p>
           </div>
 
           {filteredVenues.length === 0 ? (
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center">
               <p className="text-base font-semibold text-gray-800">
-                {filterBlock && filterBlock !== ""
-                  ? "No venues in this block"
-                  : "No venues found"}
+                {searchQuery.trim()
+                  ? "No venues match your search."
+                  : filterBlock
+                    ? `No venues found in ${selectedBlockMeta.label}.`
+                    : "No venues found."}
               </p>
               <p className="text-sm text-gray-500 mt-1">
-                {filterBlock && filterBlock !== ""
-                  ? "Add a venue to this block to begin."
-                  : "Try adjusting search or block filters."}
+                {searchQuery.trim()
+                  ? "Try a different search term or clear the block filter."
+                  : filterBlock
+                    ? "Add a venue to this block to begin."
+                    : "Create a venue from Basic Details or Bulk Import."}
               </p>
             </div>
           ) : (
