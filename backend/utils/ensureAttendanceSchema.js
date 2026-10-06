@@ -101,6 +101,45 @@ async function ensureAttendanceSchema() {
       `CREATE INDEX IF NOT EXISTS idx_attendance_student ON attendance(student_id)`
     );
 
+    // Attendance export date-range performance indexes (idempotent)
+    try {
+      await db.query(
+        `CREATE INDEX IF NOT EXISTS idx_attendance_status ON attendance(status)`
+      );
+      await db.query(
+        `CREATE INDEX IF NOT EXISTS idx_attendance_exam_status ON attendance(exam_id, status)`
+      );
+      await db.query(
+        `CREATE INDEX IF NOT EXISTS idx_exams_exam_date ON exams(exam_date)`
+      );
+      await db.query(
+        `CREATE INDEX IF NOT EXISTS idx_timetable_date ON timetable(date)`
+      );
+      await db.query(
+        `CREATE INDEX IF NOT EXISTS idx_timetable_date_course ON timetable(date, course_code)`
+      );
+      await db.query(
+        `CREATE INDEX IF NOT EXISTS idx_seating_plan_venues_venue_id ON seating_plan_venues(venue_id)`
+      );
+      await db.query(
+        `CREATE INDEX IF NOT EXISTS idx_seating_plans_exam_date_session ON seating_plans(exam_date, exam_session)`
+      );
+      await db.query(
+        `CREATE INDEX IF NOT EXISTS idx_seating_plan_students_plan_id ON seating_plan_students(seating_plan_id)`
+      );
+      await db.query(
+        `CREATE INDEX IF NOT EXISTS idx_seating_plan_students_plan_regn ON seating_plan_students(seating_plan_id, regn_no)`
+      );
+      await db.query(
+        `CREATE INDEX IF NOT EXISTS idx_seating_arrangements_spv_id ON seating_arrangements(seating_plan_venue_id)`
+      );
+    } catch (idxErr) {
+      console.warn(
+        "⚠️ Attendance export indexes skipped:",
+        idxErr.message
+      );
+    }
+
     await db.query(`
       CREATE TABLE IF NOT EXISTS attendance_sessions (
         id SERIAL PRIMARY KEY,

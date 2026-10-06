@@ -73,6 +73,7 @@ export default function AttendanceExport() {
 
     (async () => {
       setLoadingOptions(true);
+      setOptionsMessage("");
       try {
         const data = await fetchAttendanceExportOptions({
           dateFrom: filters.dateFrom,
@@ -125,7 +126,12 @@ export default function AttendanceExport() {
           setDepartments([]);
           setCourses([]);
           setBatches([]);
-          setOptionsMessage(getApiError(err, "Failed to load filter options"));
+          setOptionsMessage(
+            getApiError(
+              err,
+              "Unable to load attendance export options. Please try again."
+            )
+          );
         }
       } finally {
         if (!cancelled) setLoadingOptions(false);
@@ -334,7 +340,13 @@ export default function AttendanceExport() {
             )}
 
             {!error && optionsMessage && datesReady && (
-              <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl text-sm">
+              <div
+                className={
+                  /unable to load|failed|error|try again/i.test(optionsMessage)
+                    ? "bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm"
+                    : "bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl text-sm"
+                }
+              >
                 {optionsMessage}
               </div>
             )}
