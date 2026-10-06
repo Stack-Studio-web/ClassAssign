@@ -50,6 +50,21 @@ function loadLogoBytes() {
   return null;
 }
 
+function loadKsiLogoBytes() {
+  const candidates = [
+    path.join(__dirname, "../../src/assets/KSI logo.png"),
+    path.join(__dirname, "../../src/assets/logo KSI.png"),
+  ];
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) return fs.readFileSync(p);
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
+}
+
 function formatGeneratedAt(isoOrDate) {
   const d = isoOrDate ? new Date(isoOrDate) : new Date();
   if (Number.isNaN(d.getTime())) return "";
@@ -234,10 +249,54 @@ function normalizeBatchSections(payload) {
   return [];
 }
 
+function buildVerificationFooter(verification, ksiLogoBytes) {
+  const line = `Generated and E-Verified by HALLORA Exam Management System | Verification ID: ${
+    verification?.verificationId || "—"
+  } | Generated: ${formatGeneratedAt(verification?.generatedAt)}`;
+
+  const children = [];
+  if (ksiLogoBytes) {
+    children.push(
+      new ImageRun({
+        type: "png",
+        data: ksiLogoBytes,
+        transformation: { width: 28, height: 28 },
+        altText: {
+          title: "KSI",
+          description: "Kumaraguru School of Innovation logo",
+          name: "ksi-logo",
+        },
+      })
+    );
+    children.push(
+      new TextRun({
+        text: "  ",
+        font: "Times New Roman",
+        size: 12,
+      })
+    );
+  }
+  children.push(
+    new TextRun({
+      text: line,
+      bold: true,
+      size: 12,
+      font: "Times New Roman",
+    })
+  );
+
+  return new Paragraph({
+    alignment: AlignmentType.CENTER,
+    spacing: { before: 280, after: 40 },
+    children,
+  });
+}
+
 function buildBatchSectionChildren({
   meta,
   batch,
   logoBytes,
+  ksiLogoBytes,
   verification,
   includeVerification,
 }) {
@@ -310,30 +369,7 @@ function buildBatchSectionChildren({
   children.push(buildSignatureBlock());
 
   if (includeVerification) {
-    children.push(new Paragraph({ text: "", spacing: { before: 280 } }));
-    children.push(
-      p("Generated and E-Verified by HALLORA", {
-        bold: true,
-        size: 16,
-        before: 200,
-        after: 20,
-      })
-    );
-    children.push(
-      p("Exam Management System", { size: 14, after: 60, italics: true })
-    );
-    children.push(
-      p(`Verification ID: ${verification?.verificationId || "—"}`, {
-        size: 14,
-        after: 20,
-      })
-    );
-    children.push(
-      p(`Generated: ${formatGeneratedAt(verification?.generatedAt)}`, {
-        size: 14,
-        after: 40,
-      })
-    );
+    children.push(buildVerificationFooter(verification, ksiLogoBytes));
   }
 
   return children;
@@ -351,6 +387,7 @@ async function buildConsolidatedAbsenteeDocx(payload) {
   }
 
   const logoBytes = loadLogoBytes();
+  const ksiLogoBytes = loadKsiLogoBytes();
   const sections = batchSections.map((batch, idx) => ({
     properties: {
       page: {
@@ -361,6 +398,7 @@ async function buildConsolidatedAbsenteeDocx(payload) {
       meta,
       batch,
       logoBytes,
+      ksiLogoBytes,
       verification,
       includeVerification: idx === batchSections.length - 1,
     }),

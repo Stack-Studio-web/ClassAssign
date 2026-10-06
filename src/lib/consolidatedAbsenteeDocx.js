@@ -21,7 +21,7 @@ import {
 } from "docx";
 import { saveAs } from "file-saver";
 import logoKctUrl from "../assets/logo.png";
-import logoKsiUrl from "../assets/logo KSI.png";
+import logoKsiUrl from "../assets/KSI logo.png";
 
 const THIN = { style: BorderStyle.SINGLE, size: 8, color: "000000" };
 const NONE = { style: BorderStyle.NONE, size: 0, color: "FFFFFF" };
@@ -221,10 +221,54 @@ function buildLogoParagraph(logoBytes) {
   });
 }
 
+function buildVerificationFooter(verification, ksiLogoBytes) {
+  const line = `Generated and E-Verified by HALLORA Exam Management System | Verification ID: ${
+    verification?.verificationId || "—"
+  } | Generated: ${formatGeneratedAt(verification?.generatedAt)}`;
+
+  const children = [];
+  if (ksiLogoBytes) {
+    children.push(
+      new ImageRun({
+        type: "png",
+        data: ksiLogoBytes,
+        transformation: { width: 28, height: 28 },
+        altText: {
+          title: "KSI",
+          description: "Kumaraguru School of Innovation logo",
+          name: "ksi-logo",
+        },
+      })
+    );
+    children.push(
+      new TextRun({
+        text: "  ",
+        font: "Times New Roman",
+        size: 12,
+      })
+    );
+  }
+  children.push(
+    new TextRun({
+      text: line,
+      bold: true,
+      size: 12,
+      font: "Times New Roman",
+    })
+  );
+
+  return new Paragraph({
+    alignment: AlignmentType.CENTER,
+    spacing: { before: 280, after: 40 },
+    children,
+  });
+}
+
 function buildBatchSectionChildren({
   meta,
   batch,
   logoBytes,
+  ksiLogoBytes,
   verification,
   includeVerification,
 }) {
@@ -282,30 +326,7 @@ function buildBatchSectionChildren({
   children.push(buildSignatureBlock());
 
   if (includeVerification) {
-    children.push(new Paragraph({ text: "", spacing: { before: 280 } }));
-    children.push(
-      p("Generated and E-Verified by HALLORA", {
-        bold: true,
-        size: 16,
-        before: 200,
-        after: 20,
-      })
-    );
-    children.push(
-      p("Exam Management System", { size: 14, after: 60, italics: true })
-    );
-    children.push(
-      p(`Verification ID: ${verification?.verificationId || "—"}`, {
-        size: 14,
-        after: 20,
-      })
-    );
-    children.push(
-      p(`Generated: ${formatGeneratedAt(verification?.generatedAt)}`, {
-        size: 14,
-        after: 40,
-      })
-    );
+    children.push(buildVerificationFooter(verification, ksiLogoBytes));
   }
 
   return children;
@@ -363,6 +384,7 @@ export async function buildConsolidatedAbsenteeDocxBlob(payload) {
   const logoBytes = await fetchImageBytes(
     logoChoice === "KSI" ? logoKsiUrl : logoKctUrl
   );
+  const ksiLogoBytes = await fetchImageBytes(logoKsiUrl);
 
   const sections = batchSections.map((batch, idx) => ({
     properties: {
@@ -374,6 +396,7 @@ export async function buildConsolidatedAbsenteeDocxBlob(payload) {
       meta,
       batch,
       logoBytes,
+      ksiLogoBytes,
       verification,
       includeVerification: idx === batchSections.length - 1,
     }),
