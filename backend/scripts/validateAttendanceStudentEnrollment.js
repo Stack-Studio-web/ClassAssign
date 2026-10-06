@@ -2,87 +2,107 @@
  * Regression: attendance marking must resolve students.id by
  * seating (regn_no + course_description), not regn_no alone.
  *
- * Mirrors production Seating Plan 25 shape (24BIT → 24ITI004 vs 24ITI005).
+ * Production evidence:
+ *   Plan 21 (2026-09-07): 24BIT* → 24ITI005
+ *   Plan 25 (2026-09-10): 24BIT* → 24ITI004
+ * Same regn_no must resolve to different enrollment ids per seating assignment.
  */
 const assert = require("assert");
 const {
   matchSeatedStudentsToEnrollments,
 } = require("../utils/resolveSeatedStudentEnrollments");
 
-function testMultiEnrollmentPicksSeatingCourse() {
+/** Shared multi-enrollment students table (production-shaped ids). */
+const STUDENTS = [
+  { id: 11221, public_uuid: "u-003-iti004", regn_no: "24BIT003", course_description: "24ITI004", student_name: "Student 003" },
+  { id: 11359, public_uuid: "u-003-iti005", regn_no: "24BIT003", course_description: "24ITI005", student_name: "Student 003" },
+  { id: 11234, public_uuid: "u-018-iti004", regn_no: "24BIT018", course_description: "24ITI004", student_name: "Student 018" },
+  { id: 11372, public_uuid: "u-018-iti005", regn_no: "24BIT018", course_description: "24ITI005", student_name: "Student 018" },
+  { id: 11238, public_uuid: "u-022-iti004", regn_no: "24BIT022", course_description: "24ITI004", student_name: "Student 022" },
+  { id: 11376, public_uuid: "u-022-iti005", regn_no: "24BIT022", course_description: "24ITI005", student_name: "Student 022" },
+  { id: 11241, public_uuid: "u-025-iti004", regn_no: "24BIT025", course_description: "24ITI004", student_name: "Student 025" },
+  { id: 11379, public_uuid: "u-025-iti005", regn_no: "24BIT025", course_description: "24ITI005", student_name: "Student 025" },
+  { id: 11249, public_uuid: "u-033-iti004", regn_no: "24BIT033", course_description: "24ITI004", student_name: "Student 033" },
+  { id: 11387, public_uuid: "u-033-iti005", regn_no: "24BIT033", course_description: "24ITI005", student_name: "Student 033" },
+  { id: 20001, public_uuid: "u-25-005", regn_no: "25BIT001", course_description: "24ITI005", student_name: "Student 25-001" },
+  { id: 20002, public_uuid: "u-25-004", regn_no: "25BIT001", course_description: "24ITI004", student_name: "Student 25-001" },
+];
+
+function byRegn(matched) {
+  return Object.fromEntries(matched.map((m) => [m.regnNo, m]));
+}
+
+/** Seating Plan 21: 24BIT → 24ITI005 (07/09 attendance was CORRECT). */
+function testSeatingPlan21ResolvesIti005() {
   const seated = [
-    { regNo: "24BIT003", courseCode: "24ITI004", name: "Student 003" },
-    { regNo: "24BIT018", courseCode: "24ITI004", name: "Student 018" },
-    { regNo: "24BIT022", courseCode: "24ITI004", name: "Student 022" },
-    { regNo: "24BIT025", courseCode: "24ITI004", name: "Student 025" },
-    { regNo: "24BIT033", courseCode: "24ITI004", name: "Student 033" },
+    { regNo: "24BIT003", courseCode: "24ITI005" },
+    { regNo: "24BIT018", courseCode: "24ITI005" },
+    { regNo: "24BIT022", courseCode: "24ITI005" },
   ];
-
-  // Same shape as production: two enrollments per regn; wrong id is higher.
-  const studentRows = [
-    { id: 11221, public_uuid: "u-003-iti004", regn_no: "24BIT003", course_description: "24ITI004", student_name: "Student 003" },
-    { id: 11359, public_uuid: "u-003-iti005", regn_no: "24BIT003", course_description: "24ITI005", student_name: "Student 003" },
-    { id: 11230, public_uuid: "u-018-iti004", regn_no: "24BIT018", course_description: "24ITI004", student_name: "Student 018" },
-    { id: 11372, public_uuid: "u-018-iti005", regn_no: "24BIT018", course_description: "24ITI005", student_name: "Student 018" },
-    { id: 11240, public_uuid: "u-022-iti004", regn_no: "24BIT022", course_description: "24ITI004", student_name: "Student 022" },
-    { id: 11376, public_uuid: "u-022-iti005", regn_no: "24BIT022", course_description: "24ITI005", student_name: "Student 022" },
-    { id: 11250, public_uuid: "u-025-iti004", regn_no: "24BIT025", course_description: "24ITI004", student_name: "Student 025" },
-    { id: 11379, public_uuid: "u-025-iti005", regn_no: "24BIT025", course_description: "24ITI005", student_name: "Student 025" },
-    { id: 11260, public_uuid: "u-033-iti004", regn_no: "24BIT033", course_description: "24ITI004", student_name: "Student 033" },
-    { id: 11387, public_uuid: "u-033-iti005", regn_no: "24BIT033", course_description: "24ITI005", student_name: "Student 033" },
-  ];
-
-  const matched = matchSeatedStudentsToEnrollments(seated, studentRows);
-  assert.strictEqual(matched.length, 5);
-
-  const byRegn = Object.fromEntries(matched.map((m) => [m.regnNo, m]));
-  assert.strictEqual(byRegn["24BIT003"].studentId, 11221);
-  assert.strictEqual(byRegn["24BIT018"].studentId, 11230);
-  assert.strictEqual(byRegn["24BIT022"].studentId, 11240);
-  assert.strictEqual(byRegn["24BIT025"].studentId, 11250);
-  assert.strictEqual(byRegn["24BIT033"].studentId, 11260);
-
-  for (const m of matched) {
-    assert.strictEqual(m.courseCode, "24ITI004");
-    assert.notStrictEqual(m.studentId, 11359);
-    assert.notStrictEqual(m.studentId, 11372);
-    assert.notStrictEqual(m.studentId, 11376);
-    assert.notStrictEqual(m.studentId, 11379);
-    assert.notStrictEqual(m.studentId, 11387);
+  const matched = matchSeatedStudentsToEnrollments(seated, STUDENTS);
+  const m = byRegn(matched);
+  assert.strictEqual(m["24BIT003"].studentId, 11359);
+  assert.strictEqual(m["24BIT018"].studentId, 11372);
+  assert.strictEqual(m["24BIT022"].studentId, 11376);
+  for (const row of matched) {
+    assert.strictEqual(row.courseCode, "24ITI005");
   }
 }
 
-function testNeverPicksWrongCourseWhenSeatingIsIti004() {
-  const matched = matchSeatedStudentsToEnrollments(
-    [{ regNo: "24BIT003", courseCode: "24ITI004" }],
-    [
-      { id: 11359, public_uuid: "wrong", regn_no: "24BIT003", course_description: "24ITI005" },
-      { id: 11221, public_uuid: "right", regn_no: "24BIT003", course_description: "24ITI004" },
-    ]
-  );
-  assert.strictEqual(matched[0].studentId, 11221);
-  assert.strictEqual(matched[0].publicUuid, "right");
+/** Seating Plan 25: same regn → 24ITI004 (must NOT pick 24ITI005). */
+function testSeatingPlan25ResolvesIti004() {
+  const seated = [
+    { regNo: "24BIT003", courseCode: "24ITI004" },
+    { regNo: "24BIT018", courseCode: "24ITI004" },
+    { regNo: "24BIT022", courseCode: "24ITI004" },
+    { regNo: "24BIT025", courseCode: "24ITI004" },
+    { regNo: "24BIT033", courseCode: "24ITI004" },
+  ];
+  const matched = matchSeatedStudentsToEnrollments(seated, STUDENTS);
+  const m = byRegn(matched);
+  assert.strictEqual(m["24BIT003"].studentId, 11221);
+  assert.strictEqual(m["24BIT018"].studentId, 11234);
+  assert.strictEqual(m["24BIT022"].studentId, 11238);
+  assert.strictEqual(m["24BIT025"].studentId, 11241);
+  assert.strictEqual(m["24BIT033"].studentId, 11249);
+
+  for (const row of matched) {
+    assert.strictEqual(row.courseCode, "24ITI004");
+    assert.notStrictEqual(row.studentId, 11359);
+    assert.notStrictEqual(row.studentId, 11372);
+    assert.notStrictEqual(row.studentId, 11376);
+    assert.notStrictEqual(row.studentId, 11379);
+    assert.notStrictEqual(row.studentId, 11387);
+  }
 }
 
-function testTwentyFiveBitUsesIti005() {
+/** Same regn_no must yield different enrollment ids across plans. */
+function testSameRegnDifferentPlansDifferentStudentIds() {
+  const plan21 = matchSeatedStudentsToEnrollments(
+    [{ regNo: "24BIT003", courseCode: "24ITI005" }],
+    STUDENTS
+  );
+  const plan25 = matchSeatedStudentsToEnrollments(
+    [{ regNo: "24BIT003", courseCode: "24ITI004" }],
+    STUDENTS
+  );
+  assert.strictEqual(plan21[0].studentId, 11359);
+  assert.strictEqual(plan25[0].studentId, 11221);
+  assert.notStrictEqual(plan21[0].studentId, plan25[0].studentId);
+}
+
+function testTwentyFiveBitUsesIti005Enrollment() {
   const matched = matchSeatedStudentsToEnrollments(
     [{ regNo: "25BIT001", courseCode: "24ITI005" }],
-    [
-      { id: 20001, public_uuid: "u-25-005", regn_no: "25BIT001", course_description: "24ITI005" },
-      { id: 20002, public_uuid: "u-25-004", regn_no: "25BIT001", course_description: "24ITI004" },
-    ]
+    STUDENTS
   );
   assert.strictEqual(matched[0].studentId, 20001);
-  assert.strictEqual(matched[0].courseCode, "24ITI005");
 }
 
 function testCaseInsensitiveCourseMatch() {
   const matched = matchSeatedStudentsToEnrollments(
     [{ regNo: "24BIT003", courseCode: "24iti004" }],
-    [
-      { id: 11221, public_uuid: "u", regn_no: "24bit003", course_description: "24ITI004" },
-      { id: 11359, public_uuid: "w", regn_no: "24bit003", course_description: "24ITI005" },
-    ]
+    STUDENTS
   );
   assert.strictEqual(matched[0].studentId, 11221);
 }
@@ -90,10 +110,7 @@ function testCaseInsensitiveCourseMatch() {
 function testAmbiguousWithoutCourseDoesNotGuess() {
   const matched = matchSeatedStudentsToEnrollments(
     [{ regNo: "24BIT003", courseCode: "" }],
-    [
-      { id: 11221, public_uuid: "a", regn_no: "24BIT003", course_description: "24ITI004" },
-      { id: 11359, public_uuid: "b", regn_no: "24BIT003", course_description: "24ITI005" },
-    ]
+    STUDENTS
   );
   assert.strictEqual(matched[0].studentId, null);
 }
@@ -118,13 +135,24 @@ function testMissingEnrollmentReturnsNullId() {
   assert.strictEqual(matched[0].studentId, null);
 }
 
-testMultiEnrollmentPicksSeatingCourse();
-testNeverPicksWrongCourseWhenSeatingIsIti004();
-testTwentyFiveBitUsesIti005();
+function testRowOrderDoesNotAffectResolution() {
+  const reversed = [...STUDENTS].reverse();
+  const matched = matchSeatedStudentsToEnrollments(
+    [{ regNo: "24BIT003", courseCode: "24ITI004" }],
+    reversed
+  );
+  assert.strictEqual(matched[0].studentId, 11221);
+}
+
+testSeatingPlan21ResolvesIti005();
+testSeatingPlan25ResolvesIti004();
+testSameRegnDifferentPlansDifferentStudentIds();
+testTwentyFiveBitUsesIti005Enrollment();
 testCaseInsensitiveCourseMatch();
 testAmbiguousWithoutCourseDoesNotGuess();
 testSingleEnrollmentFallbackWithoutCourse();
 testMissingEnrollmentReturnsNullId();
+testRowOrderDoesNotAffectResolution();
 
 console.log("✅ Attendance student enrollment resolution regression checks passed");
 process.exit(0);
