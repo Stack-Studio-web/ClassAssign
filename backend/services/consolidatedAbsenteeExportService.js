@@ -263,15 +263,27 @@ function validateFilters(filters = {}) {
 }
 
 /**
- * Resolve the course a student was seated for in a venue on an exam date/session.
- * Canonical source: seating_layout_json / seating_plan_students (same as attendance Excel export).
- * Enrollment course on students.course_description is only a fallback — a student may have
- * multiple enrollment rows, and attendance.student_id can point at the wrong one.
+ * Resolve seated courses + seating-plan slot metadata for a venue/exam.
+ * Returns { courseMap: Map(regn → courseCode), startTime, endTime, examType, selectedCourses }
  */
-async function buildVenueCourseMap(examId, venueId) {
+async function buildVenueCourseContext(examId, venueId) {
   const { resolveVenueStudentsWithCourses } = require("../utils/venueAttendanceCourses");
+  const empty = {
+    courseMap: new Map(),
+    startTime: null,
+    endTime: null,
+    examType: null,
+    selectedCourses: [],
+  };
   const [spvRows] = await db.query(
-    `SELECT spv.id, spv.seating_layout_json, spv.seating_plan_id
+    `SELECT
+       spv.id,
+       spv.seating_layout_json,
+       spv.seating_plan_id,
+       sp.exam_start_time,
+       sp.exam_end_time,
+       sp.exam_type,
+       sp.selected_courses
      FROM seating_plan_venues spv
      JOIN seating_plans sp ON sp.id = spv.seating_plan_id
      JOIN exams e ON e.id = ?
@@ -283,7 +295,7 @@ async function buildVenueCourseMap(examId, venueId) {
     [examId, venueId]
   );
   const spv = spvRows?.[0];
-  if (!spv) return new Map();
+  if (!spv) return empty;
 
   const spvId = spv.id;
   const planId = spv.seating_plan_id ?? spv.seatingplanid;
@@ -306,11 +318,200 @@ async function buildVenueCourseMap(examId, venueId) {
     arrangementRows: arrangementRows || [],
     planStudentRows: planStudentRows || [],
   });
-  return new Map(
+  const courseMap = new Map(
     (students || [])
       .filter((s) => s.regNo && s.courseCode)
       .map((s) => [String(s.regNo).trim().toUpperCase(), String(s.courseCode).trim()])
   );
+
+  let selectedCourses = [];
+  const rawSelected = spv.selected_courses ?? spv.selectedcourses;
+  if (rawSelected) {
+    try {
+      const parsed =
+        typeof rawSelected === "string" ? JSON.parse(rawSelected) : rawSelected;
+      if (Array.isArray(parsed)) {
+        selectedCourses = parsed
+          .map((c) =>
+            String(
+              typeof c === "string"
+                ? c
+                : c?.code ?? c?.courseCode ?? c?.course_code ?? ""
+            ).trim()
+          )
+          .filter(Boolean);
+      }
+    } catch {
+      selectedCourses = [];
+    }
+  }
+
+  const trimTime = (t) => {
+    if (t == null || t === "") return null;
+    const s = String(t).trim();
+    const m = s.match(/^(\d{1,2}):(\d{2})/);
+    if (m) return `${m[1].padStart(2, "0")}:${m[2]}`;
+    return s.slice(0, 5) || null;
+  };
+
+  return {
+    courseMap,
+    startTime: trimTime(spv.exam_start_time ?? spv.examstarttime),
+    endTime: trimTime(spv.exam_end_time ?? spv.examendtime),
+    examType: spv.exam_type ?? spv.examtype ?? null,
+    selectedCourses,
+  };
+}
+
+/** @deprecated use buildVenueCourseContext */
+async function buildVenueCourseMap(examId, venueId) {
+  const ctx = await buildVenueCourseContext(examId, venueId);
+  return ctx.courseMap;
+}
+
+function normalizeExamTypeKey(raw) {
+  const s = String(raw || "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+  if (!s) return "";
+  if (s.includes("CAT1") || s === "CATI") return "CAT1";
+  if (s.includes("CAT2") || s === "CATII") return "CAT2";
+  if (s.includes("MODEL")) return "MODEL";
+  if (s.includes("SEMESTER") || s.includes("SUMMATIVE") || s === "SEM") return "SEM";
+  if (s.includes("RETEST")) return "RETEST";
+  return s;
+}
+
+/**
+ * Validate that a course is on the official timetable for this exam slot.
+ * Source of truth: timetable (date + session + course + batch [+ time when available]).
+ */
+async function isCourseScheduledOnTimetable(
+  {
+    courseCode,
+    examDate,
+    session,
+    batchId,
+    batchName,
+    startTime,
+    endTime,
+    examType,
+  },
+  scheduleCache
+) {
+  const code = String(courseCode || "").trim().toUpperCase();
+  const dateKey = String(examDate || "").slice(0, 10);
+  const sess = normalizeSession(session);
+  if (!code || !/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return false;
+
+  const cacheKey = [
+    code,
+    dateKey,
+    sess,
+    batchId || "",
+    String(batchName || "").trim().toUpperCase(),
+    startTime || "",
+    endTime || "",
+    normalizeExamTypeKey(examType),
+  ].join("|");
+  if (scheduleCache.has(cacheKey)) return scheduleCache.get(cacheKey);
+
+  const params = [dateKey, code];
+  let sql = `
+    SELECT t.id, t.session, t.start_time, t.end_time, t.exam_type, t.batch_id, t.batch,
+           b.name AS batch_name
+    FROM timetable t
+    LEFT JOIN batches b ON b.id = t.batch_id
+    WHERE t.date = ?
+      AND UPPER(TRIM(t.course_code)) = UPPER(TRIM(?))
+  `;
+
+  // Prefer exact time-window match when seating plan times are known.
+  if (startTime && endTime) {
+    sql += ` AND to_char(t.start_time, 'HH24:MI') = ? AND to_char(t.end_time, 'HH24:MI') = ?`;
+    params.push(startTime, endTime);
+  }
+
+  const [rows] = await db.query(sql, params);
+  const candidates = rows || [];
+
+  const matched = candidates.some((row) => {
+    const rowSess = normalizeSession(row.session);
+    if (sess && sess !== "—" && row.session != null && String(row.session).trim() !== "") {
+      if (rowSess !== sess) return false;
+    }
+
+    // Batch: if timetable row has a batch, student must match it.
+    const tBatchId = row.batch_id ?? row.batchid ?? null;
+    const tBatchName = String(
+      row.batch_name ?? row.batchname ?? row.batch ?? ""
+    ).trim();
+    if (tBatchId != null || tBatchName) {
+      if (tBatchId != null && batchId != null && Number(tBatchId) === Number(batchId)) {
+        // ok
+      } else if (
+        tBatchName &&
+        batchName &&
+        tBatchName.toUpperCase() === String(batchName).trim().toUpperCase()
+      ) {
+        // ok
+      } else if (tBatchId != null || tBatchName) {
+        return false;
+      }
+    }
+
+    // Exam type: when both sides present, require normalized match.
+    const rowType = normalizeExamTypeKey(row.exam_type ?? row.examtype);
+    const wantType = normalizeExamTypeKey(examType);
+    if (rowType && wantType && rowType !== wantType) return false;
+
+    return true;
+  });
+
+  // If exact time filter returned nothing, retry without time (date+course+session+batch).
+  if (!matched && startTime && endTime) {
+    const [fallbackRows] = await db.query(
+      `SELECT t.id, t.session, t.exam_type, t.batch_id, t.batch,
+              b.name AS batch_name
+       FROM timetable t
+       LEFT JOIN batches b ON b.id = t.batch_id
+       WHERE t.date = ?
+         AND UPPER(TRIM(t.course_code)) = UPPER(TRIM(?))`,
+      [dateKey, code]
+    );
+    const ok = (fallbackRows || []).some((row) => {
+      const rowSess = normalizeSession(row.session);
+      if (sess && sess !== "—" && row.session != null && String(row.session).trim() !== "") {
+        if (rowSess !== sess) return false;
+      }
+      const tBatchId = row.batch_id ?? row.batchid ?? null;
+      const tBatchName = String(
+        row.batch_name ?? row.batchname ?? row.batch ?? ""
+      ).trim();
+      if (tBatchId != null || tBatchName) {
+        if (tBatchId != null && batchId != null && Number(tBatchId) === Number(batchId)) {
+          /* ok */
+        } else if (
+          tBatchName &&
+          batchName &&
+          tBatchName.toUpperCase() === String(batchName).trim().toUpperCase()
+        ) {
+          /* ok */
+        } else {
+          return false;
+        }
+      }
+      const rowType = normalizeExamTypeKey(row.exam_type ?? row.examtype);
+      const wantType = normalizeExamTypeKey(examType);
+      if (rowType && wantType && rowType !== wantType) return false;
+      return true;
+    });
+    scheduleCache.set(cacheKey, ok);
+    return ok;
+  }
+
+  scheduleCache.set(cacheKey, matched);
+  return matched;
 }
 
 async function lookupCourseTitle(courseCode, titleCache) {
@@ -335,7 +536,8 @@ async function lookupCourseTitle(courseCode, titleCache) {
 /**
  * Raw absentee rows for consolidated export.
  * Course comes from seating (exam session truth), not from possibly-wrong enrollment row.
- * One physical mark per (regn, exam, venue) — prevents duplicate courses from multi-enrollment student rows.
+ * Only include courses that exist on the official timetable for that date/session/batch.
+ * One physical mark per (regn, exam, venue).
  */
 async function fetchAbsentStudentRows(user, role, filters) {
   const { department, dateFrom, dateTo, courseCode, batchUuid } = validateFilters(filters);
@@ -363,6 +565,7 @@ async function fetchAbsentStudentRows(user, role, filters) {
        st.student_name,
        st.course_description AS enrollment_course,
        st.course_name AS enrollment_title,
+       st.batch_id AS student_batch_id,
        ${PROGRAM_FROM_REGN_SQL("st")} AS student_department,
        b.public_uuid AS batch_uuid,
        b.name AS batch_name,
@@ -399,8 +602,9 @@ async function fetchAbsentStudentRows(user, role, filters) {
     queryParams
   );
 
-  const venueCourseCache = new Map();
+  const venueContextCache = new Map();
   const titleCache = new Map();
+  const scheduleCache = new Map();
   // One absentee per physical exam+venue seat occupancy (regn), not per enrollment row.
   const seenPhysical = new Set();
   const out = [];
@@ -417,18 +621,25 @@ async function fetchAbsentStudentRows(user, role, filters) {
     if (seenPhysical.has(physicalKey)) continue;
 
     const cacheKey = `${examId}::${venueId}`;
-    if (!venueCourseCache.has(cacheKey)) {
+    if (!venueContextCache.has(cacheKey)) {
       try {
-        venueCourseCache.set(cacheKey, await buildVenueCourseMap(examId, venueId));
+        venueContextCache.set(cacheKey, await buildVenueCourseContext(examId, venueId));
       } catch (err) {
         console.error(
           "consolidated export seating course map failed:",
           err?.message || err
         );
-        venueCourseCache.set(cacheKey, new Map());
+        venueContextCache.set(cacheKey, {
+          courseMap: new Map(),
+          startTime: null,
+          endTime: null,
+          examType: null,
+          selectedCourses: [],
+        });
       }
     }
-    const seatedMap = venueCourseCache.get(cacheKey);
+    const venueCtx = venueContextCache.get(cacheKey);
+    const seatedMap = venueCtx.courseMap;
     const enrollmentCourse = String(
       r.enrollment_course ?? r.enrollmentcourse ?? ""
     ).trim();
@@ -436,11 +647,66 @@ async function fetchAbsentStudentRows(user, role, filters) {
       seatedMap?.get(regn.toUpperCase()) ||
       seatedMap?.get(regn) ||
       "";
-    const course = seatedCourse || enrollmentCourse;
-    if (!course) continue;
+
+    // Prefer seating course. Do not invent a course from enrollment when seating
+    // has courses for this venue but this regn is not among them with that course.
+    let course = seatedCourse;
+    if (!course) {
+      // Enrollment fallback only if that course was actually selected/allotted
+      // for this seating plan, OR seating had no course metadata at all.
+      const selected = (venueCtx.selectedCourses || []).map((c) =>
+        String(c).trim().toUpperCase()
+      );
+      const seatingHasAnyCourse = seatedMap && seatedMap.size > 0;
+      if (
+        enrollmentCourse &&
+        (!seatingHasAnyCourse ||
+          selected.includes(enrollmentCourse.toUpperCase()))
+      ) {
+        course = enrollmentCourse;
+      }
+    }
+    if (!course) {
+      seenPhysical.add(physicalKey);
+      continue;
+    }
 
     if (courseFilter && course.toUpperCase() !== courseFilter) {
-      // Seated course is fixed per regn+venue; later enrollment rows won't change it.
+      seenPhysical.add(physicalKey);
+      continue;
+    }
+
+    const examDate = r.exam_date ?? r.examdate;
+    const session = normalizeSession(r.exam_session ?? r.examsession);
+    const batchId = r.student_batch_id ?? r.studentbatchid ?? null;
+    const batchName = r.batch_name ?? r.batchname ?? null;
+    const seatingExamType = r.seating_exam_type ?? r.seatingexamtype ?? venueCtx.examType;
+
+    let scheduled = false;
+    try {
+      scheduled = await isCourseScheduledOnTimetable(
+        {
+          courseCode: course,
+          examDate,
+          session,
+          batchId,
+          batchName,
+          startTime: venueCtx.startTime,
+          endTime: venueCtx.endTime,
+          examType: seatingExamType,
+        },
+        scheduleCache
+      );
+    } catch (err) {
+      console.error(
+        "consolidated export timetable validation failed:",
+        err?.message || err
+      );
+      scheduled = false;
+    }
+
+    if (!scheduled) {
+      // Invalid for this exam slot — do not export (attendance row is left intact).
       seenPhysical.add(physicalKey);
       continue;
     }
@@ -469,13 +735,13 @@ async function fetchAbsentStudentRows(user, role, filters) {
       courseCode: course,
       courseTitle,
       batchUuid: r.batch_uuid ?? r.batchuuid ?? null,
-      batchName: r.batch_name ?? r.batchname ?? null,
-      examDate: r.exam_date ?? r.examdate,
-      session: normalizeSession(r.exam_session ?? r.examsession),
+      batchName,
+      examDate,
+      session,
       examType: deriveExamType(
         r.exam_name ?? r.examname,
         r.exam_code ?? r.examcode,
-        r.seating_exam_type ?? r.seatingexamtype
+        seatingExamType
       ),
       semesterType: r.semester_type ?? r.semestertype ?? null,
       semesterLabel: r.semester_label ?? r.semesterlabel ?? null,
