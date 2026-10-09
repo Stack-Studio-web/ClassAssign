@@ -625,6 +625,27 @@ export default function AddVenue() {
     [filteredVenues]
   );
 
+  /** Venues with Use for Allotment enabled in the current block scope (not affected by search/sort). */
+  const allotmentSelectedVenues = useMemo(() => {
+    return [...venuesInSelectedScope]
+      .filter((v) => v.useForAllotment === true)
+      .sort((a, b) =>
+        String(a.name || "").localeCompare(String(b.name || ""), undefined, {
+          numeric: true,
+          sensitivity: "base",
+        })
+      );
+  }, [venuesInSelectedScope]);
+
+  const allotmentSelectedCapacity = useMemo(
+    () =>
+      allotmentSelectedVenues.reduce(
+        (sum, v) => sum + (Number(v.capacity) || 0),
+        0
+      ),
+    [allotmentSelectedVenues]
+  );
+
   const searchActive = searchQuery.trim().length > 0;
 
   const unassignedVenueCount = useMemo(
@@ -1490,6 +1511,63 @@ export default function AddVenue() {
                     : `${blockScopeSummary.totalVenues.toLocaleString()} venues · ${blockScopeSummary.totalCapacity.toLocaleString()} capacity across campus`,
                 }
               )}
+
+          {/* Selected for allotment — explicit list of checked venues */}
+          <div className="bg-white rounded-2xl border border-blue-100 shadow-sm p-4 md:p-5">
+            <div className="flex flex-wrap items-start justify-between gap-2 mb-3">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-900">
+                  Selected for Allotment
+                </h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  {filterBlock
+                    ? `Venues in ${selectedBlockMeta.label} with “Use for Allotment” enabled`
+                    : "Venues across campus with “Use for Allotment” enabled"}
+                </p>
+              </div>
+              <p className="text-sm font-medium text-blue-700 tabular-nums">
+                {allotmentSelectedVenues.length.toLocaleString()}{" "}
+                {allotmentSelectedVenues.length === 1 ? "venue" : "venues"}
+                {allotmentSelectedCapacity > 0
+                  ? ` · ${allotmentSelectedCapacity.toLocaleString()} seats`
+                  : ""}
+              </p>
+            </div>
+            {allotmentSelectedVenues.length === 0 ? (
+              <p className="text-sm text-gray-500">
+                No venues selected for allotment
+                {filterBlock ? ` in ${selectedBlockMeta.label}` : ""}. Enable{" "}
+                <span className="font-medium text-gray-700">Use for Allotment</span> on
+                a venue card to add it here.
+              </p>
+            ) : (
+              <ul className="flex flex-wrap gap-2" aria-label="Venues selected for allotment">
+                {allotmentSelectedVenues.map((v) => (
+                  <li key={v.uuid}>
+                    <span
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-800"
+                      title={[
+                        formatBlockLabel(v.blockName, v.blockCode),
+                        formatVenueType(v.type),
+                        v.capacity != null
+                          ? `Capacity ${Number(v.capacity).toLocaleString()}`
+                          : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    >
+                      {v.name || v.code || "Venue"}
+                      {v.capacity != null && v.capacity !== "" ? (
+                        <span className="font-medium text-blue-600 tabular-nums">
+                          · {Number(v.capacity).toLocaleString()}
+                        </span>
+                      ) : null}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
 
           {filteredVenues.length === 0 ? (
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center">
