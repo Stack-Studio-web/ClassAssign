@@ -144,6 +144,57 @@ function testRowOrderDoesNotAffectResolution() {
   assert.strictEqual(matched[0].studentId, 11221);
 }
 
+/**
+ * Future integrity: save/submit stores students.id from seating match;
+ * export reads course via attendance.student_id → students (no remapping).
+ * Exam A (Plan 21) and Exam B (Plan 25) must keep distinct enrollments.
+ */
+function testFutureMarkingToExportChain() {
+  const byId = Object.fromEntries(STUDENTS.map((s) => [s.id, s]));
+
+  // Simulate mark → INSERT attendance.student_id (no course column on attendance).
+  function simulateSave(seatingCourse) {
+    const matched = matchSeatedStudentsToEnrollments(
+      [{ regNo: "24BIT003", courseCode: seatingCourse }],
+      STUDENTS
+    );
+    assert.ok(matched[0].studentId, "must resolve an enrollment before save");
+    return {
+      student_id: matched[0].studentId,
+      studentUuid: matched[0].publicUuid,
+    };
+  }
+
+  // Simulate export JOIN students st ON st.id = att.student_id
+  function simulateExportCourse(attendanceRow) {
+    const st = byId[attendanceRow.student_id];
+    assert.ok(st, "attendance.student_id must exist in students");
+    return {
+      courseCode: st.course_description,
+      courseTitle: st.course_description === "24ITI005" ? "OPERATING SYSTEMS" : "CLOUD ARCHITECTURE",
+      regnNo: st.regn_no,
+    };
+  }
+
+  const examA = simulateSave("24ITI005"); // Plan 21 / Exam A
+  const examB = simulateSave("24ITI004"); // Plan 25 / Exam B
+
+  assert.strictEqual(examA.student_id, 11359);
+  assert.strictEqual(examB.student_id, 11221);
+  assert.notStrictEqual(examA.student_id, examB.student_id);
+  assert.notStrictEqual(examA.studentUuid, examB.studentUuid);
+
+  const exportA = simulateExportCourse(examA);
+  const exportB = simulateExportCourse(examB);
+
+  assert.strictEqual(exportA.courseCode, "24ITI005");
+  assert.strictEqual(exportA.courseTitle, "OPERATING SYSTEMS");
+  assert.strictEqual(exportB.courseCode, "24ITI004");
+  assert.strictEqual(exportB.courseTitle, "CLOUD ARCHITECTURE");
+  assert.strictEqual(exportA.regnNo, "24BIT003");
+  assert.strictEqual(exportB.regnNo, "24BIT003");
+}
+
 testSeatingPlan21ResolvesIti005();
 testSeatingPlan25ResolvesIti004();
 testSameRegnDifferentPlansDifferentStudentIds();
@@ -153,6 +204,7 @@ testAmbiguousWithoutCourseDoesNotGuess();
 testSingleEnrollmentFallbackWithoutCourse();
 testMissingEnrollmentReturnsNullId();
 testRowOrderDoesNotAffectResolution();
+testFutureMarkingToExportChain();
 
 console.log("✅ Attendance student enrollment resolution regression checks passed");
 process.exit(0);
