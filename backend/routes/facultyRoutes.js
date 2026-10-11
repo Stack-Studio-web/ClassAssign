@@ -213,6 +213,55 @@ router.put("/:uuid/max-classrooms", sessionAuth, checkRole(["admin", "faculty_in
   }
 });
 
+/**
+ * PUT /faculty/:uuid
+ * Update faculty details (name, department, email, max classrooms, availability).
+ */
+router.put("/:uuid", sessionAuth, checkRole(["admin", "faculty_incharge"]), resolveEntity(TABLE.faculty), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const name = body.name;
+    const department = body.department;
+    const email = body.email != null ? String(body.email).trim().toLowerCase() : undefined;
+    const maxClassrooms =
+      body.maxClassrooms != null
+        ? body.maxClassrooms
+        : body.max_classrooms != null
+          ? body.max_classrooms
+          : undefined;
+    const isAvailable =
+      typeof body.isAvailable === "boolean"
+        ? body.isAvailable
+        : typeof body.is_available === "boolean"
+          ? body.is_available
+          : undefined;
+
+    if (email != null && !isValidKctEmail(email)) {
+      return Api.validationError(res, "Enter a valid college email (@kct.ac.in)");
+    }
+
+    const result = await Faculty.updateDetails(
+      req.internalId,
+      { name, department, email, maxClassrooms, isAvailable },
+      await resolveOwnerOpts(req)
+    );
+
+    if (!result.ok) {
+      if (result.code === "NOT_FOUND") {
+        return Api.notFound(res, result.message || "Faculty not found or not allowed");
+      }
+      if (result.code === "DUPLICATE_EMAIL") {
+        return Api.conflict(res, "DUPLICATE_EMAIL", result.message);
+      }
+      return Api.validationError(res, result.message || "Invalid faculty details");
+    }
+
+    return Api.success(res, "Faculty details updated", result.faculty);
+  } catch (err) {
+    return Api.serverError(res, err, "PUT /faculty/:uuid");
+  }
+});
+
 router.put("/:uuid/availability", sessionAuth, checkRole(["admin", "faculty_incharge"]), resolveEntity(TABLE.faculty), async (req, res) => {
   try {
     const { isAvailable } = req.body || {};

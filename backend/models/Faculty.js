@@ -172,6 +172,145 @@ const Faculty = {
     return (result.affectedRows ?? 0) > 0;
   },
 
+  /**
+   * Update faculty profile fields and keep linked users row in sync by email.
+   * Returns { ok, code?, message?, faculty? }.
+   */
+  updateDetails: async (
+    id,
+    { name, department, email, maxClassrooms, isAvailable } = {},
+    opts = {}
+  ) => {
+    const { sql: ownerSql, params: ownerParams } = ownerAndFromOpts(opts);
+    const [match] = await db.query(
+      `SELECT id, name, department, email, max_classrooms, is_available
+       FROM faculty
+       WHERE id = ? AND ${ACTIVE_ONLY_SQL}${ownerSql}`,
+      [id, ...ownerParams]
+    );
+    if (!Array.isArray(match) || match.length === 0) {
+      return { ok: false, code: "NOT_FOUND", message: "Faculty not found or not allowed" };
+    }
+
+    const current = match[0];
+    const nextName =
+      name != null ? String(name).trim() : String(current.name || "").trim();
+    const nextDepartment =
+      department !== undefined
+        ? department == null || String(department).trim() === ""
+          ? null
+          : String(department).trim()
+        : current.department ?? null;
+    const nextEmail = normalizeFacultyEmail(
+      email != null ? email : current.email
+    );
+    const nextMax =
+      maxClassrooms != null
+        ? Number(maxClassrooms)
+        : Number(current.max_classrooms ?? 1) || 1;
+    const nextAvailable =
+      typeof isAvailable === "boolean"
+        ? isAvailable
+        : current.is_available !== false;
+
+    if (!nextName) {
+      return { ok: false, code: "VALIDATION", message: "Name is required" };
+    }
+    if (!nextEmail) {
+      return { ok: false, code: "VALIDATION", message: "Email is required" };
+    }
+    if (!Number.isFinite(nextMax) || nextMax < 1 || nextMax > 20) {
+      return {
+        ok: false,
+        code: "VALIDATION",
+        message: "max_classrooms must be between 1 and 20",
+      };
+    }
+
+    const oldEmail = normalizeFacultyEmail(current.email);
+    if (nextEmail !== oldEmail) {
+      const [dupFaculty] = await db.query(
+        `SELECT id FROM faculty
+         WHERE LOWER(TRIM(email)) = ?
+           AND id <> ?
+           AND COALESCE(is_active, TRUE) = TRUE
+         LIMIT 1`,
+        [nextEmail, id]
+      );
+      if (Array.isArray(dupFaculty) && dupFaculty.length > 0) {
+        return {
+          ok: false,
+          code: "DUPLICATE_EMAIL",
+          message: "Another faculty already uses this email.",
+        };
+      }
+      const [dupUser] = await db.query(
+        `SELECT id FROM users
+         WHERE LOWER(TRIM(email)) = ?
+           AND LOWER(TRIM(email)) <> ?
+         LIMIT 1`,
+        [nextEmail, oldEmail]
+      );
+      if (Array.isArray(dupUser) && dupUser.length > 0) {
+        return {
+          ok: false,
+          code: "DUPLICATE_EMAIL",
+          message: "A user account with this email already exists.",
+        };
+      }
+    }
+
+    const conn = await db.getConnection();
+    try {
+      await conn.beginTransaction();
+      await conn.query(
+        `UPDATE faculty
+         SET name = ?,
+             department = ?,
+             email = ?,
+             max_classrooms = ?,
+             is_available = ?
+         WHERE id = ?
+           AND ${ACTIVE_ONLY_SQL}`,
+        [nextName, nextDepartment, nextEmail, nextMax, nextAvailable, id]
+      );
+
+      if (oldEmail) {
+        await conn.query(
+          `UPDATE users
+           SET email = ?,
+               department = COALESCE(?, department)
+           WHERE LOWER(TRIM(email)) = ?`,
+          [nextEmail, nextDepartment, oldEmail]
+        );
+      }
+
+      await conn.commit();
+      return {
+        ok: true,
+        faculty: {
+          name: nextName,
+          department: nextDepartment,
+          email: nextEmail,
+          maxClassrooms: nextMax,
+          isAvailable: nextAvailable,
+        },
+      };
+    } catch (err) {
+      await conn.rollback();
+      if (err.code === "ER_DUP_ENTRY" || err.code === "23505") {
+        return {
+          ok: false,
+          code: "DUPLICATE_EMAIL",
+          message: "Faculty or user with this email already exists.",
+        };
+      }
+      throw err;
+    } finally {
+      conn.release();
+    }
+  },
+
   updateAvailability: async (id, isAvailable, opts = {}) => {
     const { sql: ownerSql, params: ownerParams } = ownerAndFromOpts(opts);
     const [match] = await db.query(

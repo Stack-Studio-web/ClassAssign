@@ -61,14 +61,6 @@ function formatDateSlash(dateValue) {
   return `${d}/${m}/${y}`;
 }
 
-function sanitizeFilename(name) {
-  return String(name || "Hallora_Faculty_Invigilation")
-    .replace(/[^A-Za-z0-9._-]+/g, "_")
-    .replace(/_+/g, "_")
-    .replace(/^_|_$/g, "")
-    .slice(0, 120);
-}
-
 const emptyFilters = {
   semester: "EVEN",
   academicYearUuid: "",
@@ -260,10 +252,6 @@ export default function FacultyInvigilationExport() {
     : "—";
 
   const showPreview = preview && !preview.empty;
-
-  const downloadName = sanitizeFilename(
-    `Hallora_Faculty_Invigilation_${filters.examType || "Schedule"}_${ayLabel}_${filters.dateFrom}_to_${filters.dateTo}`
-  );
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -533,18 +521,9 @@ export default function FacultyInvigilationExport() {
                   {" · "}
                   Semester: <strong>{semesterLabel}</strong>
                 </p>
-                <p className="text-sm mt-1">
-                  Category: <strong>{filters.examType || "All"}</strong>
-                  {" · "}
-                  Date Range:{" "}
-                  <strong>
-                    {formatDateSlash(filters.dateFrom)} – {formatDateSlash(filters.dateTo)}
-                  </strong>
-                </p>
                 <h2 className="text-lg font-bold mt-4 underline">
                   Faculty Invigilation Schedule
                 </h2>
-                <p className="text-xs text-gray-400 mt-1 print:hidden">{downloadName}</p>
               </div>
 
               {(preview.schedule || []).map((day) => (

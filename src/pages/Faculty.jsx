@@ -24,7 +24,13 @@ export default function Faculty() {
 
   // Edit States
   const [editingId, setEditingId] = useState(null);
-  const [editValue, setEditValue] = useState(0);
+  const [editForm, setEditForm] = useState({
+    name: "",
+    department: "",
+    email: "",
+    maxClassrooms: 1,
+    isAvailable: true,
+  });
   const [updatingId, setUpdatingId] = useState(null);
 
   // Import/Status States
@@ -105,42 +111,86 @@ export default function Faculty() {
   /* ================= EDIT LOGIC ================= */
   const handleEditClick = (f) => {
     setEditingId(f.uuid);
-    setEditValue(f.maxClassrooms ?? f.max_classrooms ?? 0);
+    setEditForm({
+      name: f.name || "",
+      department: f.department || "",
+      email: f.email || "",
+      maxClassrooms: Number(f.maxClassrooms ?? f.max_classrooms ?? 1) || 1,
+      isAvailable: f.isAvailable !== false,
+    });
+    setMessage("");
   };
 
-  const handleUpdateMaxClassrooms = async (id) => {
+  const handleEditFormChange = (field, value) => {
+    setEditForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleCancelEdit = () => {
+    setEditingId(null);
+    setMessage("");
+  };
+
+  const handleSaveFacultyDetails = async (id) => {
+    const name = editForm.name.trim();
+    const email = editForm.email.trim().toLowerCase();
+    const maxClassrooms = Number(editForm.maxClassrooms);
+
+    if (!name || !email) {
+      setMessage("⚠️ Name and Email are required");
+      toast.error("Name and Email are required");
+      return;
+    }
+    if (!/^[^\s@]+@kct\.ac\.in$/i.test(email)) {
+      setMessage("⚠️ Enter valid college email (@kct.ac.in)");
+      toast.error("Enter a valid college email (@kct.ac.in)");
+      return;
+    }
+    if (!Number.isFinite(maxClassrooms) || maxClassrooms < 1 || maxClassrooms > 20) {
+      setMessage("⚠️ Max classrooms must be between 1 and 20");
+      toast.error("Max classrooms must be between 1 and 20");
+      return;
+    }
+
+    setUpdatingId(id);
     try {
-      await api.put(`/faculty/${id}/max-classrooms`, {
-        max_classrooms: editValue,
+      await api.put(`/faculty/${id}`, {
+        name,
+        department: editForm.department.trim(),
+        email,
+        maxClassrooms,
+        isAvailable: editForm.isAvailable !== false,
       });
-      setMessage("✅ Max classrooms updated");
+      toast.success("Faculty details updated");
+      setMessage("✅ Faculty details updated");
       setEditingId(null);
-      fetchFaculty();
-    } catch {
-      setMessage("❌ Update failed");
+      await fetchFaculty();
+      await fetchFacultyStats();
+    } catch (err) {
+      toast.error(getApiError(err, "Failed to update faculty"), getApiErrorTitle(err, "Update failed"));
+      setMessage(`❌ ${getApiError(err, "Failed to update faculty")}`);
+    } finally {
+      setUpdatingId(null);
     }
   };
 
-  const handleAvailableChange = (f, checked) => {
+  const handleAvailableChange = async (f, checked) => {
+    if (editingId === f.uuid) {
+      handleEditFormChange("isAvailable", checked);
+      return;
+    }
     setFaculty((prev) =>
       prev.map((row) =>
         row.uuid === f.uuid ? { ...row, isAvailable: checked } : row
       )
     );
-  };
-
-  const handleUpdateFaculty = async (f) => {
     setUpdatingId(f.uuid);
     try {
-      await api.put(`/faculty/${f.uuid}/availability`, {
-        isAvailable: f.isAvailable !== false,
-      });
-      toast.success("Faculty updated successfully");
-      setMessage("✅ Faculty updated successfully");
+      await api.put(`/faculty/${f.uuid}/availability`, { isAvailable: checked });
+      toast.success(checked ? "Marked available" : "Marked unavailable");
       await fetchFaculty();
     } catch (err) {
-      toast.error(getApiError(err, "Failed to update faculty"), getApiErrorTitle(err, "Update failed"));
-      setMessage("❌ Failed to update faculty");
+      toast.error(getApiError(err, "Failed to update availability"), getApiErrorTitle(err, "Update failed"));
+      await fetchFaculty();
     } finally {
       setUpdatingId(null);
     }
@@ -564,13 +614,65 @@ export default function Faculty() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {filteredFaculty.map((f) => (
+                  {filteredFaculty.map((f) => {
+                    const isEditing = editingId === f.uuid;
+                    return (
                     <tr key={f.uuid} className="hover:bg-gray-50/50 transition-colors">
-                      <td className="px-4 md:px-6 py-3 md:py-4 font-medium text-gray-800">{f.name}</td>
-                      <td className="px-4 md:px-6 py-3 md:py-4 text-gray-600">{f.department || "—"}</td>
-                      <td className="px-4 md:px-6 py-3 md:py-4 text-gray-500 text-sm hidden sm:table-cell">{f.email}</td>
+                      <td className="px-4 md:px-6 py-3 md:py-4 font-medium text-gray-800">
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            value={editForm.name}
+                            onChange={(e) => handleEditFormChange("name", e.target.value)}
+                            className="w-full min-w-[140px] h-9 px-2 rounded-lg border border-gray-200 text-sm"
+                            aria-label="Faculty name"
+                          />
+                        ) : (
+                          f.name
+                        )}
+                      </td>
+                      <td className="px-4 md:px-6 py-3 md:py-4 text-gray-600">
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            value={editForm.department}
+                            onChange={(e) => handleEditFormChange("department", e.target.value)}
+                            className="w-full min-w-[100px] h-9 px-2 rounded-lg border border-gray-200 text-sm"
+                            aria-label="Department"
+                          />
+                        ) : (
+                          f.department || "—"
+                        )}
+                      </td>
+                      <td className="px-4 md:px-6 py-3 md:py-4 text-gray-500 text-sm hidden sm:table-cell">
+                        {isEditing ? (
+                          <input
+                            type="email"
+                            value={editForm.email}
+                            onChange={(e) => handleEditFormChange("email", e.target.value)}
+                            className="w-full min-w-[180px] h-9 px-2 rounded-lg border border-gray-200 text-sm"
+                            aria-label="Email"
+                          />
+                        ) : (
+                          f.email
+                        )}
+                      </td>
                       <td className="px-4 md:px-6 py-3 md:py-4 text-center">
-                        <span className="font-bold text-blue-800 bg-blue-100 px-2 py-1 rounded-lg text-xs">{f.maxClassrooms ?? f.max_classrooms ?? 0}</span>
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min={1}
+                            max={20}
+                            value={editForm.maxClassrooms}
+                            onChange={(e) =>
+                              handleEditFormChange("maxClassrooms", Number(e.target.value))
+                            }
+                            className="w-14 h-9 px-2 rounded-lg border border-gray-200 text-center text-sm mx-auto"
+                            aria-label="Max classrooms"
+                          />
+                        ) : (
+                          <span className="font-bold text-blue-800 bg-blue-100 px-2 py-1 rounded-lg text-xs">{f.maxClassrooms ?? f.max_classrooms ?? 0}</span>
+                        )}
                       </td>
                       <td className="px-4 md:px-6 py-3 md:py-4 text-center">
                         <span className="font-bold text-orange-700 bg-orange-100 px-2 py-1 rounded-lg text-xs">{f.allocation ?? 0}</span>
@@ -588,7 +690,11 @@ export default function Faculty() {
                         <label className="inline-flex items-center gap-2 cursor-pointer select-none">
                           <input
                             type="checkbox"
-                            checked={f.isAvailable !== false}
+                            checked={
+                              isEditing
+                                ? editForm.isAvailable !== false
+                                : f.isAvailable !== false
+                            }
                             onChange={(e) => handleAvailableChange(f, e.target.checked)}
                             disabled={updatingId === f.uuid}
                             aria-label={`${f.name} available`}
@@ -598,34 +704,35 @@ export default function Faculty() {
                         </label>
                       </td>
                       <td className="px-4 md:px-6 py-3 md:py-4">
-                        {editingId === f.uuid ? (
+                        {isEditing ? (
                           <div className="flex flex-wrap items-center gap-2">
-                            <input
-                              type="number"
-                              value={editValue}
-                              onChange={(e) => setEditValue(Number(e.target.value))}
-                              className="w-14 h-9 px-2 rounded-lg border border-gray-200 text-center text-sm"
-                            />
-                            <button type="button" onClick={() => handleUpdateMaxClassrooms(f.uuid)} className="px-3 py-1.5 rounded-xl bg-green-600 text-white text-sm font-medium">Save</button>
-                            <button type="button" onClick={() => setEditingId(null)} className="px-3 py-1.5 rounded-xl bg-gray-400 text-white text-sm font-medium">Cancel</button>
+                            <button
+                              type="button"
+                              disabled={updatingId === f.uuid}
+                              onClick={() => handleSaveFacultyDetails(f.uuid)}
+                              className="px-3 py-1.5 rounded-xl bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm font-medium"
+                            >
+                              {updatingId === f.uuid ? "Saving..." : "Save"}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={updatingId === f.uuid}
+                              onClick={handleCancelEdit}
+                              className="px-3 py-1.5 rounded-xl bg-gray-400 hover:bg-gray-500 disabled:opacity-50 text-white text-sm font-medium"
+                            >
+                              Cancel
+                            </button>
                           </div>
                         ) : (
                           <div className="flex flex-wrap gap-2">
                             <button type="button" onClick={() => handleEditClick(f)} className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium">Edit</button>
-                            <button
-                              type="button"
-                              disabled={updatingId === f.uuid || loading}
-                              onClick={() => handleUpdateFaculty(f)}
-                              className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium"
-                            >
-                              {updatingId === f.uuid ? "Updating..." : "Update"}
-                            </button>
                             <button type="button" disabled={deletingId === f.uuid || loading} onClick={() => handleDelete(f.uuid)} className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium">{deletingId === f.uuid ? "Removing..." : "Remove"}</button>
                           </div>
                         )}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
