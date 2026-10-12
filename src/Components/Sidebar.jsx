@@ -36,7 +36,8 @@ const ADMIN_NAV = [
   { to: "/report", label: "Reports", icon: NewspaperIcon },
   { to: "/report/completed", label: "Completed Reports", icon: CheckCircleIcon },
   { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
-  { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
+  { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon, end: true },
+  { to: "/timetable/completed", label: "Completed Timetable", icon: CheckCircleIcon },
   { to: "/Hall", label: "Hall Allotment", icon: BuildingOfficeIcon },
   { to: "/admin/notifications", label: "Hall Notifications", icon: BellAlertIcon },
   { to: "/admin/attendance/transfers", label: "Faculty Requests", icon: ArrowsRightLeftIcon },
@@ -60,7 +61,8 @@ const FACULTY_NAV = [
   { to: "/faculty", label: "Faculty Management", icon: UserPlusIcon },
   { to: "/report", label: "Reports", icon: NewspaperIcon },
   { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
-  { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
+  { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon, end: true },
+  { to: "/timetable/completed", label: "Completed Timetable", icon: CheckCircleIcon },
   { to: "/admin/notifications", label: "Hall Notifications", icon: BellAlertIcon },
   { to: "/admin/attendance/transfers", label: "Mutual Faculty Requests", icon: ArrowsRightLeftIcon },
   { to: "/attendance", label: "Active Attendance", icon: UserGroupIcon },
@@ -74,7 +76,8 @@ const HOD_NAV = [
   { to: "/student/browser", label: "Student Browser", icon: TableCellsIcon },
   { to: "/report", label: "Reports", icon: NewspaperIcon },
   { to: "/report/completed", label: "Completed Reports", icon: CheckCircleIcon },
-  { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon },
+  { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon, end: true },
+  { to: "/timetable/completed", label: "Completed Timetable", icon: CheckCircleIcon },
   { to: "/attendance", label: "Active Attendance", icon: UserGroupIcon },
   { to: "/attendance/completed", label: "Completed Attendance", icon: CheckCircleIcon },
   { to: "/Hall", label: "Hall Allotment", icon: BuildingOfficeIcon },
@@ -94,7 +97,8 @@ const FACULTY_INCHARGE_NAV = [
     ],
   },
   { to: "/faculty", label: "Faculty Management", icon: UserPlusIcon },
-  { to: "/timetable", label: "Time Table", icon: CalendarDaysIcon },
+  { to: "/timetable", label: "Time Table", icon: CalendarDaysIcon, end: true },
+  { to: "/timetable/completed", label: "Completed Timetable", icon: CheckCircleIcon },
   { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
   { to: "/allotment", label: "Allotment", icon: ComputerDesktopIcon },
   { to: "/report", label: "Reports", icon: NewspaperIcon },
@@ -260,6 +264,7 @@ const Sidebar = () => {
                     collapsed={collapsed}
                     open={open}
                     onNavigate={closeMobile}
+                    end={item.end}
                   />
                 </li>
               )

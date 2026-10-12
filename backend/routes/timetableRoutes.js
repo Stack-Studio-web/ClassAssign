@@ -34,7 +34,13 @@ router.get("/",
   checkRole(['admin', 'faculty_incharge', 'hod']),
   async (req, res) => {
     try {
-      const schedules = await Timetable.getAll(await resolveOwnerOpts(req));
+      const status = String(req.query.status || "active").toLowerCase();
+      const allowed = new Set(["active", "completed", "all"]);
+      const ownerOpts = await resolveOwnerOpts(req);
+      const schedules = await Timetable.getAll({
+        ...ownerOpts,
+        status: allowed.has(status) ? status : "active",
+      });
       res.json(schedules);
     } catch (err) {
       console.error("FETCH SCHEDULES ERROR:", err);

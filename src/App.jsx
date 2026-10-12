@@ -25,6 +25,7 @@ import QpakPublic from './pages/QpakPublic';
 import QpakManagement from './pages/QpakManagement';
 import Logs from './pages/Logs'; 
 import Timetable from './pages/Timetable'; // ✅ NEW
+import CompletedTimetable from './pages/CompletedTimetable';
 import { StudentAttendance } from './Components/StudentAttendance';
 import IneligibleStudentsView from './pages/IneligibleStudentsView';
 import FacultyLogin from './pages/FacultyLogin';
@@ -449,6 +450,14 @@ function App() {
         element={
           <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod']}>
             <Layout><Timetable /></Layout>
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/timetable/completed"
+        element={
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod']}>
+            <Layout><CompletedTimetable /></Layout>
           </AuthGuard>
         }
       />

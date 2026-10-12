@@ -204,6 +204,14 @@ async function start() {
     console.info(
       `Server listening on 0.0.0.0:${PORT} (${process.env.NODE_ENV || "development"})`
     );
+    try {
+      const {
+        startTimetableCompletionScheduler,
+      } = require("./services/timetableCompletionScheduler");
+      startTimetableCompletionScheduler();
+    } catch (err) {
+      console.warn("Timetable completion scheduler not started:", err.message);
+    }
   });
 }
 

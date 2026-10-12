@@ -19,17 +19,34 @@ function toTimetableRow(row) {
     batchId: row.batch_id ?? row.batchId ?? row.batchid ?? null,
     batchUuid: row.batch_uuid ?? row.batchUuid ?? row.batchuuid ?? null,
     batchName: row.batch ?? row.batch_name ?? row.batchName ?? row.batchname ?? "",
-    createdAt: row.createdat ?? row.createdAt
+    status: String(row.status || "ACTIVE").toUpperCase(),
+    completedAt: row.completed_at ?? row.completedAt ?? row.completedat ?? null,
+    createdAt: row.createdat ?? row.createdAt,
   };
+}
+
+function statusFilterSql(status) {
+  const s = String(status || "active").toLowerCase();
+  if (s === "completed") {
+    return " AND COALESCE(status, 'ACTIVE') = 'COMPLETED'";
+  }
+  if (s === "all") {
+    return "";
+  }
+  // Default: active list excludes completed
+  return " AND COALESCE(status, 'ACTIVE') = 'ACTIVE'";
 }
 
 const Timetable = {
   
   /* ===============================
       GET ALL SCHEDULES
+      opts.status: active (default) | completed | all
   =============================== */
   getAll: async (opts = {}) => {
     const { sql: ownerSql, params: ownerParams } = ownerWhereFromOpts(opts);
+    const baseWhere = ownerSql || " WHERE 1=1";
+    const statusSql = statusFilterSql(opts.status);
     const [rows] = await db.query(
       `SELECT 
         id,
@@ -44,12 +61,61 @@ const Timetable = {
         exam_type as examType,
         batch,
         batch_id as batchId,
+        COALESCE(status, 'ACTIVE') AS status,
+        completed_at as completedAt,
         created_at as createdAt
-       FROM timetable${ownerSql || " WHERE 1=1"}
+       FROM timetable${baseWhere}${statusSql}
        ORDER BY date DESC, start_time ASC`,
       ownerParams
     );
     return (rows || []).map(toTimetableRow);
+  },
+
+  /**
+   * Idempotent: mark ACTIVE rows with a valid date strictly before institutionToday.
+   * Does not touch rows with NULL dates or rows already COMPLETED.
+   * @param {string} institutionTodayYmd YYYY-MM-DD in institution TZ
+   * @returns {number} rows updated
+   */
+  markPastDatesCompleted: async (institutionTodayYmd) => {
+    const today = String(institutionTodayYmd || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) {
+      throw new Error("institutionTodayYmd must be YYYY-MM-DD");
+    }
+
+    const [result] = await db.query(
+      `UPDATE timetable
+       SET status = 'COMPLETED',
+           completed_at = COALESCE(completed_at, NOW())
+       WHERE COALESCE(status, 'ACTIVE') = 'ACTIVE'
+         AND date IS NOT NULL
+         AND date < ?::date`,
+      [today]
+    );
+
+    return Number(result?.affectedRows ?? result?.rowCount ?? 0);
+  },
+
+  /**
+   * Manual / bulk mark completed by internal ids (idempotent).
+   */
+  markCompletedByIds: async (ids, opts = {}) => {
+    const list = (Array.isArray(ids) ? ids : [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    if (list.length === 0) return 0;
+
+    const { sql: ownerSql, params: ownerParams } = ownerAndFromOpts(opts);
+    const placeholders = list.map(() => "?").join(", ");
+    const [result] = await db.query(
+      `UPDATE timetable
+       SET status = 'COMPLETED',
+           completed_at = COALESCE(completed_at, NOW())
+       WHERE id IN (${placeholders})
+         AND COALESCE(status, 'ACTIVE') = 'ACTIVE'${ownerSql}`,
+      [...list, ...ownerParams]
+    );
+    return Number(result?.affectedRows ?? result?.rowCount ?? 0);
   },
 
   /* ===============================

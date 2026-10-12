@@ -8,8 +8,16 @@ const db = require("../config/db");
 async function ensureTimetableSchema() {
   await db.query(`ALTER TABLE timetable ADD COLUMN IF NOT EXISTS batch_id INT`);
   await db.query(`ALTER TABLE timetable ADD COLUMN IF NOT EXISTS batch VARCHAR(50)`);
+  // ACTIVE | COMPLETED — past exam dates are auto-marked COMPLETED (idempotent).
+  await db.query(
+    `ALTER TABLE timetable ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'`
+  );
+  await db.query(`ALTER TABLE timetable ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`);
   await db.query(`CREATE INDEX IF NOT EXISTS idx_timetable_batch_id ON timetable(batch_id)`);
   await db.query(`CREATE INDEX IF NOT EXISTS idx_timetable_batch ON timetable(batch)`);
+  await db.query(
+    `CREATE INDEX IF NOT EXISTS idx_timetable_status_date ON timetable(status, date)`
+  );
 
   try {
     const [batchTables] = await db.query(

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
 import api from "../lib/api";
-import { TrashIcon, FunnelIcon, XMarkIcon, CalendarDaysIcon, DocumentArrowDownIcon } from "@heroicons/react/24/outline";
+import { TrashIcon, FunnelIcon, XMarkIcon, CalendarDaysIcon, DocumentArrowDownIcon, CheckCircleIcon } from "@heroicons/react/24/outline";
 import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
@@ -247,9 +248,10 @@ const Timetable = () => {
   // Fetch schedules
   const fetchSchedules = async () => {
     try {
-      const res = await api.get("/timetable");
-      setSchedules(res.data);
-      setFilteredSchedules(res.data);
+      const res = await api.get("/timetable", { params: { status: "active" } });
+      const rows = Array.isArray(res.data) ? res.data : [];
+      setSchedules(rows);
+      setFilteredSchedules(rows);
     } catch (err) {
       console.error("Failed to fetch schedules:", err);
       setMessage("❌ Failed to fetch schedules");
@@ -606,14 +608,23 @@ const Timetable = () => {
           <h1 className="text-2xl md:text-3xl font-bold text-gray-800">Exam Timetable Management</h1>
           <p className="text-sm text-gray-500 mt-0.5">Add schedules manually or bulk import. Filter and manage exam slots.</p>
         </div>
-        <button
-          type="button"
-          onClick={openCoeExport}
-          className="inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold shadow-sm transition-all duration-200"
-        >
-          <DocumentArrowDownIcon className="h-5 w-5" />
-          Export COE Schedule
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Link
+            to="/timetable/completed"
+            className="inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-semibold transition-all duration-200"
+          >
+            <CheckCircleIcon className="h-5 w-5 text-emerald-600" />
+            Completed Timetable
+          </Link>
+          <button
+            type="button"
+            onClick={openCoeExport}
+            className="inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold shadow-sm transition-all duration-200"
+          >
+            <DocumentArrowDownIcon className="h-5 w-5" />
+            Export COE Schedule
+          </button>
+        </div>
       </div>
 
       {/* Message — inline alert */}
