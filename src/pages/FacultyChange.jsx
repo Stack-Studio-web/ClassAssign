@@ -12,6 +12,8 @@ import {
 import api from "../lib/api";
 import { useToast } from "../context/ToastContext";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
+import FacultyDepartmentSelect from "../Components/FacultyDepartmentSelect";
+import { resolveFacultyDepartment } from "../lib/facultyDepartments";
 
 function useDebounce(value, delay = 400) {
   const [debounced, setDebounced] = useState(value);
@@ -37,6 +39,7 @@ export default function FacultyChange() {
   const [selectedFacultyUuid, setSelectedFacultyUuid] = useState("");
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
+  const [department, setDepartment] = useState("");
   const [reason, setReason] = useState("");
   const [lookup, setLookup] = useState(null);
   const [availability, setAvailability] = useState(null);
@@ -82,6 +85,7 @@ export default function FacultyChange() {
     setSelectedFacultyUuid("");
     setEmail("");
     setName("");
+    setDepartment("");
     setReason("");
     setLookup(null);
     setAvailability(null);
@@ -182,7 +186,7 @@ export default function FacultyChange() {
     !!effectiveEmail &&
     effectiveEmail.endsWith("@kct.ac.in") &&
     (mode === "select" ? !!selectedFacultyUuid : true) &&
-    (!facultyMissing || name.trim().length >= 2) &&
+    (!facultyMissing || (name.trim().length >= 2 && !!department)) &&
     (facultyMissing || availability?.available === true) &&
     !submitting &&
     !checking;
@@ -190,12 +194,23 @@ export default function FacultyChange() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!canSubmit) return;
+    if (facultyMissing) {
+      const deptResolved = resolveFacultyDepartment(department);
+      if (!deptResolved.ok || !deptResolved.code) {
+        toast.error(
+          deptResolved.error || "Select a department for the new faculty.",
+          "Department required"
+        );
+        return;
+      }
+    }
     setSubmitting(true);
     try {
       const res = await api.post("/faculty-transfers/admin-change", {
         assignmentUuid: selected.uuid,
         requestedEmail: effectiveEmail,
         requestedName: facultyMissing ? name.trim() : undefined,
+        requestedDepartment: facultyMissing ? department : undefined,
         reason: reason.trim() || undefined,
       });
       const data = res.data?.data ?? res.data;
@@ -384,6 +399,7 @@ export default function FacultyChange() {
                     setMode("select");
                     setEmail("");
                     setName("");
+                    setDepartment("");
                   }}
                   className={`flex-1 py-2.5 font-medium ${
                     mode === "select"
@@ -455,18 +471,32 @@ export default function FacultyChange() {
                   )}
 
                   {facultyMissing && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Faculty Name <span className="text-red-500">*</span>
-                      </label>
-                      <input
-                        type="text"
-                        value={name}
-                        onChange={(e) => setName(e.target.value)}
-                        placeholder="Full name"
-                        className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
-                      />
-                      <p className="text-xs text-amber-700 mt-1">
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          Faculty Name <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={name}
+                          onChange={(e) => setName(e.target.value)}
+                          placeholder="Full name"
+                          className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          Department <span className="text-red-500">*</span>
+                        </label>
+                        <FacultyDepartmentSelect
+                          value={department}
+                          onChange={setDepartment}
+                          required
+                          placeholder="Search department name or code…"
+                          className="[&_input]:h-10 [&_input]:py-2.5 [&_input]:text-sm"
+                        />
+                      </div>
+                      <p className="text-xs text-amber-700">
                         Email not found. A new faculty account will be created on save.
                       </p>
                     </div>

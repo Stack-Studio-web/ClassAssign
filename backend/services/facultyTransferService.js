@@ -290,19 +290,38 @@ async function checkReplacementAvailability({
   return { available: true, message: "Faculty is available for assignment." };
 }
 
-async function createFacultyWithUser({ name, email, ownerUserId = null }) {
+async function createFacultyWithUser({
+  name,
+  email,
+  department = null,
+  ownerUserId = null,
+}) {
   const Faculty = require("../models/Faculty");
+  const { resolveFacultyDepartment } = require("../utils/facultyDepartments");
   const normalizedEmail = String(email || "").trim().toLowerCase();
   if (!name?.trim()) {
     throw new Error("Faculty name is required to create a new faculty record");
   }
+
+  const deptResolved = resolveFacultyDepartment(department);
+  if (!deptResolved.ok) {
+    const err = new Error(deptResolved.error || "Invalid department");
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!deptResolved.code) {
+    const err = new Error("Department is required when creating a new faculty record");
+    err.statusCode = 400;
+    throw err;
+  }
+  const departmentCode = deptResolved.code;
 
   const existingAny = await findFacultyByEmailAny(normalizedEmail);
   if (existingAny) {
     if (existingAny.is_active === false) {
       await Faculty.reactivateById(existingAny.id, {
         name: name.trim(),
-        department: existingAny.department || "General",
+        department: departmentCode || existingAny.department || null,
       });
     }
     return {
@@ -325,7 +344,7 @@ async function createFacultyWithUser({ name, email, ownerUserId = null }) {
     const [facResult] = await conn.query(
       `INSERT INTO faculty (name, department, email, owner_user_id)
        VALUES (?, ?, ?, ?) RETURNING id`,
-      [name.trim(), "General", normalizedEmail, ownerUserId || null]
+      [name.trim(), departmentCode, normalizedEmail, ownerUserId || null]
     );
     const facultyId = facResult?.insertId ?? null;
 
@@ -339,9 +358,9 @@ async function createFacultyWithUser({ name, email, ownerUserId = null }) {
       const username = plainPassword;
       const hashedPassword = await hashPassword(plainPassword);
       await conn.query(
-        `INSERT INTO users (username, email, password, role_id, is_active, must_change_password)
-         VALUES (?, ?, ?, ?, TRUE, TRUE)`,
-        [username, normalizedEmail, hashedPassword, facultyRole.id]
+        `INSERT INTO users (username, email, password, role_id, department, is_active, must_change_password)
+         VALUES (?, ?, ?, ?, ?, TRUE, TRUE)`,
+        [username, normalizedEmail, hashedPassword, facultyRole.id, departmentCode]
       );
       generatedPassword = plainPassword;
     } else if (!existingUser.is_active) {
@@ -1391,6 +1410,7 @@ const FacultyTransferService = {
     assignmentUuid,
     requestedEmail,
     requestedName,
+    requestedDepartment,
     reason,
     adminUserId,
     ipAddress,
@@ -1448,6 +1468,7 @@ const FacultyTransferService = {
       const created = await createFacultyWithUser({
         name,
         email,
+        department: requestedDepartment,
         ownerUserId: stampOwner,
       });
       requestedFaculty = await findFacultyByEmail(email);

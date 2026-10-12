@@ -134,7 +134,13 @@ router.post(
   auditLogger("FACULTY_ADMIN_CHANGED", "FacultyAssignment"),
   async (req, res) => {
     try {
-      const { assignmentUuid, requestedEmail, requestedName, reason } = req.body || {};
+      const {
+        assignmentUuid,
+        requestedEmail,
+        requestedName,
+        requestedDepartment,
+        reason,
+      } = req.body || {};
       if (!assignmentUuid || !requestedEmail) {
         return Api.validationError(res, "assignmentUuid and requestedEmail are required");
       }
@@ -142,6 +148,7 @@ router.post(
         assignmentUuid,
         requestedEmail,
         requestedName,
+        requestedDepartment,
         reason,
         adminUserId: req.user.id,
         ...getClientMeta(req),
