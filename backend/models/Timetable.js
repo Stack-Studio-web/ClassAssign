@@ -225,15 +225,19 @@ const Timetable = {
       DELETE BY IDs (BULK)
   =============================== */
   deleteByIds: async (ids, opts = {}) => {
-    if (ids.length === 0) return 0;
+    const list = (Array.isArray(ids) ? ids : [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    if (list.length === 0) return 0;
 
     const { sql: ownerSql, params: ownerParams } = ownerAndFromOpts(opts);
+    const placeholders = list.map(() => "?").join(", ");
     const [result] = await db.query(
-      `DELETE FROM timetable WHERE id IN (?)${ownerSql}`,
-      [ids, ...ownerParams]
+      `DELETE FROM timetable WHERE id IN (${placeholders})${ownerSql}`,
+      [...list, ...ownerParams]
     );
 
-    return result.affectedRows;
+    return result.affectedRows ?? result.rowCount ?? 0;
   },
 
   /* ===============================

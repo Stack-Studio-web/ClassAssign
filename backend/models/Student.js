@@ -590,11 +590,15 @@ const Student = {
       DELETE MANY (UNDO)
   =============================== */
   deleteByIds: async (ids, opts = {}) => {
-    if (!Array.isArray(ids) || ids.length === 0) return;
+    const list = (Array.isArray(ids) ? ids : [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    if (list.length === 0) return;
     const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
+    const placeholders = list.map(() => "?").join(", ");
     await db.query(
-      `DELETE FROM students WHERE id IN (?)${ownerSql}`,
-      [ids, ...ownerParams]
+      `DELETE FROM students WHERE id IN (${placeholders})${ownerSql}`,
+      [...list, ...ownerParams]
     );
   },
 

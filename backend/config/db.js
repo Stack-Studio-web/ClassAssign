@@ -20,6 +20,16 @@ function convertPlaceholders(sql) {
   return sql.replace(/\?/g, () => `$${++i}`);
 }
 
+/** Convert leftover `?` after some `$n` placeholders were already written. */
+function convertRemainingPlaceholders(sql) {
+  let max = 0;
+  for (const m of String(sql).matchAll(/\$(\d+)/g)) {
+    max = Math.max(max, Number(m[1]) || 0);
+  }
+  let i = max;
+  return String(sql).replace(/\?/g, () => `$${++i}`);
+}
+
 function buildBulkInsert(sql, params) {
   if (!Array.isArray(params) || params.length === 0) return { sql, params };
 
@@ -32,7 +42,8 @@ function buildBulkInsert(sql, params) {
     });
     const flatParams = rows.flat().map((v) => (v === undefined ? null : v));
     const newSql = sql.replace(/VALUES\s*\?/i, `VALUES ${rowPlaceholders.join(", ")}`);
-    return { sql: newSql, params: flatParams };
+    // Owner / other filters may still use `?` after VALUES expansion.
+    return { sql: convertRemainingPlaceholders(newSql), params: flatParams };
   }
 
   if (/IN\s*\(\s*\?\s*\)/i.test(sql) && Array.isArray(params[0])) {
@@ -40,15 +51,28 @@ function buildBulkInsert(sql, params) {
     const newParams = [];
     const newSql = sql.replace(/IN\s*\(\s*\?\s*\)/gi, () => {
       const arr = params[paramIdx++];
-      const sanitizedArr = (arr || []).map((v) => (v === undefined ? null : v));
-      const placeholders = sanitizedArr.map((_, i) => `$${newParams.length + i + 1}`).join(", ");
+      // Only expand when this slot is actually an array (id lists). Scalars stay as `?`.
+      if (!Array.isArray(arr)) {
+        paramIdx -= 1;
+        return "IN (?)";
+      }
+      const sanitizedArr = arr.map((v) => (v === undefined ? null : v));
+      if (sanitizedArr.length === 0) {
+        // Valid no-match predicate — avoids `IN ()` syntax error.
+        return "IN (NULL)";
+      }
+      const placeholders = sanitizedArr
+        .map((_, i) => `$${newParams.length + i + 1}`)
+        .join(", ");
       newParams.push(...sanitizedArr);
       return `IN (${placeholders})`;
     });
     for (let i = paramIdx; i < params.length; i++) {
       newParams.push(params[i] === undefined ? null : params[i]);
     }
-    return { sql: newSql, params: newParams };
+    // Critical: owner filters often append `AND owner_user_id IN (?, ?)` — those `?`
+    // must be renumbered after the first `IN (?)` expansion wrote `$1..$n`.
+    return { sql: convertRemainingPlaceholders(newSql), params: newParams };
   }
 
   const sanitized = Array.isArray(params) ? params.map((p) => (p === undefined ? null : p)) : params;
