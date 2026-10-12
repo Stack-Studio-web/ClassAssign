@@ -1,12 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { flushSync } from "react-dom";
-import { useReactToPrint } from "react-to-print";
 import {
+  ArrowDownTrayIcon,
   ArrowLeftIcon,
   DocumentTextIcon,
   EyeIcon,
-  PrinterIcon,
 } from "@heroicons/react/24/outline";
 import api from "../lib/api";
 import LogoKSI from "../assets/logo KSI.png";
@@ -15,9 +13,9 @@ import HalloraVerifiedFooter from "../Components/HalloraVerifiedFooter";
 import {
   createReportVerification,
   finalizeReportVerification,
-  HALLORA_VERIFY_PRINT_CSS,
   sha256Hex,
 } from "../lib/reportVerification";
+import { downloadFacultyInvigilationDocx } from "../lib/facultyInvigilationDocx";
 import { useToast } from "../context/ToastContext";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
 
@@ -75,7 +73,6 @@ const emptyFilters = {
 
 export default function FacultyInvigilationExport() {
   const toast = useToast();
-  const printRef = useRef();
   const [filters, setFilters] = useState(emptyFilters);
   const [options, setOptions] = useState({
     academicYears: [],
@@ -95,11 +92,6 @@ export default function FacultyInvigilationExport() {
   const [verification, setVerification] = useState(null);
 
   const currentLogo = logoType === "KCT" ? LogoKCT : LogoKSI;
-
-  const handlePrint = useReactToPrint({
-    contentRef: printRef,
-    documentTitle: "Faculty_Invigilation_Schedule",
-  });
 
   useEffect(() => {
     let cancelled = false;
@@ -198,7 +190,7 @@ export default function FacultyInvigilationExport() {
     }
   };
 
-  const runVerifiedPrint = async () => {
+  const runDocxExport = async () => {
     const msg = validate();
     if (msg) {
       setError(msg);
@@ -222,17 +214,61 @@ export default function FacultyInvigilationExport() {
         dateTo: filters.dateTo,
         assignmentCount: preview.meta?.assignmentCount,
       });
-      flushSync(() => setVerification(v));
-      handlePrint();
-      if (printRef.current && v?.uuid) {
-        const html = printRef.current.innerHTML || "";
-        const hash = await sha256Hex(html);
+      setVerification(v);
+
+      const ayLabel =
+        filters.academicYearLabel ||
+        options.academicYears.find((y) => y.uuid === filters.academicYearUuid)?.label ||
+        "—";
+      const semesterLabel =
+        options.semesters.find((s) => s.value === filters.semester)?.label ||
+        (filters.semester === "ODD"
+          ? "Odd Sem"
+          : filters.semester === "EVEN"
+            ? "Even Sem"
+            : filters.semester);
+      const deptHeader = filters.department
+        ? /^DEPARTMENT\s+OF/i.test(filters.department)
+          ? filters.department
+          : `DEPARTMENT OF ${filters.department}`
+        : "—";
+
+      const filename = await downloadFacultyInvigilationDocx({
+        preview,
+        logoChoice: logoType,
+        verification: v,
+        meta: {
+          deptHeader,
+          ayLabel,
+          semesterLabel,
+          program1: filters.program1,
+          program2: filters.program2,
+          dateFrom: filters.dateFrom,
+          dateTo: filters.dateTo,
+        },
+      });
+
+      if (v?.uuid) {
+        const hashPayload = JSON.stringify({
+          type: "faculty-invigilation-docx",
+          filename,
+          meta: preview.meta || {},
+          scheduleDays: (preview.schedule || []).length,
+          assignmentCount: preview.meta?.assignmentCount,
+          verificationId: v.verificationId,
+        });
+        const hash = await sha256Hex(hashPayload);
         await finalizeReportVerification(v.uuid, hash).catch(() => null);
       }
-      toast.success("Faculty invigilation schedule ready to print / save as PDF.");
+
+      toast.success("Faculty invigilation schedule downloaded as DOCX.");
     } catch (err) {
       console.error(err);
-      handlePrint();
+      toast.error(
+        getApiError(err, "Failed to export DOCX"),
+        getApiErrorTitle(err, "Export failed")
+      );
+      setError(getApiError(err, "Failed to export DOCX"));
     } finally {
       setExporting(false);
     }
@@ -268,8 +304,8 @@ export default function FacultyInvigilationExport() {
             Faculty Invigilation Schedule
           </h1>
           <p className="text-sm text-gray-500 mt-1">
-            Generate and export the faculty invigilation schedule based on the selected
-            academic and examination filters.
+            Generate and export the faculty invigilation schedule as a Word (DOCX) document
+            based on the selected academic and examination filters.
           </p>
         </div>
 
@@ -478,26 +514,16 @@ export default function FacultyInvigilationExport() {
               </button>
               <button
                 type="button"
-                onClick={runVerifiedPrint}
+                onClick={runDocxExport}
                 disabled={exporting}
                 className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-semibold shadow-sm"
               >
-                <PrinterIcon className="h-4 w-4" />
-                {exporting ? "Preparing…" : "Export / Print Schedule"}
+                <ArrowDownTrayIcon className="h-4 w-4" />
+                {exporting ? "Preparing DOCX…" : "Export DOCX"}
               </button>
             </div>
 
-            <div
-              ref={printRef}
-              className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 md:p-8"
-            >
-              <style>{HALLORA_VERIFY_PRINT_CSS}</style>
-              <style>{`
-                @media print {
-                  @page { size: A4; margin: 15mm; }
-                }
-              `}</style>
-
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 md:p-8">
               <div className="text-center mb-8 pb-4">
                 <img
                   src={currentLogo}
