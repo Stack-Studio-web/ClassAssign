@@ -404,7 +404,10 @@ router.delete(
         );
       }
 
-      return Api.success(res, "Batch deleted successfully.", { deleted: true });
+      return Api.success(res, "Batch deleted successfully.", {
+        deleted: true,
+        removedStudents: result.removedStudents ?? 0,
+      });
     } catch (err) {
       return Api.fromError(res, err, "Failed to delete batch.");
     }

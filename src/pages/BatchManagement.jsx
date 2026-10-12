@@ -128,9 +128,13 @@ export default function BatchManagementPage() {
   const handleDeleteBatch = async (batch) => {
     if (deletingBatchId || busy) return;
 
+    const studentCount = batch.studentCount ?? 0;
     const ok = await showConfirm({
       title: "Delete Batch?",
-      message: `Are you sure you want to delete batch ${batch.name}? This action cannot be undone.`,
+      message:
+        studentCount > 0
+          ? `Are you sure you want to delete batch ${batch.name}? This will permanently remove its ${studentCount} student${studentCount === 1 ? "" : "s"} from this batch. Batches with generated reports cannot be deleted. This action cannot be undone.`
+          : `Are you sure you want to delete batch ${batch.name}? This action cannot be undone.`,
       confirmLabel: "Delete Batch",
       cancelLabel: "Cancel",
       destructive: true,

@@ -505,13 +505,16 @@ const Batch = {
       timetableCount,
       allotmentCount,
       lockedAttendanceCount,
-      blocked: reportCount > 0 || studentCount > 0 || timetableCount > 0 || lockedAttendanceCount > 0,
+      // Students alone do not block — they are removed inside deleteByIdSafe when allowed.
+      blocked: reportCount > 0 || lockedAttendanceCount > 0,
     };
   },
 
   /**
-   * Delete batch only when blockers are clear. Uses a transaction + row lock
-   * so a report/dependency created mid-request still rejects deletion.
+   * Delete batch when no generated reports / locked attendance exist.
+   * Students in the batch are removed first (mentor links cascade).
+   * Timetable.batch_id is cleared (SET NULL). Reports are never deleted.
+   * Uses FOR UPDATE so a report created mid-request still rejects deletion.
    */
   deleteByIdSafe: async (id, meta = {}) => {
     const conn = await db.getConnection();
@@ -530,8 +533,6 @@ const Batch = {
       const uuid = meta.uuid || row.public_uuid || row.publicuuid || null;
       const name = meta.name || row.name || null;
 
-      // Re-run blockers inside the transaction against the same connection where possible.
-      // getDeleteBlockers uses the pool; race window is closed by FOR UPDATE + immediate recheck.
       const blockers = await Batch.getDeleteBlockers(id, { uuid, name });
 
       if (blockers.reportCount > 0) {
@@ -554,26 +555,25 @@ const Batch = {
           blockers,
         };
       }
-      if (blockers.timetableCount > 0) {
-        await conn.rollback();
-        return {
-          ok: false,
-          code: "BATCH_HAS_TIMETABLE",
-          message:
-            "This batch cannot be deleted because timetable entries reference it. Remove those schedules first.",
-          blockers,
-        };
+
+      // Detach timetable references (FK is ON DELETE SET NULL; clear explicitly first).
+      try {
+        await conn.query(`UPDATE timetable SET batch_id = NULL WHERE batch_id = ?`, [id]);
+      } catch (_) {
+        /* timetable.batch_id may not exist on older DBs */
       }
-      if (blockers.studentCount > 0) {
-        await conn.rollback();
-        return {
-          ok: false,
-          code: "BATCH_HAS_STUDENTS",
-          message:
-            "This batch contains students and cannot be deleted. Mark it as completed instead.",
-          blockers,
-        };
-      }
+
+      // Remove students belonging only to this batch so RESTRICT FK allows batch delete.
+      // mentor_students / unlocked attendance cascade via student FK.
+      const [studentDeleteResult] = await conn.query(
+        `DELETE FROM students WHERE batch_id = ?`,
+        [id]
+      );
+      const removedStudents =
+        studentDeleteResult?.affectedRows ??
+        studentDeleteResult?.rowCount ??
+        (Array.isArray(studentDeleteResult) ? studentDeleteResult.length : 0) ??
+        0;
 
       const [result] = await conn.query(
         `DELETE FROM batches WHERE id = ? RETURNING id`,
@@ -586,7 +586,11 @@ const Batch = {
       }
 
       await conn.commit();
-      return { ok: true, blockers };
+      return {
+        ok: true,
+        blockers,
+        removedStudents: Number(removedStudents) || 0,
+      };
     } catch (err) {
       await conn.rollback();
       // FK violations from unexpected dependencies
