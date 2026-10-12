@@ -2,9 +2,18 @@
  * Faculty department list (./facultyDepartments.json — Docker-safe path).
  * Keep in sync with src/lib/facultyDepartments.json.
  * Stored representation on faculty.department: the department **code**
- * (e.g. CSE, IT, AI & DS) — matches the Excel DEPT column convention.
+ * (e.g. CSE, IT, AD) — matches the Excel DEPT column convention.
  */
 const FACULTY_DEPARTMENTS = require("./facultyDepartments.json");
+
+/** Legacy Excel / UI aliases → stored code (normalized keys). */
+const DEPARTMENT_ALIASES = {
+  "AI & DS": "AD",
+  "AI&DS": "AD",
+  AIDS: "AD",
+  "A.I. & D.S": "AD",
+  "A.I.& D.S": "AD",
+};
 
 function normalizeDeptKey(value) {
   return String(value || "")
@@ -24,6 +33,10 @@ function buildLookup() {
     byKey.set(codeKey, dept);
     byKey.set(nameKey, dept);
     byKey.set(labelKey, dept);
+  }
+  for (const [alias, code] of Object.entries(DEPARTMENT_ALIASES)) {
+    const dept = FACULTY_DEPARTMENTS.find((d) => d.code === code);
+    if (dept) byKey.set(normalizeDeptKey(alias), dept);
   }
   return byKey;
 }

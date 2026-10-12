@@ -22,8 +22,10 @@ expectCode("", null);
 expectCode(null, null);
 expectCode("  cse  ", "CSE");
 expectCode("Information Technology", "IT");
-expectCode("ai & ds", "AI & DS");
-expectCode("AI&DS", "AI & DS");
+expectCode("AD", "AD");
+expectCode("ai & ds", "AD"); // legacy alias
+expectCode("AI&DS", "AD"); // legacy alias
+expectCode("Artificial Intelligence and Data Science", "AD");
 expectCode("Computer Science and Engineering (CSE)", "CSE");
 expectCode("e&i", "E&I");
 expectCode("E & I", "E&I");

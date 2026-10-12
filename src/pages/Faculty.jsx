@@ -587,9 +587,11 @@ export default function Faculty() {
                 <div className="p-3 rounded-lg bg-blue-50 border border-blue-100 text-xs sm:text-sm text-blue-900">
                   <p className="font-semibold mb-1">Download Template First</p>
                   <p className="mb-2">
-                    Columns: NAME, DEPT, MAIL. DEPT accepts a predefined code (e.g. CSE, IT,
-                    AI &amp; DS) or full department name. Blank DEPT is allowed; unknown
-                    values are rejected with a row-level error.
+                    Columns: NAME, DEPT, MAIL. Use the template&apos;s{" "}
+                    <strong>Instructions</strong> sheet for allowed codes. DEPT accepts a
+                    predefined code (e.g. CSE, IT, AD) or full department name. AI &amp; DS
+                    maps to <strong>AD</strong>. Blank DEPT is allowed; unknown values are
+                    rejected with a row-level error.
                   </p>
                   <button
                     type="button"

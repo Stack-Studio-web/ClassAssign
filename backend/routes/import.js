@@ -392,7 +392,10 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
     if (!assertValidUpload(req, res)) return;
 
     const workbook = xlsx.readFile(req.file.path);
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const sheetName =
+      workbook.SheetNames.find((n) => String(n).toUpperCase() === "FACULTY_IMPORT") ||
+      workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
     const data = xlsx.utils.sheet_to_json(sheet);
 
     const deptErrors = [];

@@ -1,7 +1,7 @@
 [
   { "name": "Computer Science and Engineering", "code": "CSE" },
   { "name": "Information Technology", "code": "IT" },
-  { "name": "Artificial Intelligence and Data Science", "code": "AI & DS" },
+  { "name": "Artificial Intelligence and Data Science", "code": "AD" },
   { "name": "Electronics and Communication Engineering", "code": "ECE" },
   { "name": "Electrical and Electronics Engineering", "code": "EEE" },
   { "name": "Civil Engineering", "code": "CE" },

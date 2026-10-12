@@ -1,7 +1,7 @@
 /**
  * Faculty departments — list from ./facultyDepartments.json (Docker-safe path).
  * Keep in sync with backend/utils/facultyDepartments.json.
- * Stored DB value: department **code** (e.g. CSE, IT, AI & DS).
+ * Stored DB value: department **code** (e.g. CSE, IT, AD).
  */
 import FACULTY_DEPARTMENTS_RAW from "./facultyDepartments.json";
 
@@ -10,6 +10,15 @@ export const FACULTY_DEPARTMENTS = FACULTY_DEPARTMENTS_RAW.map((d) => ({
   code: d.code,
   label: `${d.name} (${d.code})`,
 }));
+
+/** Legacy Excel / UI aliases → stored code. */
+const DEPARTMENT_ALIASES = {
+  "AI & DS": "AD",
+  "AI&DS": "AD",
+  AIDS: "AD",
+  "A.I. & D.S": "AD",
+  "A.I.& D.S": "AD",
+};
 
 function normalizeDeptKey(value) {
   return String(value || "")
@@ -26,6 +35,10 @@ const LOOKUP = (() => {
     map.set(normalizeDeptKey(dept.code), dept);
     map.set(normalizeDeptKey(dept.name), dept);
     map.set(normalizeDeptKey(dept.label), dept);
+  }
+  for (const [alias, code] of Object.entries(DEPARTMENT_ALIASES)) {
+    const dept = FACULTY_DEPARTMENTS.find((d) => d.code === code);
+    if (dept) map.set(normalizeDeptKey(alias), dept);
   }
   return map;
 })();
