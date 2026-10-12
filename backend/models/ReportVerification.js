@@ -30,10 +30,13 @@ const ReportVerification = {
     try {
       await conn.beginTransaction();
 
+      // Table PK is `year` (no `id`). Explicit RETURNING prevents db.js from
+      // auto-appending `RETURNING id`, which raises: column "id" does not exist.
       await conn.query(
         `INSERT INTO report_verification_counters (year, last_value)
          VALUES (?, 0)
-         ON CONFLICT (year) DO NOTHING`,
+         ON CONFLICT (year) DO NOTHING
+         RETURNING year`,
         [year]
       );
 
