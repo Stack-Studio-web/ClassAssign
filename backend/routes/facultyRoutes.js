@@ -17,6 +17,14 @@ const {
   hashPassword,
 } = require("../utils/password");
 const FacultyScheduleService = require("../services/facultyScheduleService");
+const { resolveFacultyDepartment } = require("../utils/facultyDepartments");
+
+function normalizeIncomingDepartment(raw) {
+  if (raw === undefined) return { ok: true, code: null };
+  const resolved = resolveFacultyDepartment(raw);
+  if (!resolved.ok) return resolved;
+  return { ok: true, code: resolved.code };
+}
 
 router.get("/", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), async (req, res) => {
   try {
@@ -122,13 +130,19 @@ router.post("/", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (r
       return Api.validationError(res, "Enter a valid college email (@kct.ac.in)");
     }
 
+    const deptNorm = normalizeIncomingDepartment(department);
+    if (!deptNorm.ok) {
+      return Api.validationError(res, deptNorm.error);
+    }
+    const departmentCode = deptNorm.code;
+
     const existingFaculty = await Faculty.findByEmail(email);
     if (existingFaculty) {
       const inactive = existingFaculty.is_active === false;
       if (inactive) {
         await Faculty.reactivateById(existingFaculty.id, {
           name: name.trim(),
-          department: department?.trim() || null,
+          department: departmentCode,
         });
         const plainPassword = passwordFromEmail(email);
         return Api.success(
@@ -161,7 +175,7 @@ router.post("/", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (r
     const hashedPassword = await hashPassword(plainPassword);
     const opts = await resolveOwnerOpts(req);
     const { col, val } = insertField(opts.role, opts.ownerUserId);
-    const facultyVals = [name.trim(), department?.trim() || null, email];
+    const facultyVals = [name.trim(), departmentCode, email];
     if (val != null) facultyVals.push(val);
 
     conn = await db.getConnection();
@@ -175,7 +189,7 @@ router.post("/", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (r
     await conn.query(
       `INSERT INTO users (username, email, password, role_id, department, created_by, must_change_password)
        VALUES (?, ?, ?, ?, ?, ?, FALSE)`,
-      [username, email, hashedPassword, fiRole.id, department?.trim() || null, req.user?.id || null]
+      [username, email, hashedPassword, fiRole.id, departmentCode, req.user?.id || null]
     );
 
     await conn.commit();
@@ -240,9 +254,18 @@ router.put("/:uuid", sessionAuth, checkRole(["admin", "faculty_incharge"]), reso
       return Api.validationError(res, "Enter a valid college email (@kct.ac.in)");
     }
 
+    let nextDepartment = department;
+    if (department !== undefined) {
+      const deptNorm = normalizeIncomingDepartment(department);
+      if (!deptNorm.ok) {
+        return Api.validationError(res, deptNorm.error);
+      }
+      nextDepartment = deptNorm.code;
+    }
+
     const result = await Faculty.updateDetails(
       req.internalId,
-      { name, department, email, maxClassrooms, isAvailable },
+      { name, department: nextDepartment, email, maxClassrooms, isAvailable },
       await resolveOwnerOpts(req)
     );
 

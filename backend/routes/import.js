@@ -19,6 +19,7 @@ const db = require("../config/db");
 const {
   assertSemesterMutableByBatchInternalId,
 } = require("../utils/semesterGuards");
+const { resolveFacultyDepartment } = require("../utils/facultyDepartments");
 
 const router = express.Router();
 const { resolveOwnerOpts } = require("../utils/rbac");
@@ -394,13 +395,45 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const data = xlsx.utils.sheet_to_json(sheet);
 
-    const formattedData = data
-      .map(row => ({
-        name: row["NAME"]?.trim(),
-        department: row["DEPT"]?.trim(),
-        email: row["MAIL"]?.trim()
-      }))
-      .filter(f => f.name && f.email && f.email.endsWith("@kct.ac.in"));
+    const deptErrors = [];
+    const formattedData = [];
+
+    data.forEach((row, index) => {
+      const excelRow = index + 2; // header is row 1
+      const name = row["NAME"] != null ? String(row["NAME"]).trim() : "";
+      const emailRaw = row["MAIL"] != null ? String(row["MAIL"]).trim() : "";
+      const deptRaw =
+        row["DEPT"] != null && String(row["DEPT"]).trim() !== ""
+          ? String(row["DEPT"]).trim()
+          : "";
+
+      if (!name || !emailRaw || !emailRaw.toLowerCase().endsWith("@kct.ac.in")) {
+        return;
+      }
+
+      const resolved = resolveFacultyDepartment(deptRaw);
+      if (!resolved.ok) {
+        deptErrors.push({
+          row: excelRow,
+          value: resolved.value || deptRaw,
+          message: `Row ${excelRow}: ${resolved.error}`,
+        });
+        return;
+      }
+
+      formattedData.push({
+        name,
+        email: emailRaw,
+        department: resolved.code, // stored representation: code (or null)
+      });
+    });
+
+    if (deptErrors.length > 0) {
+      return res.status(400).json({
+        message: "Faculty import rejected: unknown department value(s).",
+        errors: deptErrors,
+      });
+    }
 
     if (formattedData.length === 0) {
       return res.status(400).json({
@@ -412,7 +445,7 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
       try {
         const email = String(f.email || "").trim().toLowerCase();
         const name = f.name?.trim();
-        const department = f.department?.trim() || null;
+        const department = f.department || null;
         const existing = await Faculty.findByEmail(email);
 
         if (existing) {
@@ -443,7 +476,7 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
           if (existing && existing.is_active === false) {
             await Faculty.reactivateById(existing.id, {
               name: f.name?.trim(),
-              department: f.department?.trim() || null,
+              department: f.department || null,
             });
           } else {
             lastFacultyImport.skippedEmails.push(email || f.email);

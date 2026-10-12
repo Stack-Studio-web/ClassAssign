@@ -5,6 +5,8 @@ import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
 import { downloadTemplate } from "../lib/downloadTemplate";
+import FacultyDepartmentSelect from "../Components/FacultyDepartmentSelect";
+import { resolveFacultyDepartment } from "../lib/facultyDepartments";
 
 const DEPT_ICON_COLORS = [
   { bg: "bg-emerald-100", text: "text-emerald-600" },
@@ -150,12 +152,18 @@ export default function Faculty() {
       toast.error("Max classrooms must be between 1 and 20");
       return;
     }
+    const deptResolved = resolveFacultyDepartment(editForm.department);
+    if (!deptResolved.ok) {
+      setMessage(`⚠️ ${deptResolved.error}`);
+      toast.error(deptResolved.error);
+      return;
+    }
 
     setUpdatingId(id);
     try {
       await api.put(`/faculty/${id}`, {
         name,
-        department: editForm.department.trim(),
+        department: deptResolved.code || null,
         email,
         maxClassrooms,
         isAvailable: editForm.isAvailable !== false,
@@ -236,8 +244,23 @@ export default function Faculty() {
       await fetchFaculty();
       await fetchFacultyStats();
     } catch (err) {
-      setMessage("❌ Import failed. Check file format.");
-      // Refresh list anyway - data may have been partially inserted
+      const data = err.response?.data;
+      const rowErrors = Array.isArray(data?.errors) ? data.errors : [];
+      if (rowErrors.length > 0) {
+        const preview = rowErrors
+          .slice(0, 5)
+          .map((e) => e.message || `Row ${e.row}: ${e.value}`)
+          .join(" · ");
+        setMessage(
+          `❌ ${data?.message || "Import validation failed"} — ${preview}${
+            rowErrors.length > 5 ? ` (+${rowErrors.length - 5} more)` : ""
+          }`
+        );
+        toast.error(preview, getApiErrorTitle(err, "Import failed"));
+      } else {
+        setMessage(`❌ ${getApiError(err, "Import failed. Check file format.")}`);
+        toast.error(getApiError(err), getApiErrorTitle(err, "Import failed"));
+      }
       await fetchFaculty();
       await fetchFacultyStats();
     } finally {
@@ -277,11 +300,21 @@ export default function Faculty() {
       setCreateSuccess(null);
       return;
     }
+    const deptResolved = resolveFacultyDepartment(manualData.department);
+    if (!deptResolved.ok) {
+      setMessage(`⚠️ ${deptResolved.error}`);
+      setCreateSuccess(null);
+      return;
+    }
 
     setLoading(true);
     setCreateSuccess(null);
     try {
-      const res = await api.post("/faculty", { ...manualData, email });
+      const res = await api.post("/faculty", {
+        ...manualData,
+        email,
+        department: deptResolved.code || null,
+      });
       setMessage("✅ Faculty Added Successfully");
       setCreateSuccess({
         email: res.data.data?.email || res.data.email || email,
@@ -515,13 +548,19 @@ export default function Faculty() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-600 mb-2">Department</label>
-                  <input
+                  <label className="block text-sm font-medium text-gray-600 mb-2">
+                    Department
+                  </label>
+                  <FacultyDepartmentSelect
                     value={manualData.department}
-                    onChange={(e) => setManualData({ ...manualData, department: e.target.value })}
-                    placeholder="e.g. CSE, IT"
-                    className="w-full h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                    onChange={(code) =>
+                      setManualData({ ...manualData, department: code })
+                    }
+                    placeholder="Search department name or code…"
                   />
+                  <p className="mt-1 text-xs text-gray-500">
+                    Select from the predefined list (optional).
+                  </p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-600 mb-2">Email (@kct.ac.in) *</label>
@@ -548,7 +587,9 @@ export default function Faculty() {
                 <div className="p-3 rounded-lg bg-blue-50 border border-blue-100 text-xs sm:text-sm text-blue-900">
                   <p className="font-semibold mb-1">Download Template First</p>
                   <p className="mb-2">
-                    Use the official Excel template to avoid header mismatches and skipped rows.
+                    Columns: NAME, DEPT, MAIL. DEPT accepts a predefined code (e.g. CSE, IT,
+                    AI &amp; DS) or full department name. Blank DEPT is allowed; unknown
+                    values are rejected with a row-level error.
                   </p>
                   <button
                     type="button"
@@ -680,13 +721,16 @@ export default function Faculty() {
                       </td>
                       <td className="px-4 md:px-6 py-3 md:py-4 text-gray-600">
                         {isEditing ? (
-                          <input
-                            type="text"
-                            value={editForm.department}
-                            onChange={(e) => handleEditFormChange("department", e.target.value)}
-                            className="w-full min-w-[100px] h-9 px-2 rounded-lg border border-gray-200 text-sm"
-                            aria-label="Department"
-                          />
+                          <div className="min-w-[220px]">
+                            <FacultyDepartmentSelect
+                              value={editForm.department || ""}
+                              onChange={(code) =>
+                                handleEditFormChange("department", code)
+                              }
+                              className="[&_input]:h-9 [&_input]:text-sm"
+                              aria-label="Department"
+                            />
+                          </div>
                         ) : (
                           f.department || "—"
                         )}

@@ -1,0 +1,17 @@
+[
+  { "name": "Computer Science and Engineering", "code": "CSE" },
+  { "name": "Information Technology", "code": "IT" },
+  { "name": "Artificial Intelligence and Data Science", "code": "AI & DS" },
+  { "name": "Electronics and Communication Engineering", "code": "ECE" },
+  { "name": "Electrical and Electronics Engineering", "code": "EEE" },
+  { "name": "Civil Engineering", "code": "CE" },
+  { "name": "Mechanical Engineering", "code": "ME" },
+  { "name": "Mechatronics Engineering", "code": "MC" },
+  { "name": "Fashion Technology", "code": "FT" },
+  { "name": "Textile Technology", "code": "TT" },
+  { "name": "Biotechnology", "code": "BT" },
+  { "name": "Automobile Engineering", "code": "AU" },
+  { "name": "Aeronautical Engineering", "code": "AE" },
+  { "name": "Electrical and Instrumentation Engineering", "code": "E&I" },
+  { "name": "School of Foundation Science", "code": "SFS" }
+]
