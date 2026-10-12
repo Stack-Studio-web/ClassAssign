@@ -323,6 +323,45 @@ export default function Faculty() {
     }
   };
 
+  const handleDeleteAllFaculty = async () => {
+    if (loading || deletingId) return;
+    const count = faculty.length;
+    if (count === 0) {
+      toast.info("There are no active faculty to remove.", "Nothing to delete");
+      return;
+    }
+    const ok = await showConfirm({
+      title: "Delete All Faculties?",
+      message: `Are you sure you want to remove all ${count} active faculty from management?\n\nThey will no longer be available for new allotments. Existing seating plans, attendance, reports, and exam history will be preserved.\n\nThis action cannot be undone from this screen.`,
+      confirmLabel: "Delete All Faculties",
+      cancelLabel: "Cancel",
+      destructive: true,
+    });
+    if (!ok) return;
+
+    setLoading(true);
+    setMessage("");
+    try {
+      const res = await api.delete("/import/delete-all-faculty");
+      const removed = res.data?.removed ?? count;
+      const msg =
+        res.data?.message ||
+        `Successfully removed ${removed} faculty record${removed === 1 ? "" : "s"}.`;
+      toast.success(msg, "Deleted");
+      setMessage(`✅ ${msg}`);
+      await fetchFaculty();
+      await fetchFacultyStats();
+    } catch (err) {
+      toast.error(
+        getApiError(err, "Failed to delete all faculties"),
+        getApiErrorTitle(err, "Delete failed")
+      );
+      setMessage(`❌ ${getApiError(err, "Failed to delete all faculties")}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   /* ================= FILTER & SORT ================= */
   const filteredFaculty = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
@@ -593,6 +632,14 @@ export default function Faculty() {
                 className="h-11 md:h-12 px-4 rounded-xl bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-medium text-sm shadow-sm transition-all duration-200"
               >
                 Sort: {sortOrder === "asc" ? "A–Z ↑" : "Z–A ↓"}
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteAllFaculty}
+                disabled={loading || faculty.length === 0}
+                className="h-11 md:h-12 px-4 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium text-sm shadow-sm transition-all duration-200"
+              >
+                {loading ? "Removing…" : "Delete All Faculties"}
               </button>
             </div>
           </div>

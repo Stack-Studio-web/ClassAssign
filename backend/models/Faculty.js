@@ -419,16 +419,72 @@ const Faculty = {
     }
   },
 
+  /**
+   * Soft-delete all active faculty in the caller's ownership scope.
+   * Preserves seating/attendance history (faculty rows stay; is_active=false).
+   * Also deactivates matching user login accounts.
+   * @returns {{ removed: number }}
+   */
   deleteAll: async (opts = {}) => {
+    try {
+      await db.query(
+        `ALTER TABLE faculty ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE`
+      );
+      await db.query(
+        `ALTER TABLE faculty ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ NULL`
+      );
+    } catch (_) {
+      /* ignore */
+    }
+
     const { sql: ownerSql, params: ownerParams } = ownerWhereFromOpts(opts);
-    // Soft-delete all in scope (preserve history)
-    return db.query(
-      `UPDATE faculty
-       SET is_active = FALSE, is_available = FALSE, deleted_at = CURRENT_TIMESTAMP
-       ${ownerSql || "WHERE 1=1"}
-       AND ${ACTIVE_ONLY_SQL}`,
-      ownerParams
-    );
+    const whereBase = ownerSql || "WHERE 1=1";
+
+    const conn = await db.getConnection();
+    try {
+      await conn.beginTransaction();
+
+      const [emails] = await conn.query(
+        `SELECT email FROM faculty
+         ${whereBase}
+           AND ${ACTIVE_ONLY_SQL}
+           AND email IS NOT NULL
+           AND TRIM(email) <> ''`,
+        ownerParams
+      );
+
+      const [result] = await conn.query(
+        `UPDATE faculty
+         SET is_active = FALSE,
+             is_available = FALSE,
+             deleted_at = CURRENT_TIMESTAMP
+         ${whereBase}
+           AND ${ACTIVE_ONLY_SQL}`,
+        ownerParams
+      );
+      const removed = Number(result?.affectedRows ?? result?.rowCount ?? 0) || 0;
+
+      const emailList = (Array.isArray(emails) ? emails : [])
+        .map((r) => String(r.email || "").trim().toLowerCase())
+        .filter(Boolean);
+      if (emailList.length > 0) {
+        const placeholders = emailList.map(() => "?").join(", ");
+        await conn.query(
+          `UPDATE users
+           SET is_active = FALSE
+           WHERE LOWER(TRIM(email)) IN (${placeholders})`,
+          emailList
+        );
+      }
+
+      await conn.commit();
+      return { removed };
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
   },
 
   /* =====================================

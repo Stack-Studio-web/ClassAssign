@@ -6,7 +6,7 @@ import AttendanceSheetPrintView, {
   ATTENDANCE_SHEET_PRINT_STYLES,
 } from "./AttendanceSheetPrintView";
 import {
-  generateAttendanceSheetPdfBlob,
+  generateAttendanceSheetPdfBytes,
   preloadAttendanceLogos,
 } from "../lib/generateAttendanceSheetPdf";
 import {
@@ -37,7 +37,16 @@ const safeFilePart = (value) =>
   String(value || "")
     .trim()
     .replace(/\s+/g, "_")
-    .replace(/[^a-zA-Z0-9._-]/g, "");
+    .replace(/[^a-zA-Z0-9._-]/g, "") || "sheet";
+
+const splitExamTime = (examTime) => {
+  const raw = String(examTime || "").trim();
+  const parts = raw.split(/\s*[-–—]\s*/);
+  return {
+    startTime: normalizeTime(parts[0] || ""),
+    endTime: normalizeTime(parts[1] || ""),
+  };
+};
 
 export const StudentAttendance = () => {
   const [seatingPlans, setSeatingPlans] = useState([]);
@@ -321,6 +330,8 @@ export const StudentAttendance = () => {
   };
 
   const handleDownloadZip = async () => {
+    if (zipping) return;
+
     let data = sheets.length
       ? {
           sheets,
@@ -328,12 +339,16 @@ export const StudentAttendance = () => {
           examDate: filters.date,
           examSession: filters.session,
           examType: filters.examType,
-          startTime: filters.examTime.split("-")[0],
-          endTime: filters.examTime.split("-")[1],
         }
       : await fetchBulkSheets();
 
-    if (!data?.sheets?.length) return;
+    if (!data?.sheets?.length) {
+      setError(
+        data?.error ||
+          "No venues with assigned students found for this allotment."
+      );
+      return;
+    }
 
     setZipping(true);
     setError(null);
@@ -345,47 +360,77 @@ export const StudentAttendance = () => {
       ]);
 
       const zip = new JSZip();
-      const [startTime, endTime] = filters.examTime.split("-");
+      const { startTime, endTime } = splitExamTime(filters.examTime);
       const folderName = [
         safeFilePart(filters.examType || data.examType || "Exam"),
-        safeFilePart(filters.date),
-        safeFilePart(filters.session),
-        `${safeFilePart(startTime)}-${safeFilePart(endTime)}`,
+        safeFilePart(filters.date || data.examDate || "date"),
+        safeFilePart(filters.session || data.examSession || "session"),
+        `${safeFilePart(startTime || "start")}-${safeFilePart(endTime || "end")}`,
       ].join("_");
       const folder = zip.folder(folderName);
       const category = filters.examType || data.examType || categoryLabel;
+      const sheetErrors = [];
+      let pdfCount = 0;
 
       for (const sheet of data.sheets) {
+        const hall = sheet.hallNo || "venue";
         try {
-          const verification = await createReportVerification("Attendance Sheet", {
-            hallNo: sheet.hallNo,
-            examType: category,
-            date: filters.date,
-            session: filters.session,
-            examTime: filters.examTime,
-          });
+          // Verification must not block PDF generation — a failed e-verify
+          // previously discarded the PDF and wrote only an error .txt into the ZIP.
+          let verification = null;
+          try {
+            verification = await createReportVerification("Attendance Sheet", {
+              hallNo: hall,
+              examType: category,
+              date: filters.date,
+              session: filters.session,
+              examTime: filters.examTime,
+            });
+          } catch (verifyErr) {
+            console.warn(`Verification create skipped for ${hall}:`, verifyErr);
+          }
 
-          const pdfBlob = await generateAttendanceSheetPdfBlob(
+          const pdfBytes = await generateAttendanceSheetPdfBytes(
             sheet,
             category,
             logos,
             verification
           );
-          await finalizePdfVerification(verification, pdfBlob);
 
-          const fileName = `${safeFilePart(sheet.hallNo)}_Attendance_Sheet.pdf`;
-          folder.file(fileName, pdfBlob);
+          if (!(pdfBytes instanceof ArrayBuffer) || pdfBytes.byteLength < 5) {
+            throw new Error("PDF generator returned empty output");
+          }
+
+          const pdfView = new Uint8Array(pdfBytes);
+          // PDF magic: %PDF
+          if (
+            pdfView[0] !== 0x25 ||
+            pdfView[1] !== 0x50 ||
+            pdfView[2] !== 0x44 ||
+            pdfView[3] !== 0x46
+          ) {
+            throw new Error("PDF generator returned non-PDF bytes");
+          }
+
+          const fileName = `${safeFilePart(hall)}_Attendance_Sheet.pdf`;
+          folder.file(fileName, pdfView, { binary: true });
+          pdfCount += 1;
+
+          if (verification?.uuid) {
+            finalizePdfVerification(
+              verification,
+              new Blob([pdfView], { type: "application/pdf" })
+            ).catch((finalizeErr) => {
+              console.warn(`Verification finalize skipped for ${hall}:`, finalizeErr);
+            });
+          }
         } catch (venueErr) {
-          console.error(`Failed PDF for ${sheet.hallNo}:`, venueErr);
-          folder.file(
-            `_ERROR_${safeFilePart(sheet.hallNo)}.txt`,
-            `Failed to generate attendance sheet for ${sheet.hallNo}.\n${venueErr.message || ""}`
-          );
-          setError((prev) =>
-            [prev, `Failed to generate attendance sheet for ${sheet.hallNo}.`]
-              .filter(Boolean)
-              .join(" ")
-          );
+          console.error(`Failed PDF for ${hall}:`, venueErr);
+          const msg = `Failed to generate attendance sheet for ${hall}. ${
+            venueErr?.message || ""
+          }`.trim();
+          sheetErrors.push(msg);
+          folder.file(`_ERROR_${safeFilePart(hall)}.txt`, msg);
         }
       }
 
@@ -394,17 +439,45 @@ export const StudentAttendance = () => {
         folder.file("_ERRORS.txt", notes);
       }
 
-      const zipBlob = await zip.generateAsync({ type: "blob" });
-      saveAs(zipBlob, `${folderName}.zip`);
+      if (pdfCount === 0) {
+        throw new Error(
+          sheetErrors[0] ||
+            "No attendance sheet PDFs could be generated for this export."
+        );
+      }
 
-      if (data.failures?.length) {
-        setError((prev) =>
-          [prev, ...data.failures.map((f) => f.error)].filter(Boolean).join(" ")
+      const zipBlob = await zip.generateAsync({
+        type: "blob",
+        compression: "DEFLATE",
+        compressionOptions: { level: 6 },
+        mimeType: "application/zip",
+      });
+
+      // Sanity-check ZIP local-file header (PK..)
+      const zipHead = new Uint8Array(await zipBlob.slice(0, 2).arrayBuffer());
+      if (zipHead[0] !== 0x50 || zipHead[1] !== 0x4b) {
+        throw new Error("Generated archive is not a valid ZIP file.");
+      }
+
+      saveAs(zipBlob, `attendance-sheets_${folderName}.zip`);
+
+      const warnings = [
+        ...sheetErrors,
+        ...(data.failures || []).map((f) => f.error).filter(Boolean),
+      ];
+      if (warnings.length) {
+        setError(
+          `Downloaded ${pdfCount} sheet(s) with warnings: ${warnings.join(" ")}`
         );
       }
     } catch (err) {
       console.error("ZIP generation failed:", err);
-      setError(err.message || "Failed to generate attendance sheet ZIP.");
+      setError(
+        err?.response?.data?.error ||
+          err?.response?.data?.message ||
+          err.message ||
+          "Failed to generate attendance sheet ZIP."
+      );
     } finally {
       setZipping(false);
     }

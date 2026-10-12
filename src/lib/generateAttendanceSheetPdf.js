@@ -518,6 +518,25 @@ export async function generateAttendanceSheetPdfBlob(
 }
 
 /**
+ * Generate PDF bytes for ZIP packing (more reliable than Blob in JSZip).
+ * @returns {Promise<Uint8Array>}
+ */
+export async function generateAttendanceSheetPdfBytes(
+  attendanceData,
+  category,
+  logos = null,
+  verification = null
+) {
+  const pdf = await buildAttendanceSheetPdf(
+    attendanceData,
+    category,
+    logos,
+    verification
+  );
+  return pdf.output("arraybuffer");
+}
+
+/**
  * Preload logos once for multi-venue ZIP generation.
  */
 export async function preloadAttendanceLogos() {

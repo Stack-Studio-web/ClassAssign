@@ -359,12 +359,21 @@ router.post("/import-students", sessionAuth, checkRole(["admin", "faculty_inchar
 ===================================================== */
 router.delete("/delete-all-faculty", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
   try {
-    await Faculty.deleteAll(await resolveOwnerOpts(req));
-    res.json({ message: "Successfully deleted all faculty records." });
+    const result = await Faculty.deleteAll(await resolveOwnerOpts(req));
+    const removed = Number(result?.removed ?? 0) || 0;
+    res.json({
+      success: true,
+      message:
+        removed > 0
+          ? `Successfully removed ${removed} faculty record${removed === 1 ? "" : "s"} from active management.`
+          : "No active faculty records to remove.",
+      removed,
+    });
   } catch (error) {
+    console.error("DELETE ALL FACULTY:", error?.message || error);
     res.status(500).json({
+      success: false,
       message: "Server error during faculty deletion.",
-      error: error.message
     });
   }
 });
