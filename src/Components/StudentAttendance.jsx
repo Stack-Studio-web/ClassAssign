@@ -1,17 +1,13 @@
 import React, { useEffect, useState, useRef, useMemo } from "react";
+import { flushSync } from "react-dom";
 import api from "../lib/api";
 import { useReactToPrint } from "react-to-print";
-import { PrinterIcon, ArrowDownTrayIcon } from "@heroicons/react/24/outline";
+import { PrinterIcon } from "@heroicons/react/24/outline";
 import AttendanceSheetPrintView, {
   ATTENDANCE_SHEET_PRINT_STYLES,
 } from "./AttendanceSheetPrintView";
 import {
-  generateAttendanceSheetPdfBytes,
-  preloadAttendanceLogos,
-} from "../lib/generateAttendanceSheetPdf";
-import {
   createReportVerification,
-  finalizePdfVerification,
   HALLORA_VERIFY_PRINT_CSS,
 } from "../lib/reportVerification";
 import HalloraVerifiedFooter from "./HalloraVerifiedFooter";
@@ -33,28 +29,13 @@ const normalizeTime = (t) => {
   return `${m[1].padStart(2, "0")}:${m[2]}`;
 };
 
-const safeFilePart = (value) =>
-  String(value || "")
-    .trim()
-    .replace(/\s+/g, "_")
-    .replace(/[^a-zA-Z0-9._-]/g, "") || "sheet";
-
-const splitExamTime = (examTime) => {
-  const raw = String(examTime || "").trim();
-  const parts = raw.split(/\s*[-–—]\s*/);
-  return {
-    startTime: normalizeTime(parts[0] || ""),
-    endTime: normalizeTime(parts[1] || ""),
-  };
-};
-
 export const StudentAttendance = () => {
   const [seatingPlans, setSeatingPlans] = useState([]);
   const [sheets, setSheets] = useState([]);
   const [failures, setFailures] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadingSheets, setLoadingSheets] = useState(false);
-  const [zipping, setZipping] = useState(false);
+  const [printing, setPrinting] = useState(false);
   const [error, setError] = useState(null);
   const [showPreview, setShowPreview] = useState(false);
   const [previewVerification, setPreviewVerification] = useState(null);
@@ -329,157 +310,51 @@ export const StudentAttendance = () => {
     }
   };
 
-  const handleDownloadZip = async () => {
-    if (zipping) return;
-
-    let data = sheets.length
-      ? {
-          sheets,
-          failures,
-          examDate: filters.date,
-          examSession: filters.session,
-          examType: filters.examType,
-        }
-      : await fetchBulkSheets();
-
-    if (!data?.sheets?.length) {
-      setError(
-        data?.error ||
-          "No venues with assigned students found for this allotment."
-      );
-      return;
-    }
-
-    setZipping(true);
+  /** Load sheets (if needed) then print all venues in the existing Hallora format. */
+  const handlePrintAllSheets = async () => {
+    if (printing || loadingSheets) return;
+    setPrinting(true);
     setError(null);
     try {
-      const [{ default: JSZip }, { saveAs }, logos] = await Promise.all([
-        import("jszip"),
-        import("file-saver"),
-        preloadAttendanceLogos(),
-      ]);
+      let data = sheets.length
+        ? { sheets, failures }
+        : await fetchBulkSheets();
 
-      const zip = new JSZip();
-      const { startTime, endTime } = splitExamTime(filters.examTime);
-      const folderName = [
-        safeFilePart(filters.examType || data.examType || "Exam"),
-        safeFilePart(filters.date || data.examDate || "date"),
-        safeFilePart(filters.session || data.examSession || "session"),
-        `${safeFilePart(startTime || "start")}-${safeFilePart(endTime || "end")}`,
-      ].join("_");
-      const folder = zip.folder(folderName);
-      const category = filters.examType || data.examType || categoryLabel;
-      const sheetErrors = [];
-      let pdfCount = 0;
-
-      for (const sheet of data.sheets) {
-        const hall = sheet.hallNo || "venue";
-        try {
-          // Verification must not block PDF generation — a failed e-verify
-          // previously discarded the PDF and wrote only an error .txt into the ZIP.
-          let verification = null;
-          try {
-            verification = await createReportVerification("Attendance Sheet", {
-              hallNo: hall,
-              examType: category,
-              date: filters.date,
-              session: filters.session,
-              examTime: filters.examTime,
-            });
-          } catch (verifyErr) {
-            console.warn(`Verification create skipped for ${hall}:`, verifyErr);
-          }
-
-          const pdfBytes = await generateAttendanceSheetPdfBytes(
-            sheet,
-            category,
-            logos,
-            verification
-          );
-
-          if (!(pdfBytes instanceof ArrayBuffer) || pdfBytes.byteLength < 5) {
-            throw new Error("PDF generator returned empty output");
-          }
-
-          const pdfView = new Uint8Array(pdfBytes);
-          // PDF magic: %PDF
-          if (
-            pdfView[0] !== 0x25 ||
-            pdfView[1] !== 0x50 ||
-            pdfView[2] !== 0x44 ||
-            pdfView[3] !== 0x46
-          ) {
-            throw new Error("PDF generator returned non-PDF bytes");
-          }
-
-          const fileName = `${safeFilePart(hall)}_Attendance_Sheet.pdf`;
-          folder.file(fileName, pdfView, { binary: true });
-          pdfCount += 1;
-
-          if (verification?.uuid) {
-            finalizePdfVerification(
-              verification,
-              new Blob([pdfView], { type: "application/pdf" })
-            ).catch((finalizeErr) => {
-              console.warn(`Verification finalize skipped for ${hall}:`, finalizeErr);
-            });
-          }
-        } catch (venueErr) {
-          console.error(`Failed PDF for ${hall}:`, venueErr);
-          const msg = `Failed to generate attendance sheet for ${hall}. ${
-            venueErr?.message || ""
-          }`.trim();
-          sheetErrors.push(msg);
-          folder.file(`_ERROR_${safeFilePart(hall)}.txt`, msg);
-        }
-      }
-
-      if (data.failures?.length) {
-        const notes = data.failures.map((f) => f.error || f.venue).join("\n");
-        folder.file("_ERRORS.txt", notes);
-      }
-
-      if (pdfCount === 0) {
-        throw new Error(
-          sheetErrors[0] ||
-            "No attendance sheet PDFs could be generated for this export."
-        );
-      }
-
-      const zipBlob = await zip.generateAsync({
-        type: "blob",
-        compression: "DEFLATE",
-        compressionOptions: { level: 6 },
-        mimeType: "application/zip",
-      });
-
-      // Sanity-check ZIP local-file header (PK..)
-      const zipHead = new Uint8Array(await zipBlob.slice(0, 2).arrayBuffer());
-      if (zipHead[0] !== 0x50 || zipHead[1] !== 0x4b) {
-        throw new Error("Generated archive is not a valid ZIP file.");
-      }
-
-      saveAs(zipBlob, `attendance-sheets_${folderName}.zip`);
-
-      const warnings = [
-        ...sheetErrors,
-        ...(data.failures || []).map((f) => f.error).filter(Boolean),
-      ];
-      if (warnings.length) {
+      if (!data?.sheets?.length) {
         setError(
-          `Downloaded ${pdfCount} sheet(s) with warnings: ${warnings.join(" ")}`
+          data?.error ||
+            "No venues with assigned students found for this allotment."
         );
+        return;
       }
+
+      let verification = null;
+      try {
+        verification = await createReportVerification("Attendance Sheet", {
+          examType: filters.examType,
+          date: filters.date,
+          session: filters.session,
+          examTime: filters.examTime,
+          venueCount: data.sheets.length,
+        });
+      } catch (err) {
+        console.error("Verification create failed:", err);
+      }
+
+      flushSync(() => {
+        setPreviewVerification(verification);
+        setShowPreview(true);
+      });
+      handlePrint();
     } catch (err) {
-      console.error("ZIP generation failed:", err);
+      console.error("Print all sheets failed:", err);
       setError(
         err?.response?.data?.error ||
-          err?.response?.data?.message ||
-          err.message ||
-          "Failed to generate attendance sheet ZIP."
+          err?.message ||
+          "Failed to print attendance sheets."
       );
     } finally {
-      setZipping(false);
+      setPrinting(false);
     }
   };
 
@@ -662,7 +537,7 @@ export const StudentAttendance = () => {
             <button
               type="button"
               onClick={handlePreview}
-              disabled={!slotReady || loadingSheets || zipping}
+              disabled={!slotReady || loadingSheets || printing}
               className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm py-2.5 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
             >
               <PrinterIcon className="h-5 w-5" />
@@ -670,12 +545,14 @@ export const StudentAttendance = () => {
             </button>
             <button
               type="button"
-              onClick={handleDownloadZip}
-              disabled={!slotReady || loadingSheets || zipping}
+              onClick={handlePrintAllSheets}
+              disabled={!slotReady || loadingSheets || printing}
               className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl border border-blue-600 text-blue-700 hover:bg-blue-50 font-semibold text-sm py-2.5 disabled:border-gray-300 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors"
             >
-              <ArrowDownTrayIcon className="h-5 w-5" />
-              {zipping ? "Creating ZIP…" : "Download ZIP"}
+              <PrinterIcon className="h-5 w-5" />
+              {printing || loadingSheets
+                ? "Preparing…"
+                : "Print all sheets (existing format)"}
             </button>
           </div>
 
@@ -697,11 +574,12 @@ export const StudentAttendance = () => {
               </p>
               <button
                 type="button"
-                onClick={handlePrint}
-                className="mt-2 inline-flex items-center gap-2 text-sm font-semibold text-blue-700 hover:text-blue-900"
+                onClick={handlePrintAllSheets}
+                disabled={printing || loadingSheets}
+                className="mt-2 inline-flex items-center gap-2 text-sm font-semibold text-blue-700 hover:text-blue-900 disabled:text-gray-400"
               >
                 <PrinterIcon className="h-4 w-4" />
-                Print all sheets (existing format)
+                {printing ? "Preparing…" : "Print all sheets (existing format)"}
               </button>
             </div>
           )}
