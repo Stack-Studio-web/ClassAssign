@@ -41,6 +41,48 @@ export function parseAcademicApiError(err, context = {}) {
     };
   }
 
+  if (code === "BATCH_HAS_REPORTS") {
+    return {
+      message:
+        "This batch cannot be deleted because reports have already been generated for it. Keep the batch to preserve report integrity.",
+      code: "BATCH_HAS_REPORTS",
+    };
+  }
+
+  if (code === "BATCH_HAS_STUDENTS") {
+    return {
+      message:
+        "This batch contains students and cannot be deleted. Mark it as completed instead.",
+      code: "BATCH_HAS_STUDENTS",
+    };
+  }
+
+  if (code === "BATCH_HAS_TIMETABLE") {
+    return {
+      message:
+        "This batch cannot be deleted because timetable entries reference it. Remove those schedules first.",
+      code: "BATCH_HAS_TIMETABLE",
+    };
+  }
+
+  if (code === "BATCH_HAS_ATTENDANCE") {
+    return {
+      message:
+        "This batch cannot be deleted because locked attendance records exist for its students.",
+      code: "BATCH_HAS_ATTENDANCE",
+    };
+  }
+
+  if (code === "BATCH_HAS_DEPENDENCIES") {
+    return {
+      message:
+        text.length < 200
+          ? text
+          : "This batch cannot be deleted because related academic records still reference it.",
+      code: "BATCH_HAS_DEPENDENCIES",
+    };
+  }
+
   if (DUPLICATE_SEMESTER_PATTERNS.some((p) => p.test(text))) {
     const type = context.semesterType || "this type";
     return {

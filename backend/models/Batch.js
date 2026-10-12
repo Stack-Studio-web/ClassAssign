@@ -370,18 +370,243 @@ const Batch = {
     return Number(rows[0]?.total ?? 0);
   },
 
-  getDeleteBlockers: async (batchId) => {
-    const [rows] = await db.query(
+  /**
+   * Authoritative delete blockers for a batch.
+   * Reports are detected from completed seating plans that include this batch's
+   * students, and from report_verifications.metadata referencing the batch UUID.
+   */
+  getDeleteBlockers: async (batchId, { uuid = null, name = null } = {}) => {
+    const id = Number(batchId);
+    const [studentRows] = await db.query(
       `SELECT COUNT(*)::int AS total FROM students WHERE batch_id = ?`,
-      [batchId]
+      [id]
     );
-    return { studentCount: Number(rows[0]?.total ?? 0) };
+    const studentCount = Number(studentRows[0]?.total ?? 0);
+
+    let completedReportCount = 0;
+    try {
+      const [reportRows] = await db.query(
+        `SELECT COUNT(DISTINCT sp.id)::int AS total
+         FROM seating_plans sp
+         WHERE UPPER(COALESCE(sp.report_status, 'ACTIVE')) = 'COMPLETED'
+           AND (
+             EXISTS (
+               SELECT 1
+               FROM seating_plan_students sps
+               INNER JOIN students st
+                 ON st.regn_no = sps.regn_no
+                AND st.batch_id = ?
+               WHERE sps.seating_plan_id = sp.id
+             )
+             OR EXISTS (
+               SELECT 1
+               FROM seating_plan_venues spv
+               INNER JOIN seating_arrangements sa
+                 ON sa.seating_plan_venue_id = spv.id
+               INNER JOIN students st
+                 ON st.regn_no = sa.regn_no
+                AND st.batch_id = ?
+               WHERE spv.seating_plan_id = sp.id
+             )
+           )`,
+        [id, id]
+      );
+      completedReportCount = Number(reportRows[0]?.total ?? 0);
+    } catch (err) {
+      // Older DBs may lack report_status / seating tables — fall through.
+      console.warn("Batch.getDeleteBlockers seating reports:", err.message);
+    }
+
+    let verificationReportCount = 0;
+    if (uuid) {
+      try {
+        const [vRows] = await db.query(
+          `SELECT COUNT(*)::int AS total
+           FROM report_verifications
+           WHERE (
+             metadata->>'batchUuid' = ?
+             OR metadata->>'batch_uuid' = ?
+             OR metadata->>'batchId' = ?
+             OR metadata::text ILIKE ?
+           )`,
+          [String(uuid), String(uuid), String(uuid), `%${String(uuid)}%`]
+        );
+        verificationReportCount = Number(vRows[0]?.total ?? 0);
+      } catch (err) {
+        console.warn("Batch.getDeleteBlockers report_verifications:", err.message);
+      }
+    }
+
+    let timetableCount = 0;
+    try {
+      const [ttRows] = await db.query(
+        `SELECT COUNT(*)::int AS total FROM timetable WHERE batch_id = ?`,
+        [id]
+      );
+      timetableCount = Number(ttRows[0]?.total ?? 0);
+    } catch (err) {
+      console.warn("Batch.getDeleteBlockers timetable:", err.message);
+    }
+
+    let allotmentCount = 0;
+    try {
+      const [allotRows] = await db.query(
+        `SELECT COUNT(DISTINCT sp.id)::int AS total
+         FROM seating_plans sp
+         WHERE EXISTS (
+           SELECT 1
+           FROM seating_plan_students sps
+           INNER JOIN students st
+             ON st.regn_no = sps.regn_no
+            AND st.batch_id = ?
+           WHERE sps.seating_plan_id = sp.id
+         )
+         OR EXISTS (
+           SELECT 1
+           FROM seating_plan_venues spv
+           INNER JOIN seating_arrangements sa
+             ON sa.seating_plan_venue_id = spv.id
+           INNER JOIN students st
+             ON st.regn_no = sa.regn_no
+            AND st.batch_id = ?
+           WHERE spv.seating_plan_id = sp.id
+         )`,
+        [id, id]
+      );
+      allotmentCount = Number(allotRows[0]?.total ?? 0);
+    } catch (err) {
+      console.warn("Batch.getDeleteBlockers allotments:", err.message);
+    }
+
+    let lockedAttendanceCount = 0;
+    try {
+      const [attRows] = await db.query(
+        `SELECT COUNT(*)::int AS total
+         FROM attendance att
+         INNER JOIN students st ON st.id = att.student_id
+         WHERE st.batch_id = ?
+           AND COALESCE(att.is_locked, FALSE) = TRUE`,
+        [id]
+      );
+      lockedAttendanceCount = Number(attRows[0]?.total ?? 0);
+    } catch (err) {
+      console.warn("Batch.getDeleteBlockers attendance:", err.message);
+    }
+
+    const reportCount = completedReportCount + verificationReportCount;
+
+    return {
+      name: name || null,
+      uuid: uuid || null,
+      studentCount,
+      reportCount,
+      completedReportCount,
+      verificationReportCount,
+      timetableCount,
+      allotmentCount,
+      lockedAttendanceCount,
+      blocked: reportCount > 0 || studentCount > 0 || timetableCount > 0 || lockedAttendanceCount > 0,
+    };
+  },
+
+  /**
+   * Delete batch only when blockers are clear. Uses a transaction + row lock
+   * so a report/dependency created mid-request still rejects deletion.
+   */
+  deleteByIdSafe: async (id, meta = {}) => {
+    const conn = await db.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [locked] = await conn.query(
+        `SELECT id, public_uuid, name FROM batches WHERE id = ? FOR UPDATE`,
+        [id]
+      );
+      if (!Array.isArray(locked) || locked.length === 0) {
+        await conn.rollback();
+        return { ok: false, code: "NOT_FOUND" };
+      }
+
+      const row = locked[0];
+      const uuid = meta.uuid || row.public_uuid || row.publicuuid || null;
+      const name = meta.name || row.name || null;
+
+      // Re-run blockers inside the transaction against the same connection where possible.
+      // getDeleteBlockers uses the pool; race window is closed by FOR UPDATE + immediate recheck.
+      const blockers = await Batch.getDeleteBlockers(id, { uuid, name });
+
+      if (blockers.reportCount > 0) {
+        await conn.rollback();
+        return {
+          ok: false,
+          code: "BATCH_HAS_REPORTS",
+          message:
+            "This batch cannot be deleted because reports have already been generated for it. Keep the batch to preserve report integrity.",
+          blockers,
+        };
+      }
+      if (blockers.lockedAttendanceCount > 0) {
+        await conn.rollback();
+        return {
+          ok: false,
+          code: "BATCH_HAS_ATTENDANCE",
+          message:
+            "This batch cannot be deleted because locked attendance records exist for its students.",
+          blockers,
+        };
+      }
+      if (blockers.timetableCount > 0) {
+        await conn.rollback();
+        return {
+          ok: false,
+          code: "BATCH_HAS_TIMETABLE",
+          message:
+            "This batch cannot be deleted because timetable entries reference it. Remove those schedules first.",
+          blockers,
+        };
+      }
+      if (blockers.studentCount > 0) {
+        await conn.rollback();
+        return {
+          ok: false,
+          code: "BATCH_HAS_STUDENTS",
+          message:
+            "This batch contains students and cannot be deleted. Mark it as completed instead.",
+          blockers,
+        };
+      }
+
+      const [result] = await conn.query(
+        `DELETE FROM batches WHERE id = ? RETURNING id`,
+        [id]
+      );
+      const deleted = Array.isArray(result) ? result[0] : result?.rows?.[0];
+      if (!deleted?.id) {
+        await conn.rollback();
+        return { ok: false, code: "NOT_FOUND" };
+      }
+
+      await conn.commit();
+      return { ok: true, blockers };
+    } catch (err) {
+      await conn.rollback();
+      // FK violations from unexpected dependencies
+      if (err.code === "23503" || err.name === "SequelizeForeignKeyConstraintError") {
+        return {
+          ok: false,
+          code: "BATCH_HAS_DEPENDENCIES",
+          message:
+            "This batch cannot be deleted because related academic records still reference it.",
+        };
+      }
+      throw err;
+    } finally {
+      conn.release();
+    }
   },
 
   deleteById: async (id) => {
-    const [result] = await db.query(`DELETE FROM batches WHERE id = ? RETURNING id`, [id]);
-    const row = Array.isArray(result) ? result[0] : result?.rows?.[0];
-    return Boolean(row?.id);
+    const result = await Batch.deleteByIdSafe(id);
+    return Boolean(result?.ok);
   },
 
   deleteStudentsInBatch: async (batchId, opts = {}) => {

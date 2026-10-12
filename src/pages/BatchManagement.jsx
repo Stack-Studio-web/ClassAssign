@@ -36,6 +36,7 @@ export default function BatchManagementPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingBatch, setEditingBatch] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [deletingBatchId, setDeletingBatchId] = useState(null);
   const importRef = useRef(null);
 
   const hasYearSemester = Boolean(selectedYear?.uuid && selectedSemester?.uuid);
@@ -125,30 +126,37 @@ export default function BatchManagementPage() {
   };
 
   const handleDeleteBatch = async (batch) => {
-    if ((batch.studentCount ?? 0) > 0) {
-      toast.warning(
-        "This batch contains students and cannot be deleted. Mark it as completed instead.",
-        "Cannot delete"
-      );
-      return;
-    }
+    if (deletingBatchId || busy) return;
+
     const ok = await showConfirm({
-      title: "Delete batch?",
-      message: `Permanently remove batch "${batch.name}"? This only works for empty batches.`,
-      confirmLabel: "Delete",
+      title: "Delete Batch?",
+      message: `Are you sure you want to delete batch ${batch.name}? This action cannot be undone.`,
+      confirmLabel: "Delete Batch",
+      cancelLabel: "Cancel",
       destructive: true,
     });
     if (!ok) return;
+
     setBusy(true);
+    setDeletingBatchId(batch.uuid);
     try {
       await deleteBatch(batch.uuid);
       if (selectedBatch?.uuid === batch.uuid) selectBatch(null);
       await refreshBatches(selectedSemester.uuid);
-      toast.success("Batch deleted", "Deleted");
+      toast.success("Batch deleted successfully.", "Deleted");
     } catch (err) {
       const parsed = parseAcademicApiError(err);
-      toast.error(parsed.message, "Error");
+      const code = parsed.code || err?.response?.data?.code;
+      if (code === "BATCH_HAS_REPORTS") {
+        toast.error(
+          "This batch cannot be deleted because reports have already been generated for it. Keep the batch to preserve report integrity.",
+          "Cannot Delete Batch"
+        );
+      } else {
+        toast.error(parsed.message, "Cannot Delete Batch");
+      }
     } finally {
+      setDeletingBatchId(null);
       setBusy(false);
     }
   };

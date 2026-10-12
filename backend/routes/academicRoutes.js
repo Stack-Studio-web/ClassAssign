@@ -387,18 +387,24 @@ router.delete(
         return Api.forbidden(res, "You can only delete batches in your Academic Context.");
       }
       if (!(await assertSemesterMutableByBatchInternalId(row.id, res))) return;
-      const blockers = await Batch.getDeleteBlockers(row.id);
-      if (blockers.studentCount > 0) {
+
+      const result = await Batch.deleteByIdSafe(row.id, {
+        uuid: req.params.uuid,
+      });
+
+      if (!result.ok) {
+        if (result.code === "NOT_FOUND") {
+          return Api.notFound(res, "Batch not found");
+        }
         return Api.conflict(
           res,
-          "BATCH_HAS_STUDENTS",
-          "This batch contains students and cannot be deleted. Mark it as completed instead.",
-          blockers
+          result.code || "BATCH_HAS_DEPENDENCIES",
+          result.message || "This batch cannot be deleted.",
+          result.blockers || undefined
         );
       }
-      const deleted = await Batch.deleteById(row.id);
-      if (!deleted) return Api.notFound(res, "Batch not found");
-      return Api.success(res, "Batch deleted", { deleted: true });
+
+      return Api.success(res, "Batch deleted successfully.", { deleted: true });
     } catch (err) {
       return Api.fromError(res, err, "Failed to delete batch.");
     }
