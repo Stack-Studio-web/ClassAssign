@@ -7,8 +7,16 @@ import KSI from "../assets/KSI logo.png";
  * Layout helpers use plain CSS (no Tailwind) so html2canvas ZIP export
  * does not hit unsupported oklch() colors from Tailwind v4.
  */
-export default function AttendanceSheetPrintView({ attendanceData, category }) {
+export default function AttendanceSheetPrintView({
+  attendanceData,
+  category,
+  logoType = "KSI",
+}) {
   if (!attendanceData?.courses?.length) return null;
+
+  // KSI: left KCT crest + right KSI logo (existing). KCT: drop right logo, expand title to end.
+  const showKsiLogo = logoType !== "KCT";
+  const titleColSpan = showKsiLogo ? 3 : 4;
 
   return (
     <>
@@ -31,15 +39,17 @@ export default function AttendanceSheetPrintView({ attendanceData, category }) {
                   <td rowSpan="2" className="att-w-12 att-center att-bold">
                     <img src={KCT} alt="KCT Logo" width={80} />
                   </td>
-                  <td colSpan="3" className="att-center att-bold att-sm">
+                  <td colSpan={titleColSpan} className="att-center att-bold att-sm">
                     KUMARAGURU COLLEGE OF TECHNOLOGY, COIMBATORE - 49
                   </td>
-                  <td rowSpan="2" className="att-w-15 att-center att-bold att-xs">
-                    <img src={KSI} alt="KSI Logo" width={100} height={60} />
-                  </td>
+                  {showKsiLogo ? (
+                    <td rowSpan="2" className="att-w-15 att-center att-bold att-xs">
+                      <img src={KSI} alt="KSI Logo" width={100} height={60} />
+                    </td>
+                  ) : null}
                 </tr>
                 <tr>
-                  <td colSpan="3" className="att-center att-bold att-sm">
+                  <td colSpan={titleColSpan} className="att-center att-bold att-sm">
                     ATTENDANCE SHEET
                   </td>
                 </tr>

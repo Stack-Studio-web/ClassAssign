@@ -47,11 +47,24 @@ export const StudentAttendance = () => {
     examTime: "",
   });
 
+  const getInitialLogoType = () => {
+    if (typeof window === "undefined") return "KSI";
+    return window.localStorage.getItem("kctLogoType") || "KSI";
+  };
+  const [logoType, setLogoType] = useState(getInitialLogoType);
+
+  const handleLogoChange = (value) => {
+    setLogoType(value);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("kctLogoType", value);
+    }
+  };
+
   const printRef = useRef();
 
   const handlePrint = useReactToPrint({
     contentRef: printRef,
-    documentTitle: "KCT_Attendance_Sheet",
+    documentTitle: `${logoType}_Attendance_Sheet`,
     pageStyle: `
       @page {
         size: A4;
@@ -380,7 +393,20 @@ export const StudentAttendance = () => {
         </div>
 
         <div className="px-4 md:px-6 pb-4 space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">
+                Logo
+              </label>
+              <select
+                value={logoType}
+                onChange={(e) => handleLogoChange(e.target.value)}
+                className="w-full border border-gray-300 px-3 py-2 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              >
+                <option value="KSI">KSI</option>
+                <option value="KCT">KCT</option>
+              </select>
+            </div>
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">
                 Exam Type
@@ -610,6 +636,7 @@ export const StudentAttendance = () => {
               key={sheet.hallNo}
               attendanceData={sheet}
               category={categoryLabel}
+              logoType={logoType}
             />
           ))}
         {showPreview && previewVerification ? (
