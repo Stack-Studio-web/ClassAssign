@@ -1,16 +1,10 @@
 /**
- * Authoritative faculty department list (shared/facultyDepartments.json).
+ * Faculty department list (./facultyDepartments.json — Docker-safe path).
+ * Keep in sync with src/lib/facultyDepartments.json.
  * Stored representation on faculty.department: the department **code**
  * (e.g. CSE, IT, AI & DS) — matches the Excel DEPT column convention.
  */
-const path = require("path");
-const FACULTY_DEPARTMENTS = require(path.join(
-  __dirname,
-  "..",
-  "..",
-  "shared",
-  "facultyDepartments.json"
-));
+const FACULTY_DEPARTMENTS = require("./facultyDepartments.json");
 
 function normalizeDeptKey(value) {
   return String(value || "")

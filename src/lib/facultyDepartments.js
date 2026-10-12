@@ -1,8 +1,9 @@
 /**
- * Faculty departments — single list from shared/facultyDepartments.json.
+ * Faculty departments — list from ./facultyDepartments.json (Docker-safe path).
+ * Keep in sync with backend/utils/facultyDepartments.json.
  * Stored DB value: department **code** (e.g. CSE, IT, AI & DS).
  */
-import FACULTY_DEPARTMENTS_RAW from "../../shared/facultyDepartments.json";
+import FACULTY_DEPARTMENTS_RAW from "./facultyDepartments.json";
 
 export const FACULTY_DEPARTMENTS = FACULTY_DEPARTMENTS_RAW.map((d) => ({
   name: d.name,
