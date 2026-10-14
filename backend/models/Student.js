@@ -130,6 +130,12 @@ function buildStudentListQuery(filters = {}, opts = {}) {
   if (batchId != null && batchId !== "") {
     conditions.push("st.batch_id = ?");
     params.push(Number(batchId));
+  } else if (filters.semesterId != null && filters.semesterId !== "") {
+    // All batches within a semester (Student Browser "All Batches")
+    conditions.push(
+      "st.batch_id IN (SELECT b.id FROM batches b WHERE b.semester_id = ?)"
+    );
+    params.push(Number(filters.semesterId));
   }
 
   const createdByUserId = filters.createdByUserId;
@@ -246,6 +252,40 @@ const Student = {
     );
     const row = Array.isArray(rows) ? rows[0] : rows;
     return Number(row?.total ?? row?.TOTAL ?? 0);
+  },
+
+  /**
+   * Read-only export rows matching list filters (no pagination).
+   * Columns align with student_import_template_CORRECT.xlsx.
+   */
+  listForExport: async (filters = {}, opts = {}) => {
+    const { whereSql, params, fromClause } = buildStudentListQuery(filters, opts);
+    const orderBy = resolveSort(filters.sortBy || "regnNo", filters.sortOrder || "asc");
+    const maxRows = Math.min(
+      100000,
+      Math.max(1, Number(filters.maxRows) || 100000)
+    );
+
+    const [rows] = await db.query(
+      `SELECT
+        st.regn_no AS regnNo,
+        st.student_name AS studentName,
+        st.course_description AS courseDescription,
+        st.course_name AS courseName,
+        st.email
+      ${fromClause}${whereSql}
+      ORDER BY ${orderBy}
+      LIMIT ?`,
+      [...params, maxRows]
+    );
+
+    return (rows || []).map((row) => ({
+      regnNo: row.regnno ?? row.regnNo ?? "",
+      studentName: row.studentname ?? row.studentName ?? "",
+      courseDescription: row.coursedescription ?? row.courseDescription ?? "",
+      courseName: row.coursename ?? row.courseName ?? "",
+      email: row.email ?? "",
+    }));
   },
 
   listPaginated: async (filters = {}, opts = {}) => {

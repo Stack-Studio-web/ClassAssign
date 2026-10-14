@@ -1,8 +1,10 @@
 // Class/backend/routes/studentRoutes.js - FIXED VERSION
 const express = require("express");
 const router = express.Router();
+const xlsx = require("xlsx");
 const Student = require("../models/Student");
 const Batch = require("../models/Batch");
+const Semester = require("../models/Semester");
 const db = require("../config/db");
 const { whereClause, andClause } = require("../utils/ownerFilter");
 const sessionAuth = require("../middleware/sessionAuth");
@@ -19,6 +21,24 @@ const {
   assertSemesterMutableByBatchInternalId,
   assertSemesterMutableByStudentInternalId,
 } = require("../utils/semesterGuards");
+
+/** Exact headers/order from format/student_import_template_CORRECT.xlsx */
+const STUDENT_IMPORT_HEADERS = [
+  "Regn. No.",
+  "Student Name",
+  "Course Description",
+  "Course Name",
+  "Email",
+];
+
+function safeFilenamePart(value, fallback = "export") {
+  const cleaned = String(value || "")
+    .trim()
+    .replace(/[^\w\-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_|_$/g, "");
+  return cleaned || fallback;
+}
 
 async function resolveAccessibleBatchId(batchUuid, req, res) {
   if (!batchUuid) return null;
@@ -120,6 +140,82 @@ router.get("/course-stats", sessionAuth, checkRole(["admin", "faculty_incharge",
     return Api.success(res, "Student course stats", result);
   } catch (error) {
     return Api.fromError(res, error, "Failed to load course stats.");
+  }
+});
+
+/**
+ * GET /students/export
+ * Read-only Excel export matching the student import template columns.
+ * Filters: batchId (uuid), semesterId (uuid, for All Batches), department, search, courseDescription.
+ */
+router.get("/export", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), async (req, res) => {
+  try {
+    const filters = {
+      search: req.query.search || "",
+      department: req.query.department || "",
+      courseName: req.query.courseName || "",
+      courseDescription: req.query.courseDescription || "",
+      sortBy: "regnNo",
+      sortOrder: "asc",
+    };
+
+    let batchLabel = "all_batches";
+    if (req.query.batchId) {
+      const batchInternalId = await resolveAccessibleBatchId(req.query.batchId, req, res);
+      if (batchInternalId == null && res.headersSent) return;
+      if (!batchInternalId) return Api.notFound(res, "Batch not found");
+      filters.batchId = batchInternalId;
+      batchLabel = String(req.query.batchLabel || "batch").trim() || "batch";
+    } else if (req.query.semesterId) {
+      const sem = await Semester.getInternalIdByUuid(req.query.semesterId);
+      if (!sem?.id) {
+        return Api.notFound(res, "Semester not found");
+      }
+      filters.semesterId = sem.id;
+      batchLabel = "all_batches";
+    }
+
+    const rows = await Student.listForExport(filters, await resolveOwnerOpts(req));
+    if (!rows.length) {
+      return res.status(404).json({
+        message: "No student records found for the selected filters.",
+      });
+    }
+
+    const sheetRows = rows.map((r) => ({
+      "Regn. No.": r.regnNo ?? "",
+      "Student Name": r.studentName ?? "",
+      "Course Description": r.courseDescription ?? "",
+      "Course Name": r.courseName ?? "",
+      Email: r.email ?? "",
+    }));
+
+    const wb = xlsx.utils.book_new();
+    const ws = xlsx.utils.json_to_sheet(sheetRows, { header: STUDENT_IMPORT_HEADERS });
+    ws["!cols"] = [
+      { wch: 14 },
+      { wch: 28 },
+      { wch: 16 },
+      { wch: 36 },
+      { wch: 32 },
+    ];
+    xlsx.utils.book_append_sheet(wb, ws, "student_import_template_CORRECT");
+    const buffer = xlsx.write(wb, { type: "buffer", bookType: "xlsx" });
+
+    const deptPart = filters.department
+      ? `_${safeFilenamePart(filters.department)}`
+      : "";
+    const filename = `students_${safeFilenamePart(batchLabel)}${deptPart}.xlsx`;
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    return res.send(buffer);
+  } catch (error) {
+    console.error("GET /students/export:", error);
+    return Api.fromError(res, error, "Failed to export students.");
   }
 });
 

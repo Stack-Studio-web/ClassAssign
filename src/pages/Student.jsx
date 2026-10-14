@@ -23,9 +23,10 @@ import { CourseStudentTable } from "../Components/student-browser/CourseStudentT
 import { StudentDrawer } from "../Components/student-browser/StudentDrawer";
 import { getSortFromPreset } from "../Components/student-browser/StudentFilterToolbar";
 import { StudentEmptyState } from "../Components/student-browser/StudentEmptyState";
-import { Search, ArrowLeft } from "lucide-react";
+import { Search, ArrowLeft, Download } from "lucide-react";
 import { Input } from "../Components/ui/Input";
 import { Button } from "../Components/ui/Button";
+import { downloadStudentsExcel } from "../lib/studentsApi";
 
 const EMPTY_FILTERS = {
   courseName: "",
@@ -64,6 +65,7 @@ export default function StudentBrowserPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [selectedStudentUuid, setSelectedStudentUuid] = useState(null);
+  const [exporting, setExporting] = useState(false);
 
   const debouncedSearch = useDebouncedValue(searchQuery, 400);
   const { sortBy, sortOrder } = getSortFromPreset(sortPreset);
@@ -290,6 +292,42 @@ export default function StudentBrowserPage() {
     setSelectedStudentUuid(null);
   }, []);
 
+  const handleExportExcel = async () => {
+    if (!canBrowse) {
+      toast.error("Select an Academic Year and Semester first.", "Export");
+      return;
+    }
+    if (!effectiveBatchId && !selectedSemester?.uuid) {
+      toast.error("Select a semester (or batch) before exporting.", "Export");
+      return;
+    }
+
+    const batchMeta = effectiveBatchId
+      ? batches.find((b) => b.uuid === effectiveBatchId)
+      : null;
+
+    setExporting(true);
+    try {
+      await downloadStudentsExcel({
+        batchId: effectiveBatchId || undefined,
+        batchLabel: batchMeta?.name || undefined,
+        semesterId: !effectiveBatchId ? selectedSemester?.uuid : undefined,
+        department: departmentFilter || undefined,
+        search: courseSelected ? debouncedSearch || undefined : undefined,
+        courseDescription: courseSelected ? selectedCourseCode || undefined : undefined,
+        courseName: courseSelected ? filters.courseName || undefined : undefined,
+      });
+      toast.success("Student Excel downloaded", "Export");
+    } catch (err) {
+      toast.error(
+        err?.message || "No student records found for the selected filters.",
+        "Export failed"
+      );
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const courseTitle =
     selectedCourse?.courseName || filters.courseName || selectedCourseCode || "Course";
   const courseStudentCount = selectedCourse?.count ?? pagination.totalItems ?? 0;
@@ -330,6 +368,29 @@ export default function StudentBrowserPage() {
           onBatchChange={handleBatchChange}
           onDepartmentChange={handleDepartmentChange}
         />
+
+        {canBrowse && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-gray-100 bg-white px-4 py-3 shadow-sm">
+            <p className="text-sm text-gray-600">
+              Export uses the same columns as the student import template
+              (Regn. No., Student Name, Course Description, Course Name, Email).
+              {effectiveBatchId
+                ? " Current batch filter is applied."
+                : " All batches in the selected semester are included."}
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={exporting}
+              onClick={handleExportExcel}
+              className="gap-2 shrink-0"
+            >
+              <Download className="h-4 w-4" aria-hidden />
+              {exporting ? "Exporting…" : "Export Excel"}
+            </Button>
+          </div>
+        )}
 
         {!canBrowse ? (
           <p className="text-sm text-gray-500">

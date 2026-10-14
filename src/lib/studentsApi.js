@@ -166,6 +166,86 @@ function escapeCsvCell(value) {
   return s;
 }
 
+async function readBlobErrorMessage(data, fallback) {
+  if (!data) return fallback;
+  try {
+    const text =
+      typeof data === "string"
+        ? data
+        : typeof Blob !== "undefined" && data instanceof Blob
+          ? await data.text()
+          : JSON.stringify(data);
+    const parsed = JSON.parse(text);
+    return parsed.message || parsed.error || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Export students as .xlsx matching the import template
+ * (Regn. No. | Student Name | Course Description | Course Name | Email).
+ * Backend applies batch / semester / department / search filters.
+ */
+export async function downloadStudentsExcel(params = {}) {
+  try {
+    const res = await api.get("/students/export", {
+      params: {
+        ...(params.batchId ? { batchId: params.batchId } : {}),
+        ...(params.batchLabel ? { batchLabel: params.batchLabel } : {}),
+        ...(params.semesterId ? { semesterId: params.semesterId } : {}),
+        ...(params.department ? { department: params.department } : {}),
+        ...(params.search ? { search: params.search } : {}),
+        ...(params.courseDescription
+          ? { courseDescription: params.courseDescription }
+          : {}),
+        ...(params.courseName ? { courseName: params.courseName } : {}),
+      },
+      responseType: "blob",
+    });
+
+    const contentType = res.headers["content-type"] || "";
+    if (
+      contentType.includes("application/json") ||
+      (typeof Blob !== "undefined" &&
+        res.data instanceof Blob &&
+        res.data.type &&
+        res.data.type.includes("json"))
+    ) {
+      throw new Error(
+        await readBlobErrorMessage(
+          res.data,
+          "No student records found for the selected filters."
+        )
+      );
+    }
+
+    const blob = new Blob([res.data], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const cd = res.headers["content-disposition"];
+    const match = cd?.match(/filename="(.+)"/);
+    a.download = match?.[1] || "students_export.xlsx";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    if (err?.response?.data) {
+      throw new Error(
+        await readBlobErrorMessage(
+          err.response.data,
+          err.message || "No student records found for the selected filters."
+        )
+      );
+    }
+    throw err;
+  }
+}
+
 /** Export all students in a batch as CSV (scoped by batch UUID). */
 export async function exportStudentsCsv(batchUuid, batchLabel = "batch") {
   if (!batchUuid) throw new Error("Batch UUID is required for export.");
