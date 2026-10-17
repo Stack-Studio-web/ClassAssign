@@ -555,7 +555,7 @@ const Faculty = {
    * Capacity and time conflict are checked separately.
    * @param {object} opts
    * @param {boolean} [opts.ignoreCapacity=false] - When true (faculty transfer),
-   *   skip normal allocation-limit check; still enforce time overlap / active status.
+   *   skip normal allocation-limit check; still enforce same-day conflict / active status.
    */
   validateFacultyForAllocation: async (
     facultyId,
@@ -567,6 +567,7 @@ const Faculty = {
       excludeSeatingPlanId = null,
       excludeSpvId = null,
       ignoreCapacity = false,
+      forUpdate = false,
     } = {},
     executor = db
   ) => {
@@ -609,7 +610,8 @@ const Faculty = {
       }
     }
 
-    if (examDate && examStartTime && examEndTime) {
+    // Same calendar day = conflict (times are informational only).
+    if (examDate) {
       const conflict = await findActiveTimeConflict(executor, {
         facultyId,
         examDate,
@@ -617,6 +619,7 @@ const Faculty = {
         examEndTime,
         excludeSeatingPlanId,
         excludeSpvId,
+        forUpdate,
       });
       if (conflict) {
         return {

@@ -237,7 +237,7 @@ async function checkReplacementAvailability({
     };
   }
 
-  // Transfer flow: ignore normal allocation capacity; only block on time overlap / status.
+  // Transfer flow: ignore normal allocation capacity; still block same-day / status.
   const validation = await Faculty.validateFacultyForAllocation(requestedFacultyId, {
     examDate,
     examStartTime: examStartTime || "00:00",
@@ -252,7 +252,8 @@ async function checkReplacementAvailability({
       return {
         available: false,
         message:
-          "Transfer unavailable. This faculty is already allocated during this time.",
+          validation.message ||
+          "Transfer unavailable. This faculty is already allotted to an exam on this date.",
         code: validation.code,
         conflict: validation.conflict || null,
       };

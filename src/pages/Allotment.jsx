@@ -8,6 +8,7 @@ import {
   validateAndRepairAutoFacultyPlan,
   validateAutoFacultyPlan,
   formatExamTimeRange,
+  buildSameDayConflictMessage,
 } from "../lib/autoFacultyAllocation";
 import { useToast } from "../context/ToastContext";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
@@ -1273,9 +1274,17 @@ const Allotment = () => {
           const msg =
             faculty?.conflictMessage ||
             (faculty?.hasTimeConflict
-              ? `${faculty.name} is unavailable for this exam time slot.`
+              ? buildSameDayConflictMessage({
+                  facultyName: faculty.name,
+                  venueName: faculty.conflictInfo?.venueName,
+                  examDate: faculty.conflictInfo?.examDate || examDate,
+                  examStartTime: faculty.conflictInfo?.examStartTime,
+                  examEndTime: faculty.conflictInfo?.examEndTime,
+                })
               : "One or more selected faculty are unavailable.");
-          return setError(msg);
+          setError(`Faculty Already Allotted\n${msg}`);
+          toast.error(msg, "Faculty Already Allotted");
+          return;
         }
         if (uses > Number(faculty.remaining ?? 0)) {
           return setError(
@@ -1405,13 +1414,22 @@ const Allotment = () => {
       if (err.isForbidden) {
         setError("Access denied: " + err.message);
       } else {
+        const data = err.response?.data;
         const errorMsg =
-          err.response?.data?.message ||
-          err.response?.data?.details ||
-          err.response?.data?.error ||
+          data?.message ||
+          data?.details ||
+          data?.error ||
           "Failed to save seating plan.";
-        setError(errorMsg);
-        toast.error(errorMsg);
+        const isSameDay =
+          data?.code === "TIME_CONFLICT" ||
+          data?.error === "Faculty Already Allotted";
+        if (isSameDay) {
+          setError(`Faculty Already Allotted\n${errorMsg}`);
+          toast.error(errorMsg, "Faculty Already Allotted");
+        } else {
+          setError(errorMsg);
+          toast.error(errorMsg);
+        }
       }
     } finally {
       setLoading(false);
@@ -2087,6 +2105,23 @@ const Allotment = () => {
                                 : "cursor-not-allowed opacity-60"
                             }`}
                             title={f.conflictMessage || undefined}
+                            onClick={(e) => {
+                              if (selectable || isSelected) return;
+                              if (f.hasTimeConflict) {
+                                e.preventDefault();
+                                const msg =
+                                  f.conflictMessage ||
+                                  buildSameDayConflictMessage({
+                                    facultyName: f.name,
+                                    venueName: f.conflictInfo?.venueName,
+                                    examDate:
+                                      f.conflictInfo?.examDate || examDate,
+                                    examStartTime: f.conflictInfo?.examStartTime,
+                                    examEndTime: f.conflictInfo?.examEndTime,
+                                  });
+                                toast.error(msg, "Faculty Already Allotted");
+                              }
+                            }}
                           >
                             <input
                               type="checkbox"
@@ -2104,7 +2139,7 @@ const Allotment = () => {
                               <span className="font-medium text-gray-800">{f.name}</span>
                               <span className="block text-[11px] text-gray-500">
                                 {f.hasTimeConflict
-                                  ? "Time conflict"
+                                  ? "Already allotted today"
                                   : f.isAvailable === false
                                     ? "Unavailable"
                                     : isFacultyUsedInOtherVenues(

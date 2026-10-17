@@ -1,6 +1,7 @@
 /**
  * Auto faculty allocation: intelligent assignment, validation, and repair.
- * Mirrors backend rules in facultyTimeConflict.js (examTimesOverlap).
+ * Mirrors backend same-day rule in facultyTimeConflict.js:
+ * one active invigilation allotment per faculty per calendar day.
  */
 
 export function normalizeExamTime(value) {
@@ -18,10 +19,17 @@ export function normalizeExamTime(value) {
 export function normalizeExamDateOnly(value) {
   if (!value) return null;
   const str = String(value).trim();
-  return str.includes("T") ? str.split("T")[0] : str;
+  return str.includes("T") ? str.split("T")[0] : str.slice(0, 10);
 }
 
-/** existingStart < newEnd AND existingEnd > newStart */
+/** YYYY-MM-DD → DD/MM/YYYY */
+export function formatDateDisplay(dateOnly) {
+  const m = String(dateOnly || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return String(dateOnly || "");
+  return `${m[3]}/${m[2]}/${m[1]}`;
+}
+
+/** Kept for venue occupancy helpers; faculty conflict uses same calendar day. */
 export function examTimesOverlap(existingStart, existingEnd, newStart, newEnd) {
   const es = normalizeExamTime(existingStart);
   const ee = normalizeExamTime(existingEnd);
@@ -87,21 +95,60 @@ export function formatExamTimeRange(examContext) {
   return `${start}–${end}`;
 }
 
+export function buildSameDayConflictMessage({
+  facultyName,
+  venueName,
+  examDate,
+  examStartTime,
+  examEndTime,
+}) {
+  const name = facultyName || "This faculty";
+  const venue = venueName || "another venue";
+  const date = formatDateDisplay(normalizeExamDateOnly(examDate));
+  const start = formatTime12h(examStartTime);
+  const end = formatTime12h(examEndTime);
+  const when =
+    start && end
+      ? ` at ${venue} (${start}–${end})`
+      : venue
+        ? ` at ${venue}`
+        : "";
+  const datePart = date ? ` on ${date}` : "";
+  return `${name} is already assigned to an exam${datePart}${when}. Please select another faculty member.`;
+}
+
+/** Same calendar day = conflict (times ignored). */
 function hasInMemoryExamConflict(busySlots, examContext) {
   const dateOnly = normalizeExamDateOnly(examContext.examDate);
-  const newStart = examContext.examStartTime;
-  const newOccupancyEnd = occupancyEndFromContext(examContext);
-  return (busySlots || []).some(
-    (slot) =>
-      slot.date === dateOnly &&
-      examTimesOverlap(slot.start, slot.end, newStart, newOccupancyEnd)
-  );
+  if (!dateOnly) return false;
+  return (busySlots || []).some((slot) => slot.date === dateOnly);
 }
 
 export function createAllocationRuntime(facultyPool) {
   const eligible = (facultyPool || []).filter(
     (f) => f.isAvailable !== false && Number(f.remaining ?? 0) > 0
   );
+  const busySlotsByFaculty = new Map();
+
+  // Seed from existing saved allotments reported by the availability API.
+  for (const f of facultyPool || []) {
+    const uuid = String(f.uuid);
+    const info = f.conflictInfo;
+    if (!info && !f.hasTimeConflict) continue;
+    const date =
+      normalizeExamDateOnly(info?.examDate) ||
+      normalizeExamDateOnly(info?.exam_date) ||
+      null;
+    if (!busySlotsByFaculty.has(uuid)) busySlotsByFaculty.set(uuid, []);
+    busySlotsByFaculty.get(uuid).push({
+      date,
+      start: info?.examStartTime ?? info?.exam_start_time ?? null,
+      end: info?.examEndTime ?? info?.exam_end_time ?? null,
+      venueName: info?.venueName ?? info?.venue_name ?? null,
+      venueUuid: null,
+    });
+  }
+
   return {
     availableFaculty: eligible,
     remainingSlots: new Map(
@@ -110,7 +157,7 @@ export function createAllocationRuntime(facultyPool) {
         Math.max(0, Number(f.remaining ?? 0)),
       ])
     ),
-    busySlotsByFaculty: new Map(),
+    busySlotsByFaculty,
     assignedInBatchByFaculty: new Map(),
   };
 }
@@ -156,7 +203,7 @@ export function itemHasStudents(item) {
 }
 
 /**
- * Intelligently assign faculty to each venue using capacity + time rules.
+ * Intelligently assign faculty to each venue using capacity + same-day rules.
  */
 export function runAutoFacultyAllocation(venueItems, facultyPool, examContext) {
   const runtime = createAllocationRuntime(facultyPool);
@@ -181,6 +228,7 @@ export function runAutoFacultyAllocation(venueItems, facultyPool, examContext) {
         facultyId: null,
         previewFacultyName: "Not Assigned",
         needsFaculty: true,
+        unfilledReason: `No eligible faculty remain for ${item.venue?.name || "this venue"} on ${formatDateDisplay(normalizeExamDateOnly(examContext.examDate))} (same-day invigilation already assigned or capacity exhausted).`,
       };
     }
 
@@ -190,6 +238,7 @@ export function runAutoFacultyAllocation(venueItems, facultyPool, examContext) {
       facultyId: faculty.uuid,
       previewFacultyName: `${faculty.name} (${faculty.department})`,
       needsFaculty: false,
+      unfilledReason: null,
     };
   });
 }
@@ -203,6 +252,8 @@ export function validateAutoFacultyPlan(venueItems, facultyPool, examContext) {
   const facultyUsage = new Map();
   const inPlanSchedules = new Map();
   const seenConflictKeys = new Set();
+  const dateOnly = normalizeExamDateOnly(examContext.examDate);
+  const dateDisplay = formatDateDisplay(dateOnly);
 
   const addConflict = (conflict) => {
     const key = `${conflict.type}:${conflict.message}`;
@@ -221,7 +272,9 @@ export function validateAutoFacultyPlan(venueItems, facultyPool, examContext) {
       unassigned.push({
         venueUuid,
         venueName,
-        message: `${venueName} has no available faculty for ${formatExamTimeRange(examContext)}.`,
+        message:
+          item.unfilledReason ||
+          `${venueName} has no eligible faculty on ${dateDisplay}. All available faculty are already allotted that day or at capacity.`,
       });
       continue;
     }
@@ -254,7 +307,13 @@ export function validateAutoFacultyPlan(venueItems, facultyPool, examContext) {
         facultyName: faculty.name,
         message:
           faculty.conflictMessage ||
-          `${faculty.name} has a time conflict with an existing active allocation.`,
+          buildSameDayConflictMessage({
+            facultyName: faculty.name,
+            venueName: faculty.conflictInfo?.venueName,
+            examDate: faculty.conflictInfo?.examDate || examContext.examDate,
+            examStartTime: faculty.conflictInfo?.examStartTime,
+            examEndTime: faculty.conflictInfo?.examEndTime,
+          }),
       });
     }
 
@@ -280,20 +339,18 @@ export function validateAutoFacultyPlan(venueItems, facultyPool, examContext) {
           message: `${faculty.name} cannot be assigned to both ${slot.venueName} and ${venueName} on the same seating plan.`,
         });
       }
-      if (
-        slot.date === normalizeExamDateOnly(examContext.examDate) &&
-        examTimesOverlap(
-          slot.start,
-          slot.end,
-          examContext.examStartTime,
-          occupancyEndFromContext(examContext)
-        )
-      ) {
+      if (slot.date === dateOnly) {
         addConflict({
-          type: "time_overlap",
+          type: "same_day",
           facultyName: faculty.name,
           venues: [slot.venueName, venueName],
-          message: `CONFLICT: ${faculty.name} is assigned to ${slot.venueName} and ${venueName} at overlapping times.`,
+          message: buildSameDayConflictMessage({
+            facultyName: faculty.name,
+            venueName: slot.venueName,
+            examDate: examContext.examDate,
+            examStartTime: slot.start,
+            examEndTime: slot.end,
+          }),
         });
       }
     }
@@ -301,7 +358,7 @@ export function validateAutoFacultyPlan(venueItems, facultyPool, examContext) {
     schedule.push({
       venueUuid,
       venueName,
-      date: normalizeExamDateOnly(examContext.examDate),
+      date: dateOnly,
       start: examContext.examStartTime,
       end: occupancyEndFromContext(examContext),
     });
@@ -384,9 +441,11 @@ export function repairAutoFacultyPlan(venueItems, facultyPool, examContext) {
       item.facultyId = faculty.uuid;
       item.previewFacultyName = `${faculty.name} (${faculty.department})`;
       item.needsFaculty = false;
+      item.unfilledReason = null;
     } else {
       item.previewFacultyName = "Not Assigned";
       item.needsFaculty = true;
+      item.unfilledReason = `No eligible faculty remain for ${item.venue?.name || "this venue"} on ${formatDateDisplay(normalizeExamDateOnly(examContext.examDate))} (same-day invigilation already assigned or capacity exhausted).`;
     }
   }
 

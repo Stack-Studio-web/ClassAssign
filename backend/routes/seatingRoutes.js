@@ -17,7 +17,11 @@ const auditLogger = require("../middleware/auditLogger");
 const { resolveEntity } = require("../middleware/resolvePublicId");
 const { TABLE, getPublicUuid, resolveInternalId } = require("../utils/publicId");
 const { ACTIVE_ALLOCATION_SQL } = require("../utils/facultyAllocationStatus");
-const { resolveOccupancyWindow } = require("../utils/facultyTimeConflict");
+const {
+  resolveOccupancyWindow,
+  findActiveSameDayConflictsBulk,
+  lockFacultyRowsForUpdate,
+} = require("../utils/facultyTimeConflict");
 
 async function resolveVenuesUsedIds(venuesUsed) {
   const resolved = [];
@@ -234,6 +238,11 @@ router.post(
         }
       }
 
+      // Lock faculty rows before same-day conflict checks so concurrent
+      // save-plan requests cannot assign the same faculty on one calendar day.
+      const facultyIdsToLock = [...slotsByFaculty.keys()];
+      await lockFacultyRowsForUpdate(connection, facultyIdsToLock);
+
       for (const [fId, slotsOnThisPlan] of slotsByFaculty.entries()) {
         const validation = await Faculty.validateFacultyForAllocation(
           fId,
@@ -253,7 +262,7 @@ router.post(
           return res.status(statusCode).json({
             error:
               validation.code === "TIME_CONFLICT"
-                ? "Faculty time conflict"
+                ? "Faculty Already Allotted"
                 : validation.code === "CAPACITY"
                   ? "Faculty allocation limit reached"
                   : "Faculty unavailable",
@@ -727,35 +736,33 @@ router.post("/check-faculty-availability",
          WHERE COALESCE(f.is_active, TRUE) = TRUE`
       );
 
-      const facultyStatus = await Promise.all(
-        allFaculty.map(async (f) => {
-          const conflict = await Faculty.findActiveTimeConflict({
-            facultyId: f.id,
-            examDate: dateOnly,
-            examStartTime,
-            examEndTime,
-          });
+      const conflictByFaculty = await findActiveSameDayConflictsBulk(db, {
+        facultyIds: (allFaculty || []).map((f) => f.id),
+        examDate: dateOnly,
+      });
 
-          const maxClassrooms = Number(f.max_classrooms ?? f.maxclassrooms ?? 1) || 1;
-          const currentAlloc = Number(f.current_allocation ?? f.currentallocation ?? 0) || 0;
-          const remaining = maxClassrooms - currentAlloc;
-          const facultyMarkedAvailable =
-            f.is_available !== false && f.isavailable !== false;
+      const facultyStatus = (allFaculty || []).map((f) => {
+        const conflict = conflictByFaculty.get(Number(f.id)) || null;
 
-          return {
-            uuid: f.public_uuid,
-            name: f.name,
-            department: f.department,
-            canAllocate: remaining > 0 && facultyMarkedAvailable,
-            hasTimeConflict: !!conflict,
-            conflictInfo: conflict,
-            conflictMessage: conflict?.message || null,
-            allocationsRemaining: remaining,
-            maxClassrooms,
-            currentAllocation: currentAlloc
-          };
-        })
-      );
+        const maxClassrooms = Number(f.max_classrooms ?? f.maxclassrooms ?? 1) || 1;
+        const currentAlloc = Number(f.current_allocation ?? f.currentallocation ?? 0) || 0;
+        const remaining = maxClassrooms - currentAlloc;
+        const facultyMarkedAvailable =
+          f.is_available !== false && f.isavailable !== false;
+
+        return {
+          uuid: f.public_uuid,
+          name: f.name,
+          department: f.department,
+          canAllocate: remaining > 0 && facultyMarkedAvailable,
+          hasTimeConflict: !!conflict,
+          conflictInfo: conflict,
+          conflictMessage: conflict?.message || null,
+          allocationsRemaining: remaining,
+          maxClassrooms,
+          currentAllocation: currentAlloc,
+        };
+      });
 
       const availableFaculty = facultyStatus.filter(
         f => f.canAllocate && !f.hasTimeConflict
