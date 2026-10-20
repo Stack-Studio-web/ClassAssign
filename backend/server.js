@@ -164,7 +164,6 @@ async function start() {
       await ensureAttendanceLifecycleSchema();
       await ensureSeatingReportSchema();
       await ensureSeatingVenueFacultySchema();
-      await ensureLabExamSchema();
       await ensureInvigilationEmailSchema();
       await ensureHallNotificationSchema();
       await ensureTransferSchema();
@@ -180,6 +179,7 @@ async function start() {
       await ensureStudentIndexes();
       await ensureBlockVenueSchema();
       await ensureUuidSchema();
+      await ensureLabExamSchema();
       await ensureReportVerificationSchema();
       await ensureTimetableSchema();
       await ensureFacultyActiveSchema();

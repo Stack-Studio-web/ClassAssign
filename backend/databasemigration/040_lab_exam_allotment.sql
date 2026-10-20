@@ -1,18 +1,9 @@
 -- LAB Exam Allotment module (draft → finalize → attendance via seating_plans)
+-- Prefer backend/utils/ensureLabExamSchema.js at runtime (no DO $$ blocks —
+-- the app DB wrapper cannot safely execute dollar-quoted PL/pgSQL).
 
 ALTER TABLE seating_plans
   ADD COLUMN IF NOT EXISTS plan_kind VARCHAR(10) NOT NULL DEFAULT 'hall';
-
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'seating_plans_plan_kind_check'
-  ) THEN
-    ALTER TABLE seating_plans
-      ADD CONSTRAINT seating_plans_plan_kind_check
-      CHECK (plan_kind IN ('hall', 'lab'));
-  END IF;
-END $$;
 
 CREATE INDEX IF NOT EXISTS idx_seating_plans_plan_kind ON seating_plans (plan_kind);
 
