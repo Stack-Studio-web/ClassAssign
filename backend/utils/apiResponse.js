@@ -51,23 +51,33 @@ function fromError(res, err, fallbackMessage = "Request failed") {
   }
   const pgCode = pgErrorCode(err);
   const msg = String(err?.message || "");
-  // undefined_table / undefined_column — common right after a failed schema ensure
+  // Explicit LAB schema gate
+  if (err?.code === "SCHEMA_NOT_READY") {
+    return fail(res, err.statusCode || 503, "SCHEMA_NOT_READY", err.message, err.details);
+  }
+  // Missing LAB relations only (not arbitrary SQL bugs like venues.department)
   if (
-    err?.code === "SCHEMA_NOT_READY" ||
     pgCode === "42P01" ||
-    pgCode === "42703" ||
-    /relation .* does not exist/i.test(msg) ||
-    /column .* does not exist/i.test(msg)
+    (/relation .* does not exist/i.test(msg) &&
+      /lab_exam|lab_slot/i.test(msg))
   ) {
     return fail(
       res,
       503,
       "SCHEMA_NOT_READY",
-      err.message && err.code === "SCHEMA_NOT_READY"
-        ? err.message
-        : msg && /does not exist/i.test(msg)
-          ? `LAB schema error: ${msg}. Retry once after API restart; if it persists, grant CREATE/ALTER on public to the DB user.`
-          : "LAB exam schema is incomplete. Restart the API and retry; check logs for ensureLabExamSchema warnings.",
+      `LAB schema error: ${msg}. Restart the API so ensureLabExamSchema can create missing tables, then retry.`,
+      err.details
+    );
+  }
+  if (
+    pgCode === "42703" &&
+    /plan_kind/i.test(msg)
+  ) {
+    return fail(
+      res,
+      503,
+      "SCHEMA_NOT_READY",
+      `LAB schema error: ${msg}. Restart the API so ensureLabExamSchema can add seating_plans.plan_kind, then retry.`,
       err.details
     );
   }

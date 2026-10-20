@@ -312,7 +312,11 @@ async function setSlotVenues(slotUuid, venueUuids = []) {
       lock: false,
     });
     const [vrows] = await db.query(
-      `SELECT id, public_uuid, name, department, capacity, block_id FROM venues WHERE id = ?`,
+      `SELECT v.id, v.public_uuid, v.name, v.capacity, v.block_id,
+              b.owning_department AS department
+       FROM venues v
+       LEFT JOIN blocks b ON b.id = v.block_id
+       WHERE v.id = ?`,
       [venueId]
     );
     const v = vrows?.[0];
@@ -329,7 +333,7 @@ async function setSlotVenues(slotUuid, venueUuids = []) {
       id: venueId,
       uuid: v.public_uuid,
       name: v.name,
-      department: v.department,
+      department: v.department ?? null,
       capacity: v.capacity,
     });
   }
@@ -373,8 +377,9 @@ async function listSlotVenues(slotUuid) {
     throw err;
   }
   const [rows] = await db.query(
-    `SELECT v.id, v.public_uuid, v.name, v.department, v.capacity, v.type,
-            b.name AS block_name
+    `SELECT v.id, v.public_uuid, v.name, v.capacity, v.type,
+            b.name AS block_name,
+            b.owning_department AS department
      FROM lab_slot_venues lsv
      JOIN venues v ON v.id = lsv.venue_id
      LEFT JOIN blocks b ON b.id = v.block_id
@@ -386,7 +391,7 @@ async function listSlotVenues(slotUuid) {
     id: v.id,
     uuid: v.public_uuid ?? v.publicuuid,
     name: v.name,
-    department: v.department,
+    department: v.department ?? null,
     capacity: v.capacity,
     type: v.type,
     blockName: v.block_name ?? v.blockname ?? null,
