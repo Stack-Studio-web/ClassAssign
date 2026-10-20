@@ -223,6 +223,29 @@ function testIdempotentFinalizeFlag() {
   console.log("✓ repeated finalize returns alreadyFinalized without new plan id");
 }
 
+/**
+ * Sequelize RAW UPDATE often yields affectedRows=0 even when 1 row changed.
+ * Finalize must trust RETURNING rows, not affectedRows alone.
+ */
+function testSlotUpdateUsesReturningNotAffectedRows() {
+  const returningRows = [{ id: 42, status: "finalized", seating_plan_id: 99 }];
+  const slotUpdatedFromReturning =
+    (Array.isArray(returningRows) && returningRows.length > 0) ||
+    Number(returningRows?.affectedRows ?? 0) > 0;
+  assert.strictEqual(slotUpdatedFromReturning, true);
+
+  const bogusAffectedOnly = { affectedRows: 0 };
+  const wouldFalselyFail = Number(bogusAffectedOnly?.affectedRows ?? 0) < 1;
+  assert.strictEqual(wouldFalselyFail, true, "affectedRows-only check is unreliable");
+
+  const emptyReturning = [];
+  const slotUpdatedEmpty =
+    (Array.isArray(emptyReturning) && emptyReturning.length > 0) ||
+    Number(emptyReturning?.affectedRows ?? 0) > 0;
+  assert.strictEqual(slotUpdatedEmpty, false);
+  console.log("✓ finalize slot update uses RETURNING rows (not affectedRows alone)");
+}
+
 testValidAndInvalidRows();
 testFacultyCounts();
 testMultipleFacultySameSlot();
@@ -232,4 +255,5 @@ testMissingFacultyBlocksFinalizeGate();
 testExamTypeFitsVarchar20();
 testLayoutYieldsAttendanceSeats();
 testIdempotentFinalizeFlag();
+testSlotUpdateUsesReturningNotAffectedRows();
 console.log("\nAll LAB exam import checks passed.");

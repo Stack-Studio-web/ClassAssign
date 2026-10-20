@@ -554,6 +554,9 @@ export default function LabAllotment() {
       setLoading(true);
       setError("");
       const { examUuid: eid, slotUuid: sid } = await ensureLabSlot();
+      if (!sid) {
+        throw new Error("LAB slot was not created. Save exam details and try again.");
+      }
       await api.put(`/lab-exams/slots/${sid}/venues`, {
         venueIds: selectedVenueIds,
       });
@@ -564,11 +567,14 @@ export default function LabAllotment() {
         });
       }
       const data = res.data?.data || res.data || {};
-      const serverStatus = data.slot?.status || data.examStatus || "finalized";
-      // Only mark finalized from server payload (never optimistic-only).
-      if (serverStatus !== "finalized" && !data.seatingPlanId && !data.seatingPlanUuid) {
+      const planOk = !!(data.seatingPlanId || data.seatingPlanUuid);
+      const slotStatusOk =
+        data.slot?.status === "finalized" || data.alreadyFinalized === true;
+      // Confirm from backend payload only (seating plan id or finalized slot).
+      if (!planOk && !slotStatusOk) {
         throw new Error(
-          "Server did not confirm finalization. Check the error details and try again."
+          res.data?.message ||
+            "Server did not confirm finalization (no seating plan id). Check network response and try again."
         );
       }
       setSlotStatus("finalized");
@@ -581,14 +587,18 @@ export default function LabAllotment() {
         slotStatus: "finalized",
       });
       await refreshStudents(sid);
-      // Re-fetch exam detail so reload/state matches DB.
       try {
         const detailRes = await api.get(`/lab-exams/${eid}`);
         const detail = detailRes.data?.data || detailRes.data;
         const slot = detail?.slots?.[0];
-        if (slot?.status) setSlotStatus(slot.status);
+        if (slot?.status === "finalized") {
+          setSlotStatus("finalized");
+        } else if (planOk || slotStatusOk) {
+          // Keep finalized if detail lag; do not downgrade from server success.
+          setSlotStatus("finalized");
+        }
       } catch {
-        /* keep status from finalize response */
+        setSlotStatus("finalized");
       }
       const already = data.alreadyFinalized
         ? "Already finalized (no duplicate capacity charge)."
@@ -597,9 +607,9 @@ export default function LabAllotment() {
       setError("");
     } catch (err) {
       const msg = getApiError(err, "Finalize failed");
+      console.error("LAB finalize failed:", err?.response?.data || err);
       toast.error(msg);
       setError(msg);
-      // Do not reset mappings / venues on failure — keep draft state.
     } finally {
       setLoading(false);
       setFinalizing(false);
@@ -1229,23 +1239,34 @@ export default function LabAllotment() {
                 <button
                   type="button"
                   onClick={handleFinalize}
-                  disabled={!canFinalize && !isFinalized}
+                  disabled={finalizing || (!canFinalize && !isFinalized)}
                   title={
-                    !canFinalize && !isFinalized
-                      ? "Complete mappings, venues, and exam details first"
-                      : ""
+                    finalizing
+                      ? "Finalization in progress"
+                      : !canFinalize && !isFinalized
+                        ? "Complete mappings, venues, and exam details first"
+                        : ""
                   }
                   className={`w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold shadow-sm transition-all min-h-[40px] ${
                     isFinalized
                       ? "bg-green-600 text-white cursor-default"
-                      : canFinalize
-                        ? "bg-indigo-600 text-white hover:bg-indigo-700"
-                        : "bg-gray-300 text-gray-600 cursor-not-allowed"
+                      : finalizing
+                        ? "bg-indigo-500 text-white cursor-wait"
+                        : canFinalize
+                          ? "bg-indigo-600 text-white hover:bg-indigo-700"
+                          : "bg-gray-300 text-gray-600 cursor-not-allowed"
                   }`}
                 >
-                  <CheckCircleIcon className="h-4 w-4" />
-                  {finalizing || loading
-                    ? "Finalizing…"
+                  {finalizing ? (
+                    <span
+                      className="h-4 w-4 rounded-full border-2 border-white border-t-transparent animate-spin"
+                      aria-hidden
+                    />
+                  ) : (
+                    <CheckCircleIcon className="h-4 w-4" />
+                  )}
+                  {finalizing
+                    ? "Finalizing LAB Allotment…"
                     : isFinalized
                       ? "LAB Allotment Finalized"
                       : "Finalize LAB Allotment"}

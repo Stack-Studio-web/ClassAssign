@@ -1107,14 +1107,19 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
       }
     }
 
-    const [slotUpdate] = await conn.query(
+    // Use RETURNING — Sequelize RAW often reports affectedRows=0 for UPDATE even when
+    // 1 row changed, which previously aborted finalize and rolled back the whole txn.
+    const [slotUpdateRows] = await conn.query(
       `UPDATE lab_exam_slots
        SET seating_plan_id = ?, status = 'finalized', updated_at = CURRENT_TIMESTAMP
-       WHERE id = ? AND seating_plan_id IS NULL`,
+       WHERE id = ? AND seating_plan_id IS NULL
+       RETURNING id, status, seating_plan_id`,
       [seatingPlanId, slot.id]
     );
-    const slotUpdated = Number(slotUpdate?.affectedRows ?? 0);
-    if (slotUpdated < 1) {
+    const slotUpdated =
+      (Array.isArray(slotUpdateRows) && slotUpdateRows.length > 0) ||
+      Number(slotUpdateRows?.affectedRows ?? 0) > 0;
+    if (!slotUpdated) {
       const err = new Error(
         "LAB slot was finalized concurrently. Refresh the page and retry if needed."
       );
