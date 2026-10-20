@@ -10,6 +10,9 @@ const { MAX_UPLOAD_BYTES, validateUploadedFile } = require("../utils/uploadValid
 const { importLimiter } = require("../middleware/rateLimiters");
 const LabExamService = require("../services/labExamService");
 const Venue = require("../models/venue");
+const {
+  ensureLabExamSchemaOrThrow,
+} = require("../utils/ensureLabExamSchema");
 
 const router = express.Router();
 const WRITE_ROLES = ["admin", "faculty_incharge"];
@@ -29,6 +32,18 @@ function assertValidUpload(req, res) {
   }
   return true;
 }
+
+/** Re-run schema ensure when a prior startup ensure failed (e.g. optional ALTER aborted). */
+async function requireLabSchema(req, res, next) {
+  try {
+    await ensureLabExamSchemaOrThrow();
+    return next();
+  } catch (err) {
+    return Api.fromError(res, err, "LAB schema not ready");
+  }
+}
+
+router.use(requireLabSchema);
 
 router.get("/", sessionAuth, checkRole(READ_ROLES), async (req, res) => {
   try {

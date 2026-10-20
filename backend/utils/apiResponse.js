@@ -52,12 +52,19 @@ function fromError(res, err, fallbackMessage = "Request failed") {
   const pgCode = pgErrorCode(err);
   const msg = String(err?.message || "");
   // undefined_table / undefined_column — common right after a failed schema ensure
-  if (pgCode === "42P01" || pgCode === "42703" || /relation .* does not exist/i.test(msg)) {
+  if (
+    pgCode === "42P01" ||
+    pgCode === "42703" ||
+    /relation .* does not exist/i.test(msg) ||
+    /column .* does not exist/i.test(msg)
+  ) {
     return fail(
       res,
       503,
       "SCHEMA_NOT_READY",
-      "LAB exam tables are not ready. Restart the API after deploying the latest schema ensure, then retry."
+      err.code === "SCHEMA_NOT_READY"
+        ? err.message
+        : "LAB exam schema is incomplete (missing table or plan_kind). Redeploy the API so ensureLabExamSchema can run, then retry the same action."
     );
   }
   if (isForeignKeyViolation(err)) {
