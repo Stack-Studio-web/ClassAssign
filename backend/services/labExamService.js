@@ -311,11 +311,10 @@ async function setSlotVenues(slotUuid, venueUuids = []) {
     const check = await Venue.checkAllotmentSlot(venueId, dateOnly, start, end, db, {
       lock: false,
     });
+    // venues has no department column; do not join optional block columns here.
     const [vrows] = await db.query(
-      `SELECT v.id, v.public_uuid, v.name, v.capacity, v.block_id,
-              b.owning_department AS department
+      `SELECT v.id, v.public_uuid, v.name, v.capacity, v.block_id
        FROM venues v
-       LEFT JOIN blocks b ON b.id = v.block_id
        WHERE v.id = ?`,
       [venueId]
     );
@@ -329,11 +328,15 @@ async function setSlotVenues(slotUuid, venueUuids = []) {
       });
       continue;
     }
+    if (!v) {
+      conflicts.push({ venueId: raw, message: "Venue not found" });
+      continue;
+    }
     resolved.push({
       id: venueId,
-      uuid: v.public_uuid,
+      uuid: v.public_uuid ?? v.publicuuid,
       name: v.name,
-      department: v.department ?? null,
+      department: null,
       capacity: v.capacity,
     });
   }
@@ -347,6 +350,12 @@ async function setSlotVenues(slotUuid, venueUuids = []) {
     throw err;
   }
 
+  if (!resolved.length) {
+    const err = new Error("Select at least one available venue");
+    err.statusCode = 400;
+    throw err;
+  }
+
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
@@ -354,14 +363,30 @@ async function setSlotVenues(slotUuid, venueUuids = []) {
     for (const v of resolved) {
       await conn.query(
         `INSERT INTO lab_slot_venues (lab_slot_id, venue_id) VALUES (?, ?)
-         ON CONFLICT DO NOTHING`,
+         ON CONFLICT (lab_slot_id, venue_id) DO NOTHING`,
         [slot.id, v.id]
       );
     }
     await conn.commit();
   } catch (e) {
-    await conn.rollback();
-    throw e;
+    try {
+      await conn.rollback();
+    } catch (_) {
+      /* ignore */
+    }
+    const msg = String(e?.message || e);
+    if (/lab_slot_venues/i.test(msg) && /does not exist/i.test(msg)) {
+      const err = new Error(
+        "LAB venue table is missing. Restart the API so ensureLabExamSchema can create lab_slot_venues, then retry."
+      );
+      err.statusCode = 503;
+      err.code = "SCHEMA_NOT_READY";
+      throw err;
+    }
+    const err = new Error(msg || "Failed to save LAB venues");
+    err.statusCode = 500;
+    err.code = "LAB_VENUE_SAVE_FAILED";
+    throw err;
   } finally {
     conn.release();
   }
@@ -378,8 +403,7 @@ async function listSlotVenues(slotUuid) {
   }
   const [rows] = await db.query(
     `SELECT v.id, v.public_uuid, v.name, v.capacity, v.type,
-            b.name AS block_name,
-            b.owning_department AS department
+            b.name AS block_name
      FROM lab_slot_venues lsv
      JOIN venues v ON v.id = lsv.venue_id
      LEFT JOIN blocks b ON b.id = v.block_id
@@ -391,7 +415,7 @@ async function listSlotVenues(slotUuid) {
     id: v.id,
     uuid: v.public_uuid ?? v.publicuuid,
     name: v.name,
-    department: v.department ?? null,
+    department: null,
     capacity: v.capacity,
     type: v.type,
     blockName: v.block_name ?? v.blockname ?? null,

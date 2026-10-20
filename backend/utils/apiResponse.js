@@ -69,17 +69,18 @@ function fromError(res, err, fallbackMessage = "Request failed") {
       err.details
     );
   }
-  if (
-    pgCode === "42703" &&
-    /plan_kind/i.test(msg)
-  ) {
-    return fail(
-      res,
-      503,
-      "SCHEMA_NOT_READY",
-      `LAB schema error: ${msg}. Restart the API so ensureLabExamSchema can add seating_plans.plan_kind, then retry.`,
-      err.details
-    );
+  if (pgCode === "42703" || /column .* does not exist/i.test(msg)) {
+    if (/plan_kind/i.test(msg)) {
+      return fail(
+        res,
+        503,
+        "SCHEMA_NOT_READY",
+        `LAB schema error: ${msg}. Restart the API so ensureLabExamSchema can add seating_plans.plan_kind, then retry.`,
+        err.details
+      );
+    }
+    // Surface real SQL column bugs instead of a generic 500.
+    return fail(res, 500, "UNDEFINED_COLUMN", msg);
   }
   if (isForeignKeyViolation(err)) {
     return conflict(
