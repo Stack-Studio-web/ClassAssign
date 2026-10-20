@@ -12,6 +12,7 @@ const LabExamService = require("../services/labExamService");
 const Venue = require("../models/venue");
 const {
   ensureLabExamSchemaOrThrow,
+  getSchemaStatus,
 } = require("../utils/ensureLabExamSchema");
 
 const router = express.Router();
@@ -32,6 +33,24 @@ function assertValidUpload(req, res) {
   }
   return true;
 }
+
+/** Diagnostic: which LAB schema pieces are present (admin / FI). Always available. */
+router.get(
+  "/schema-status",
+  sessionAuth,
+  checkRole(WRITE_ROLES),
+  async (_req, res) => {
+    try {
+      // Attempt repair, then report whatever is present.
+      const ensure = require("../utils/ensureLabExamSchema");
+      await ensure();
+      const status = await getSchemaStatus();
+      return Api.success(res, "LAB schema status", status);
+    } catch (err) {
+      return Api.fromError(res, err, "Failed to read LAB schema status");
+    }
+  }
+);
 
 /** Re-run schema ensure when a prior startup ensure failed (e.g. optional ALTER aborted). */
 async function requireLabSchema(req, res, next) {

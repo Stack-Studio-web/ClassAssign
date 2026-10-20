@@ -178,8 +178,9 @@ async function start() {
       await ensureMentorAuthSchema();
       await ensureStudentIndexes();
       await ensureBlockVenueSchema();
-      await ensureUuidSchema();
+      // LAB tables before UUID backfill so lab_* public_uuid ALTERs can succeed.
       await ensureLabExamSchema();
+      await ensureUuidSchema();
       await ensureReportVerificationSchema();
       await ensureTimetableSchema();
       await ensureFacultyActiveSchema();

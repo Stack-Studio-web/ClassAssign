@@ -53,6 +53,7 @@ function fromError(res, err, fallbackMessage = "Request failed") {
   const msg = String(err?.message || "");
   // undefined_table / undefined_column — common right after a failed schema ensure
   if (
+    err?.code === "SCHEMA_NOT_READY" ||
     pgCode === "42P01" ||
     pgCode === "42703" ||
     /relation .* does not exist/i.test(msg) ||
@@ -62,9 +63,12 @@ function fromError(res, err, fallbackMessage = "Request failed") {
       res,
       503,
       "SCHEMA_NOT_READY",
-      err.code === "SCHEMA_NOT_READY"
+      err.message && err.code === "SCHEMA_NOT_READY"
         ? err.message
-        : "LAB exam schema is incomplete (missing table or plan_kind). Redeploy the API so ensureLabExamSchema can run, then retry the same action."
+        : msg && /does not exist/i.test(msg)
+          ? `LAB schema error: ${msg}. Retry once after API restart; if it persists, grant CREATE/ALTER on public to the DB user.`
+          : "LAB exam schema is incomplete. Restart the API and retry; check logs for ensureLabExamSchema warnings.",
+      err.details
     );
   }
   if (isForeignKeyViolation(err)) {
