@@ -124,14 +124,45 @@ function hasInMemoryExamConflict(busySlots, examContext) {
   return (busySlots || []).some((slot) => slot.date === dateOnly);
 }
 
+export function facultyMaxCount(faculty) {
+  const explicit = Number(faculty?.maxClassrooms ?? faculty?.max_classrooms);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  const allocation = Math.max(0, Number(faculty?.allocation ?? 0) || 0);
+  const remaining = Math.max(0, Number(faculty?.remaining ?? 0) || 0);
+  return Math.max(1, allocation + remaining);
+}
+
+/** Highest remaining first; name then uuid for stable fair ties. */
+export function compareFacultyByRemaining(runtime, a, b) {
+  const ra = runtime.remainingSlots.get(String(a.uuid)) ?? 0;
+  const rb = runtime.remainingSlots.get(String(b.uuid)) ?? 0;
+  if (rb !== ra) return rb - ra;
+  const nameCmp = String(a.name || "").localeCompare(String(b.name || ""), undefined, {
+    sensitivity: "base",
+  });
+  if (nameCmp !== 0) return nameCmp;
+  return String(a.uuid).localeCompare(String(b.uuid));
+}
+
 export function createAllocationRuntime(facultyPool) {
-  const eligible = (facultyPool || []).filter(
-    (f) => f.isAvailable !== false && Number(f.remaining ?? 0) > 0
-  );
+  const pool = facultyPool || [];
+  const eligible = pool
+    .filter((f) => f.isAvailable !== false && Number(f.remaining ?? 0) > 0)
+    .sort((a, b) => {
+      const ra = Number(a.remaining ?? 0);
+      const rb = Number(b.remaining ?? 0);
+      if (rb !== ra) return rb - ra;
+      const nameCmp = String(a.name || "").localeCompare(String(b.name || ""), undefined, {
+        sensitivity: "base",
+      });
+      if (nameCmp !== 0) return nameCmp;
+      return String(a.uuid).localeCompare(String(b.uuid));
+    });
+
   const busySlotsByFaculty = new Map();
 
   // Seed from existing saved allotments reported by the availability API.
-  for (const f of facultyPool || []) {
+  for (const f of pool) {
     const uuid = String(f.uuid);
     const info = f.conflictInfo;
     if (!info && !f.hasTimeConflict) continue;
@@ -152,24 +183,45 @@ export function createAllocationRuntime(facultyPool) {
   return {
     availableFaculty: eligible,
     remainingSlots: new Map(
-      eligible.map((f) => [
-        String(f.uuid),
-        Math.max(0, Number(f.remaining ?? 0)),
-      ])
+      pool.map((f) => [String(f.uuid), Math.max(0, Number(f.remaining ?? 0))])
+    ),
+    baseAllocation: new Map(
+      pool.map((f) => [String(f.uuid), Math.max(0, Number(f.allocation ?? 0))])
     ),
     busySlotsByFaculty,
     assignedInBatchByFaculty: new Map(),
   };
 }
 
-export function isFacultyEligibleForAutoAllocation(faculty, runtime, examContext) {
+/**
+ * @param {{ ignorePoolTimeConflict?: boolean }} [opts]
+ * When ignorePoolTimeConflict is true (multi-session planner), same-day
+ * unavailability comes only from busySlots / in-batch marks — not the
+ * single-date hasTimeConflict flag from the availability API.
+ */
+export function isFacultyEligibleForAutoAllocation(
+  faculty,
+  runtime,
+  examContext,
+  opts = {}
+) {
   const uuid = String(faculty.uuid);
   if ((runtime.remainingSlots.get(uuid) ?? 0) <= 0) return false;
   if (faculty.isAvailable === false) return false;
-  if (faculty.hasTimeConflict) return false;
+  if (!opts.ignorePoolTimeConflict && faculty.hasTimeConflict) return false;
   if (runtime.assignedInBatchByFaculty.has(uuid)) return false;
   const busy = runtime.busySlotsByFaculty.get(uuid) || [];
   return !hasInMemoryExamConflict(busy, examContext);
+}
+
+/** Prefer faculty with the highest live remaining count. */
+export function pickBestEligibleFaculty(runtime, examContext, opts = {}) {
+  const candidates = (runtime.availableFaculty || []).filter((f) =>
+    isFacultyEligibleForAutoAllocation(f, runtime, examContext, opts)
+  );
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => compareFacultyByRemaining(runtime, a, b));
+  return candidates[0];
 }
 
 export function recordAutoFacultyAssignment(runtime, faculty, item, examContext) {
@@ -184,6 +236,35 @@ export function recordAutoFacultyAssignment(runtime, faculty, item, examContext)
     venueName: item.venue.name,
     venueUuid: item.venue.uuid,
   });
+}
+
+/** Remaining = max − (saved allocation + assignments made in this runtime). */
+export function snapshotFacultyCapacity(facultyPool, runtime = null) {
+  return (facultyPool || [])
+    .map((f) => {
+      const uuid = String(f.uuid);
+      const maxClassrooms = facultyMaxCount(f);
+      const remaining = runtime
+        ? Math.max(0, runtime.remainingSlots.get(uuid) ?? Number(f.remaining ?? 0))
+        : Math.max(0, Number(f.remaining ?? 0));
+      const allocation = Math.max(0, maxClassrooms - remaining);
+      return {
+        uuid,
+        name: f.name,
+        department: f.department,
+        maxClassrooms,
+        allocation,
+        remaining,
+        isAvailable: f.isAvailable !== false,
+        hasTimeConflict: !!f.hasTimeConflict,
+      };
+    })
+    .sort((a, b) => {
+      if (b.remaining !== a.remaining) return b.remaining - a.remaining;
+      return String(a.name || "").localeCompare(String(b.name || ""), undefined, {
+        sensitivity: "base",
+      });
+    });
 }
 
 export function itemHasStudents(item) {
@@ -202,45 +283,111 @@ export function itemHasStudents(item) {
   );
 }
 
-/**
- * Intelligently assign faculty to each venue using capacity + same-day rules.
- */
-export function runAutoFacultyAllocation(venueItems, facultyPool, examContext) {
-  const runtime = createAllocationRuntime(facultyPool);
-
-  return (venueItems || []).map((item) => {
-    if (!itemHasStudents(item)) {
-      return {
-        ...item,
-        facultyId: null,
-        previewFacultyName: "Not Assigned",
-        needsFaculty: false,
-      };
-    }
-
-    const faculty = runtime.availableFaculty.find((f) =>
-      isFacultyEligibleForAutoAllocation(f, runtime, examContext)
-    );
-
-    if (!faculty) {
-      return {
-        ...item,
-        facultyId: null,
-        previewFacultyName: "Not Assigned",
-        needsFaculty: true,
-        unfilledReason: `No eligible faculty remain for ${item.venue?.name || "this venue"} on ${formatDateDisplay(normalizeExamDateOnly(examContext.examDate))} (same-day invigilation already assigned or capacity exhausted).`,
-      };
-    }
-
-    recordAutoFacultyAssignment(runtime, faculty, item, examContext);
+function assignVenueItem(item, runtime, examContext, pickOpts = {}) {
+  if (!itemHasStudents(item)) {
     return {
       ...item,
-      facultyId: faculty.uuid,
-      previewFacultyName: `${faculty.name} (${faculty.department})`,
+      facultyId: null,
+      previewFacultyName: "Not Assigned",
       needsFaculty: false,
       unfilledReason: null,
     };
+  }
+
+  const faculty = pickBestEligibleFaculty(runtime, examContext, pickOpts);
+
+  if (!faculty) {
+    const dateDisplay = formatDateDisplay(normalizeExamDateOnly(examContext.examDate));
+    return {
+      ...item,
+      facultyId: null,
+      previewFacultyName: "Not Assigned",
+      needsFaculty: true,
+      unfilledReason: `No eligible faculty remain for ${item.venue?.name || "this venue"} on ${dateDisplay} (remaining count is zero, same-day invigilation conflict, or capacity exhausted).`,
+    };
+  }
+
+  recordAutoFacultyAssignment(runtime, faculty, item, examContext);
+  return {
+    ...item,
+    facultyId: faculty.uuid,
+    previewFacultyName: `${faculty.name} (${faculty.department || "—"})`,
+    needsFaculty: false,
+    unfilledReason: null,
+  };
+}
+
+/**
+ * Intelligently assign faculty to each venue using max/remaining count + same-day rules.
+ * Prefers the eligible faculty member with the highest remaining count.
+ */
+export function runAutoFacultyAllocation(venueItems, facultyPool, examContext) {
+  const runtime = createAllocationRuntime(facultyPool);
+  const items = (venueItems || []).map((item) =>
+    assignVenueItem(item, runtime, examContext)
+  );
+  return items;
+}
+
+/**
+ * Allocate across multiple exam dates/sessions in chronological order while
+ * keeping one shared remaining-count ledger (counts do not reset each day).
+ *
+ * @param {Array<{ examContext: object, venueItems: object[] }>} sessions
+ * @param {object[]} facultyPool
+ */
+export function runAutoFacultyAllocationAcrossSessions(sessions, facultyPool) {
+  const runtime = createAllocationRuntime(facultyPool);
+  const ordered = [...(sessions || [])].sort((a, b) => {
+    const da = normalizeExamDateOnly(a.examContext?.examDate) || "";
+    const db = normalizeExamDateOnly(b.examContext?.examDate) || "";
+    if (da !== db) return da.localeCompare(db);
+    const sa = normalizeExamTime(a.examContext?.examStartTime) || "";
+    const sb = normalizeExamTime(b.examContext?.examStartTime) || "";
+    if (sa !== sb) return sa.localeCompare(sb);
+    return String(a.examContext?.examSession || "").localeCompare(
+      String(b.examContext?.examSession || "")
+    );
   });
+
+  const sessionResults = [];
+  const unassigned = [];
+
+  for (const session of ordered) {
+    // One venue per faculty per plan/day; remaining + busy slots carry across days.
+    runtime.assignedInBatchByFaculty = new Map();
+    const examContext = session.examContext || {};
+    const items = (session.venueItems || []).map((item) =>
+      assignVenueItem(item, runtime, examContext, { ignorePoolTimeConflict: true })
+    );
+
+    for (const item of items) {
+      if (item.needsFaculty) {
+        unassigned.push({
+          examDate: normalizeExamDateOnly(examContext.examDate),
+          examSession: examContext.examSession || null,
+          examStartTime: examContext.examStartTime,
+          examEndTime: examContext.examEndTime,
+          venueUuid: item.venue?.uuid,
+          venueName: item.venue?.name || "Unknown",
+          message: item.unfilledReason,
+        });
+      }
+    }
+
+    sessionResults.push({
+      examContext,
+      items,
+      capacitySnapshot: snapshotFacultyCapacity(facultyPool, runtime),
+    });
+  }
+
+  return {
+    sessions: sessionResults,
+    unassigned,
+    capacitySnapshot: snapshotFacultyCapacity(facultyPool, runtime),
+    runtime,
+  };
 }
 
 /**
@@ -433,19 +580,17 @@ export function repairAutoFacultyPlan(venueItems, facultyPool, examContext) {
 
   for (const item of items) {
     if (item.facultyId || !itemHasStudents(item)) continue;
-    const faculty = runtime.availableFaculty.find((f) =>
-      isFacultyEligibleForAutoAllocation(f, runtime, examContext)
-    );
+    const faculty = pickBestEligibleFaculty(runtime, examContext);
     if (faculty) {
       recordAutoFacultyAssignment(runtime, faculty, item, examContext);
       item.facultyId = faculty.uuid;
-      item.previewFacultyName = `${faculty.name} (${faculty.department})`;
+      item.previewFacultyName = `${faculty.name} (${faculty.department || "—"})`;
       item.needsFaculty = false;
       item.unfilledReason = null;
     } else {
       item.previewFacultyName = "Not Assigned";
       item.needsFaculty = true;
-      item.unfilledReason = `No eligible faculty remain for ${item.venue?.name || "this venue"} on ${formatDateDisplay(normalizeExamDateOnly(examContext.examDate))} (same-day invigilation already assigned or capacity exhausted).`;
+      item.unfilledReason = `No eligible faculty remain for ${item.venue?.name || "this venue"} on ${formatDateDisplay(normalizeExamDateOnly(examContext.examDate))} (remaining count is zero, same-day invigilation conflict, or capacity exhausted).`;
     }
   }
 

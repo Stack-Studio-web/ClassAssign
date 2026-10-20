@@ -528,7 +528,8 @@ const Faculty = {
     return {
       maxClassrooms,
       allocation,
-      remaining: maxClassrooms - allocation,
+      // Remaining is global across exam days: Max − active assignments.
+      remaining: Math.max(0, maxClassrooms - allocation),
       isAvailable: !(r.is_available === false || r.isavailable === false),
       isActive: !(r.is_active === false || r.isactive === false),
     };
@@ -602,7 +603,7 @@ const Faculty = {
           allowed: false,
           code: "CAPACITY",
           message:
-            "Faculty allocation limit reached. This faculty currently has no remaining allocation capacity.",
+            `Faculty allocation limit reached. ${summary.maxClassrooms} max, ${summary.allocation} already assigned, ${summary.remaining} remaining.`,
           currentAllocation: summary.allocation,
           maxClassrooms: summary.maxClassrooms,
           remaining: summary.remaining,

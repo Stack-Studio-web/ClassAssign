@@ -9,6 +9,7 @@ import {
   validateAutoFacultyPlan,
   formatExamTimeRange,
   buildSameDayConflictMessage,
+  facultyMaxCount,
 } from "../lib/autoFacultyAllocation";
 import { useToast } from "../context/ToastContext";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
@@ -256,6 +257,68 @@ const Allotment = () => {
     if (facultyMode !== "AUTO" || !generatedSeating) return true;
     return autoPlanValidation?.canSubmit === true;
   }, [facultyMode, generatedSeating, autoPlanValidation]);
+
+  /** Live Max / Assigned / Remaining for the current allotment draft. */
+  const facultyCapacityRows = useMemo(() => {
+    const pendingIds = [];
+    if (facultyMode === "AUTO" && generatedSeating) {
+      for (const item of generatedSeating) {
+        if (item.facultyId) pendingIds.push(item.facultyId);
+      }
+    } else if (facultyMode === "MANUAL") {
+      for (const value of Object.values(manualFacultyAssignments || {})) {
+        const ids = Array.isArray(value) ? value : value ? [value] : [];
+        pendingIds.push(...ids.filter(Boolean));
+      }
+    }
+
+    const pendingCount = new Map();
+    for (const id of pendingIds) {
+      const key = String(id);
+      pendingCount.set(key, (pendingCount.get(key) || 0) + 1);
+    }
+
+    return (allFaculty || [])
+      .map((f) => {
+        const maxClassrooms = facultyMaxCount(f);
+        const baseRemaining = Math.max(0, Number(f.remaining ?? 0));
+        const usedInDraft = pendingCount.get(String(f.uuid)) || 0;
+        const remaining = Math.max(0, baseRemaining - usedInDraft);
+        const allocation = Math.max(0, maxClassrooms - remaining);
+        return {
+          uuid: f.uuid,
+          name: f.name,
+          department: f.department,
+          maxClassrooms,
+          allocation,
+          remaining,
+          hasTimeConflict: !!f.hasTimeConflict,
+          isAvailable: f.isAvailable !== false,
+        };
+      })
+      .sort((a, b) => {
+        if (b.remaining !== a.remaining) return b.remaining - a.remaining;
+        return String(a.name || "").localeCompare(String(b.name || ""), undefined, {
+          sensitivity: "base",
+        });
+      });
+  }, [
+    allFaculty,
+    facultyMode,
+    generatedSeating,
+    manualFacultyAssignments,
+  ]);
+
+  const facultyListForManual = useMemo(() => {
+    return [...(allFaculty || [])].sort((a, b) => {
+      const ra = getEffectiveRemaining(a, manualFacultyAssignments);
+      const rb = getEffectiveRemaining(b, manualFacultyAssignments);
+      if (rb !== ra) return rb - ra;
+      return String(a.name || "").localeCompare(String(b.name || ""), undefined, {
+        sensitivity: "base",
+      });
+    });
+  }, [allFaculty, manualFacultyAssignments]);
 
   const handleCalendarDay = (day) => {
     if (!day || !hasWriteAccess) return;
@@ -2045,6 +2108,65 @@ const Allotment = () => {
               </div>
             )}
 
+            {facultyCapacityRows.length > 0 && (
+              <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+                <div className="px-3 py-2 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
+                  <p className="text-sm font-semibold text-gray-800">
+                    Faculty allocation counts
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    {examDate
+                      ? `${examDate.split("-").reverse().join("/")} · ${examSession || "Session"} · ${formatSlotTime(examStartTime) || "—"}–${formatSlotTime(examEndTime) || "—"}`
+                      : "Select an exam date"}
+                    {" · Remaining = Max − Assigned (across all exam days)"}
+                  </p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-xs sm:text-sm">
+                    <thead className="bg-gray-50 text-gray-600">
+                      <tr>
+                        <th className="text-left font-semibold px-3 py-2">Faculty</th>
+                        <th className="text-center font-semibold px-2 py-2">Max</th>
+                        <th className="text-center font-semibold px-2 py-2">Assigned</th>
+                        <th className="text-center font-semibold px-2 py-2">Remaining</th>
+                        <th className="text-left font-semibold px-3 py-2">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {facultyCapacityRows.map((row) => (
+                        <tr key={row.uuid}>
+                          <td className="px-3 py-2 font-medium text-gray-800">
+                            {row.name}
+                            {row.department ? (
+                              <span className="text-gray-400 font-normal"> ({row.department})</span>
+                            ) : null}
+                          </td>
+                          <td className="text-center px-2 py-2 text-blue-800">{row.maxClassrooms}</td>
+                          <td className="text-center px-2 py-2 text-orange-700">{row.allocation}</td>
+                          <td
+                            className={`text-center px-2 py-2 font-semibold ${
+                              row.remaining > 0 ? "text-green-700" : "text-red-700"
+                            }`}
+                          >
+                            {row.remaining}
+                          </td>
+                          <td className="px-3 py-2 text-gray-500">
+                            {!row.isAvailable
+                              ? "Unavailable"
+                              : row.hasTimeConflict
+                                ? "Already allotted today"
+                                : row.remaining <= 0
+                                  ? "At capacity"
+                                  : "Eligible"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
             {facultyMode === "AUTO" && autoPlanValidation && (
               <div
                 className={`rounded-xl border px-3 py-3 text-sm ${
@@ -2087,7 +2209,7 @@ const Allotment = () => {
                       </span>
                     </div>
                     <div className="max-h-44 overflow-y-auto rounded-lg border border-gray-200 divide-y divide-gray-100">
-                      {allFaculty.map((f) => {
+                      {facultyListForManual.map((f) => {
                         const isSelected = selectedIds.some(
                           (id) => String(id) === String(f.uuid)
                         );
@@ -2148,13 +2270,7 @@ const Allotment = () => {
                                           venueUuid
                                         )
                                       ? "Already assigned to another room"
-                                      : `Rem ${Math.max(
-                                          0,
-                                          getEffectiveRemaining(
-                                            f,
-                                            manualFacultyAssignments
-                                          )
-                                        )}`}
+                                      : `Max ${facultyMaxCount(f)} · Assigned ${Math.max(0, facultyMaxCount(f) - Math.max(0, getEffectiveRemaining(f, manualFacultyAssignments)))} · Rem ${Math.max(0, getEffectiveRemaining(f, manualFacultyAssignments))}`}
                               </span>
                             </span>
                           </label>
@@ -2245,6 +2361,16 @@ const Allotment = () => {
                               .filter(Boolean)
                               .join(", ") || "Unassigned"}
                       </p>
+                      <p className="text-[11px] text-gray-500 mt-0.5">
+                        {examDate
+                          ? `${examDate.split("-").reverse().join("/")} · ${examSession || "—"}`
+                          : null}
+                      </p>
+                      {facultyMode === "AUTO" && item.needsFaculty && item.unfilledReason && (
+                        <p className="text-[11px] text-amber-700 mt-1 max-w-xs ml-auto">
+                          {item.unfilledReason}
+                        </p>
+                      )}
                     </div>
                   </div>
  

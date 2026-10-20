@@ -746,7 +746,7 @@ router.post("/check-faculty-availability",
 
         const maxClassrooms = Number(f.max_classrooms ?? f.maxclassrooms ?? 1) || 1;
         const currentAlloc = Number(f.current_allocation ?? f.currentallocation ?? 0) || 0;
-        const remaining = maxClassrooms - currentAlloc;
+        const remaining = Math.max(0, maxClassrooms - currentAlloc);
         const facultyMarkedAvailable =
           f.is_available !== false && f.isavailable !== false;
 
