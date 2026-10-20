@@ -361,9 +361,12 @@ async function setSlotVenues(slotUuid, venueUuids = []) {
     await conn.beginTransaction();
     await conn.query(`DELETE FROM lab_slot_venues WHERE lab_slot_id = ?`, [slot.id]);
     for (const v of resolved) {
+      // lab_slot_venues has composite PK (no id). Must RETURNING something other than id
+      // because db.query auto-appends RETURNING id when omitted.
       await conn.query(
         `INSERT INTO lab_slot_venues (lab_slot_id, venue_id) VALUES (?, ?)
-         ON CONFLICT (lab_slot_id, venue_id) DO NOTHING`,
+         ON CONFLICT (lab_slot_id, venue_id) DO NOTHING
+         RETURNING lab_slot_id, venue_id`,
         [slot.id, v.id]
       );
     }
