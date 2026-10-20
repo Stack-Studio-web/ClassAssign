@@ -1,4 +1,10 @@
-import { createContext, useCallback, useContext, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useMemo,
+  useState,
+} from "react";
 
 const ToastContext = createContext(null);
 
@@ -20,13 +26,17 @@ export function ToastProvider({ children }) {
     return id;
   }, [dismiss]);
 
-  const toast = {
-    success: (message, title = "Success") => push("success", message, title),
-    error: (message, title = "Error") => push("error", message, title, 7000),
-    info: (message, title = "Info") => push("info", message, title),
-    warning: (message, title = "Warning") => push("warning", message, title),
-    dismiss,
-  };
+  // Stable reference — unstable toast broke memoized callbacks (e.g. loadVenues).
+  const toast = useMemo(
+    () => ({
+      success: (message, title = "Success") => push("success", message, title),
+      error: (message, title = "Error") => push("error", message, title, 7000),
+      info: (message, title = "Info") => push("info", message, title),
+      warning: (message, title = "Warning") => push("warning", message, title),
+      dismiss,
+    }),
+    [push, dismiss]
+  );
 
   return (
     <ToastContext.Provider value={toast}>

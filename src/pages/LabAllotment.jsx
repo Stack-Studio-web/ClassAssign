@@ -92,6 +92,8 @@ export default function LabAllotment() {
   const [loading, setLoading] = useState(false);
   const [preparing, setPreparing] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
+  const [showFinalizeConfirm, setShowFinalizeConfirm] = useState(false);
+  const finalizeInFlightRef = useRef(false);
   const LAB_DRAFT_KEY = "labAllotmentDraft";
 
   const selectedDay =
@@ -525,8 +527,9 @@ export default function LabAllotment() {
     }
   };
 
-  const handleFinalize = async () => {
-    if (!hasWriteAccess || finalizing) return;
+  /** Open confirm UI only — does not call the API. */
+  const handleFinalizeClick = () => {
+    if (!hasWriteAccess || finalizing || finalizeInFlightRef.current) return;
     if (!canFinalize) {
       setError(
         unresolvedCount > 0
@@ -535,31 +538,36 @@ export default function LabAllotment() {
       );
       return;
     }
-    const mappingLines = facultyGroups
-      .map((g) => `• ${g.facultyName}: ${g.students.length} students`)
-      .join("\n");
-    if (
-      !window.confirm(
-        `Finalize LAB allotment using imported Email ID mappings?\n\n` +
-          `${students.length} students · ${facultyGroups.length} faculty\n` +
-          `${mappingLines}\n\n` +
-          `Each faculty consumes 1 invigilation duty on the Faculty remaining count (not one per student).\n` +
-          `Faculty will see their students at /attendance/login during the exam window.`
-      )
-    ) {
-      return;
-    }
+    setShowFinalizeConfirm(true);
+  };
+
+  /**
+   * Runs after the user confirms. Captures IDs first so later state updates
+   * cannot drop the slot UUID before POST /finalize.
+   */
+  const runFinalizeLabAllotment = async () => {
+    if (finalizeInFlightRef.current) return;
+    finalizeInFlightRef.current = true;
+    setShowFinalizeConfirm(false);
+    setFinalizing(true);
+    setLoading(true);
+    setError("");
+
+    const venueIdsSnapshot = [...selectedVenueIds];
+
     try {
-      setFinalizing(true);
-      setLoading(true);
-      setError("");
       const { examUuid: eid, slotUuid: sid } = await ensureLabSlot();
       if (!sid) {
         throw new Error("LAB slot was not created. Save exam details and try again.");
       }
+
       await api.put(`/lab-exams/slots/${sid}/venues`, {
-        venueIds: selectedVenueIds,
+        venueIds: venueIdsSnapshot,
       });
+
+      if (import.meta.env.DEV) {
+        console.info("[LAB] POST finalize", sid);
+      }
       const res = await api.post(`/lab-exams/slots/${sid}/finalize`);
       if (res.data?.success === false) {
         throw Object.assign(new Error(res.data?.message || "Finalize failed"), {
@@ -570,13 +578,13 @@ export default function LabAllotment() {
       const planOk = !!(data.seatingPlanId || data.seatingPlanUuid);
       const slotStatusOk =
         data.slot?.status === "finalized" || data.alreadyFinalized === true;
-      // Confirm from backend payload only (seating plan id or finalized slot).
       if (!planOk && !slotStatusOk) {
         throw new Error(
           res.data?.message ||
-            "Server did not confirm finalization (no seating plan id). Check network response and try again."
+            "Server did not confirm finalization (no seating plan id)."
         );
       }
+
       setSlotStatus("finalized");
       setFinalizeSummary(data.summary || null);
       setExamUuid(eid);
@@ -591,19 +599,17 @@ export default function LabAllotment() {
         const detailRes = await api.get(`/lab-exams/${eid}`);
         const detail = detailRes.data?.data || detailRes.data;
         const slot = detail?.slots?.[0];
-        if (slot?.status === "finalized") {
-          setSlotStatus("finalized");
-        } else if (planOk || slotStatusOk) {
-          // Keep finalized if detail lag; do not downgrade from server success.
+        if (slot?.status === "finalized" || planOk || slotStatusOk) {
           setSlotStatus("finalized");
         }
       } catch {
         setSlotStatus("finalized");
       }
-      const already = data.alreadyFinalized
-        ? "Already finalized (no duplicate capacity charge)."
-        : "LAB allotment finalized.";
-      toast.success(already);
+      toast.success(
+        data.alreadyFinalized
+          ? "Already finalized (no duplicate capacity charge)."
+          : "LAB allotment finalized."
+      );
       setError("");
     } catch (err) {
       const msg = getApiError(err, "Finalize failed");
@@ -613,6 +619,7 @@ export default function LabAllotment() {
     } finally {
       setLoading(false);
       setFinalizing(false);
+      finalizeInFlightRef.current = false;
     }
   };
 
@@ -1238,7 +1245,7 @@ export default function LabAllotment() {
               <div className="pt-2 border-t border-gray-100 space-y-2">
                 <button
                   type="button"
-                  onClick={handleFinalize}
+                  onClick={handleFinalizeClick}
                   disabled={finalizing || (!canFinalize && !isFinalized)}
                   title={
                     finalizing
@@ -1297,6 +1304,61 @@ export default function LabAllotment() {
           </section>
         </div>
       </div>
+
+      {showFinalizeConfirm && (
+        <div
+          className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="lab-finalize-title"
+        >
+          <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border border-gray-200 p-5 space-y-4">
+            <h2
+              id="lab-finalize-title"
+              className="text-lg font-bold text-gray-900"
+            >
+              Finalize LAB allotment?
+            </h2>
+            <p className="text-sm text-gray-600">
+              Use imported Email ID mappings as the source of truth.
+            </p>
+            <div className="rounded-xl bg-gray-50 border border-gray-100 p-3 text-sm space-y-1">
+              <p>
+                <span className="font-semibold">{students.length}</span> students ·{" "}
+                <span className="font-semibold">{facultyGroups.length}</span> faculty
+              </p>
+              {facultyGroups.map((g) => (
+                <p key={g.facultyUuid || g.facultyEmail} className="text-xs text-gray-700">
+                  • {g.facultyName}: {g.students.length} students
+                </p>
+              ))}
+              <p className="text-xs text-gray-500 pt-1">
+                Each faculty consumes 1 invigilation duty (not one per student).
+              </p>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button
+                type="button"
+                className="px-4 py-2 rounded-xl text-sm font-semibold border border-gray-300 text-gray-700 hover:bg-gray-50"
+                onClick={() => setShowFinalizeConfirm(false)}
+                disabled={finalizing}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="px-4 py-2 rounded-xl text-sm font-semibold bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-60"
+                onClick={() => {
+                  void runFinalizeLabAllotment();
+                }}
+                disabled={finalizing}
+              >
+                OK — Finalize
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
