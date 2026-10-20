@@ -18,6 +18,7 @@ const ensureAttendanceLifecycleSchema = require("./utils/ensureAttendanceLifecyc
 const ensureHallNotificationSchema = require("./utils/ensureHallNotificationSchema");
 const ensureSeatingReportSchema = require("./utils/ensureSeatingReportSchema");
 const ensureSeatingVenueFacultySchema = require("./utils/ensureSeatingVenueFacultySchema");
+const ensureLabExamSchema = require("./utils/ensureLabExamSchema");
 const ensureInvigilationEmailSchema = require("./utils/ensureInvigilationEmailSchema");
 const ensureUuidSchema = require("./utils/ensureUuidSchema");
 const ensureBlockVenueSchema = require("./utils/ensureBlockVenueSchema");
@@ -113,6 +114,7 @@ app.get("/health", (_req, res) => {
 
 app.use("/api/venues", venueRoutes);
 app.use("/api/seating", seatingRoutes);
+app.use("/api/lab-exams", require("./routes/labExamRoutes"));
 app.use("/api/exams", examRoutes);
 app.use("/api/students", studentRoutes);
 app.use("/api/academic", academicRoutes);
@@ -162,6 +164,7 @@ async function start() {
       await ensureAttendanceLifecycleSchema();
       await ensureSeatingReportSchema();
       await ensureSeatingVenueFacultySchema();
+      await ensureLabExamSchema();
       await ensureInvigilationEmailSchema();
       await ensureHallNotificationSchema();
       await ensureTransferSchema();

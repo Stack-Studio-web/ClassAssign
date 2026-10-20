@@ -6,7 +6,7 @@ import { useToast } from './context/ToastContext';
 import Landing from './pages/Landing';
 import ChangePassword from './pages/ChangePassword';
 import Layout from './Components/Layout';
-import Allotment from './pages/Allotment';
+import Allotment from './pages/Allotment';import LabAllotment from './pages/LabAllotment';
 import Venue from './pages/Venue';
 import Report from './pages/Report';
 import CompletedReports from './pages/CompletedReports';
@@ -479,6 +479,15 @@ function App() {
         element={
           <AuthGuard allowedRoles={['admin', 'faculty_incharge']}>
             <Layout><Allotment /></Layout>
+          </AuthGuard>
+        }
+      />
+
+      <Route
+        path="/lab-allotment"
+        element={
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge']}>
+            <Layout><LabAllotment /></Layout>
           </AuthGuard>
         }
       />

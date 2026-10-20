@@ -21,6 +21,7 @@ import {
   CheckCircleIcon,
   ShieldCheckIcon,
   DocumentTextIcon,
+  BeakerIcon,
 } from "@heroicons/react/24/outline";
 import { NavLink, useLocation } from "react-router-dom";
 import { useSidebar } from "../context/SidebarContext";
@@ -38,6 +39,13 @@ const ADMIN_NAV = [
   { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
   { to: "/timetable", label: "Timetable", icon: CalendarDaysIcon, end: true },
   { to: "/Hall", label: "Hall Allotment", icon: BuildingOfficeIcon },
+  {
+    label: "LAB Exam Management",
+    icon: BeakerIcon,
+    children: [
+      { to: "/lab-allotment", label: "LAB Exam Allotment", icon: BeakerIcon },
+    ],
+  },
   { to: "/admin/notifications", label: "Hall Notifications", icon: BellAlertIcon },
   { to: "/admin/attendance/transfers", label: "Faculty Requests", icon: ArrowsRightLeftIcon },
   { to: "/change", label: "Change Faculty", icon: UserPlusIcon },
@@ -97,6 +105,13 @@ const FACULTY_INCHARGE_NAV = [
   { to: "/timetable", label: "Time Table", icon: CalendarDaysIcon, end: true },
   { to: "/venue", label: "Venue", icon: BuildingOfficeIcon },
   { to: "/allotment", label: "Allotment", icon: ComputerDesktopIcon },
+  {
+    label: "LAB Exam Management",
+    icon: BeakerIcon,
+    children: [
+      { to: "/lab-allotment", label: "LAB Exam Allotment", icon: BeakerIcon },
+    ],
+  },
   { to: "/report", label: "Reports", icon: NewspaperIcon },
   { to: "/admin/attendance/transfers", label: "Mutual Faculty Request", icon: ArrowsRightLeftIcon },
   { to: "/attendance", label: "Attendance", icon: UserGroupIcon },

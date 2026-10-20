@@ -41,6 +41,7 @@ export const StudentAttendance = () => {
   const [previewVerification, setPreviewVerification] = useState(null);
 
   const [filters, setFilters] = useState({
+    category: "all", // all | hall | lab
     examType: "",
     date: "",
     session: "",
@@ -100,12 +101,34 @@ export const StudentAttendance = () => {
     fetchPlans();
   }, []);
 
+  const categoryFilteredPlans = useMemo(() => {
+    if (filters.category === "lab") {
+      return seatingPlans.filter(
+        (p) =>
+          String(p.planKind ?? p.plankind ?? "").toLowerCase() === "lab" ||
+          String(p.examType ?? p.examtype ?? "").toUpperCase().startsWith("LAB")
+      );
+    }
+    if (filters.category === "hall") {
+      return seatingPlans.filter(
+        (p) =>
+          String(p.planKind ?? p.plankind ?? "hall").toLowerCase() !== "lab" &&
+          !String(p.examType ?? p.examtype ?? "").toUpperCase().startsWith("LAB")
+      );
+    }
+    return seatingPlans;
+  }, [seatingPlans, filters.category]);
+
   const availableExamTypes = useMemo(() => {
-    return [...new Set(seatingPlans.map((p) => p.examType ?? p.examtype).filter(Boolean))].sort();
-  }, [seatingPlans]);
+    return [
+      ...new Set(
+        categoryFilteredPlans.map((p) => p.examType ?? p.examtype).filter(Boolean)
+      ),
+    ].sort();
+  }, [categoryFilteredPlans]);
 
   const availableDates = useMemo(() => {
-    let plans = seatingPlans;
+    let plans = categoryFilteredPlans;
     if (filters.examType) {
       plans = plans.filter(
         (p) => String(p.examType ?? p.examtype ?? "") === filters.examType
@@ -116,11 +139,11 @@ export const StudentAttendance = () => {
     ]
       .filter(Boolean)
       .sort();
-  }, [seatingPlans, filters.examType]);
+  }, [categoryFilteredPlans, filters.examType]);
 
   const availableSessions = useMemo(() => {
     if (!filters.date) return [];
-    let plans = seatingPlans.filter(
+    let plans = categoryFilteredPlans.filter(
       (p) => normalizeDateToYYYYMMDD(p.examDate ?? p.examdate) === filters.date
     );
     if (filters.examType) {
@@ -131,11 +154,11 @@ export const StudentAttendance = () => {
     return [
       ...new Set(plans.map((p) => p.examSession ?? p.examsession).filter(Boolean)),
     ].sort();
-  }, [seatingPlans, filters.date, filters.examType]);
+  }, [categoryFilteredPlans, filters.date, filters.examType]);
 
   const availableExamTimes = useMemo(() => {
     if (!filters.date || !filters.session) return [];
-    let plans = seatingPlans.filter(
+    let plans = categoryFilteredPlans.filter(
       (p) =>
         normalizeDateToYYYYMMDD(p.examDate ?? p.examdate) === filters.date &&
         (p.examSession ?? p.examsession) === filters.session
@@ -157,13 +180,13 @@ export const StudentAttendance = () => {
     ]
       .filter((t) => t !== "-")
       .sort();
-  }, [seatingPlans, filters.date, filters.session, filters.examType]);
+  }, [categoryFilteredPlans, filters.date, filters.session, filters.examType]);
 
   /** Venues from matching saved allotment (client list for UI). */
   const allotmentVenues = useMemo(() => {
     if (!filters.date || !filters.session || !filters.examTime) return [];
     const [start, end] = filters.examTime.split("-");
-    let plans = seatingPlans.filter(
+    let plans = categoryFilteredPlans.filter(
       (p) =>
         normalizeDateToYYYYMMDD(p.examDate ?? p.examdate) === filters.date &&
         (p.examSession ?? p.examsession) === filters.session &&
@@ -409,17 +432,44 @@ export const StudentAttendance = () => {
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">
+                Category
+              </label>
+              <select
+                value={filters.category}
+                onChange={(e) => {
+                  setFilters({
+                    category: e.target.value,
+                    examType: "",
+                    date: "",
+                    session: "",
+                    examTime: "",
+                  });
+                  setSheets([]);
+                  setFailures([]);
+                  setShowPreview(false);
+                  setError(null);
+                }}
+                className="w-full border border-gray-300 px-3 py-2 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              >
+                <option value="all">All exams</option>
+                <option value="hall">Hall / Theory</option>
+                <option value="lab">LAB exams</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">
                 Exam Type
               </label>
               <select
                 value={filters.examType}
                 onChange={(e) => {
-                  setFilters({
+                  setFilters((f) => ({
+                    ...f,
                     examType: e.target.value,
                     date: "",
                     session: "",
                     examTime: "",
-                  });
+                  }));
                   setSheets([]);
                   setFailures([]);
                   setShowPreview(false);

@@ -662,26 +662,36 @@ const AttendanceService = {
    * Must not pick an arbitrary students row when the same regn_no has multiple courses
    * (see migration 003_allow_duplicate_student_regn).
    */
-  getStudentsForExamVenue: async (examId, venueId) => {
+  getStudentsForExamVenue: async (examId, venueId, opts = {}) => {
     const {
       resolveVenueStudentsWithCourses,
     } = require("../utils/venueAttendanceCourses");
     const {
       matchSeatedStudentsToEnrollments,
     } = require("../utils/resolveSeatedStudentEnrollments");
+    const facultyId = opts.facultyId != null ? Number(opts.facultyId) : null;
 
+    // Prefer SPV matched via seating_plan_venue_faculty (multi-invigilator / LAB).
+    // Fall back to legacy seating_plan_venues.faculty_id.
     const [spvRows] = await db.query(
-      `SELECT spv.id, spv.seating_layout_json, spv.seating_plan_id
+      `SELECT spv.id, spv.seating_layout_json, spv.seating_plan_id, sp.plan_kind
        FROM faculty_assignments fa
        JOIN exams e ON e.id = fa.exam_id
-       JOIN seating_plan_venues spv
-         ON spv.venue_id = fa.venue_id AND spv.faculty_id = fa.faculty_id
+       JOIN seating_plan_venues spv ON spv.venue_id = fa.venue_id
        JOIN seating_plans sp
          ON sp.id = spv.seating_plan_id
         AND sp.exam_date = e.exam_date
         AND (e.exam_session IS NULL OR sp.exam_session = e.exam_session)
+       LEFT JOIN seating_plan_venue_faculty spvf
+         ON spvf.seating_plan_venue_id = spv.id AND spvf.faculty_id = fa.faculty_id
        WHERE fa.exam_id = ? AND fa.venue_id = ?
-       ORDER BY spv.id DESC
+         AND (spvf.faculty_id IS NOT NULL OR spv.faculty_id = fa.faculty_id
+              OR COALESCE(sp.plan_kind, 'hall') = 'lab')
+       ORDER BY
+         CASE WHEN spvf.faculty_id IS NOT NULL THEN 0
+              WHEN spv.faculty_id = fa.faculty_id THEN 1
+              ELSE 2 END,
+         spv.id DESC
        LIMIT 1`,
       [examId, venueId]
     );
@@ -691,6 +701,7 @@ const AttendanceService = {
     const spvId = spv.id;
     const planId = spv.seating_plan_id ?? spv.seatingplanid;
     const layoutJson = spv.seating_layout_json ?? spv.seatinglayoutjson;
+    const planKind = spv.plan_kind ?? spv.plankind ?? "hall";
 
     const [[arrangementRows], [planStudentRows]] = await Promise.all([
       db.query(
@@ -711,11 +722,32 @@ const AttendanceService = {
       ),
     ]);
 
-    const seated = resolveVenueStudentsWithCourses({
+    let seated = resolveVenueStudentsWithCourses({
       layoutJson,
       arrangementRows: arrangementRows || [],
       planStudentRows: planStudentRows || [],
     });
+    if (!seated.length) return [];
+
+    // LAB: show only students mapped to this faculty via lab_slot_students.
+    if (planKind === "lab" && facultyId) {
+      try {
+        const LabExamService = require("./labExamService");
+        const allowed = await LabExamService.getLabRegnsForFacultyAssignment(
+          examId,
+          venueId,
+          facultyId
+        );
+        if (allowed && allowed.size > 0) {
+          seated = seated.filter((s) =>
+            allowed.has(String(s.regNo || "").trim().toLowerCase())
+          );
+        }
+      } catch (_) {
+        /* keep full roster if LAB filter unavailable */
+      }
+    }
+
     if (!seated.length) return [];
 
     const regns = [...new Set(seated.map((s) => String(s.regNo || "").trim()).filter(Boolean))];

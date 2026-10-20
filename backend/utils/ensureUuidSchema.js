@@ -20,6 +20,9 @@ const PUBLIC_UUID_TABLES = [
   "academic_years",
   "semesters",
   "batches",
+  "lab_exams",
+  "lab_exam_slots",
+  "lab_slot_students",
 ];
 
 async function ensureUuidSchema() {

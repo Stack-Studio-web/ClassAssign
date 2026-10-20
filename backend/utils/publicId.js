@@ -23,6 +23,9 @@ const TABLE = {
   semesters: "semesters",
   batches: "batches",
   qpakDocuments: "qpak_documents",
+  labExams: "lab_exams",
+  labExamSlots: "lab_exam_slots",
+  labSlotStudents: "lab_slot_students",
 };
 
 function isValidUuid(value) {

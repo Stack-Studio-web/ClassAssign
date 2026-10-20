@@ -450,7 +450,9 @@ const AttendanceController = {
       const { examId, venueId, uuid: assignmentUuid, sessionUuid } = assignment;
 
       const [students, isLocked, window] = await Promise.all([
-        AttendanceService.getStudentsForExamVenue(examId, venueId),
+        AttendanceService.getStudentsForExamVenue(examId, venueId, {
+          facultyId: assignment.facultyId,
+        }),
         AttendanceService.isAttendanceLocked(examId, venueId),
         AttendanceService.getWindowState(examId, venueId),
       ]);

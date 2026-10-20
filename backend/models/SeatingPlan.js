@@ -237,6 +237,7 @@ const SeatingPlan = {
         exam_end_time,
         selected_courses,
         faculty_mode,
+        COALESCE(plan_kind, 'hall') AS plan_kind,
         COALESCE(report_status, 'ACTIVE') AS report_status,
         completed_at,
         created_at
@@ -253,6 +254,7 @@ const SeatingPlan = {
         examDate: row.exam_date ?? row.examdate,
         examSession: row.exam_session ?? row.examsession,
         examType: row.exam_type ?? row.examtype,
+        planKind: row.plan_kind ?? row.plankind ?? "hall",
         examStartTime: row.exam_start_time ?? row.examstarttime,
         examEndTime: row.exam_end_time ?? row.examendtime,
         facultyMode: row.faculty_mode ?? row.facultymode,
