@@ -191,4 +191,19 @@ async function connectWithRetry() {
   }
 }
 
-module.exports = { query, execute: query, getConnection, connectWithRetry };
+/**
+ * Run DDL/raw SQL without Sequelize `bind` (bind mode mis-parses `$` in some SQL).
+ * Prefer this for CREATE/ALTER/CREATE EXTENSION schema ensures.
+ */
+async function queryRaw(sql) {
+  return sequelize.query(String(sql), { type: Sequelize.QueryTypes.RAW });
+}
+
+module.exports = {
+  query,
+  execute: query,
+  queryRaw,
+  getConnection,
+  connectWithRetry,
+  sequelize,
+};

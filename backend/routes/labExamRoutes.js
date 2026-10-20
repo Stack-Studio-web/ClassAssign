@@ -87,6 +87,7 @@ router.get("/venues/available", sessionAuth, checkRole(WRITE_ROLES), async (req,
       date: String(date).slice(0, 10),
       startTime,
       endTime,
+      user: req.user,
     });
     return Api.success(res, "Available venues", pool);
   } catch (err) {
@@ -94,42 +95,7 @@ router.get("/venues/available", sessionAuth, checkRole(WRITE_ROLES), async (req,
   }
 });
 
-router.get("/:uuid", sessionAuth, checkRole(READ_ROLES), async (req, res) => {
-  try {
-    const detail = await LabExamService.getExamDetail(req.params.uuid);
-    return Api.success(res, "LAB exam detail", detail);
-  } catch (err) {
-    return Api.fromError(res, err, "Failed to load LAB exam");
-  }
-});
-
-router.patch("/:uuid", sessionAuth, checkRole(WRITE_ROLES), async (req, res) => {
-  try {
-    const exam = await LabExamService.updateExam(req.params.uuid, req.body || {});
-    return Api.success(res, "LAB exam updated", exam);
-  } catch (err) {
-    return Api.fromError(res, err, "Failed to update LAB exam");
-  }
-});
-
-router.get("/:uuid/slots", sessionAuth, checkRole(READ_ROLES), async (req, res) => {
-  try {
-    const slots = await LabExamService.listSlots(req.params.uuid);
-    return Api.success(res, "LAB slots", slots);
-  } catch (err) {
-    return Api.fromError(res, err, "Failed to list slots");
-  }
-});
-
-router.post("/:uuid/slots", sessionAuth, checkRole(WRITE_ROLES), async (req, res) => {
-  try {
-    const slot = await LabExamService.addSlot(req.params.uuid, req.body || {});
-    return Api.success(res, "Slot created", slot, 201);
-  } catch (err) {
-    return Api.fromError(res, err, "Failed to create slot");
-  }
-});
-
+// Register /slots/* and /students/* before /:uuid so "slots" is never treated as an exam id.
 router.patch("/slots/:slotUuid", sessionAuth, checkRole(WRITE_ROLES), async (req, res) => {
   try {
     const slot = await LabExamService.updateSlot(req.params.slotUuid, req.body || {});
@@ -295,5 +261,41 @@ router.post(
     }
   }
 );
+
+router.get("/:uuid", sessionAuth, checkRole(READ_ROLES), async (req, res) => {
+  try {
+    const detail = await LabExamService.getExamDetail(req.params.uuid);
+    return Api.success(res, "LAB exam detail", detail);
+  } catch (err) {
+    return Api.fromError(res, err, "Failed to load LAB exam");
+  }
+});
+
+router.patch("/:uuid", sessionAuth, checkRole(WRITE_ROLES), async (req, res) => {
+  try {
+    const exam = await LabExamService.updateExam(req.params.uuid, req.body || {});
+    return Api.success(res, "LAB exam updated", exam);
+  } catch (err) {
+    return Api.fromError(res, err, "Failed to update LAB exam");
+  }
+});
+
+router.get("/:uuid/slots", sessionAuth, checkRole(READ_ROLES), async (req, res) => {
+  try {
+    const slots = await LabExamService.listSlots(req.params.uuid);
+    return Api.success(res, "LAB slots", slots);
+  } catch (err) {
+    return Api.fromError(res, err, "Failed to list slots");
+  }
+});
+
+router.post("/:uuid/slots", sessionAuth, checkRole(WRITE_ROLES), async (req, res) => {
+  try {
+    const slot = await LabExamService.addSlot(req.params.uuid, req.body || {});
+    return Api.success(res, "Slot created", slot, 201);
+  } catch (err) {
+    return Api.fromError(res, err, "Failed to create slot");
+  }
+});
 
 module.exports = router;

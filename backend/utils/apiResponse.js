@@ -49,6 +49,17 @@ function fromError(res, err, fallbackMessage = "Request failed") {
     const status = err.statusCode || err.status;
     return fail(res, status, err.code || "REQUEST_FAILED", err.message || fallbackMessage, err.details);
   }
+  const pgCode = pgErrorCode(err);
+  const msg = String(err?.message || "");
+  // undefined_table / undefined_column — common right after a failed schema ensure
+  if (pgCode === "42P01" || pgCode === "42703" || /relation .* does not exist/i.test(msg)) {
+    return fail(
+      res,
+      503,
+      "SCHEMA_NOT_READY",
+      "LAB exam tables are not ready. Restart the API after deploying the latest schema ensure, then retry."
+    );
+  }
   if (isForeignKeyViolation(err)) {
     return conflict(
       res,
