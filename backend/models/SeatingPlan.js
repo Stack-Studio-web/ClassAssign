@@ -79,9 +79,14 @@ const SeatingPlan = {
       students = [],
       venuesUsed = [],
       facultyMode = "AUTO",
+      planKind = null,
     } = planData;
 
     const { col, val } = insertField(opts.role, opts.ownerUserId);
+    const kind =
+      planKind === "lab" || planKind === "hall" ? planKind : null;
+    const kindCol = kind ? ", plan_kind" : "";
+    const kindPlaceholder = kind ? ", ?" : "";
     const vals = [
       examDate,
       examSession,
@@ -91,6 +96,7 @@ const SeatingPlan = {
       JSON.stringify(selectedCourses),
       facultyMode,
     ];
+    if (kind) vals.push(kind);
     if (val != null) vals.push(val);
 
     const conn = externalConn || (await db.getConnection());
@@ -99,14 +105,41 @@ const SeatingPlan = {
       if (ownsTxn) await conn.beginTransaction();
 
       // 1️⃣ Insert into seating_plans
-      const [planResult] = await conn.query(
-        `INSERT INTO seating_plans 
-         (exam_date, exam_session, exam_type, exam_start_time, exam_end_time, selected_courses, faculty_mode${col}) 
-         VALUES (?, ?, ?, ?, ?, ?, ?${val != null ? ", ?" : ""})`,
-        vals
-      );
+      let planResult;
+      try {
+        [planResult] = await conn.query(
+          `INSERT INTO seating_plans 
+           (exam_date, exam_session, exam_type, exam_start_time, exam_end_time, selected_courses, faculty_mode${kindCol}${col}) 
+           VALUES (?, ?, ?, ?, ?, ?, ?${kindPlaceholder}${val != null ? ", ?" : ""})`,
+          vals
+        );
+      } catch (insertErr) {
+        // Older DBs may lack plan_kind — retry without it (caller can UPDATE later).
+        const code = insertErr?.code || insertErr?.parent?.code;
+        const msg = String(insertErr?.message || "");
+        if (kind && (code === "42703" || /plan_kind/i.test(msg))) {
+          const fallbackVals = [
+            examDate,
+            examSession,
+            examType,
+            examStartTime,
+            examEndTime,
+            JSON.stringify(selectedCourses),
+            facultyMode,
+          ];
+          if (val != null) fallbackVals.push(val);
+          [planResult] = await conn.query(
+            `INSERT INTO seating_plans 
+             (exam_date, exam_session, exam_type, exam_start_time, exam_end_time, selected_courses, faculty_mode${col}) 
+             VALUES (?, ?, ?, ?, ?, ?, ?${val != null ? ", ?" : ""})`,
+            fallbackVals
+          );
+        } else {
+          throw insertErr;
+        }
+      }
 
-      const seatingPlanId = planResult.insertId;
+      const seatingPlanId = planResult.insertId ?? planResult.insertid;
 
       // 2️⃣ Insert students
       if (students.length > 0) {

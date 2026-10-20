@@ -91,6 +91,8 @@ export default function LabAllotment() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [preparing, setPreparing] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
+  const LAB_DRAFT_KEY = "labAllotmentDraft";
 
   const selectedDay =
     examDate &&
@@ -139,6 +141,7 @@ export default function LabAllotment() {
     hasWriteAccess &&
     !loading &&
     !preparing &&
+    !finalizing &&
     slotStatus !== "finalized" &&
     !!examDate &&
     !!department &&
@@ -150,6 +153,40 @@ export default function LabAllotment() {
     students.length > 0 &&
     unresolvedCount === 0 &&
     (totalCapacity === 0 || students.length <= totalCapacity);
+
+  const persistDraft = useCallback((patch = {}) => {
+    try {
+      const prev = JSON.parse(sessionStorage.getItem(LAB_DRAFT_KEY) || "{}");
+      sessionStorage.setItem(
+        LAB_DRAFT_KEY,
+        JSON.stringify({
+          ...prev,
+          examUuid,
+          slotUuid,
+          slotStatus,
+          examDate,
+          examStartTime,
+          examEndTime,
+          department,
+          courseCode,
+          selectedVenueIds,
+          ...patch,
+        })
+      );
+    } catch {
+      /* ignore quota / private mode */
+    }
+  }, [
+    examUuid,
+    slotUuid,
+    slotStatus,
+    examDate,
+    examStartTime,
+    examEndTime,
+    department,
+    courseCode,
+    selectedVenueIds,
+  ]);
 
   useEffect(() => {
     fetchCurrentUser().then((u) => setUser(u));
@@ -167,7 +204,51 @@ export default function LabAllotment() {
         setFacultyList(list);
       })
       .catch(() => setFacultyList([]));
+
+    // Restore draft / finalized LAB exam after reload.
+    (async () => {
+      let draft = null;
+      try {
+        draft = JSON.parse(sessionStorage.getItem(LAB_DRAFT_KEY) || "null");
+      } catch {
+        draft = null;
+      }
+      if (!draft?.examUuid) return;
+      try {
+        const res = await api.get(`/lab-exams/${draft.examUuid}`);
+        const detail = res.data?.data || res.data;
+        if (!detail?.uuid) return;
+        setExamUuid(detail.uuid);
+        setExamDate(
+          String(detail.examDate || detail.exam_date || draft.examDate || "").slice(0, 10)
+        );
+        setDepartment(detail.department || draft.department || "");
+        const slot = detail.slots?.[0];
+        if (slot?.uuid) {
+          setSlotUuid(slot.uuid);
+          setSlotStatus(slot.status || "draft");
+          setExamStartTime(
+            String(slot.startTime || slot.start_time || draft.examStartTime || "09:00").slice(0, 5)
+          );
+          setExamEndTime(
+            String(slot.endTime || slot.end_time || draft.examEndTime || "11:00").slice(0, 5)
+          );
+          const venueIds = (slot.venues || []).map((v) => v.uuid).filter(Boolean);
+          if (venueIds.length) setSelectedVenueIds(venueIds);
+          const stuRes = await api.get(`/lab-exams/slots/${slot.uuid}/students`);
+          const list = stuRes.data?.data || stuRes.data || [];
+          setStudents(Array.isArray(list) ? list : []);
+        }
+        if (draft.courseCode) setCourseCode(draft.courseCode);
+      } catch {
+        /* draft may be stale */
+      }
+    })();
   }, []);
+
+  useEffect(() => {
+    if (examUuid || slotUuid) persistDraft();
+  }, [examUuid, slotUuid, slotStatus, persistDraft]);
 
   // Courses by department
   useEffect(() => {
@@ -445,7 +526,7 @@ export default function LabAllotment() {
   };
 
   const handleFinalize = async () => {
-    if (!hasWriteAccess) return;
+    if (!hasWriteAccess || finalizing) return;
     if (!canFinalize) {
       setError(
         unresolvedCount > 0
@@ -469,26 +550,59 @@ export default function LabAllotment() {
       return;
     }
     try {
+      setFinalizing(true);
       setLoading(true);
-      const { slotUuid: sid } = await ensureLabSlot();
+      setError("");
+      const { examUuid: eid, slotUuid: sid } = await ensureLabSlot();
       await api.put(`/lab-exams/slots/${sid}/venues`, {
         venueIds: selectedVenueIds,
       });
       const res = await api.post(`/lab-exams/slots/${sid}/finalize`);
-      const data = res.data?.data || res.data;
+      if (res.data?.success === false) {
+        throw Object.assign(new Error(res.data?.message || "Finalize failed"), {
+          response: { data: res.data },
+        });
+      }
+      const data = res.data?.data || res.data || {};
+      const serverStatus = data.slot?.status || data.examStatus || "finalized";
+      // Only mark finalized from server payload (never optimistic-only).
+      if (serverStatus !== "finalized" && !data.seatingPlanId && !data.seatingPlanUuid) {
+        throw new Error(
+          "Server did not confirm finalization. Check the error details and try again."
+        );
+      }
       setSlotStatus("finalized");
       setFinalizeSummary(data.summary || null);
+      setExamUuid(eid);
+      setSlotUuid(sid);
+      persistDraft({
+        examUuid: eid,
+        slotUuid: sid,
+        slotStatus: "finalized",
+      });
       await refreshStudents(sid);
+      // Re-fetch exam detail so reload/state matches DB.
+      try {
+        const detailRes = await api.get(`/lab-exams/${eid}`);
+        const detail = detailRes.data?.data || detailRes.data;
+        const slot = detail?.slots?.[0];
+        if (slot?.status) setSlotStatus(slot.status);
+      } catch {
+        /* keep status from finalize response */
+      }
       const already = data.alreadyFinalized
         ? "Already finalized (no duplicate capacity charge)."
         : "LAB allotment finalized.";
       toast.success(already);
       setError("");
     } catch (err) {
-      toast.error(getApiError(err, "Finalize failed"));
-      setError(getApiError(err, "Finalize failed"));
+      const msg = getApiError(err, "Finalize failed");
+      toast.error(msg);
+      setError(msg);
+      // Do not reset mappings / venues on failure — keep draft state.
     } finally {
       setLoading(false);
+      setFinalizing(false);
     }
   };
 
@@ -1130,7 +1244,7 @@ export default function LabAllotment() {
                   }`}
                 >
                   <CheckCircleIcon className="h-4 w-4" />
-                  {loading
+                  {finalizing || loading
                     ? "Finalizing…"
                     : isFinalized
                       ? "LAB Allotment Finalized"

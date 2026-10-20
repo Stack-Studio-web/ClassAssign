@@ -16,6 +16,10 @@ async function ensureLabExamSchema() {
         ADD COLUMN IF NOT EXISTS plan_kind VARCHAR(10) NOT NULL DEFAULT 'hall'
     `);
 
+    // LAB titles / session labels need more room than the original hall CAT codes.
+    await q(`ALTER TABLE seating_plans ALTER COLUMN exam_type TYPE VARCHAR(80)`);
+    await q(`ALTER TABLE seating_plans ALTER COLUMN exam_session TYPE VARCHAR(20)`);
+
     await q(`
       CREATE INDEX IF NOT EXISTS idx_seating_plans_plan_kind
       ON seating_plans (plan_kind)

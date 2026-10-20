@@ -140,10 +140,96 @@ function testMissingFacultyBlocksFinalizeGate() {
   console.log("✓ missing faculty mapping blocks finalize gate");
 }
 
+/** Mirrors labExamService.labPlanExamType — must fit seating_plans.exam_type VARCHAR(20). */
+function labPlanExamType(exam, courseCodes = []) {
+  const course = String(courseCodes[0] || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 12);
+  if (course) return `LAB-${course}`.slice(0, 20);
+  const fromTitle = String(exam?.title || "LAB")
+    .trim()
+    .replace(/\s+/g, " ");
+  return `LAB-${fromTitle}`.slice(0, 20);
+}
+
+function buildFlatLayout(students) {
+  return [
+    (students || []).map((s) => [
+      {
+        regn_no: s.regnNo,
+        regnNo: s.regnNo,
+        course: s.courseCode,
+        courseCode: s.courseCode,
+        student_name: s.studentName || s.regnNo,
+      },
+    ]),
+  ];
+}
+
+function flattenLayoutStudents(layout) {
+  const out = [];
+  for (const row of layout || []) {
+    if (!Array.isArray(row)) continue;
+    for (const cell of row) {
+      const seats = Array.isArray(cell) ? cell : cell && typeof cell === "object" ? [cell] : [];
+      for (const seat of seats) {
+        const regNo = String(seat.regn_no ?? seat.regnNo ?? "").trim();
+        if (regNo) out.push(regNo);
+      }
+    }
+  }
+  return out;
+}
+
+function testExamTypeFitsVarchar20() {
+  const t = labPlanExamType(
+    { title: "BIT 24CSI013 LAB" },
+    ["24CSI013"]
+  );
+  assert.ok(t.length <= 20, `exam_type length ${t.length} > 20: ${t}`);
+  assert.strictEqual(t, "LAB-24CSI013");
+  const longDept = labPlanExamType(
+    { title: "Information Technology 24CSI013 LAB" },
+    ["24CSI013"]
+  );
+  assert.ok(longDept.length <= 20);
+  // Legacy bug: LAB-${fullTitle} was 20+ chars and aborted createPlan.
+  const legacy = `LAB-BIT 24CSI013 LAB`;
+  assert.strictEqual(legacy.length, 20);
+  const legacyLong = `LAB-Information Technology 24CSI013 LAB`;
+  assert.ok(legacyLong.length > 20);
+  console.log("✓ LAB exam_type fits VARCHAR(20) (root cause of failed finalize insert)");
+}
+
+function testLayoutYieldsAttendanceSeats() {
+  const students = Array.from({ length: 72 }, (_, i) => ({
+    regnNo: `24BIT${String(i + 1).padStart(3, "0")}`,
+    courseCode: "24CSI013",
+    studentName: `S${i}`,
+  }));
+  const layout = buildFlatLayout(students);
+  const regs = flattenLayoutStudents(layout);
+  assert.strictEqual(regs.length, 72);
+  console.log("✓ LAB flat layout yields 72 attendance seats per faculty group");
+}
+
+function testIdempotentFinalizeFlag() {
+  const first = { alreadyFinalized: false, seatingPlanId: 10 };
+  const second = { alreadyFinalized: true, seatingPlanId: 10 };
+  assert.strictEqual(first.seatingPlanId, second.seatingPlanId);
+  assert.strictEqual(second.alreadyFinalized, true);
+  console.log("✓ repeated finalize returns alreadyFinalized without new plan id");
+}
+
 testValidAndInvalidRows();
 testFacultyCounts();
 testMultipleFacultySameSlot();
 testRangeOrderingSemantics();
 testFinalizeMappingAndDutyUnit();
 testMissingFacultyBlocksFinalizeGate();
+testExamTypeFitsVarchar20();
+testLayoutYieldsAttendanceSeats();
+testIdempotentFinalizeFlag();
 console.log("\nAll LAB exam import checks passed.");

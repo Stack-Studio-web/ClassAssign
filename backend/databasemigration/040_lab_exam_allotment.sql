@@ -5,6 +5,10 @@
 ALTER TABLE seating_plans
   ADD COLUMN IF NOT EXISTS plan_kind VARCHAR(10) NOT NULL DEFAULT 'hall';
 
+-- LAB finalize writes longer exam_type / exam_session labels than hall CAT codes.
+ALTER TABLE seating_plans ALTER COLUMN exam_type TYPE VARCHAR(80);
+ALTER TABLE seating_plans ALTER COLUMN exam_session TYPE VARCHAR(20);
+
 CREATE INDEX IF NOT EXISTS idx_seating_plans_plan_kind ON seating_plans (plan_kind);
 
 CREATE TABLE IF NOT EXISTS lab_exams (

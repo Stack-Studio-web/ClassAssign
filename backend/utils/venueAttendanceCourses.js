@@ -23,12 +23,20 @@ function flattenLayoutStudents(layoutJson) {
   for (const row of layout) {
     if (!Array.isArray(row)) continue;
     for (const cell of row) {
-      if (!Array.isArray(cell)) continue;
-      for (const seat of cell) {
+      // Canonical: cell is an array of seat objects. Also accept a bare seat object
+      // (older LAB finalize layouts stored a flat row of student objects).
+      const seats = Array.isArray(cell)
+        ? cell
+        : cell && typeof cell === "object"
+          ? [cell]
+          : [];
+      for (const seat of seats) {
         if (!seat || typeof seat !== "object") continue;
-        const regNo = String(seat.regn_no ?? seat.regnNo ?? "").trim();
+        const regNo = String(seat.regn_no ?? seat.regnNo ?? seat.regNo ?? "").trim();
         if (!regNo || regNo === "-") continue;
-        const courseCode = String(seat.course ?? seat.courseCode ?? seat.course_description ?? "").trim();
+        const courseCode = String(
+          seat.course ?? seat.courseCode ?? seat.course_description ?? seat.courseDescription ?? ""
+        ).trim();
         const key = `${regNo}::${courseCode || "_"}`;
         if (seen.has(key)) continue;
         seen.add(key);

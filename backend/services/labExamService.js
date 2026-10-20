@@ -714,17 +714,43 @@ async function assignStudentRange(slotUuid, { fromRegn, toRegn, facultyUuid, ven
   };
 }
 
+/**
+ * Hall-compatible seating layout: row → columns → seats-in-cell.
+ * venueAttendanceCourses / seatingLayout both require cells to be arrays of seat objects.
+ */
 function buildFlatLayout(students) {
-  // Single-row layout consumed by venueAttendanceCourses / attendance roster.
   return [
-    students.map((s) => ({
-      regnNo: s.regnNo,
-      regNo: s.regnNo,
-      courseCode: s.courseCode,
-      courseDescription: s.courseCode,
-      studentName: s.studentName || s.regnNo,
-    })),
+    (students || []).map((s) => [
+      {
+        regn_no: s.regnNo,
+        regnNo: s.regnNo,
+        course: s.courseCode,
+        courseCode: s.courseCode,
+        course_description: s.courseCode,
+        student_name: s.studentName || s.regnNo,
+        studentName: s.studentName || s.regnNo,
+      },
+    ]),
   ];
+}
+
+/** seating_plans.exam_type is VARCHAR(20); exam_session VARCHAR(10) in base schema. */
+function labPlanExamType(exam, courseCodes = []) {
+  const course = String(courseCodes[0] || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 12);
+  if (course) return `LAB-${course}`.slice(0, 20);
+  const fromTitle = String(exam?.title || "LAB")
+    .trim()
+    .replace(/\s+/g, " ");
+  return `LAB-${fromTitle}`.slice(0, 20);
+}
+
+function labPlanExamSession(slot) {
+  const idx = Number(slot?.slot_index ?? slot?.slotindex ?? 1) || 1;
+  return `LAB-S${idx}`.slice(0, 10);
 }
 
 /**
@@ -853,6 +879,7 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
   }
 
   const conn = await db.getConnection();
+  let committed = false;
   try {
     await conn.beginTransaction();
 
@@ -964,11 +991,13 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
     const allPlanStudents = [];
     for (const bucket of venueBuckets.values()) {
       const fids = [...bucket.facultyIds];
+      const layout = buildFlatLayout(bucket.students);
       venuesUsed.push({
         venueId: bucket.venue.id,
         venueName: bucket.venue.name,
-        seatingArrangement: buildFlatLayout(bucket.students),
-        benchConfig: [bucket.students.length || 1],
+        seatingArrangement: layout,
+        // One seat per column — matches buildFlatLayout cell shape.
+        benchConfig: bucket.students.map(() => 1),
         facultyId: fids[0] || null,
         facultyIds: fids,
       });
@@ -985,27 +1014,51 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
     const selectedCourses = [
       ...new Set(students.map((s) => s.courseCode).filter(Boolean)),
     ];
+    const examType = labPlanExamType(exam, selectedCourses);
+    const examSession = labPlanExamSession(slot);
 
     const seatingPlanId = await SeatingPlan.createPlan(
       {
         examDate: dateOnly,
-        examSession: `LAB-S${slot.slot_index ?? slot.slotindex ?? 1}`,
-        examType: `LAB-${exam.title}`.slice(0, 80),
+        examSession,
+        examType,
         examStartTime: start,
         examEndTime: end,
         selectedCourses,
         students: allPlanStudents,
         venuesUsed,
         facultyMode: "MANUAL",
+        planKind: "lab",
       },
       ownerOpts,
       conn
     );
 
-    await conn.query(
-      `UPDATE seating_plans SET plan_kind = 'lab' WHERE id = ?`,
-      [seatingPlanId]
-    );
+    if (!seatingPlanId) {
+      const err = new Error("Failed to create LAB seating plan");
+      err.statusCode = 500;
+      throw err;
+    }
+
+    // Ensure plan_kind even if createPlan ignored planKind (older code paths).
+    try {
+      await conn.query(
+        `UPDATE seating_plans SET plan_kind = 'lab' WHERE id = ?`,
+        [seatingPlanId]
+      );
+    } catch (kindErr) {
+      const code = kindErr?.code || kindErr?.parent?.code;
+      const msg = String(kindErr?.message || "");
+      if (code === "42703" || /plan_kind/i.test(msg)) {
+        const err = new Error(
+          "LAB schema is missing seating_plans.plan_kind. Restart the API so ensureLabExamSchema can run, then retry finalize."
+        );
+        err.statusCode = 503;
+        err.code = "SCHEMA_NOT_READY";
+        throw err;
+      }
+      throw kindErr;
+    }
 
     const attendanceSync = await AttendanceService.syncAssignmentsFromSeatingPlan(
       seatingPlanId,
@@ -1013,15 +1066,30 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
     );
 
     for (const v of venues) {
-      await Venue.addSession(v.id, dateOnly, start, end, conn);
+      try {
+        await Venue.addSession(v.id, dateOnly, start, end, conn);
+      } catch (sessionErr) {
+        // Duplicate venue_sessions must not abort finalize (idempotent retry).
+        const code = sessionErr?.code || sessionErr?.parent?.code;
+        if (code !== "23505") throw sessionErr;
+      }
     }
 
-    await conn.query(
+    const [slotUpdate] = await conn.query(
       `UPDATE lab_exam_slots
        SET seating_plan_id = ?, status = 'finalized', updated_at = CURRENT_TIMESTAMP
        WHERE id = ? AND seating_plan_id IS NULL`,
       [seatingPlanId, slot.id]
     );
+    const slotUpdated = Number(slotUpdate?.affectedRows ?? 0);
+    if (slotUpdated < 1) {
+      const err = new Error(
+        "LAB slot was finalized concurrently. Refresh the page and retry if needed."
+      );
+      err.statusCode = 409;
+      err.code = "ALREADY_FINALIZED";
+      throw err;
+    }
 
     const [remaining] = await conn.query(
       `SELECT COUNT(*)::int AS cnt FROM lab_exam_slots
@@ -1039,9 +1107,31 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
     );
 
     await conn.commit();
+    committed = true;
 
-    const planUuid = await getPublicUuid(TABLE.seatingPlans, seatingPlanId);
-    const summary = await buildFinalizeSummary(students, byFaculty, venuesUsed);
+    // Post-commit: never roll back persisted work if summary enrichment fails.
+    let planUuid = null;
+    let summary;
+    try {
+      planUuid = await getPublicUuid(TABLE.seatingPlans, seatingPlanId);
+      summary = await buildFinalizeSummary(students, byFaculty, venuesUsed);
+    } catch (postErr) {
+      console.error("LAB finalize post-commit summary error:", postErr?.message || postErr);
+      summary = {
+        totalStudents: students.length,
+        mappedStudents: students.filter((s) => s.facultyId).length,
+        unresolvedStudents: students.filter((s) => !s.facultyId).length,
+        facultyCount: byFaculty.size,
+        facultyAssignments: [...byFaculty.entries()].map(([facultyId, group]) => ({
+          facultyId: Number(facultyId),
+          facultyName: group[0]?.facultyName || null,
+          facultyEmail: group[0]?.facultyEmail || null,
+          studentCount: group.length,
+          invigilationDutiesCharged: 1,
+        })),
+        note: "Finalized successfully; capacity summary unavailable.",
+      };
+    }
 
     return {
       alreadyFinalized: false,
@@ -1058,7 +1148,13 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
       }),
     };
   } catch (e) {
-    await conn.rollback();
+    if (!committed) {
+      try {
+        await conn.rollback();
+      } catch (_) {
+        /* transaction may already be closed */
+      }
+    }
     throw e;
   } finally {
     conn.release();
@@ -1170,4 +1266,7 @@ module.exports = {
   parseLabStudentRows,
   summarizeFacultyCounts,
   readWorkbookSheets,
+  buildFlatLayout,
+  labPlanExamType,
+  labPlanExamSession,
 };

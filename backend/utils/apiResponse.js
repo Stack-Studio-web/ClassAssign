@@ -71,6 +71,15 @@ function fromError(res, err, fallbackMessage = "Request failed") {
   if (pgErrorCode(err) === "23505") {
     return conflict(res, "DUPLICATE_RECORD", "A record with this value already exists.");
   }
+  // value_too_long — e.g. seating_plans.exam_type VARCHAR limit
+  if (pgCode === "22001" || /value too long for type character varying/i.test(msg)) {
+    return fail(
+      res,
+      400,
+      "VALUE_TOO_LONG",
+      err.message || "A saved value exceeds the database column length."
+    );
+  }
   if (err?.code === "DUPLICATE_BATCH") {
     return conflict(res, err.code, err.message);
   }
