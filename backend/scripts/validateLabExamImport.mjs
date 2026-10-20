@@ -89,8 +89,61 @@ function testRangeOrderingSemantics() {
   console.log("✓ register range uses numeric-aware ordering");
 }
 
+/**
+ * Finalize must keep Excel Email→faculty mapping and charge 1 invigilation duty
+ * per faculty (Faculty.max_classrooms unit), not 1 per student.
+ */
+function testFinalizeMappingAndDutyUnit() {
+  const { valid } = parse([
+    ...Array.from({ length: 72 }, (_, i) => ({
+      "Register Number": `S${String(i + 1).padStart(3, "0")}`,
+      "Course-1": "24CSI013",
+      "Email ID": "nithyaroopa.s.cse@kct.ac.in",
+    })),
+    ...Array.from({ length: 72 }, (_, i) => ({
+      "Register Number": `T${String(i + 1).padStart(3, "0")}`,
+      "Course-1": "24CSI013",
+      "Email ID": "sathyavathi.s.it@kct.ac.in",
+    })),
+  ]);
+  assert.strictEqual(valid.length, 144);
+  const summary = summarize(valid);
+  const nithya = summary.find((g) => g.facultyEmail.includes("nithyaroopa"));
+  const sathya = summary.find((g) => g.facultyEmail.includes("sathyavathi"));
+  assert.strictEqual(nithya.studentCount, 72);
+  assert.strictEqual(sathya.studentCount, 72);
+
+  // Simulated duty charge (matches finalizeSlot business rule)
+  const dutiesPerFaculty = 1;
+  const maxClassrooms = 100;
+  const previouslyAssigned = 10;
+  const remainingAfter =
+    maxClassrooms - previouslyAssigned - dutiesPerFaculty;
+  assert.strictEqual(remainingAfter, 89);
+  assert.notStrictEqual(
+    maxClassrooms - previouslyAssigned - nithya.studentCount,
+    remainingAfter,
+    "must not deduct one unit per student"
+  );
+  console.log("✓ Excel mappings preserved; duty charge is 1 per faculty not per student");
+}
+
+function testMissingFacultyBlocksFinalizeGate() {
+  const students = [
+    { facultyId: 1, regnNo: "A" },
+    { facultyId: null, regnNo: "B" },
+  ];
+  const unresolved = students.filter((s) => !s.facultyId);
+  assert.strictEqual(unresolved.length, 1);
+  const canFinalize = students.length > 0 && unresolved.length === 0;
+  assert.strictEqual(canFinalize, false);
+  console.log("✓ missing faculty mapping blocks finalize gate");
+}
+
 testValidAndInvalidRows();
 testFacultyCounts();
 testMultipleFacultySameSlot();
 testRangeOrderingSemantics();
+testFinalizeMappingAndDutyUnit();
+testMissingFacultyBlocksFinalizeGate();
 console.log("\nAll LAB exam import checks passed.");

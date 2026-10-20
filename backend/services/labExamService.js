@@ -10,6 +10,7 @@ const {
   readWorkbookSheets,
 } = require("../utils/labStudentImport");
 const { TABLE, getPublicUuid, resolveInternalId } = require("../utils/publicId");
+const { lockFacultyRowsForUpdate } = require("../utils/facultyTimeConflict");
 
 const STATUSES = ["draft", "validated", "finalized", "attendance_open", "completed"];
 
@@ -727,7 +728,53 @@ function buildFlatLayout(students) {
 }
 
 /**
- * Finalize a slot: create seating plan + faculty assignments for attendance.
+ * Build finalization summary from imported student→faculty mappings.
+ * Faculty page "remaining" counts invigilation duties (SPVF rows), not students.
+ * Each distinct faculty in a finalized LAB slot consumes 1 duty.
+ */
+async function buildFinalizeSummary(students, byFaculty, venuesUsed) {
+  const facultyAssignments = [];
+  for (const [facultyId, group] of byFaculty.entries()) {
+    const sample = group[0];
+    const venue =
+      venuesUsed.find((v) =>
+        (v.facultyIds || []).map(Number).includes(Number(facultyId))
+      ) || null;
+    const capacity = await Faculty.getCapacitySummary(Number(facultyId));
+    facultyAssignments.push({
+      facultyId: Number(facultyId),
+      facultyUuid: sample.facultyUuid || null,
+      facultyName: sample.facultyName || null,
+      facultyEmail: sample.facultyEmail || null,
+      studentCount: group.length,
+      registerNumbers: group.map((s) => s.regnNo),
+      venueName: venue?.venueName || null,
+      // Counting unit = invigilation duty (room assignment), not student headcount.
+      invigilationDutiesCharged: 1,
+      maxClassrooms: capacity?.maxClassrooms ?? null,
+      allocationAfter: capacity?.allocation ?? null,
+      remainingAfter: capacity?.remaining ?? null,
+    });
+  }
+  facultyAssignments.sort((a, b) =>
+    String(a.facultyName || "").localeCompare(String(b.facultyName || ""), undefined, {
+      sensitivity: "base",
+    })
+  );
+  return {
+    totalStudents: students.length,
+    mappedStudents: students.filter((s) => s.facultyId).length,
+    unresolvedStudents: students.filter((s) => !s.facultyId).length,
+    facultyCount: facultyAssignments.length,
+    facultyAssignments,
+    note:
+      "Faculty remaining count deducts 1 invigilation duty per faculty on this LAB slot (not one per student).",
+  };
+}
+
+/**
+ * Finalize a slot using imported lab_slot_students.faculty_id as source of truth.
+ * Creates one seating plan + attendance sync. Idempotent if already finalized.
  */
 async function finalizeSlot(slotUuid, ownerOpts = {}) {
   const slot = await getSlotInternal(slotUuid);
@@ -736,10 +783,33 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
     err.statusCode = 404;
     throw err;
   }
+
+  // Idempotent: already finalized → return existing summary (no double capacity charge).
   if (slot.seating_plan_id || slot.seatingplanid) {
-    const err = new Error("Slot is already finalized");
-    err.statusCode = 400;
-    throw err;
+    const students = await listSlotStudents(slot.public_uuid || slotUuid);
+    const byFaculty = new Map();
+    for (const s of students) {
+      if (!s.facultyId) continue;
+      const key = String(s.facultyId);
+      if (!byFaculty.has(key)) byFaculty.set(key, []);
+      byFaculty.get(key).push(s);
+    }
+    const planId = slot.seating_plan_id || slot.seatingplanid;
+    const planUuid = await getPublicUuid(TABLE.seatingPlans, planId);
+    const summary = await buildFinalizeSummary(students, byFaculty, []);
+    return {
+      alreadyFinalized: true,
+      seatingPlanId: planId,
+      seatingPlanUuid: planUuid,
+      attendanceAssignmentsSynced: 0,
+      examStatus: "finalized",
+      summary,
+      slot: toSlotRow({
+        ...slot,
+        seating_plan_uuid: planUuid,
+        status: "finalized",
+      }),
+    };
   }
 
   const [examRows] = await db.query(`SELECT * FROM lab_exams WHERE id = ?`, [
@@ -774,7 +844,7 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
     throw err;
   }
 
-  // Group students by faculty
+  // Preserve imported (or manually corrected) faculty_id — never reassign.
   const byFaculty = new Map();
   for (const s of students) {
     const key = String(s.facultyId);
@@ -782,10 +852,43 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
     byFaculty.get(key).push(s);
   }
 
-  // Validate venue conflicts + faculty same-day/capacity
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
+
+    // Concurrent finalize: lock slot row
+    const [lockedSlots] = await conn.query(
+      `SELECT id, seating_plan_id, status FROM lab_exam_slots WHERE id = ? FOR UPDATE`,
+      [slot.id]
+    );
+    const locked = lockedSlots?.[0];
+    if (locked?.seating_plan_id || locked?.seatingplanid) {
+      await conn.rollback();
+      const studentsLocked = await listSlotStudents(slot.public_uuid || slotUuid);
+      const byFac = new Map();
+      for (const s of studentsLocked) {
+        if (!s.facultyId) continue;
+        const key = String(s.facultyId);
+        if (!byFac.has(key)) byFac.set(key, []);
+        byFac.get(key).push(s);
+      }
+      const planId = locked.seating_plan_id || locked.seatingplanid;
+      const planUuid = await getPublicUuid(TABLE.seatingPlans, planId);
+      return {
+        alreadyFinalized: true,
+        seatingPlanId: planId,
+        seatingPlanUuid: planUuid,
+        attendanceAssignmentsSynced: 0,
+        examStatus: "finalized",
+        summary: await buildFinalizeSummary(studentsLocked, byFac, []),
+        slot: toSlotRow({
+          ...slot,
+          seating_plan_id: planId,
+          seating_plan_uuid: planUuid,
+          status: "finalized",
+        }),
+      };
+    }
 
     for (const v of venues) {
       const check = await Venue.checkAllotmentSlot(
@@ -803,10 +906,19 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
       }
     }
 
-    for (const [facultyId] of byFaculty) {
+    const facultyIds = [...byFaculty.keys()].map(Number);
+    await lockFacultyRowsForUpdate(conn, facultyIds);
+
+    // Capacity unit = 1 invigilation duty per faculty (not student count).
+    for (const facultyId of facultyIds) {
       const validation = await Faculty.validateFacultyForAllocation(
-        Number(facultyId),
-        { examDate: dateOnly, examStartTime: start, examEndTime: end, additionalSlots: 1 },
+        facultyId,
+        {
+          examDate: dateOnly,
+          examStartTime: start,
+          examEndTime: end,
+          additionalSlots: 1,
+        },
         conn
       );
       if (!validation.allowed) {
@@ -817,10 +929,9 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
       }
     }
 
-    // Round-robin faculty groups onto venues, then one SPV per venue with
-    // all faculty for that venue (avoids sync wiping shared-venue assignments).
+    // Round-robin faculty groups onto venues; keep each student's faculty_id unchanged.
     const facultyEntries = [...byFaculty.entries()];
-    const venueBuckets = new Map(); // venueId -> { venue, facultyIds:Set, students:[] }
+    const venueBuckets = new Map();
 
     for (let i = 0; i < facultyEntries.length; i++) {
       const [facultyId, group] = facultyEntries[i];
@@ -841,8 +952,10 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
           allowLegacyNumeric: true,
         });
         await conn.query(
-          `UPDATE lab_slot_students SET venue_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-          [venue.id, sid]
+          `UPDATE lab_slot_students
+           SET venue_id = ?, faculty_id = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [venue.id, Number(facultyId), sid]
         );
       }
     }
@@ -850,14 +963,14 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
     const venuesUsed = [];
     const allPlanStudents = [];
     for (const bucket of venueBuckets.values()) {
-      const facultyIds = [...bucket.facultyIds];
+      const fids = [...bucket.facultyIds];
       venuesUsed.push({
         venueId: bucket.venue.id,
         venueName: bucket.venue.name,
         seatingArrangement: buildFlatLayout(bucket.students),
         benchConfig: [bucket.students.length || 1],
-        facultyId: facultyIds[0] || null,
-        facultyIds,
+        facultyId: fids[0] || null,
+        facultyIds: fids,
       });
       for (const s of bucket.students) {
         allPlanStudents.push({
@@ -873,7 +986,6 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
       ...new Set(students.map((s) => s.courseCode).filter(Boolean)),
     ];
 
-    // Extend createPlan with plan_kind via raw update after insert
     const seatingPlanId = await SeatingPlan.createPlan(
       {
         examDate: dateOnly,
@@ -907,7 +1019,7 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
     await conn.query(
       `UPDATE lab_exam_slots
        SET seating_plan_id = ?, status = 'finalized', updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
+       WHERE id = ? AND seating_plan_id IS NULL`,
       [seatingPlanId, slot.id]
     );
 
@@ -929,11 +1041,15 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
     await conn.commit();
 
     const planUuid = await getPublicUuid(TABLE.seatingPlans, seatingPlanId);
+    const summary = await buildFinalizeSummary(students, byFaculty, venuesUsed);
+
     return {
+      alreadyFinalized: false,
       seatingPlanId,
       seatingPlanUuid: planUuid,
       attendanceAssignmentsSynced: attendanceSync.synced,
       examStatus: allFinal ? "finalized" : "validated",
+      summary,
       slot: toSlotRow({
         ...slot,
         seating_plan_id: seatingPlanId,

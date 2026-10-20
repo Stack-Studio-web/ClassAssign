@@ -86,11 +86,7 @@ export default function LabAllotment() {
   const [sheetName, setSheetName] = useState("");
   const [preview, setPreview] = useState(null);
   const [students, setStudents] = useState([]);
-  const [rangeForm, setRangeForm] = useState({
-    fromRegn: "",
-    toRegn: "",
-    facultyUuid: "",
-  });
+  const [finalizeSummary, setFinalizeSummary] = useState(null);
 
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -113,10 +109,10 @@ export default function LabAllotment() {
   const facultyGroups = useMemo(() => {
     const map = new Map();
     for (const s of students) {
-      const key = s.facultyEmail || "unassigned";
+      const key = s.facultyUuid || s.facultyEmail || "unassigned";
       if (!map.has(key)) {
         map.set(key, {
-          facultyEmail: key,
+          facultyEmail: s.facultyEmail || "—",
           facultyName: s.facultyName || "Unresolved",
           facultyUuid: s.facultyUuid,
           students: [],
@@ -124,14 +120,36 @@ export default function LabAllotment() {
       }
       map.get(key).students.push(s);
     }
-    return [...map.values()];
+    return [...map.values()].sort((a, b) => b.students.length - a.students.length);
   }, [students]);
+
+  const mappedCount = useMemo(
+    () => students.filter((s) => s.facultyUuid || s.facultyId).length,
+    [students]
+  );
+  const unresolvedCount = students.length - mappedCount;
 
   const totalCapacity = useMemo(() => {
     return venues
       .filter((v) => selectedVenueIds.includes(v.uuid))
       .reduce((sum, v) => sum + (Number(v.capacity) || 0), 0);
   }, [venues, selectedVenueIds]);
+
+  const canFinalize =
+    hasWriteAccess &&
+    !loading &&
+    !preparing &&
+    slotStatus !== "finalized" &&
+    !!examDate &&
+    !!department &&
+    !!courseCode &&
+    !!examStartTime &&
+    !!examEndTime &&
+    examStartTime < examEndTime &&
+    selectedVenueIds.length > 0 &&
+    students.length > 0 &&
+    unresolvedCount === 0 &&
+    (totalCapacity === 0 || students.length <= totalCapacity);
 
   useEffect(() => {
     fetchCurrentUser().then((u) => setUser(u));
@@ -426,52 +444,26 @@ export default function LabAllotment() {
     }
   };
 
-  const handleAssignRange = async () => {
-    if (!slotUuid) {
-      setError("Import students before assigning a range.");
-      return;
-    }
-    try {
-      const res = await api.post(
-        `/lab-exams/slots/${slotUuid}/assign-range`,
-        rangeForm
-      );
-      const data = res.data?.data || res.data;
-      setStudents(data.students || []);
-      toast.success(`Updated ${data.updated || 0} student(s)`);
-    } catch (err) {
-      toast.error(getApiError(err, "Range assign failed"));
-    }
-  };
-
   const handleFinalize = async () => {
     if (!hasWriteAccess) return;
-    const validation = validateDetails();
-    if (validation) {
-      setError(validation);
-      return;
-    }
-    if (!selectedVenueIds.length) {
-      setError("Select and save at least one venue before finalizing.");
-      return;
-    }
-    if (!students.length) {
-      setError("Import students before finalizing.");
-      return;
-    }
-    if (students.some((s) => !s.facultyId && !s.facultyUuid)) {
-      setError("Resolve all faculty email mappings before finalizing.");
-      return;
-    }
-    if (totalCapacity > 0 && students.length > totalCapacity) {
+    if (!canFinalize) {
       setError(
-        `Selected venues hold ${totalCapacity} seats but ${students.length} students are imported.`
+        unresolvedCount > 0
+          ? `Resolve ${unresolvedCount} student(s) without faculty before finalizing.`
+          : "Complete exam details, venues, and student import before finalizing."
       );
       return;
     }
+    const mappingLines = facultyGroups
+      .map((g) => `• ${g.facultyName}: ${g.students.length} students`)
+      .join("\n");
     if (
       !window.confirm(
-        "Finalize this LAB allotment? Faculty will see it under /attendance/login during the exam window."
+        `Finalize LAB allotment using imported Email ID mappings?\n\n` +
+          `${students.length} students · ${facultyGroups.length} faculty\n` +
+          `${mappingLines}\n\n` +
+          `Each faculty consumes 1 invigilation duty on the Faculty remaining count (not one per student).\n` +
+          `Faculty will see their students at /attendance/login during the exam window.`
       )
     ) {
       return;
@@ -482,9 +474,15 @@ export default function LabAllotment() {
       await api.put(`/lab-exams/slots/${sid}/venues`, {
         venueIds: selectedVenueIds,
       });
-      await api.post(`/lab-exams/slots/${sid}/finalize`);
+      const res = await api.post(`/lab-exams/slots/${sid}/finalize`);
+      const data = res.data?.data || res.data;
       setSlotStatus("finalized");
-      toast.success("LAB allotment finalized");
+      setFinalizeSummary(data.summary || null);
+      await refreshStudents(sid);
+      const already = data.alreadyFinalized
+        ? "Already finalized (no duplicate capacity charge)."
+        : "LAB allotment finalized.";
+      toast.success(already);
       setError("");
     } catch (err) {
       toast.error(getApiError(err, "Finalize failed"));
@@ -931,49 +929,29 @@ export default function LabAllotment() {
                 </div>
               )}
 
-              {students.length > 0 && !isFinalized && (
+              {students.length > 0 && (
                 <div className="px-4 sm:px-5 md:px-6 py-4 border-t border-gray-100 space-y-2">
                   <p className="text-xs font-semibold text-gray-600">
-                    Assign faculty by register range (ordered imported list)
+                    Imported Email ID mapping is the source of truth — no From/To range required.
+                    Use the Faculty dropdown only for corrections.
                   </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
-                    <input
-                      className="rounded-lg border px-2 py-1.5 text-sm"
-                      placeholder="From regn"
-                      value={rangeForm.fromRegn}
-                      onChange={(e) =>
-                        setRangeForm((f) => ({ ...f, fromRegn: e.target.value }))
-                      }
-                    />
-                    <input
-                      className="rounded-lg border px-2 py-1.5 text-sm"
-                      placeholder="To regn"
-                      value={rangeForm.toRegn}
-                      onChange={(e) =>
-                        setRangeForm((f) => ({ ...f, toRegn: e.target.value }))
-                      }
-                    />
-                    <select
-                      className="rounded-lg border px-2 py-1.5 text-sm"
-                      value={rangeForm.facultyUuid}
-                      onChange={(e) =>
-                        setRangeForm((f) => ({ ...f, facultyUuid: e.target.value }))
-                      }
-                    >
-                      <option value="">Faculty</option>
-                      {facultyList.map((f) => (
-                        <option key={f.uuid} value={f.uuid}>
-                          {f.name}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      onClick={handleAssignRange}
-                      className="rounded-lg bg-gray-800 text-white text-sm font-medium"
-                    >
-                      Apply range
-                    </button>
+                  <div className="rounded-xl bg-gray-50 border border-gray-100 p-3 text-sm space-y-1">
+                    <p>
+                      <span className="font-semibold">{students.length}</span> imported ·{" "}
+                      <span className="font-semibold text-green-700">{mappedCount}</span> mapped ·{" "}
+                      <span
+                        className={`font-semibold ${
+                          unresolvedCount ? "text-amber-700" : "text-gray-700"
+                        }`}
+                      >
+                        {unresolvedCount} unresolved
+                      </span>
+                    </p>
+                    {facultyGroups.map((g) => (
+                      <p key={g.facultyUuid || g.facultyEmail} className="text-xs text-gray-700">
+                        {g.facultyName}: {g.students.length} students
+                      </p>
+                    ))}
                   </div>
                 </div>
               )}
@@ -1085,15 +1063,15 @@ export default function LabAllotment() {
                   </label>
                 </div>
                 <p className="text-xs text-gray-500">
-                  Manual only — faculty is resolved from the Excel Email ID column. Adjust
-                  assignments in the student table after import.
+                  From Excel Email ID (source of truth). Correct via the student table if needed.
+                  Faculty remaining count charges 1 invigilation duty per faculty on finalize.
                 </p>
                 <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 space-y-2 max-h-48 overflow-y-auto">
                   {facultyGroups.length === 0 ? (
                     <p className="text-xs text-gray-500">No faculty groups yet.</p>
                   ) : (
                     facultyGroups.map((g) => (
-                      <div key={g.facultyEmail} className="text-sm">
+                      <div key={g.facultyUuid || g.facultyEmail} className="text-sm">
                         <p className="font-semibold text-gray-800">
                           {g.facultyName}{" "}
                           <span className="font-normal text-gray-500 text-xs">
@@ -1102,7 +1080,7 @@ export default function LabAllotment() {
                         </p>
                         <p className="text-xs text-gray-600">
                           {g.students.length} student
-                          {g.students.length === 1 ? "" : "s"}
+                          {g.students.length === 1 ? "" : "s"} · 1 duty on finalize
                         </p>
                       </div>
                     ))
@@ -1110,20 +1088,45 @@ export default function LabAllotment() {
                 </div>
               </div>
 
+              {students.length > 0 && (
+                <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-3 text-xs space-y-1">
+                  <p className="font-semibold text-indigo-900">Pre-finalize summary</p>
+                  <p>
+                    {formatDateDisplay(examDate)} · {examStartTime}–{examEndTime} ·{" "}
+                    {department}/{courseCode}
+                  </p>
+                  <p>
+                    Students: {students.length} (mapped {mappedCount}, unresolved{" "}
+                    {unresolvedCount})
+                  </p>
+                  <p>
+                    Venues: {selectedVenueIds.length}
+                    {totalCapacity ? ` · capacity ${totalCapacity}` : ""}
+                  </p>
+                  {facultyGroups.map((g) => (
+                    <p key={`sum-${g.facultyUuid || g.facultyEmail}`}>
+                      {g.facultyName}: {g.students.length}
+                    </p>
+                  ))}
+                </div>
+              )}
+
               <div className="pt-2 border-t border-gray-100 space-y-2">
                 <button
                   type="button"
                   onClick={handleFinalize}
-                  disabled={
-                    !hasWriteAccess ||
-                    loading ||
-                    preparing ||
-                    isFinalized
+                  disabled={!canFinalize && !isFinalized}
+                  title={
+                    !canFinalize && !isFinalized
+                      ? "Complete mappings, venues, and exam details first"
+                      : ""
                   }
                   className={`w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold shadow-sm transition-all min-h-[40px] ${
-                    !hasWriteAccess || loading || preparing || isFinalized
-                      ? "bg-gray-300 text-gray-600 cursor-not-allowed"
-                      : "bg-indigo-600 text-white hover:bg-indigo-700"
+                    isFinalized
+                      ? "bg-green-600 text-white cursor-default"
+                      : canFinalize
+                        ? "bg-indigo-600 text-white hover:bg-indigo-700"
+                        : "bg-gray-300 text-gray-600 cursor-not-allowed"
                   }`}
                 >
                   <CheckCircleIcon className="h-4 w-4" />
@@ -1134,10 +1137,25 @@ export default function LabAllotment() {
                       : "Finalize LAB Allotment"}
                 </button>
                 {isFinalized && (
-                  <p className="text-xs text-green-700 text-center">
-                    Available at /attendance/login during the exam window. Sheets:
-                    /attendance/sheets → LAB exams.
-                  </p>
+                  <div className="text-xs text-green-800 space-y-1 text-center">
+                    <p>
+                      Available at /attendance/login during the exam window. Sheets:
+                      /attendance/sheets → LAB exams.
+                    </p>
+                    {finalizeSummary?.facultyAssignments?.length > 0 && (
+                      <ul className="text-left rounded-lg bg-green-50 border border-green-100 p-2 space-y-0.5">
+                        {finalizeSummary.facultyAssignments.map((f) => (
+                          <li key={f.facultyId}>
+                            {f.facultyName}: {f.studentCount} students · duty charged{" "}
+                            {f.invigilationDutiesCharged}
+                            {f.remainingAfter != null
+                              ? ` · remaining ${f.remainingAfter}/${f.maxClassrooms}`
+                              : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
