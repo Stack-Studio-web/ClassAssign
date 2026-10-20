@@ -94,7 +94,50 @@ export default function LabAllotment() {
   const [finalizing, setFinalizing] = useState(false);
   const [showFinalizeConfirm, setShowFinalizeConfirm] = useState(false);
   const finalizeInFlightRef = useRef(false);
+  const importFileInputRef = useRef(null);
+  const skipDraftPersistRef = useRef(false);
   const LAB_DRAFT_KEY = "labAllotmentDraft";
+
+  /** Clear UI for a new allotment. Does not delete saved backend records. */
+  const resetLabAllotmentForm = useCallback(() => {
+    skipDraftPersistRef.current = true;
+    try {
+      sessionStorage.removeItem(LAB_DRAFT_KEY);
+    } catch {
+      /* ignore */
+    }
+    setExamDate("");
+    setExamSession("FN");
+    setExamStartTime("09:00");
+    setExamEndTime("11:00");
+    setDepartment("");
+    setCourseCode("");
+    setAvailableCourses([]);
+    setCoursesError("");
+    setExamUuid("");
+    setSlotUuid("");
+    setSlotStatus("draft");
+    setVenues([]);
+    setSelectedVenueIds([]);
+    setImportFile(null);
+    setSheetName("");
+    setPreview(null);
+    setStudents([]);
+    setFinalizeSummary(null);
+    setError("");
+    setLoading(false);
+    setPreparing(false);
+    setFinalizing(false);
+    setShowFinalizeConfirm(false);
+    finalizeInFlightRef.current = false;
+    if (importFileInputRef.current) {
+      importFileInputRef.current.value = "";
+    }
+    // Allow persistDraft again on the next intentional save/create.
+    queueMicrotask(() => {
+      skipDraftPersistRef.current = false;
+    });
+  }, []);
 
   const selectedDay =
     examDate &&
@@ -207,7 +250,7 @@ export default function LabAllotment() {
       })
       .catch(() => setFacultyList([]));
 
-    // Restore draft / finalized LAB exam after reload.
+    // Restore in-progress draft only (never auto-load a finalized allotment).
     (async () => {
       let draft = null;
       try {
@@ -216,19 +259,36 @@ export default function LabAllotment() {
         draft = null;
       }
       if (!draft?.examUuid) return;
+      if (draft.slotStatus === "finalized") {
+        try {
+          sessionStorage.removeItem(LAB_DRAFT_KEY);
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
       try {
         const res = await api.get(`/lab-exams/${draft.examUuid}`);
         const detail = res.data?.data || res.data;
         if (!detail?.uuid) return;
+        const slot = detail.slots?.[0];
+        const status = slot?.status || detail.status || draft.slotStatus || "draft";
+        if (status === "finalized" || status === "completed") {
+          try {
+            sessionStorage.removeItem(LAB_DRAFT_KEY);
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
         setExamUuid(detail.uuid);
         setExamDate(
           String(detail.examDate || detail.exam_date || draft.examDate || "").slice(0, 10)
         );
         setDepartment(detail.department || draft.department || "");
-        const slot = detail.slots?.[0];
         if (slot?.uuid) {
           setSlotUuid(slot.uuid);
-          setSlotStatus(slot.status || "draft");
+          setSlotStatus(status);
           setExamStartTime(
             String(slot.startTime || slot.start_time || draft.examStartTime || "09:00").slice(0, 5)
           );
@@ -249,6 +309,9 @@ export default function LabAllotment() {
   }, []);
 
   useEffect(() => {
+    if (skipDraftPersistRef.current) return;
+    // Never persist finalized allotments as the active draft (would reload into the form).
+    if (slotStatus === "finalized") return;
     if (examUuid || slotUuid) persistDraft();
   }, [examUuid, slotUuid, slotStatus, persistDraft]);
 
@@ -585,38 +648,23 @@ export default function LabAllotment() {
         );
       }
 
-      setSlotStatus("finalized");
-      setFinalizeSummary(data.summary || null);
-      setExamUuid(eid);
-      setSlotUuid(sid);
-      persistDraft({
-        examUuid: eid,
-        slotUuid: sid,
-        slotStatus: "finalized",
-      });
-      await refreshStudents(sid);
+      // Soft verify from GET (failure here does not block reset when plan was saved).
       try {
-        const detailRes = await api.get(`/lab-exams/${eid}`);
-        const detail = detailRes.data?.data || detailRes.data;
-        const slot = detail?.slots?.[0];
-        if (slot?.status === "finalized" || planOk || slotStatusOk) {
-          setSlotStatus("finalized");
-        }
+        await api.get(`/lab-exams/${eid}`);
       } catch {
-        setSlotStatus("finalized");
+        /* ignore — POST already confirmed finalization */
       }
+
       toast.success(
-        data.alreadyFinalized
-          ? "Already finalized (no duplicate capacity charge)."
-          : "LAB allotment finalized."
+        "LAB allotment finalized successfully. Ready for a new allotment."
       );
-      setError("");
+      // Reset form only after success — saved allotment remains in the database.
+      resetLabAllotmentForm();
     } catch (err) {
       const msg = getApiError(err, "Finalize failed");
       console.error("LAB finalize failed:", err?.response?.data || err);
       toast.error(msg);
       setError(msg);
-    } finally {
       setLoading(false);
       setFinalizing(false);
       finalizeInFlightRef.current = false;
@@ -922,6 +970,7 @@ export default function LabAllotment() {
                   Columns: Register Number, Course-1, Email ID. Email maps each student to faculty.
                 </p>
                 <input
+                  ref={importFileInputRef}
                   type="file"
                   accept=".xlsx,.xls"
                   disabled={!hasWriteAccess || isFinalized}
