@@ -336,7 +336,13 @@ const ExamHallAllotment = () => {
 
   const reportHeader = (
     <div className="text-center mb-4 hall-print-header">
-      <img src={currentLogo} alt="Logo" width={240} className="mx-auto" />
+      <img
+        src={currentLogo}
+        alt="Logo"
+        width={240}
+        className="mx-auto hall-print-logo"
+        style={{ maxHeight: 70, width: "auto" }}
+      />
       <h2 className="font-bold text-lg">Kumaraguru College of Technology</h2>
       <p>{departmentLine}</p>
       <strong className="block font-bold">{programmeLine1}</strong>

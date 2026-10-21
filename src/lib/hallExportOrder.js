@@ -83,24 +83,27 @@ export function groupHallsByExamTime(halls) {
 
 /**
  * Print geometry for /Hall PDF (A4 portrait, CSS px @ 96dpi).
- * Bottom margin reserves the fixed Hallora verify footer.
+ * Estimates are intentionally slightly conservative so pre-packed pages do not
+ * overflow and trigger browser reflow (which leaves large blank gaps).
  */
 export const HALL_PRINT_GEOMETRY = {
-  pageHeightPx: Math.round((297 / 25.4) * 96), // A4
+  pageHeightPx: Math.round((297 / 25.4) * 96), // A4 ≈ 1123px
   marginTopPx: Math.round((12 / 25.4) * 96),
   marginBottomPx: Math.round((12 / 25.4) * 96),
   marginXPx: Math.round((10 / 25.4) * 96),
-  /** Extra slack so packed pages do not overflow and get re-split by the browser. */
-  safetyPx: 48,
-  reportHeaderPx: 160,
-  sessionTitlePx: 36,
-  theadPx: 32,
-  /** Base row height; long roll/course text grows via estimatePrintRowHeight. */
-  rowPx: 26,
-  charsPerRollLine: 38,
-  charsPerCourseLine: 15,
-  sessionGapPx: 16,
-  linePx: 13,
+  /** Slack so packed pages stay under printable height after subpixel/wrap variance. */
+  safetyPx: 72,
+  /** Logo (max ~70px) + college/dept/programme/AY lines + spacing. */
+  reportHeaderPx: 210,
+  sessionTitlePx: 40,
+  theadPx: 38,
+  /** Base row height including cell padding + borders. */
+  rowPx: 30,
+  /** ~36% column at 9pt mono — keep slightly low so wraps are not under-counted. */
+  charsPerRollLine: 30,
+  charsPerCourseLine: 12,
+  sessionGapPx: 10,
+  linePx: 14,
 };
 
 export function getHallPrintUsableHeightPx(geometry = HALL_PRINT_GEOMETRY) {
@@ -118,10 +121,13 @@ export function estimatePrintRowHeight(row, geometry = HALL_PRINT_GEOMETRY) {
   const courseLen = Array.isArray(row?.courseCodes)
     ? row.courseCodes.join(", ").length
     : String(row?.courseCodes ?? "").length;
+  const yearLen = String(row?.yearBranch ?? "").length;
   const rollLines = Math.max(1, Math.ceil(rollLen / geometry.charsPerRollLine));
   const courseLines = Math.max(1, Math.ceil(courseLen / geometry.charsPerCourseLine));
-  const lines = Math.max(rollLines, courseLines, 1);
-  return Math.max(geometry.rowPx, 10 + lines * geometry.linePx);
+  const yearLines = Math.max(1, Math.ceil(yearLen / 12));
+  const lines = Math.max(rollLines, courseLines, yearLines, 1);
+  // +2px border fudge per row so collapse borders never push a packed page over.
+  return Math.max(geometry.rowPx, 12 + lines * geometry.linePx) + 2;
 }
 
 function flattenHallRows(hall) {
@@ -228,27 +234,46 @@ export function paginateHallAllotmentForPrint(
         }
       } else if (
         fullHallH + titleCost + geometry.theadPx <= usable &&
-        (page.blocks.length > 0 || page.usedPx > (page.showReportHeader ? geometry.reportHeaderPx : 0))
+        page.blocks.length > 0
       ) {
-        // Hall fits on a fresh page — move it rather than splitting early.
+        // Hall fits on a fresh page and this page already has a table — move intact.
+        // (Do not eject a header-only first page just to keep a hall together.)
         pushPage();
         continue;
       } else {
-        // Oversized hall (or forced onto this page): take as many rows as fit.
+        // Oversized hall (or forced onto this page): take as many whole rows as fit.
         takeEnd = hallStart;
         let used = 0;
         while (takeEnd < hallEnd) {
           const rh = estimatePrintRowHeight(flatRows[takeEnd], geometry);
           if (takeEnd > hallStart && used + rh > roomForRows) break;
+          // Always allow at least one row even if it is tall (continuation will follow).
+          if (takeEnd === hallStart && rh > roomForRows && page.blocks.length > 0) {
+            pushPage();
+            break;
+          }
           used += rh;
           takeEnd += 1;
           if (takeEnd === hallStart + 1 && rh > roomForRows) break;
         }
-        if (takeEnd === hallStart) takeEnd = hallStart + 1;
+        if (takeEnd === hallStart) {
+          // Pushed page for a tall first row — restart loop on the fresh page.
+          if (page.blocks.length === 0 && page.usedPx === 0) {
+            takeEnd = hallStart + 1;
+          } else {
+            continue;
+          }
+        }
       }
 
       const rowsH = hallGroupHeight(flatRows, cursor, takeEnd, geometry);
       const blockH = titleCost + geometry.theadPx + rowsH + geometry.sessionGapPx;
+
+      // Final guard: never place a chunk that our own estimate says overflows.
+      if (blockH > remaining() && page.blocks.length > 0) {
+        pushPage();
+        continue;
+      }
 
       page.blocks.push({
         sessionKey,
@@ -263,6 +288,13 @@ export function paginateHallAllotmentForPrint(
   }
 
   pages.push(page);
+  while (
+    pages.length > 1 &&
+    pages[pages.length - 1].blocks.length === 0 &&
+    !pages[pages.length - 1].showReportHeader
+  ) {
+    pages.pop();
+  }
 
   return { pages, geometry, usableHeightPx: usable };
 }
@@ -314,10 +346,25 @@ export const HALL_ALLOTMENT_PRINT_CSS = `
     page-break-after: always;
   }
 
+  .hall-print-root .hall-print-page {
+    /* Do not min-height the page — that fabricates blank areas. */
+    box-sizing: border-box;
+  }
+
+  .hall-print-root .hall-print-logo {
+    max-height: 70px !important;
+    width: auto !important;
+    max-width: 240px !important;
+  }
+
   .hall-print-root .hall-print-overflow {
     overflow: visible !important;
     margin-left: 0 !important;
     margin-right: 0 !important;
+  }
+
+  .hall-print-root .hall-session {
+    margin-bottom: 8px !important;
   }
 
   .hall-print-root .hall-session-title {
@@ -339,6 +386,10 @@ export const HALL_ALLOTMENT_PRINT_CSS = `
     display: table-header-group;
   }
 
+  /*
+   * Keep each pre-packed hall group intact. Estimates are conservative so the
+   * browser should not need to relocate groups (relocation caused large blanks).
+   */
   .hall-print-root table.hall-alloc-table tbody.hall-group {
     break-inside: avoid;
     page-break-inside: avoid;
