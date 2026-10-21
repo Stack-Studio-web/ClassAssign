@@ -50,13 +50,30 @@ function testBucketsAndMergeAreDepartmentScoped() {
   const base = {
     id: 7, public_uuid: "u-7", name: "Arun Kumar", email: "arun@kct.ac.in", department: "CSE",
     max_classrooms: 5, is_available: true, transfer_count: 0,
-    home_department: "CSE", shared_departments: ["IT"],
+    home_department: "CSE", shared_departments: ["IT"], shared_context_count: 1,
   };
   const [cse] = Faculty._mergeScopedRows([{ ...base, is_home: true }], buckets);
   const [it] = Faculty._mergeScopedRows(
     [{ ...base, is_home: false, shared_membership_id: 91, shared_max: 4, shared_available: true, shared_transfer_count: 1, shared_department: "IT" }],
     buckets
   );
+  // Same faculty department (CSE) in two contexts still shows Shared - CSE
+  const [ksi] = Faculty._mergeScopedRows(
+    [{
+      ...base,
+      shared_departments: ["CSE"],
+      shared_context_count: 1,
+      is_home: false,
+      shared_membership_id: 92,
+      shared_max: 3,
+      shared_available: true,
+      shared_transfer_count: 0,
+      shared_department: "CSE",
+    }],
+    buckets
+  );
+  assert.strictEqual(ksi.membershipLabel, "Shared - CSE");
+  assert.strictEqual(ksi.isShared, true);
   assert.deepStrictEqual(
     [cse.maxClassrooms, cse.allocation, cse.completed, cse.remaining, cse.membershipType],
     [5, 3, 2, 2, "home"]
@@ -82,13 +99,12 @@ function testMembershipLabels() {
   assert.deepStrictEqual(membershipLabels(null, ["IT"]), ["IT"]);
   assert.deepStrictEqual(membershipLabels("MECH", []), ["MECH"]);
   assert.strictEqual(membershipDisplayLabel("CSE", []), "CSE");
-  assert.strictEqual(membershipDisplayLabel("SFS", []), "SFS");
-  assert.strictEqual(membershipDisplayLabel("CSE", ["SFS"]), "Shared - CSE");
-  assert.strictEqual(membershipDisplayLabel("CSE", ["KSI"]), "Shared - CSE");
+  assert.strictEqual(membershipDisplayLabel("CSE", ["CSE"], false), "CSE");
+  assert.strictEqual(membershipDisplayLabel("CSE", ["CSE"], true), "Shared - CSE");
+  assert.strictEqual(membershipDisplayLabel("CSE", ["IT"]), "Shared - CSE");
   assert.strictEqual(membershipDisplayLabel("CSE", ["SFS", "KSI"]), "Shared - CSE");
-  assert.strictEqual(membershipDisplayLabel("SFS", ["CSE"]), "Shared - SFS");
-  assert.strictEqual(isSharedMembership("CSE", []), false);
-  assert.strictEqual(isSharedMembership("CSE", ["SFS"]), true);
+  assert.strictEqual(isSharedMembership("CSE", [], false), false);
+  assert.strictEqual(isSharedMembership("CSE", ["CSE"], true), true);
   console.log("✓ department membership labels");
 }
 
@@ -102,18 +118,18 @@ function testAttributionMirrorsInsertField() {
 
 function testConflictMessageAndVisibility() {
   const conflict = {
-    facultyName: "Arun Kumar",
+    facultyName: "Faizal",
     venueName: "AD207",
     examDate: "2026-10-24",
     examStartTime: "09:00",
     examEndTime: "11:00",
     ownerUserId: 10,
-    assignedDepartment: "CSE",
+    assignedContext: "KSI",
   };
   conflict.message = buildTimeConflictMessage(conflict);
   assert.strictEqual(
     conflict.message,
-    "Arun Kumar is already assigned by CSE to an exam on 24/10/2026 at AD207 (9:00 AM–11:00 AM). Please select another faculty member."
+    "Faculty Faizal is already assigned to an exam through KSI on 24/10/2026, 9:00 AM–11:00 AM at AD207. Please select another faculty member."
   );
 
   const cseViewer = conflictViewerFromOpts({ role: "faculty_incharge", ownerIds: [10, 11] });
@@ -124,12 +140,12 @@ function testConflictMessageAndVisibility() {
   assert.strictEqual(shown.venueName, null);
   assert.strictEqual(shown.crossDepartment, true);
   assert.ok(!shown.message.includes("AD207"));
-  assert.ok(shown.message.includes("by CSE") && shown.message.includes("24/10/2026"));
+  assert.ok(shown.message.includes("through KSI") && shown.message.includes("24/10/2026"));
   assert.ok(shown.message.includes("9:00 AM–11:00 AM"));
 
   const admin = conflictViewerFromOpts({ role: "admin" });
   assert.ok(presentConflictForViewer(conflict, admin).message.includes("AD207"));
-  console.log("✓ conflict message from stored fields; other departments' venue hidden");
+  console.log("✓ conflict message from stored fields; other contexts' venue hidden");
 }
 
 function testNameNormalization() {

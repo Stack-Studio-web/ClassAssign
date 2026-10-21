@@ -82,14 +82,25 @@ function mergeScopedRows(rows, bucketRows) {
           };
     const homeDepartment = r.home_department ?? r.homedepartment ?? null;
     const shared = r.shared_departments ?? r.shareddepartments ?? [];
+    const rawCount = r.shared_context_count ?? r.sharedcontextcount;
+    const sharedAcrossContexts =
+      rawCount != null
+        ? Number(rawCount) > 0
+        : Array.isArray(shared) && shared.length > 0;
     const departments = Membership.membershipLabels(homeDepartment, shared);
+    const mainDepartment =
+      String(homeDepartment || "").trim().toUpperCase() || departments[0] || null;
     return toFacultyRow({
       ...r,
       ...Membership.scopedCounters(settings, counts),
       departments,
-      main_department: String(homeDepartment || "").trim().toUpperCase() || departments[0] || null,
-      membership_label: Membership.membershipDisplayLabel(homeDepartment, shared),
-      is_shared: Membership.isSharedMembership(homeDepartment, shared),
+      main_department: mainDepartment,
+      membership_label: Membership.membershipDisplayLabel(
+        homeDepartment,
+        shared,
+        sharedAcrossContexts
+      ),
+      is_shared: sharedAcrossContexts,
       membership_type: sharedId != null ? "shared" : "home",
       scoped_department:
         sharedId != null ? r.shared_department ?? r.shareddepartment : homeDepartment,
@@ -1019,6 +1030,10 @@ const Faculty = {
           WHERE m.faculty_id = f.id AND m.is_active = TRUE
           ORDER BY m.department
         ) AS shared_departments,
+        (
+          SELECT COUNT(*)::int FROM faculty_department_memberships m
+          WHERE m.faculty_id = f.id AND m.is_active = TRUE
+        ) AS shared_context_count,
         ${vis.selectSql}
       FROM faculty f
       ${vis.joinSql}

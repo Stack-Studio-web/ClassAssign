@@ -1,5 +1,5 @@
 const { ACTIVE_ALLOCATION_SQL } = require("./facultyAllocationStatus");
-const { PLAN_DEPARTMENT_SQL } = require("./facultyMembership");
+const { PLAN_CONTEXT_SQL } = require("./facultyMembership");
 
 function normalizeExamTime(value) {
   if (value == null || value === "") return null;
@@ -39,7 +39,7 @@ function formatDateDisplay(dateOnly) {
 
 /**
  * Business rule: one active invigilation allotment per faculty per calendar day
- * (regardless of whether exam times overlap).
+ * (regardless of whether exam times overlap). Conflicts are global across Academic Contexts.
  */
 function buildTimeConflictMessage({
   facultyName,
@@ -47,22 +47,22 @@ function buildTimeConflictMessage({
   examDate,
   examStartTime,
   examEndTime,
+  assignedContext = null,
   assignedDepartment = null,
   hideVenue = false,
 }) {
   const name = facultyName || "This faculty";
+  const facultyLabel = name === "This faculty" ? name : `Faculty ${name}`;
   const venue = venueName || "another venue";
   const date = formatDateDisplay(normalizeExamDate(examDate));
   const start = formatTime12h(examStartTime);
   const end = formatTime12h(examEndTime);
-  const venuePart = hideVenue ? "" : ` at ${venue}`;
-  const when =
-    start && end
-      ? `${venuePart} (${start}–${end})`
-      : venuePart;
+  const contextLabel = assignedContext || assignedDepartment || null;
+  const throughPart = contextLabel ? ` through ${contextLabel}` : "";
   const datePart = date ? ` on ${date}` : "";
-  const byPart = assignedDepartment ? ` by ${assignedDepartment}` : "";
-  return `${name} is already assigned${byPart} to an exam${datePart}${when}. Please select another faculty member.`;
+  const timePart = start && end ? `, ${start}–${end}` : "";
+  const venuePart = hideVenue ? "" : ` at ${venue}`;
+  return `${facultyLabel} is already assigned to an exam${throughPart}${datePart}${timePart}${venuePart}. Please select another faculty member.`;
 }
 
 /** Viewer used to decide whether another department's venue may be revealed. */
@@ -169,7 +169,12 @@ function mapConflictRow(row) {
   const examEndTime = row.exam_end_time ?? row.examendtime ?? null;
   const examDate = normalizeExamDate(row.exam_date ?? row.examdate ?? null);
   const ownerUserId = row.owner_user_id ?? row.owneruserid ?? null;
-  const assignedDepartment = row.assigned_department ?? row.assigneddepartment ?? null;
+  const assignedContext =
+    row.assigned_context ??
+    row.assignedcontext ??
+    row.assigned_department ??
+    row.assigneddepartment ??
+    null;
   return {
     seatingPlanId: row.seating_plan_id ?? row.seatingplanid ?? null,
     spvId: row.spv_id ?? row.spvid ?? row.id ?? null,
@@ -181,14 +186,15 @@ function mapConflictRow(row) {
     examEndTime,
     occupancyEndTime: examEndTime,
     ownerUserId: ownerUserId != null ? Number(ownerUserId) : null,
-    assignedDepartment,
+    assignedContext,
+    assignedDepartment: assignedContext,
     message: buildTimeConflictMessage({
       facultyName,
       venueName,
       examDate,
       examStartTime,
       examEndTime,
-      assignedDepartment,
+      assignedContext,
     }),
   };
 }
@@ -238,7 +244,7 @@ async function findActiveTimeConflict(
        sp.exam_start_time,
        sp.exam_end_time,
        sp.owner_user_id,
-       ${PLAN_DEPARTMENT_SQL} AS assigned_department,
+       ${PLAN_CONTEXT_SQL} AS assigned_context,
        f.name AS faculty_name
      FROM seating_plan_venue_faculty spvf
      JOIN seating_plan_venues spv ON spv.id = spvf.seating_plan_venue_id
@@ -294,7 +300,7 @@ async function findActiveSameDayConflictsBulk(
        sp.exam_start_time,
        sp.exam_end_time,
        sp.owner_user_id,
-       ${PLAN_DEPARTMENT_SQL} AS assigned_department,
+       ${PLAN_CONTEXT_SQL} AS assigned_context,
        f.name AS faculty_name
      FROM seating_plan_venue_faculty spvf
      JOIN seating_plan_venues spv ON spv.id = spvf.seating_plan_venue_id

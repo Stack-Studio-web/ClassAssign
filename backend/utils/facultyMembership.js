@@ -1,17 +1,18 @@
 /**
- * Cross-department faculty sharing.
+ * Cross-context faculty sharing.
  *
  * Identity: one faculty row per normalized email (idx_faculty_email_lower).
- * Home department: the Academic Context that owns faculty.owner_user_id. Its duty
- *   settings stay on the faculty row (max_classrooms, is_available, transfer_count).
- * Shared department: one faculty_department_memberships row per extra Academic Context,
- *   with independent max_classrooms / is_available / transfer_count.
+ * Academic Context (e.g. KSI, SFS) ≠ faculty department (e.g. CSE, IT).
+ * Home: the Academic Context that owns faculty.owner_user_id; duty settings stay on
+ *   the faculty row (max_classrooms, is_available, transfer_count).
+ * Shared: one faculty_department_memberships row per extra Academic Context, with
+ *   independent counters. membership.department is the faculty department code (CSE),
+ *   not the Academic Context label.
  *
- * Attribution: an assignment (seating_plan_venue_faculty row) counts toward the membership
- * whose Academic Context contains seating_plans.owner_user_id; otherwise toward home.
- * Sum over all departments = the faculty's global total, so nothing is double counted.
+ * Attribution: a seating plan counts toward the membership whose Academic Context
+ * contains seating_plans.owner_user_id; otherwise toward home.
  *
- * Scheduling conflicts are NOT department-scoped (see facultyTimeConflict.js).
+ * Scheduling conflicts are global across all Academic Contexts (facultyTimeConflict.js).
  */
 const db = require("../config/db");
 const { ownerAndFromOpts } = require("./ownerFilter");
@@ -48,8 +49,14 @@ const ATTRIBUTION_LATERAL_SQL = `
     LIMIT 1
   ) attr ON TRUE`;
 
-/** Department label of the Academic Context that owns a seating plan (alias sp). */
-const PLAN_DEPARTMENT_SQL = `COALESCE(
+/** Academic Context label (KSI / SFS / …) for the plan owner — preferred in conflict messages. */
+const PLAN_CONTEXT_SQL = `COALESCE(
+  (SELECT NULLIF(TRIM(ac.label), '')
+     FROM academic_context_members acm
+     JOIN academic_contexts ac ON ac.id = acm.academic_context_id
+    WHERE acm.user_id = sp.owner_user_id
+    ORDER BY ac.is_active DESC, ac.id
+    LIMIT 1),
   (SELECT ac.department
      FROM academic_context_members acm
      JOIN academic_contexts ac ON ac.id = acm.academic_context_id
@@ -58,6 +65,9 @@ const PLAN_DEPARTMENT_SQL = `COALESCE(
     LIMIT 1),
   (SELECT NULLIF(TRIM(u.department), '') FROM users u WHERE u.id = sp.owner_user_id)
 )`;
+
+/** @deprecated use PLAN_CONTEXT_SQL — kept as alias for older imports */
+const PLAN_DEPARTMENT_SQL = PLAN_CONTEXT_SQL;
 
 /**
  * Per-faculty, per-department assignment counts.
@@ -147,18 +157,23 @@ function membershipLabels(homeDepartment, sharedDepartments = []) {
 }
 
 /**
- * UI label for Dept. Memberships column.
- * Main department = original faculty identity department (home), never the latest share.
- * One membership → "CSE"; two or more → "Shared - CSE".
+ * UI label for Dept. Memberships.
+ * Main department = original faculty.department (home), never overwritten by association.
+ * Shared when the identity exists in more than one Academic Context (even if both use CSE).
  */
-function membershipDisplayLabel(homeDepartment, sharedDepartments = []) {
+function membershipDisplayLabel(homeDepartment, sharedDepartments = [], sharedAcrossContexts = null) {
   const all = membershipLabels(homeDepartment, sharedDepartments);
   const main = String(homeDepartment || "").trim().toUpperCase() || all[0] || "";
-  if (all.length <= 1) return main || "—";
+  const shared =
+    sharedAcrossContexts == null
+      ? all.length > 1
+      : Boolean(sharedAcrossContexts);
+  if (!shared) return main || "—";
   return main ? `Shared - ${main}` : "Shared";
 }
 
-function isSharedMembership(homeDepartment, sharedDepartments = []) {
+function isSharedMembership(homeDepartment, sharedDepartments = [], sharedAcrossContexts = null) {
+  if (sharedAcrossContexts != null) return Boolean(sharedAcrossContexts);
   return membershipLabels(homeDepartment, sharedDepartments).length > 1;
 }
 
@@ -172,18 +187,34 @@ function homePredicate(opts, prefix = "f.") {
   return { sql: `(1=1${sql})`, params };
 }
 
-/** Academic Context the requester manages, with its department code. */
-async function resolveManagedDepartment(opts = {}, executor = db) {
+/**
+ * Academic Context the requester manages.
+ * Returns context id + label (KSI/SFS/…). contextDepartment is the optional
+ * academic_contexts.department field and must NOT be confused with faculty CSE/IT.
+ */
+async function resolveManagedContext(opts = {}, executor = db) {
   const contextId = Number(opts.academicContextId);
   if (!Number.isFinite(contextId) || contextId <= 0) return null;
   const [rows] = await executor.query(
-    `SELECT id, department FROM academic_contexts WHERE id = ? AND is_active = TRUE LIMIT 1`,
+    `SELECT id, label, department FROM academic_contexts WHERE id = ? AND is_active = TRUE LIMIT 1`,
     [contextId]
   );
   const row = rows?.[0];
-  const department = String(row?.department || "").trim().toUpperCase();
-  if (!row || !department) return null;
-  return { contextId: Number(row.id), department };
+  if (!row) return null;
+  const label = String(row.label || "").trim() || String(row.department || "").trim().toUpperCase();
+  if (!label) return null;
+  return {
+    contextId: Number(row.id),
+    label,
+    contextDepartment: String(row.department || "").trim().toUpperCase() || null,
+    /** @deprecated alias — prefer label; do not use as faculty department */
+    department: String(row.department || "").trim().toUpperCase() || label,
+  };
+}
+
+/** @deprecated use resolveManagedContext */
+async function resolveManagedDepartment(opts = {}, executor = db) {
+  return resolveManagedContext(opts, executor);
 }
 
 /**
@@ -249,15 +280,15 @@ async function countActiveMembershipsExcluding(facultyId, excludeContextId = nul
 }
 
 /**
- * Associate an existing faculty identity with the requester's department.
+ * Associate an existing faculty identity with the requester's Academic Context.
  * Never modifies faculty identity fields, users, credentials, or roles.
+ * Does not check duty conflicts — allotment validates those separately.
  *
- * @returns {Promise<{status: string, httpStatus: number, message: string, membership?: object, faculty?: object, detailsMismatch?: boolean}>}
- *   status: ASSOCIATED | REACTIVATED | ALREADY_ASSOCIATED | HOME_INACTIVE |
- *           NO_DEPARTMENT | IDENTITY_INACTIVE
+ * membership.department = requested faculty department (CSE/IT/…), falling back to
+ * the existing identity department. Unique on (faculty_id, academic_context_id).
  */
 async function associateExistingFaculty(
-  { faculty, requestedName = null, addedByUserId = null },
+  { faculty, requestedDepartment = null, requestedName = null, addedByUserId = null },
   opts = {},
   executor = db
 ) {
@@ -273,30 +304,26 @@ async function associateExistingFaculty(
     return {
       status: "ALREADY_ASSOCIATED",
       httpStatus: 409,
-      message: `${displayName} (${scope.faculty.email}) is already a member of your department.`,
+      message: `${displayName} (${scope.faculty.email}) is already a member of your Academic Context.`,
       faculty: scope.faculty,
     };
   }
 
-  const managed = await resolveManagedDepartment(opts, executor);
+  const managed = await resolveManagedContext(opts, executor);
   if (!managed) {
     return {
       status: "NO_DEPARTMENT",
       httpStatus: 409,
       message:
-        "A faculty member with this email already exists. Your account is not linked to a department Academic Context, so it cannot be shared with you.",
+        "A faculty member with this email already exists. Your account is not linked to an Academic Context, so they cannot be shared with you.",
     };
   }
-
-  // Association always targets the caller's managed department (Academic Context).
-  // A submitted/home department that differs (e.g. SFS FI entering CSE for an existing
-  // CSE identity) must not block creating the caller's membership.
 
   if (scope.faculty?.is_active === false || scope.faculty?.isactive === false) {
     return {
       status: "IDENTITY_INACTIVE",
       httpStatus: 409,
-      message: `${displayName} was removed from active management by their home department. Ask that department or an administrator to restore them first.`,
+      message: `${displayName} was removed from active management by their home context. Ask that context or an administrator to restore them first.`,
     };
   }
 
@@ -304,11 +331,18 @@ async function associateExistingFaculty(
     return {
       status: "ALREADY_ASSOCIATED",
       httpStatus: 409,
-      message: `${displayName} (${scope.faculty.email}) is already a member of ${managed.department}.`,
+      message: `${displayName} (${scope.faculty.email}) is already a member of ${managed.label}.`,
       membership: scope.membership,
       faculty: scope.faculty,
     };
   }
+
+  // Faculty department for this context membership (CSE), not the context label (KSI/SFS).
+  const membershipDepartment =
+    String(requestedDepartment || "").trim().toUpperCase() ||
+    String(scope.faculty?.department || faculty.department || "").trim().toUpperCase() ||
+    managed.contextDepartment ||
+    "UNASSIGNED";
 
   // Atomic on (faculty_id, academic_context_id): concurrent requests insert at most one row.
   const [rows] = await executor.query(
@@ -316,17 +350,20 @@ async function associateExistingFaculty(
        (faculty_id, academic_context_id, department, added_by_user_id)
      VALUES (?, ?, ?, ?)
      ON CONFLICT (faculty_id, academic_context_id) DO UPDATE
-       SET is_active = TRUE, removed_at = NULL, updated_at = CURRENT_TIMESTAMP
+       SET is_active = TRUE,
+           department = COALESCE(NULLIF(TRIM(EXCLUDED.department), ''), faculty_department_memberships.department),
+           removed_at = NULL,
+           updated_at = CURRENT_TIMESTAMP
        WHERE faculty_department_memberships.is_active = FALSE
-     RETURNING id, (xmax = 0) AS inserted`,
-    [facultyId, managed.contextId, managed.department, addedByUserId]
+     RETURNING id, department, (xmax = 0) AS inserted`,
+    [facultyId, managed.contextId, membershipDepartment, addedByUserId]
   );
   const row = Array.isArray(rows) ? rows[0] : null;
   if (!row || row.id == null) {
     return {
       status: "ALREADY_ASSOCIATED",
       httpStatus: 409,
-      message: `${displayName} (${scope.faculty.email}) is already a member of ${managed.department}.`,
+      message: `${displayName} (${scope.faculty.email}) is already a member of ${managed.label}.`,
       faculty: scope.faculty,
     };
   }
@@ -336,14 +373,20 @@ async function associateExistingFaculty(
     String(requestedName).trim() !== "" &&
     normalizeName(requestedName) !== normalizeName(scope.faculty?.name);
   const inserted = row.inserted === true || row.inserted === "t";
+  const storedDept = String(row.department || membershipDepartment).trim().toUpperCase();
   const mismatchNote = detailsMismatch
     ? ` The existing name "${scope.faculty.name}" was kept; the submitted name "${String(requestedName).trim()}" was not applied.`
     : "";
   return {
     status: inserted ? "ASSOCIATED" : "REACTIVATED",
     httpStatus: inserted ? 201 : 200,
-    message: `Existing faculty ${displayName} added to ${managed.department}. Their login and details are unchanged.${mismatchNote}`,
-    membership: { id: row.id, academicContextId: managed.contextId, department: managed.department },
+    message: `Existing faculty ${displayName} added to ${managed.label} (${storedDept}). Their login and details are unchanged.${mismatchNote}`,
+    membership: {
+      id: row.id,
+      academicContextId: managed.contextId,
+      contextLabel: managed.label,
+      department: storedDept,
+    },
     faculty: scope.faculty,
     detailsMismatch,
   };
@@ -352,6 +395,7 @@ async function associateExistingFaculty(
 module.exports = {
   HOME_KEY,
   ATTRIBUTION_LATERAL_SQL,
+  PLAN_CONTEXT_SQL,
   PLAN_DEPARTMENT_SQL,
   attributionUserIdFromOpts,
   bucketKey,
@@ -363,6 +407,7 @@ module.exports = {
   isSharedMembership,
   normalizeName,
   homePredicate,
+  resolveManagedContext,
   resolveManagedDepartment,
   resolveFacultyScope,
   findMembershipForAttributionUser,

@@ -39,17 +39,15 @@ router.get(
   checkRole(["admin", "faculty_incharge", "hod"]),
   async (req, res) => {
     try {
-      const AcademicContextService = require("../services/academicContextService");
-      const departments = await AcademicContextService.listDepartments();
-      const managed = await Membership.resolveManagedDepartment(await resolveOwnerOpts(req));
-      const currentDepartment =
-        managed?.department ||
-        (req.user?.department ? String(req.user.department).trim().toUpperCase() : null);
+      const { listFacultyDepartments } = require("../utils/facultyDepartments");
+      const departments = listFacultyDepartments();
+      const managed = await Membership.resolveManagedContext(await resolveOwnerOpts(req));
       return Api.success(res, "Faculty department options", {
+        /** Configured faculty departments (CSE, IT, …) — not Academic Context labels. */
         departments,
-        currentDepartment,
-        /** Other departments only — for the Add Faculty dropdown. */
-        otherDepartments: departments.filter((d) => d.code !== currentDepartment),
+        currentContext: managed
+          ? { id: managed.contextId, label: managed.label }
+          : null,
       });
     } catch (err) {
       return Api.serverError(res, err, "GET /faculty/department-options");
@@ -166,15 +164,16 @@ router.post("/", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (r
       return Api.validationError(res, deptNorm.error);
     }
     const opts = await resolveOwnerOpts(req);
-    // New identities default main department to the caller's Academic Context.
-    // A selected other department (Add Faculty dropdown) becomes the main department
-    // only for a brand-new row; associations never overwrite faculty.department.
-    const managed = await Membership.resolveManagedDepartment(opts);
-    const departmentCode = deptNorm.code || managed?.department || null;
+    const managed = await Membership.resolveManagedContext(opts);
+    // Faculty department (CSE/IT/…) comes from the form — never from the Academic Context label (KSI/SFS).
+    const departmentCode = deptNorm.code || null;
     if (!departmentCode) {
+      return Api.validationError(res, "Department is required. Select a faculty department (e.g. CSE, IT).");
+    }
+    if (!managed && opts.role !== "admin") {
       return Api.validationError(
         res,
-        "Department is required (select one, or work inside an Academic Context)."
+        "Your account is not linked to an Academic Context, so faculty cannot be added here."
       );
     }
 
@@ -271,7 +270,7 @@ async function respondExistingFaculty(res, existingFaculty, { email, name, depar
   const result = await Membership.associateExistingFaculty(
     {
       faculty: existingFaculty,
-      requestedDepartment: departmentCode,
+      requestedDepartment: departmentCode || null,
       requestedName: name,
       addedByUserId: userId,
     },
@@ -297,6 +296,7 @@ async function respondExistingFaculty(res, existingFaculty, { email, name, depar
         associated: true,
         reactivatedMembership: result.status === "REACTIVATED",
         department: result.membership.department,
+        contextLabel: result.membership.contextLabel ?? null,
         detailsMismatch: !!result.detailsMismatch,
         existingName: result.faculty?.name ?? null,
       },

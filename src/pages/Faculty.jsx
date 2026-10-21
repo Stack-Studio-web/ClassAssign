@@ -38,15 +38,13 @@ export default function Faculty() {
   const toast = useToast();
   const showConfirm = useConfirm();
   const { user } = useAuth();
-  const currentContextDepartment = String(
-    user?.academicContext?.department || user?.department || ""
-  )
-    .trim()
-    .toUpperCase();
+  const currentContextLabel = String(
+    user?.academicContext?.label || user?.academicContext?.department || ""
+  ).trim();
   const [totalFaculty, setTotalFaculty] = useState(0);
   const [faculty, setFaculty] = useState([]);
   const [activeTab, setActiveTab] = useState("add");
-  const [contextDepartments, setContextDepartments] = useState([]);
+  const [facultyDepartmentOptions, setFacultyDepartmentOptions] = useState([]);
 
   // Edit States
   const [editingId, setEditingId] = useState(null);
@@ -121,18 +119,16 @@ export default function Faculty() {
       try {
         const res = await api.get("/faculty/department-options");
         const data = res.data?.data ?? res.data ?? {};
-        const others = data.otherDepartments ?? data.departments ?? [];
-        if (!cancelled) setContextDepartments(Array.isArray(others) ? others : []);
+        const list = data.departments ?? [];
+        if (!cancelled) setFacultyDepartmentOptions(Array.isArray(list) ? list : []);
       } catch {
-        if (!cancelled) setContextDepartments([]);
+        if (!cancelled) setFacultyDepartmentOptions([]);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [currentContextDepartment]);
-
-  const addFacultyDepartmentOptions = contextDepartments;
+  }, []);
 
   // Keep Alloc/Done/Rem derived from backend after attendance or report updates.
   useEffect(() => {
@@ -377,12 +373,11 @@ export default function Faculty() {
       setCreateSuccess(null);
       return;
     }
-    const rawDept = String(manualData.department || "").trim();
-    let departmentCode = null;
-    if (rawDept) {
-      const deptResolved = resolveFacultyDepartment(rawDept);
-      // Context-only codes (not in the static JSON) are still valid department codes.
-      departmentCode = deptResolved.ok ? deptResolved.code : rawDept.toUpperCase();
+    const deptResolved = resolveFacultyDepartment(manualData.department);
+    if (!deptResolved.ok || !deptResolved.code) {
+      setMessage(`⚠️ ${deptResolved.error || "Select a faculty department (e.g. CSE, IT)."}`);
+      setCreateSuccess(null);
+      return;
     }
 
     setLoading(true);
@@ -391,7 +386,7 @@ export default function Faculty() {
       const res = await api.post("/faculty", {
         ...manualData,
         email,
-        department: departmentCode,
+        department: deptResolved.code,
       });
       if (res.data.data?.associated) {
         setMessage(
@@ -642,17 +637,14 @@ export default function Faculty() {
                     onChange={(code) =>
                       setManualData({ ...manualData, department: code })
                     }
-                    options={addFacultyDepartmentOptions}
-                    placeholder={
-                      currentContextDepartment
-                        ? `Other departments (default: ${currentContextDepartment})`
-                        : "Search department…"
-                    }
+                    options={facultyDepartmentOptions}
+                    required
+                    placeholder="Search faculty department (CSE, IT, …)"
                   />
                   <p className="mt-1 text-xs text-gray-500">
-                    {currentContextDepartment
-                      ? `Leave blank to use your Academic Context (${currentContextDepartment}). Options exclude the current context.`
-                      : "Loaded from active Academic Contexts."}
+                    {currentContextLabel
+                      ? `Adds the faculty to Academic Context “${currentContextLabel}”. Department is the faculty's branch (CSE, IT), not the context name.`
+                      : "Select the faculty's department (CSE, IT, …). Destination is your current Academic Context."}
                   </p>
                 </div>
                 <div>

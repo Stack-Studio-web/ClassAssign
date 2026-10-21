@@ -200,7 +200,8 @@ async function main() {
     assert.strictEqual(r.status, 201, JSON.stringify(r.body));
     assert.strictEqual(r.body.data.associated, true);
     assert.strictEqual(r.body.data.generatedPassword, undefined, "no new credentials issued");
-    assert.match(r.body.message, /added to IT/);
+    assert.match(r.body.message, /added to IT/i);
+    assert.strictEqual(r.body.data.department, "IT");
   });
 
   await step("3. one faculty ID and one login account for the shared email", async () => {
@@ -254,23 +255,24 @@ async function main() {
   });
 
   await step("7. home-dept form value still associates; unauthorized roles stay rejected", async () => {
-    // SFS/IT FI submits the faculty's home department (CSE) — must still create an IT membership.
+    // Cross-context: same faculty department CSE in a second Academic Context.
     await api("csefi", "POST", "/faculty", { name: "Kavin", department: "CSE", email: "kavin@kct.ac.in" });
     const share = await api("itfi", "POST", "/faculty", { name: "Kavin", department: "CSE", email: "kavin@kct.ac.in" });
     assert.strictEqual(share.status, 201, JSON.stringify(share.body));
     assert.strictEqual(share.body.data.associated, true);
-    assert.strictEqual(share.body.data.department, "IT");
-    assert.deepStrictEqual((await rowFor("itfi", "kavin@kct.ac.in")).departments, ["CSE", "IT"]);
-    assert.deepStrictEqual((await rowFor("csefi", "kavin@kct.ac.in")).departments, ["CSE", "IT"]);
+    assert.strictEqual(share.body.data.department, "CSE");
+    assert.strictEqual(
+      (await one(`SELECT department FROM faculty_department_memberships WHERE faculty_id = (SELECT id FROM faculty WHERE email = 'kavin@kct.ac.in')`)).department,
+      "CSE"
+    );
     assert.strictEqual((await rowFor("itfi", "kavin@kct.ac.in")).membershipLabel, "Shared - CSE");
     assert.strictEqual((await rowFor("csefi", "kavin@kct.ac.in")).membershipLabel, "Shared - CSE");
 
-    // Reverse: IT-home faculty associated by CSE while submitting department=IT.
+    // Reverse: IT-home faculty associated into CSE context with department IT.
     await api("itfi", "POST", "/faculty", { name: "Sita", department: "IT", email: "sita@kct.ac.in" });
     const reverse = await api("csefi", "POST", "/faculty", { name: "Sita", department: "IT", email: "sita@kct.ac.in" });
     assert.strictEqual(reverse.status, 201, JSON.stringify(reverse.body));
-    assert.strictEqual(reverse.body.data.department, "CSE");
-    assert.deepStrictEqual((await rowFor("csefi", "sita@kct.ac.in")).departments, ["IT", "CSE"]);
+    assert.strictEqual(reverse.body.data.department, "IT");
     assert.strictEqual((await rowFor("csefi", "sita@kct.ac.in")).membershipLabel, "Shared - IT");
     assert.strictEqual((await rowFor("itfi", "sita@kct.ac.in")).membershipLabel, "Shared - IT");
     assert.strictEqual(
@@ -439,17 +441,18 @@ async function main() {
     });
     assert.strictEqual(v.allowed, false);
     assert.strictEqual(v.code, "TIME_CONFLICT");
-    assert.strictEqual(
+    assert.match(
       v.message,
-      "Arun Kumar is already assigned by CSE to an exam on 24/10/2026 (9:00 AM–11:00 AM). Please select another faculty member."
+      /Faculty Arun Kumar is already assigned to an exam through CSE 2026-27 on 24\/10\/2026, 9:00 AM–11:00 AM/
     );
+    assert.ok(!v.message.includes("AD207"));
     assert.strictEqual(v.conflict.venueName, null);
     const forCse = await Faculty.validateFacultyForAllocation(arunId, {
       examDate: "2026-10-24", examStartTime: "10:00", examEndTime: "12:00",
       attributionUserId: USERS.csefi.id,
       viewer: { isAdmin: false, ownerIds: [USERS.csehod.id, USERS.csefi.id] },
     });
-    assert.match(forCse.message, /by CSE to an exam on 24\/10\/2026 at AD207 \(9:00 AM–11:00 AM\)/);
+    assert.match(forCse.message, /through CSE 2026-27 on 24\/10\/2026, 9:00 AM–11:00 AM at AD207/);
     const it = await availability("itfi", "2026-10-24", "10:00", "12:00");
     const hit = it.body.facultyStatus.find((f) => f.uuid === cseRow.uuid);
     assert.strictEqual(hit.hasTimeConflict, true);
@@ -496,7 +499,7 @@ async function main() {
       viewer: { isAdmin: false, ownerIds: [USERS.csehod.id, USERS.csefi.id] },
     });
     assert.strictEqual(v.code, "TIME_CONFLICT");
-    assert.match(v.message, /by IT to an exam on 28\/10\/2026 \(2:00 PM–4:00 PM\)/);
+    assert.match(v.message, /through IT 2026-27 on 28\/10\/2026, 2:00 PM–4:00 PM/);
     assert.strictEqual((await rowFor("itfi", ARUN)).allocation, 1, "LAB duty counted for IT");
     assert.strictEqual((await rowFor("csefi", ARUN)).allocation, 1, "not for CSE");
     await db.query(`DELETE FROM seating_plans WHERE id = ?`, [lab.planId]);
@@ -514,14 +517,18 @@ async function main() {
     ]);
     assert.strictEqual(r.status, 200, JSON.stringify(r.body));
     assert.strictEqual(r.body.inserted, 1);
-    // Ravi (IT dept column) + OnlyCse (home dept CSE in DEPT column) both associate to IT.
+    // Ravi (DEPT IT) + OnlyCse (DEPT CSE) both get an IT-context membership; faculty dept codes differ.
     assert.strictEqual(r.body.associated, 2, JSON.stringify(r.body));
     const statuses = r.body.rowIssues.map((x) => x.status).sort();
     assert.deepStrictEqual(statuses, ["DUPLICATE_IN_FILE"]);
     assert.ok(r.body.skippedEmails.includes(ARUN), "existing association reported as skipped");
     assert.strictEqual(num((await one(`SELECT COUNT(*) c FROM faculty WHERE email = 'ravi@kct.ac.in'`)).c), 1);
     assert.deepStrictEqual((await rowFor("itfi", "ravi@kct.ac.in")).departments, ["CSE", "IT"]);
-    assert.deepStrictEqual((await rowFor("itfi", "onlycse@kct.ac.in")).departments, ["CSE", "IT"]);
+    assert.strictEqual((await rowFor("itfi", "ravi@kct.ac.in")).membershipLabel, "Shared - CSE");
+    // Same faculty department CSE in two contexts → still Shared - CSE (not "CSE, IT").
+    assert.deepStrictEqual((await rowFor("itfi", "onlycse@kct.ac.in")).departments, ["CSE"]);
+    assert.strictEqual((await rowFor("itfi", "onlycse@kct.ac.in")).membershipLabel, "Shared - CSE");
+    assert.strictEqual((await rowFor("itfi", "onlycse@kct.ac.in")).isShared, true);
     const undo = await api("itfi", "POST", "/import/undo-faculty-import");
     assert.strictEqual(undo.status, 200, JSON.stringify(undo.body));
     assert.strictEqual(await rowFor("itfi", "ravi@kct.ac.in"), null, "undo removed the IT association");
