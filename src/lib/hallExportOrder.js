@@ -80,3 +80,105 @@ export function groupHallsByExamTime(halls) {
   }
   return [...groups.entries()];
 }
+
+/**
+ * Print CSS for /Hall PDF export (react-to-print / browser print).
+ * Keeps hall row-groups together and reserves space for the fixed verify footer.
+ */
+export const HALL_ALLOTMENT_PRINT_CSS = `
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 12mm 10mm 22mm 10mm;
+  }
+
+  body {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    padding-bottom: 18mm !important;
+  }
+
+  .hall-print-root {
+    color: #000;
+    font-size: 10pt;
+  }
+
+  .hall-print-root .hall-print-overflow {
+    overflow: visible !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+  }
+
+  .hall-print-root .hall-session {
+    break-inside: auto;
+    page-break-inside: auto;
+    margin-bottom: 10mm;
+  }
+
+  .hall-print-root .hall-session-title {
+    break-after: avoid;
+    page-break-after: avoid;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .hall-print-root table.hall-alloc-table {
+    width: 100% !important;
+    min-width: 0 !important;
+    table-layout: fixed;
+    border-collapse: collapse;
+    border: 1px solid #000;
+  }
+
+  .hall-print-root table.hall-alloc-table thead {
+    display: table-header-group;
+  }
+
+  .hall-print-root table.hall-alloc-table tfoot {
+    display: table-footer-group;
+  }
+
+  .hall-print-root table.hall-alloc-table tbody.hall-group {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .hall-print-root table.hall-alloc-table tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .hall-print-root table.hall-alloc-table th,
+  .hall-print-root table.hall-alloc-table td {
+    border: 1px solid #000 !important;
+    padding: 4px 3px !important;
+    vertical-align: middle;
+    word-wrap: break-word;
+    overflow-wrap: anywhere;
+    font-size: 9pt !important;
+    line-height: 1.25;
+  }
+
+  .hall-print-root table.hall-alloc-table th {
+    background: #1f2937 !important;
+    color: #fff !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .hall-print-root .hallora-verify-footer {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+  }
+}
+`;
+
+/** Inline @page styles passed to react-to-print pageStyle. */
+export const HALL_ALLOTMENT_PAGE_STYLE = `
+  @page { size: A4 portrait; margin: 12mm 10mm 22mm 10mm; }
+  @media print {
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+`;

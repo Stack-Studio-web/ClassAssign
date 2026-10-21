@@ -14,7 +14,12 @@ import {
   HALLORA_VERIFY_PRINT_CSS,
   sha256Hex,
 } from "../lib/reportVerification";
-import { groupHallsByExamTime, sortHallsForExport } from "../lib/hallExportOrder";
+import {
+  groupHallsByExamTime,
+  sortHallsForExport,
+  HALL_ALLOTMENT_PRINT_CSS,
+  HALL_ALLOTMENT_PAGE_STYLE,
+} from "../lib/hallExportOrder";
 
 const getNumericPart = (rollNo) => {
   if (!rollNo) return NaN;
@@ -129,6 +134,7 @@ const ExamHallAllotment = () => {
   const handlePrint = useReactToPrint({
     contentRef: printRef,
     documentTitle: "Exam_Hall_Allotment",
+    pageStyle: HALL_ALLOTMENT_PAGE_STYLE,
   });
 
   const runVerifiedExport = async () => {
@@ -401,9 +407,10 @@ const ExamHallAllotment = () => {
         </div>
       </div>
 
-        <div ref={printRef}>
+        <div ref={printRef} className="hall-print-root">
         <style>{HALLORA_VERIFY_PRINT_CSS}</style>
-        <div className="text-center mb-4">
+        <style>{HALL_ALLOTMENT_PRINT_CSS}</style>
+        <div className="text-center mb-4 hall-print-header">
           <img src={currentLogo} alt="Logo" width={240} className="mx-auto" />
           <h2 className="font-bold text-lg">Kumaraguru College of Technology</h2>
           <p>{departmentLine}</p>
@@ -416,41 +423,63 @@ const ExamHallAllotment = () => {
           <p className="text-center text-gray-500 italic py-10">No records found for the selected date/session.</p>
         ) : (
           hallsByTimeEntries.map(([time, halls]) => (
-            <div key={time} className="mb-8 page-break-inside-avoid">
-              <h3 className="font-bold text-sm sm:text-md mb-1 text-center bg-gray-100 py-1">
+            <div key={time} className="mb-8 hall-session">
+              <h3 className="font-bold text-sm sm:text-md mb-1 text-center bg-gray-100 py-1 hall-session-title">
                 Exam Time: {formatTime(halls[0].examStartTime, halls[0].examEndTime)} | {new Date(halls[0].examDate).toLocaleDateString()}
               </h3>
 
-              <div className="overflow-x-auto -mx-4 sm:mx-0">
-                <table className="w-full border-collapse border border-gray-400 text-xs min-w-[500px]">
+              <div className="overflow-x-auto -mx-4 sm:mx-0 hall-print-overflow">
+                <table className="w-full border-collapse border border-gray-400 text-xs min-w-[500px] hall-alloc-table">
+                <colgroup>
+                  <col style={{ width: "12%" }} />
+                  <col style={{ width: "14%" }} />
+                  <col style={{ width: "18%" }} />
+                  <col style={{ width: "36%" }} />
+                  <col style={{ width: "10%" }} />
+                  <col style={{ width: "10%" }} />
+                </colgroup>
                 <thead>
                   <tr className="bg-gray-800 text-white">
                     <th className="border border-gray-400 p-2">Hall No</th>
                     <th className="border border-gray-400 p-2">Year / Branch</th>
                     <th className="border border-gray-400 p-2">Course Code</th>
-                    <th className="border border-gray-400 p-2">Roll No's</th>
+                    <th className="border border-gray-400 p-2">Roll No&apos;s</th>
                     <th className="border border-gray-400 p-2">Count</th>
                     <th className="border border-gray-400 p-2">Total</th>
                   </tr>
                 </thead>
-                <tbody>
-                  {halls.map((hall, hIndex) => (
-                    hall.rows.map((row, rIndex) => (
+                {/* One tbody per hall so page-break-inside:avoid keeps hall rows together
+                    and thead can repeat on each printed page. */}
+                {halls.map((hall, hIndex) => (
+                  <tbody key={`${time}-hall-${hIndex}`} className="hall-group">
+                    {hall.rows.map((row, rIndex) => (
                       <tr key={`${hIndex}-${rIndex}`} className="text-center border-b">
-                        {rIndex === 0 && (
-                          <td rowSpan={hall.rows.length} className="border border-gray-400 font-bold bg-white">{hall.hallNo}</td>
-                        )}
+                        {rIndex === 0 ? (
+                          <td
+                            rowSpan={hall.rows.length}
+                            className="border border-gray-400 font-bold bg-white"
+                          >
+                            {hall.hallNo}
+                          </td>
+                        ) : null}
                         <td className="border border-gray-400 p-2">{row.yearBranch}</td>
-                        <td className="border border-gray-400 p-2 font-mono">{row.courseCodes.join(", ") || "N/A"}</td>
+                        <td className="border border-gray-400 p-2 font-mono">
+                          {row.courseCodes.join(", ") || "N/A"}
+                        </td>
                         <td className="border border-gray-400 p-2 font-mono">{row.rollNos}</td>
                         <td className="border border-gray-400 p-2">{row.count}</td>
-                        {rIndex === 0 && (
-                          <td rowSpan={hall.rows.length} className="border border-gray-400 font-bold bg-white">{hall.overallCount}</td>
-                        )}
+                        {rIndex === 0 ? (
+                          <td
+                            rowSpan={hall.rows.length}
+                            className="border border-gray-400 font-bold bg-white"
+                          >
+                            {hall.overallCount}
+                          </td>
+                        ) : null}
                       </tr>
-                    ))
-                  ))}
-                </tbody>
+                    ))}
+                  </tbody>
+                ))}
               </table>
               </div>
             </div>

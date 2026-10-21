@@ -8,6 +8,8 @@ import {
   sortHallsForExport,
   groupHallsByExamTime,
   compareHallExportSessions,
+  HALL_ALLOTMENT_PRINT_CSS,
+  HALL_ALLOTMENT_PAGE_STYLE,
 } from "../../src/lib/hallExportOrder.js";
 
 function testParseTimes() {
@@ -92,9 +94,18 @@ function testSsFormat() {
   console.log("✓ HH:mm:ss start times sort correctly");
 }
 
+function testPrintCssHasPaginationRules() {
+  assert.ok(/thead\s*\{\s*display:\s*table-header-group/i.test(HALL_ALLOTMENT_PRINT_CSS));
+  assert.ok(/tbody\.hall-group/i.test(HALL_ALLOTMENT_PRINT_CSS));
+  assert.ok(/page-break-inside:\s*avoid/i.test(HALL_ALLOTMENT_PRINT_CSS));
+  assert.ok(/margin:\s*12mm 10mm 22mm 10mm/i.test(HALL_ALLOTMENT_PAGE_STYLE));
+  console.log("✓ print CSS repeats thead and keeps hall-group tbodies together");
+}
+
 testParseTimes();
 testWrongInputOrderFixed();
 testMultiDate();
 testEqualStartTimes();
 testSsFormat();
+testPrintCssHasPaginationRules();
 console.log("\nAll hall export order checks passed.");
