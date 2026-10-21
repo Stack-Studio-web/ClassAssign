@@ -47,6 +47,7 @@ const Report = () => {
   const [notifyBusy, setNotifyBusy] = useState(false);
   const [notifyProgress, setNotifyProgress] = useState(null);
   const notifyPollRef = useRef(null);
+  const deleteInFlightRef = useRef(false);
   const componentRef = useRef();
   const navigate = useNavigate();
 
@@ -160,17 +161,29 @@ const Report = () => {
       );
       return;
     }
-    const ok = await showConfirm("Are you sure you want to delete this seating plan?");
-    if (!ok) return;
-    setDeletingPlanId(planId);
+    // Prevent double-submit (second DELETE returns 404 after the first succeeds).
+    if (deleteInFlightRef.current) return;
+    deleteInFlightRef.current = true;
     try {
-      await api.delete(`/seating/delete-plan/${encodeURIComponent(planId)}`);
-      toast.success("Seating plan deleted successfully.");
-      fetchPlans();
-    } catch (err) {
-      toast.error(getApiError(err), getApiErrorTitle(err, "Cannot delete seating plan"));
+      const ok = await showConfirm("Are you sure you want to delete this seating plan?");
+      if (!ok) return;
+      setDeletingPlanId(planId);
+      try {
+        await api.delete(`/seating/delete-plan/${encodeURIComponent(planId)}`);
+        toast.success("Seating plan deleted successfully.");
+        await fetchPlans();
+      } catch (err) {
+        const status = err?.response?.status;
+        // Keep the card on failure; if the plan is already gone, refresh so the list matches the DB.
+        if (status === 404) {
+          await fetchPlans();
+        }
+        toast.error(getApiError(err), getApiErrorTitle(err, "Cannot delete seating plan"));
+      } finally {
+        setDeletingPlanId(null);
+      }
     } finally {
-      setDeletingPlanId(null);
+      deleteInFlightRef.current = false;
     }
   };
 

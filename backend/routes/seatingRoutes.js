@@ -371,7 +371,9 @@ router.delete(
   "/delete-plan/:uuid",
   sessionAuth,
   checkRole(['admin', 'faculty_incharge', 'hod']),
-  resolveEntity(TABLE.seatingPlans),
+  resolveEntity(TABLE.seatingPlans, {
+    notFoundMessage: "Seating plan not found",
+  }),
   auditLogger("DELETE_SEATING_PLAN", "SeatingPlan"),
   async (req, res) => {
     const planId = req.internalId;

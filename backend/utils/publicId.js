@@ -53,8 +53,9 @@ async function resolveInternalId(table, param, { allowLegacyNumeric = false } = 
   if (raw === "undefined" || raw === "null") return null;
 
   if (isValidUuid(raw)) {
+    // Match other resolvers: bind as text and let Postgres compare to UUID columns.
     const [rows] = await db.query(
-      `SELECT id FROM ${table} WHERE public_uuid = ?::uuid LIMIT 1`,
+      `SELECT id FROM ${table} WHERE public_uuid = ? LIMIT 1`,
       [raw]
     );
     const id = rows[0]?.id ?? rows[0]?.ID ?? null;

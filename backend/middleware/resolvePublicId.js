@@ -11,13 +11,14 @@ function resolveEntity(table, options = {}) {
     legacyParamKey = "id",
     reqKey = "internalId",
     allowLegacyNumeric = true,
+    notFoundMessage = "Not found",
   } = options;
 
   return async (req, res, next) => {
     try {
       const raw = req.params[paramKey] ?? req.params[legacyParamKey];
       if (!raw || raw === "undefined" || raw === "null") {
-        return Api.notFound(res, "Not found");
+        return Api.notFound(res, notFoundMessage);
       }
 
       const looksLikeUuid =
@@ -27,7 +28,7 @@ function resolveEntity(table, options = {}) {
         );
 
       if (!looksLikeUuid && !(allowLegacyNumeric && PublicId.isLegacyNumericId(raw))) {
-        return Api.notFound(res, "Not found");
+        return Api.notFound(res, notFoundMessage);
       }
 
       const internalId = await PublicId.resolveInternalId(table, raw, {
@@ -35,7 +36,7 @@ function resolveEntity(table, options = {}) {
       });
 
       if (!internalId) {
-        return Api.notFound(res, "Not found");
+        return Api.notFound(res, notFoundMessage);
       }
 
       req[reqKey] = internalId;
