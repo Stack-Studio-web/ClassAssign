@@ -14,6 +14,8 @@ const { resolveOwnerOpts } = require("../utils/rbac");
 const { resolveEntity } = require("../middleware/resolvePublicId");
 const { TABLE, getPublicUuid, resolveInternalId } = require("../utils/publicId");
 
+const { normalizeBenchConfig } = require("../utils/benchSeats");
+
 const VENUE_ROLES = ["admin", "faculty_incharge"];
 const BLOCK_STATUSES = ["ACTIVE", "INACTIVE", "MAINTENANCE"];
 
@@ -291,6 +293,14 @@ router.post(
         });
       }
 
+      const seatsCheck = normalizeBenchConfig(benchConfig);
+      if (!seatsCheck.ok) {
+        return res.status(400).json({
+          error: "Validation error",
+          details: seatsCheck.message,
+        });
+      }
+
       const blockId = await resolveBlockId(blockUuid);
       if (!blockId) {
         return res.status(400).json({ error: "Invalid blockUuid" });
@@ -315,7 +325,7 @@ router.post(
           type: trimmedType,
           benchesRow,
           benchesCol,
-          benchConfig,
+          benchConfig: seatsCheck.seats,
           blockId,
           code: req.body.code || trimmedName,
           isAvailable: isAvailable !== false,
@@ -581,6 +591,21 @@ async function handleVenueUpdate(req, res) {
     return res.status(400).json({ error: "Block is required." });
   }
 
+  if (!Array.isArray(benchConfig) || benchConfig.length !== Number(benchesCol)) {
+    return res.status(400).json({
+      error: "Validation error",
+      details: "Bench configuration mismatch.",
+    });
+  }
+
+  const seatsCheck = normalizeBenchConfig(benchConfig);
+  if (!seatsCheck.ok) {
+    return res.status(400).json({
+      error: "Validation error",
+      details: seatsCheck.message,
+    });
+  }
+
   const exists = await Venue.existsByNameAndTypeExceptId(name.trim(), type.trim(), id);
   if (exists) return res.status(400).json({ error: "Duplicate venue" });
 
@@ -597,7 +622,7 @@ async function handleVenueUpdate(req, res) {
       type,
       benchesRow,
       benchesCol,
-      benchConfig,
+      benchConfig: seatsCheck.seats,
       blockId,
       code: req.body.code || name.trim(),
       isAvailable,

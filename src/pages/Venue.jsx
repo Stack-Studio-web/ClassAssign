@@ -29,6 +29,9 @@ const VENUE_TYPE_LABELS = {
   hall: "Seminar Hall",
 };
 
+/** Uniform / Custom seats-per-bench options (must match backend benchSeats util). */
+const SEATS_PER_BENCH_OPTIONS = [1, 2, 3, 4, 5];
+
 function formatVenueType(type) {
   if (!type) return "—";
   const key = String(type).toLowerCase();
@@ -443,8 +446,15 @@ export default function AddVenue() {
       benchesCol: venue.benchesCol,
       blockUuid: venue.blockUuid || "",
     });
-    setBenchConfig(venue.benchConfig || Array(venue.benchesCol).fill(2));
-    setConfigMode("custom");
+    const cfg = venue.benchConfig || Array(venue.benchesCol).fill(2);
+    setBenchConfig(cfg);
+    const allSame =
+      cfg.length > 0 && cfg.every((s) => Number(s) === Number(cfg[0]));
+    const seats = allSame ? Number(cfg[0]) : 2;
+    setUniformSeats(
+      SEATS_PER_BENCH_OPTIONS.includes(seats) ? seats : 2
+    );
+    setConfigMode(allSame ? "uniform" : "custom");
     setCalculatedCapacity(venue.capacity);
     setEditingId(venue.uuid);
     setActiveTab("basic");
@@ -1210,14 +1220,17 @@ export default function AddVenue() {
                         <select
                           value={uniformSeats}
                           onChange={(e) => {
-                            const seats = parseInt(e.target.value);
+                            const seats = parseInt(e.target.value, 10);
                             setUniformSeats(seats);
                             setBenchConfig(Array(Number(form.benchesCol)).fill(seats));
                           }}
                           className="w-full h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all bg-white"
                         >
-                          <option value={2}>2 Seats</option>
-                          <option value={3}>3 Seats</option>
+                          {SEATS_PER_BENCH_OPTIONS.map((n) => (
+                            <option key={n} value={n}>
+                              {n === 1 ? "1 Seat" : `${n} Seats`}
+                            </option>
+                          ))}
                         </select>
                       </div>
                     ) : (
@@ -1232,8 +1245,11 @@ export default function AddVenue() {
                               onChange={(e) => handleBenchConfigChange(idx, e.target.value)}
                               className="w-full h-11 px-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none transition-all text-sm bg-white"
                             >
-                              <option value={2}>2</option>
-                              <option value={3}>3</option>
+                              {SEATS_PER_BENCH_OPTIONS.map((n) => (
+                                <option key={n} value={n}>
+                                  {n}
+                                </option>
+                              ))}
                             </select>
                           </div>
                         ))}
@@ -1512,7 +1528,7 @@ export default function AddVenue() {
                   <strong>Valid Types:</strong> Classroom, Lab, Hall
                 </li>
                 <li>
-                  <strong>Bench Configuration:</strong> comma-separated 2 or 3 only; length must equal Columns
+                  <strong>Bench Configuration:</strong> comma-separated seats per column (1–5); length must equal Columns
                 </li>
                 <li>
                   <strong>Available:</strong> TRUE/FALSE or Yes/No

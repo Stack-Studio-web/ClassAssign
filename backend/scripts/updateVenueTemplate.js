@@ -87,7 +87,7 @@ const instructions = [
   [""],
   ["Rows / Columns / Bench Configuration:"],
   ["  • Rows and Columns must be positive integers"],
-  ["  • Bench Configuration: comma-separated seats per column (2 or 3 only)"],
+  ["  • Bench Configuration: comma-separated seats per column (1–5 only)"],
   ["  • Length of Bench Configuration must equal Columns"],
   ["  • Capacity is calculated automatically (do not enter capacity)"],
   [""],
