@@ -24,6 +24,13 @@ const {
   parseScheduleKey,
   formatScheduleLabel,
 } = require("../utils/coeExportHelpers");
+const {
+  listCoursesByDepartment,
+  listBatchesForCourse,
+  listStudentsForCourseBatch,
+  studentDepartmentMatchSql,
+} = require("../utils/timetableFormOptions");
+const { normalizeBatchName } = require("../utils/timetableBulkImport");
 
 /* =====================================================
     GET: ALL TIMETABLE SCHEDULES
@@ -494,18 +501,6 @@ async function runTimetableValidation(data, ownerOpts) {
   return validateTimetableRows(data, ownerOpts, {
     knownDepartments,
     findBatchByName: async (batchName, department) => {
-      const formal = await Batch.findByNameInScope(batchName, ownerOpts);
-      if (formal) return formal;
-
-      // Fall back to student-derived batch codes in this Academic Context (same as Manual Entry)
-      const derived = await Student.listBatchesByDepartment(department, ownerOpts);
-      const hit = (derived || []).find(
-        (b) => String(b.name || "").toUpperCase() === String(batchName).toUpperCase()
-      );
-      if (!hit) return null;
-      return { id: hit.batchId ?? null, name: hit.name, uuid: hit.uuid ?? hit.name };
-    },
-    courseExistsForDeptBatch: async (courseCode, department, batch, batchId) => {
       const db = require("../config/db");
       const { andClause } = require("../utils/ownerFilter");
       const { sql: ownerSql, params: ownerParams } = andClause(
@@ -514,54 +509,100 @@ async function runTimetableValidation(data, ownerOpts) {
         "st.",
         ownerOpts.ownerIds
       );
+      const dept = String(department || "").trim().toUpperCase();
+      const wanted = normalizeBatchName(batchName);
 
-      // Formal batch: same students.batch_id → batches relationship as Manual Entry.
-      // Batch names are not unique across departments/semesters, so match by name
-      // among the batches this department's course students are actually linked to.
-      if (batchId != null && Number.isFinite(Number(batchId))) {
-        const linked = await listBatchesForCourse(department, courseCode, ownerOpts);
-        const resolved = resolveLinkedBatch(linked, batch, batchId);
-        if (resolved.ambiguous) {
-          return {
-            ok: false,
-            message: `Batch ${batch} is ambiguous for Course Code ${courseCode} in Department ${department} (multiple batches share this name).`,
-          };
-        }
-        if (!resolved.batch) {
-          return {
-            ok: false,
-            message: `Course Code ${courseCode} is not linked to Batch ${batch} for Department ${department}.`,
-          };
-        }
+      // Prefer a formal batch that this department's students actually use (any course).
+      // Avoids Batch.findByNameInScope picking another semester/department's same-named row.
+      if (dept && wanted) {
         const [rows] = await db.query(
           `
-          SELECT st.course_name AS "courseName"
+          SELECT b.id, b.public_uuid AS uuid, TRIM(b.name) AS name
           FROM students st
-          WHERE st.course_description = ?
-            AND st.batch_id = ?
+          INNER JOIN batches b ON b.id = st.batch_id
+          WHERE UPPER(TRIM(b.name)) = ?
+            AND ${studentDepartmentMatchSql()}
+            AND st.batch_id IS NOT NULL
             ${ownerSql}
-          LIMIT 1
+          GROUP BY b.id, b.public_uuid, b.name
+          HAVING COUNT(st.id) > 0
+          ORDER BY b.id DESC
+          LIMIT 5
           `,
-          [courseCode, Number(resolved.batch.id), ...ownerParams]
+          [wanted, dept, dept, ...ownerParams]
+        );
+        const hit =
+          (rows || []).find((b) => normalizeBatchName(b.name) === wanted) || rows?.[0];
+        if (hit?.id != null) {
+          return {
+            id: Number(hit.id),
+            uuid: hit.uuid ?? null,
+            name: String(hit.name || "").trim(),
+          };
+        }
+      }
+
+      const formal = await Batch.findByNameInScope(batchName, ownerOpts);
+      if (formal) {
+        return {
+          id: formal.id,
+          uuid: formal.uuid,
+          name: String(formal.name || "").trim(),
+        };
+      }
+
+      // Legacy YY+Dept register-prefix codes (e.g. 24BCS)
+      const derived = await Student.listBatchesByDepartment(department, ownerOpts);
+      const derivedHit = (derived || []).find(
+        (b) => normalizeBatchName(b.name) === wanted
+      );
+      if (!derivedHit) return null;
+      return { id: derivedHit.batchId ?? null, name: derivedHit.name, uuid: derivedHit.uuid ?? derivedHit.name };
+    },
+    courseExistsForDeptBatch: async (courseCode, department, batch, batchId) => {
+      // Same source of truth as Manual Entry: /timetable/form-options/batches
+      const linked = await listBatchesForCourse(department, courseCode, ownerOpts);
+      const resolved = resolveLinkedBatch(linked, batch, batchId);
+
+      if (resolved.ambiguous) {
+        return {
+          ok: false,
+          message: `Batch ${batch} is ambiguous for Course Code ${courseCode} in Department ${department} (multiple batches share this name).`,
+        };
+      }
+      if (resolved.batch) {
+        const students = await listStudentsForCourseBatch(
+          {
+            department,
+            courseCode,
+            batchId: resolved.batch.id,
+          },
+          ownerOpts
         );
         return {
           ok: true,
           batchId: Number(resolved.batch.id),
-          courseName: rows?.[0]?.courseName ?? rows?.[0]?.coursename ?? null,
+          courseName: students[0]?.courseName || null,
         };
       }
 
-      // Legacy YY+Dept code fallback (e.g. 24BCS)
-      const students = await Student.getByCourseAndDepartment(courseCode, department, ownerOpts);
-      if (!students?.length) {
+      const courses = await listCoursesByDepartment(department, ownerOpts);
+      const courseNorm = String(courseCode || "").trim().toUpperCase();
+      const courseHit = (courses || []).find(
+        (c) => String(c.courseCode || "").trim().toUpperCase() === courseNorm
+      );
+      if (!courseHit) {
         return {
           ok: false,
           message: `Course Code ${courseCode} was not found for Department ${department} in the selected academic context.`,
         };
       }
-      const batchUpper = String(batch).toUpperCase();
+
+      // Legacy YY+Dept code fallback (e.g. 24BCS) when Excel still uses register prefixes
+      const batchUpper = String(batch || "").trim().toUpperCase();
       if (/^[0-9]{2}[A-Z]+$/.test(batchUpper)) {
-        const inBatch = students.some((s) =>
+        const students = await Student.getByCourseAndDepartment(courseCode, department, ownerOpts);
+        const inBatch = (students || []).some((s) =>
           String(s.regnNo || s.regn_no || "").toUpperCase().startsWith(batchUpper)
         );
         if (!inBatch) {
@@ -570,10 +611,15 @@ async function runTimetableValidation(data, ownerOpts) {
             message: `Course Code ${courseCode} is not linked to Batch ${batch} for Department ${department}.`,
           };
         }
+        return {
+          ok: true,
+          courseName: students[0]?.courseName || students[0]?.course_name || courseHit.courseName || null,
+        };
       }
+
       return {
-        ok: true,
-        courseName: students[0]?.courseName || students[0]?.course_name || null,
+        ok: false,
+        message: `Course Code ${courseCode} is not linked to Batch ${batch} for Department ${department}.`,
       };
     },
     departmentExists: async (department) => {
@@ -663,12 +709,6 @@ router.post("/bulk-delete",
     TIMETABLE ADD-SCHEDULE FORM OPTIONS (Timetable-only)
     Prefers students.batch_id → batches + course_description.
 ===================================================== */
-const {
-  listCoursesByDepartment,
-  listBatchesForCourse,
-  listStudentsForCourseBatch,
-} = require("../utils/timetableFormOptions");
-
 router.get(
   "/form-options/courses",
   sessionAuth,

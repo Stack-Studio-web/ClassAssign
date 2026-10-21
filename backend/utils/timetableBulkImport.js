@@ -208,15 +208,23 @@ function parseTimetableRow(row, rowNum) {
   };
 }
 
+/** Normalize batch display names for comparison (trim, case, unicode dashes → ASCII). */
+function normalizeBatchName(name) {
+  return String(name || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[\u2010-\u2015\u2212]/g, "-");
+}
+
 /**
  * Pick the batch (from listBatchesForCourse) whose name matches the Excel Batch cell.
  * When several linked batches share the name, prefer formalBatchId; otherwise ambiguous.
  */
 function resolveLinkedBatch(linkedBatches, batchName, formalBatchId = null) {
-  const wanted = String(batchName || "").trim().toUpperCase();
+  const wanted = normalizeBatchName(batchName);
   if (!wanted) return { batch: null, ambiguous: false };
   const matches = (linkedBatches || []).filter(
-    (b) => b && b.id != null && String(b.name || "").trim().toUpperCase() === wanted
+    (b) => b && b.id != null && normalizeBatchName(b.name) === wanted
   );
   if (matches.length === 1) return { batch: matches[0], ambiguous: false };
   if (matches.length === 0) return { batch: null, ambiguous: false };
@@ -357,6 +365,7 @@ module.exports = {
   LEGACY_BATCH_PATTERN,
   parseTimetableRow,
   resolveLinkedBatch,
+  normalizeBatchName,
   validateTimetableRows,
   parseDateCell,
   parseTimeCell,

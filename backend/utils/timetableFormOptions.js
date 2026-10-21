@@ -31,6 +31,11 @@ function normalizeCourse(courseCode) {
   return String(courseCode || "").trim();
 }
 
+/** Match Excel/UI course codes to students.course_description (trim + case-insensitive). */
+function courseMatchSql(alias = "st") {
+  return `UPPER(TRIM(COALESCE(${alias}.course_description, ''))) = UPPER(TRIM(?))`;
+}
+
 function ownerFragments(opts = {}) {
   return andClause(opts.role, opts.ownerUserId, "st.", opts.ownerIds);
 }
@@ -88,7 +93,7 @@ async function listCoursesByDepartment(department, opts = {}) {
   );
 
   return (rows || []).map((r) => ({
-    courseCode: r.courseCode ?? r.coursecode ?? "",
+    courseCode: String(r.courseCode ?? r.coursecode ?? "").trim(),
     courseName: r.courseName ?? r.coursename ?? "",
     count: Number(r.count ?? 0),
   }));
@@ -117,7 +122,7 @@ async function listBatchesForCourse(department, courseCode, opts = {}) {
       COUNT(st.id)::int AS "studentCount"
     FROM students st
     INNER JOIN batches b ON b.id = st.batch_id
-    WHERE st.course_description = ?
+    WHERE ${courseMatchSql("st")}
       AND ${studentDepartmentMatchSql()}
       AND st.batch_id IS NOT NULL
       ${ownerSql}
@@ -200,7 +205,7 @@ async function listStudentsForCourseBatch(
       b.id AS "batchId"
     FROM students st
     INNER JOIN batches b ON b.id = st.batch_id
-    WHERE st.course_description = ?
+    WHERE ${courseMatchSql("st")}
       AND ${studentDepartmentMatchSql()}
       AND st.batch_id = ?
       ${ownerSql}
@@ -225,4 +230,7 @@ module.exports = {
   listCoursesByDepartment,
   listBatchesForCourse,
   listStudentsForCourseBatch,
+  normalizeCourse,
+  courseMatchSql,
+  studentDepartmentMatchSql,
 };

@@ -1,7 +1,7 @@
 /**
  * Offline timetable bulk-import course ↔ department ↔ batch checks.
- * Batch names (e.g. 2026-2030) repeat across departments; import must use the
- * batch the department's course students are linked to (same as Manual Entry).
+ * Batch names (e.g. 2026-2030) repeat across departments/semesters; import must use the
+ * batch the department's course students are linked to (same as Manual Entry listBatchesForCourse).
  * Run: node backend/scripts/validateTimetableImportBatchLink.mjs
  */
 import assert from "assert";
@@ -10,6 +10,7 @@ import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const {
   resolveLinkedBatch,
+  normalizeBatchName,
   validateTimetableRows,
 } = require("../utils/timetableBulkImport.js");
 
@@ -24,6 +25,8 @@ const BATCHES = [
   { id: 17, name: "2026-2030", department: "BMC" },
   { id: 18, name: "2026-2030", department: "BTT" },
   { id: 19, name: "2026-2030", department: "BCS" },
+  // Newer same-named batch in another semester — findByNameInScope would prefer this id.
+  { id: 99, name: "2026-2030", department: "OTHER" },
 ];
 
 const STUDENTS = [
@@ -48,6 +51,14 @@ const STUDENTS = [
     course_name: "Engineering Mechanics",
     batch_id: 15,
   },
+  // Whitespace / case variant still belongs to BAE + 2026-2030
+  {
+    regn_no: "26BAE099",
+    department: "BAE",
+    course_description: " 24mei101 ",
+    course_name: "Engineering Graphics",
+    batch_id: 11,
+  },
 ];
 
 function deptMatches(st, dept) {
@@ -56,20 +67,37 @@ function deptMatches(st, dept) {
   return Boolean(m && m[1] === dept);
 }
 
+function courseMatches(st, courseCode) {
+  return String(st.course_description || "").trim().toUpperCase() === String(courseCode || "").trim().toUpperCase();
+}
+
 /** In-memory equivalent of timetableFormOptions.listBatchesForCourse. */
 function listBatchesForCourse(department, courseCode) {
   const dept = department.toUpperCase();
   const ids = new Set(
     STUDENTS.filter(
-      (st) => st.course_description === courseCode && deptMatches(st, dept) && st.batch_id != null
+      (st) => courseMatches(st, courseCode) && deptMatches(st, dept) && st.batch_id != null
     ).map((st) => st.batch_id)
   );
   return BATCHES.filter((b) => ids.has(b.id)).map((b) => ({ id: b.id, name: b.name }));
 }
 
+function listCoursesByDepartment(department) {
+  const dept = department.toUpperCase();
+  const map = new Map();
+  for (const st of STUDENTS) {
+    if (!deptMatches(st, dept)) continue;
+    const code = String(st.course_description || "").trim();
+    if (!code) continue;
+    map.set(code.toUpperCase(), { courseCode: code.trim(), courseName: st.course_name });
+  }
+  return [...map.values()];
+}
+
 /** Batch.findByNameInScope: newest batch with that name, department-agnostic. */
 function findBatchByName(name) {
-  const hits = BATCHES.filter((b) => b.name.toUpperCase() === String(name).toUpperCase());
+  const wanted = normalizeBatchName(name);
+  const hits = BATCHES.filter((b) => normalizeBatchName(b.name) === wanted);
   const row = hits.sort((a, b) => b.id - a.id)[0];
   return row ? { id: row.id, name: row.name } : null;
 }
@@ -78,7 +106,7 @@ function findBatchByName(name) {
 async function oldCourseCheck(courseCode, department, batch, batchId) {
   const ok = STUDENTS.some(
     (st) =>
-      st.course_description === courseCode &&
+      courseMatches(st, courseCode) &&
       st.batch_id === Number(batchId) &&
       deptMatches(st, department)
   );
@@ -87,17 +115,29 @@ async function oldCourseCheck(courseCode, department, batch, batchId) {
     : { ok: false, message: `Course Code ${courseCode} is not linked to Batch ${batch} for Department ${department}.` };
 }
 
-/** Fixed importer rule (mirrors runTimetableValidation). */
+/** Fixed importer rule (mirrors runTimetableValidation / Manual Entry). */
 async function newCourseCheck(courseCode, department, batch, batchId) {
-  const resolved = resolveLinkedBatch(listBatchesForCourse(department, courseCode), batch, batchId);
+  const linked = listBatchesForCourse(department, courseCode);
+  const resolved = resolveLinkedBatch(linked, batch, batchId);
   if (resolved.ambiguous) return { ok: false, message: `Batch ${batch} is ambiguous` };
-  if (!resolved.batch) {
-    return { ok: false, message: `Course Code ${courseCode} is not linked to Batch ${batch} for Department ${department}.` };
+  if (resolved.batch) return { ok: true, batchId: resolved.batch.id };
+  const courses = listCoursesByDepartment(department);
+  const hasCourse = courses.some(
+    (c) => String(c.courseCode).trim().toUpperCase() === String(courseCode).trim().toUpperCase()
+  );
+  if (!hasCourse) {
+    return {
+      ok: false,
+      message: `Course Code ${courseCode} was not found for Department ${department} in the selected academic context.`,
+    };
   }
-  return { ok: true, batchId: resolved.batch.id };
+  return {
+    ok: false,
+    message: `Course Code ${courseCode} is not linked to Batch ${batch} for Department ${department}.`,
+  };
 }
 
-function row(department, courseCode, courseName = "Course") {
+function row(department, courseCode, courseName = "Course", batch = "2026-2030") {
   return {
     Date: "2026-12-01",
     "Start Time": "09:30",
@@ -106,7 +146,7 @@ function row(department, courseCode, courseName = "Course") {
     Department: department,
     "Course Code": courseCode,
     "Course Name": courseName,
-    Batch: "2026-2030",
+    Batch: batch,
     "Exam Type": "CAT1",
   };
 }
@@ -171,9 +211,67 @@ async function testUnlinkedCombinationsStillRejected() {
   assert.strictEqual(result.errorCount, 3);
   assert.strictEqual(result.canImport, false);
   for (const r of result.rows) {
-    assert.match(r.error, /is not linked to Batch 2026-2030 for Department/);
+    assert.match(
+      r.error,
+      /is not linked to Batch 2026-2030 for Department|was not found for Department/
+    );
   }
   console.log("✓ combinations without enrolled students are still rejected");
+}
+
+async function testNonexistentCourseAndBatch() {
+  const missingCourse = await validateTimetableRows(
+    [row("BAE", "99ZZZ999")],
+    {},
+    helpers(newCourseCheck)
+  );
+  assert.strictEqual(missingCourse.errorCount, 1);
+  assert.match(missingCourse.rows[0].error, /was not found for Department BAE/);
+
+  const missingBatch = await validateTimetableRows(
+    [row("BAE", "24MEI101", "Course", "2030-2034")],
+    {},
+    helpers(newCourseCheck)
+  );
+  assert.strictEqual(missingBatch.errorCount, 1);
+  assert.match(missingBatch.rows[0].error, /Batch "2030-2034" does not exist/);
+  console.log("✓ nonexistent course and batch still rejected with distinct messages");
+}
+
+async function testWhitespaceAndCaseInCourseCode() {
+  const result = await validateTimetableRows(
+    [row("BAE", " 24mei101 ")],
+    {},
+    helpers(newCourseCheck)
+  );
+  assert.strictEqual(result.errorCount, 0, JSON.stringify(result.rows));
+  assert.strictEqual(result.rows[0].batchId, 11);
+  console.log("✓ leading/trailing whitespace and course-code case are accepted");
+}
+
+async function testMixedValidAndInvalidRows() {
+  const result = await validateTimetableRows(
+    [row("BAE", "24MEI101"), row("BEE", "24MEI101"), row("BEE", "24MET105")],
+    {},
+    helpers(newCourseCheck)
+  );
+  assert.strictEqual(result.validCount, 2);
+  assert.strictEqual(result.errorCount, 1);
+  assert.strictEqual(result.canImport, false);
+  assert.match(result.rows[1].error, /is not linked to Batch|was not found for Department/);
+  console.log("✓ mixed valid/invalid rows keep import blocked");
+}
+
+async function testCourseInOtherDepartmentRejected() {
+  // 24MET105 exists for BEE, not BAE
+  const result = await validateTimetableRows(
+    [row("BAE", "24MET105")],
+    {},
+    helpers(newCourseCheck)
+  );
+  assert.strictEqual(result.errorCount, 1);
+  assert.match(result.rows[0].error, /was not found for Department BAE|is not linked to Batch/);
+  console.log("✓ course assigned only to another department is rejected");
 }
 
 async function testMissingBatchNameStillRejected() {
@@ -197,12 +295,18 @@ function testResolveLinkedBatch() {
   assert.strictEqual(resolveLinkedBatch(linked, "2024-2028").batch, null);
   assert.strictEqual(resolveLinkedBatch([], "2026-2030").batch, null);
   assert.strictEqual(resolveLinkedBatch(linked, "").batch, null);
-  console.log("✓ resolveLinkedBatch: case/trim match, formal-id tie-break, ambiguity");
+  assert.strictEqual(resolveLinkedBatch([{ id: 3, name: "2026–2030" }], "2026-2030").batch.id, 3);
+  assert.strictEqual(normalizeBatchName(" 2026–2030 "), "2026-2030");
+  console.log("✓ resolveLinkedBatch: case/trim/dash match, formal-id tie-break, ambiguity");
 }
 
 await testOldRuleReproducesBug();
 await testReportedRowsValidWithFix();
 await testUnlinkedCombinationsStillRejected();
+await testNonexistentCourseAndBatch();
+await testWhitespaceAndCaseInCourseCode();
+await testMixedValidAndInvalidRows();
+await testCourseInOtherDepartmentRejected();
 await testMissingBatchNameStillRejected();
 testResolveLinkedBatch();
 console.log("\nAll timetable import batch-link checks passed.");
