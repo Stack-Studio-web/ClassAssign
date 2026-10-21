@@ -172,10 +172,10 @@ const Faculty = {
    * All faculty rows matching email (case-insensitive), with allotment/seating counts.
    * Used to pick a stable canonical id when soft-delete + re-add created duplicates.
    */
-  findAllByEmail: async (email) => {
+  findAllByEmail: async (email, executor = db) => {
     const normalized = normalizeFacultyEmail(email);
     if (!normalized) return [];
-    const [rows] = await db.query(
+    const [rows] = await executor.query(
       `SELECT
          f.id,
          f.public_uuid,
@@ -199,8 +199,8 @@ const Faculty = {
   },
 
   /** Canonical row for an email (active+history preferred). Includes inactive. */
-  findByEmail: async (email) => {
-    const rows = await Faculty.findAllByEmail(email);
+  findByEmail: async (email, executor = db) => {
+    const rows = await Faculty.findAllByEmail(email, executor);
     return pickCanonicalFaculty(rows);
   },
 
@@ -231,18 +231,129 @@ const Faculty = {
     return Faculty.findByEmail(email);
   },
 
-  create: async ({ name, department, email }, opts = {}) => {
+  create: async ({ name, department, email, maxClassrooms }, opts = {}, executor = db) => {
     const { insertOwnership } = require("../utils/ownerFilter");
     const ownership = insertOwnership(opts);
     const normalizedEmail = normalizeFacultyEmail(email);
-    const cols = ["name", "department", "email"];
-    const vals = [name, department, normalizedEmail];
+    const max =
+      maxClassrooms != null && maxClassrooms !== ""
+        ? Number(maxClassrooms)
+        : 1;
+    if (!Number.isFinite(max) || max < 1 || max > 20) {
+      const err = new Error("max_classrooms must be between 1 and 20");
+      err.code = "VALIDATION";
+      throw err;
+    }
+    const cols = ["name", "department", "email", "max_classrooms"];
+    const vals = [name, department, normalizedEmail, max];
     if (ownership.col) {
       cols.push(...ownership.col.replace(/^,\s*/, "").split(",").map((c) => c.trim()).filter(Boolean));
       vals.push(...ownership.params);
     }
     const sql = `INSERT INTO faculty (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`;
-    return db.query(sql, vals);
+    return executor.query(sql, vals);
+  },
+
+  /**
+   * Add `delta` to context-scoped MAX (home faculty row or shared membership).
+   * Uses SELECT FOR UPDATE — call inside a transaction.
+   * Never modifies is_available, allocation, completed, or transfer_count.
+   */
+  incrementMaxClassroomsBy: async (id, delta, opts = {}, executor = db) => {
+    const d = Number(delta);
+    if (!Number.isFinite(d) || d < 1 || !Number.isInteger(d)) {
+      return {
+        ok: false,
+        code: "VALIDATION",
+        message: "MAX increment must be a positive integer",
+      };
+    }
+
+    const scope = await Membership.resolveFacultyScope(id, opts, executor);
+
+    if (scope.kind === "shared") {
+      const membershipId = Number(scope.membership?.id ?? scope.membership?.ID);
+      const [locked] = await executor.query(
+        `SELECT id, max_classrooms
+         FROM faculty_department_memberships
+         WHERE id = ? AND is_active = TRUE
+         FOR UPDATE`,
+        [membershipId]
+      );
+      const row = locked?.[0];
+      if (!row) {
+        return { ok: false, code: "NOT_FOUND", message: "Membership not found or inactive" };
+      }
+      const previousMax = Number(row.max_classrooms ?? row.maxclassrooms ?? 1) || 1;
+      const nextMax = previousMax + d;
+      if (nextMax > 20) {
+        return {
+          ok: false,
+          code: "MAX_LIMIT",
+          message: `MAX would be ${nextMax}; allowed range is 1–20.`,
+          previousMax,
+          nextMax,
+        };
+      }
+      await executor.query(
+        `UPDATE faculty_department_memberships
+         SET max_classrooms = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND is_active = TRUE`,
+        [nextMax, membershipId]
+      );
+      return {
+        ok: true,
+        previousMax,
+        nextMax,
+        scope: "shared",
+        membershipId,
+        facultyId: Number(id),
+      };
+    }
+
+    if (scope.kind !== "home") {
+      return {
+        ok: false,
+        code: "NOT_IN_SCOPE",
+        message: "Faculty is not in your Academic Context",
+      };
+    }
+
+    const { sql: ownerSql, params: ownerParams } = ownerAndFromOpts(opts);
+    const [locked] = await executor.query(
+      `SELECT id, max_classrooms
+       FROM faculty
+       WHERE id = ? AND ${ACTIVE_ONLY_SQL}${ownerSql}
+       FOR UPDATE`,
+      [id, ...ownerParams]
+    );
+    const row = locked?.[0];
+    if (!row) {
+      return { ok: false, code: "NOT_FOUND", message: "Faculty not found or not allowed" };
+    }
+    const previousMax = Number(row.max_classrooms ?? row.maxclassrooms ?? 1) || 1;
+    const nextMax = previousMax + d;
+    if (nextMax > 20) {
+      return {
+        ok: false,
+        code: "MAX_LIMIT",
+        message: `MAX would be ${nextMax}; allowed range is 1–20.`,
+        previousMax,
+        nextMax,
+      };
+    }
+    await executor.query(
+      `UPDATE faculty SET max_classrooms = ? WHERE id = ?${ownerSql}`,
+      [nextMax, id, ...ownerParams]
+    );
+    return {
+      ok: true,
+      previousMax,
+      nextMax,
+      scope: "home",
+      membershipId: null,
+      facultyId: Number(id),
+    };
   },
 
   getAll: async (opts = {}) => Faculty.getAllWithAllocation(opts),
@@ -586,8 +697,8 @@ const Faculty = {
   },
 
   /** Reactivate a soft-deleted faculty (e.g. re-add same email). Preserves faculty.id. */
-  reactivateById: async (id, { name, department } = {}) => {
-    await db.query(
+  reactivateById: async (id, { name, department } = {}, executor = db) => {
+    await executor.query(
       `UPDATE faculty
        SET is_active = TRUE,
            is_available = TRUE,
@@ -598,15 +709,82 @@ const Faculty = {
        WHERE id = ?`,
       [name || null, department ?? null, id]
     );
-    const [rows] = await db.query(`SELECT email FROM faculty WHERE id = ?`, [id]);
+    const [rows] = await executor.query(`SELECT email FROM faculty WHERE id = ?`, [id]);
     const email = rows?.[0]?.email;
     if (email) {
-      await db.query(
+      await executor.query(
         `UPDATE users SET is_active = TRUE WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))`,
         [email]
       );
     }
     return true;
+  },
+
+  /**
+   * Set context-scoped MAX to an absolute value (new membership init from import).
+   * Does not modify is_available / transfers / allocation history.
+   */
+  setMaxClassroomsAbsolute: async (id, maxClassrooms, opts = {}, executor = db) => {
+    const nextMax = Number(maxClassrooms);
+    if (!Number.isFinite(nextMax) || nextMax < 1 || nextMax > 20) {
+      return {
+        ok: false,
+        code: "VALIDATION",
+        message: "max_classrooms must be between 1 and 20",
+      };
+    }
+    const scope = await Membership.resolveFacultyScope(id, opts, executor);
+    if (scope.kind === "shared") {
+      const membershipId = Number(scope.membership?.id ?? scope.membership?.ID);
+      const [locked] = await executor.query(
+        `SELECT id, max_classrooms FROM faculty_department_memberships
+         WHERE id = ? AND is_active = TRUE FOR UPDATE`,
+        [membershipId]
+      );
+      if (!locked?.[0]) {
+        return { ok: false, code: "NOT_FOUND", message: "Membership not found or inactive" };
+      }
+      const previousMax = Number(locked[0].max_classrooms ?? 1) || 1;
+      await executor.query(
+        `UPDATE faculty_department_memberships
+         SET max_classrooms = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND is_active = TRUE`,
+        [nextMax, membershipId]
+      );
+      return {
+        ok: true,
+        previousMax,
+        nextMax,
+        scope: "shared",
+        membershipId,
+        facultyId: Number(id),
+      };
+    }
+    if (scope.kind !== "home") {
+      return { ok: false, code: "NOT_IN_SCOPE", message: "Faculty is not in your Academic Context" };
+    }
+    const { sql: ownerSql, params: ownerParams } = ownerAndFromOpts(opts);
+    const [locked] = await executor.query(
+      `SELECT id, max_classrooms FROM faculty
+       WHERE id = ? AND ${ACTIVE_ONLY_SQL}${ownerSql} FOR UPDATE`,
+      [id, ...ownerParams]
+    );
+    if (!locked?.[0]) {
+      return { ok: false, code: "NOT_FOUND", message: "Faculty not found or not allowed" };
+    }
+    const previousMax = Number(locked[0].max_classrooms ?? 1) || 1;
+    await executor.query(
+      `UPDATE faculty SET max_classrooms = ? WHERE id = ?${ownerSql}`,
+      [nextMax, id, ...ownerParams]
+    );
+    return {
+      ok: true,
+      previousMax,
+      nextMax,
+      scope: "home",
+      membershipId: null,
+      facultyId: Number(id),
+    };
   },
 
   deleteById: async (id, opts = {}) => Faculty.softDeleteById(id, opts),

@@ -298,14 +298,24 @@ export default function Faculty() {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
-      const inserted = res.data?.inserted ?? 0;
+      const inserted = res.data?.identitiesCreated ?? res.data?.inserted ?? 0;
+      const membershipsUpdated = res.data?.membershipsUpdated ?? 0;
       const associated = res.data?.associated ?? 0;
+      const merged = res.data?.duplicateRowsMerged ?? 0;
+      const rejected = res.data?.rejected ?? 0;
       const skipped = res.data?.skipped ?? res.data?.skippedEmails?.length ?? 0;
       setInsertedCount(inserted);
       setSkippedEmails(res.data?.skippedEmails || []);
       setImportIssues(Array.isArray(res.data?.rowIssues) ? res.data.rowIssues : []);
       setMessage(
-        `🎉 Added: ${inserted}${associated ? `, Linked existing faculty: ${associated}` : ""}, Skipped: ${skipped}`
+        [
+          `New identities: ${inserted}`,
+          `Memberships updated: ${membershipsUpdated}${associated ? ` (${associated} newly linked)` : ""}`,
+          `Duplicate rows merged into MAX: ${merged}`,
+          rejected > 0 || skipped > 0 ? `Rejected: ${rejected || skipped}` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")
       );
 
       setSelectedFile(null);
@@ -712,7 +722,7 @@ export default function Faculty() {
                 </button>
                 {skippedEmails.length > 0 && (
                   <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl">
-                    <h4 className="font-semibold text-amber-800 mb-2 text-sm">Skipped (duplicate/invalid)</h4>
+                    <h4 className="font-semibold text-amber-800 mb-2 text-sm">Rejected emails</h4>
                     <div className="max-h-32 overflow-y-auto space-y-1">
                       {skippedEmails.map((email, index) => (
                         <div key={index} className="text-xs text-amber-700 bg-white/60 px-2 py-1 rounded">{email}</div>
@@ -722,7 +732,7 @@ export default function Faculty() {
                 )}
                 {importIssues.length > 0 && (
                   <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl">
-                    <h4 className="font-semibold text-amber-800 mb-2 text-sm">Rows needing attention</h4>
+                    <h4 className="font-semibold text-amber-800 mb-2 text-sm">Rejected rows / notes</h4>
                     <div className="max-h-40 overflow-y-auto space-y-1">
                       {importIssues.map((issue, index) => (
                         <div key={index} className="text-xs text-amber-700 bg-white/60 px-2 py-1 rounded">

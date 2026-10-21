@@ -21,6 +21,11 @@ const {
 } = require("../utils/semesterGuards");
 const { resolveFacultyDepartment } = require("../utils/facultyDepartments");
 const Membership = require("../utils/facultyMembership");
+const {
+  groupFacultyImportRows,
+  indexGroupsByEmail,
+  emptyImportSummary,
+} = require("../utils/facultyImportMaxMerge");
 
 const router = express.Router();
 const { resolveOwnerOpts } = require("../utils/rbac");
@@ -40,7 +45,7 @@ function assertValidUpload(req, res) {
 }
 
 function emptyFacultyImport() {
-  return { insertedIds: [], associatedMembershipIds: [], skippedEmails: [], rowIssues: [] };
+  return emptyImportSummary();
 }
 
 let lastFacultyImport = emptyFacultyImport();
@@ -390,6 +395,7 @@ router.delete("/delete-all-faculty", sessionAuth, checkRole(["admin", "faculty_i
    IMPORT FACULTY FROM EXCEL (DUPLICATE SAFE)
 ===================================================== */
 router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharge"]), importLimiter, upload.single("file"), async (req, res) => {
+  let conn = null;
   try {
     lastFacultyImport = emptyFacultyImport();
 
@@ -407,6 +413,7 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
 
     const deptErrors = [];
     const formattedData = [];
+    const rejectedRows = [];
 
     data.forEach((row, index) => {
       const excelRow = index + 2; // header is row 1
@@ -418,6 +425,14 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
           : "";
 
       if (!name || !emailRaw || !emailRaw.toLowerCase().endsWith("@kct.ac.in")) {
+        if (name || emailRaw || deptRaw) {
+          rejectedRows.push({
+            row: excelRow,
+            email: emailRaw || null,
+            status: "INVALID_ROW",
+            message: `Row ${excelRow}: name and a @kct.ac.in email are required.`,
+          });
+        }
         return;
       }
 
@@ -448,103 +463,251 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
 
     if (formattedData.length === 0) {
       return res.status(400).json({
-        message: "No valid faculty records found in Excel."
+        message: "No valid faculty records found in Excel.",
+        rejected: rejectedRows.length,
+        rowIssues: rejectedRows,
       });
     }
 
     const ownerOpts = await resolveOwnerOpts(req);
-    const seenEmails = new Set();
-    const rowIssues = [];
+    const groups = groupFacultyImportRows(formattedData);
+    const byEmail = indexGroupsByEmail(groups);
+    const summary = emptyImportSummary();
+    summary.rowIssues.push(...rejectedRows);
+    summary.rejected += rejectedRows.length;
 
-    // Existing email → reuse identity; add this department's membership when missing.
-    const handleExisting = async (existing, f, email) => {
+    /**
+     * Ensure identity is in this Academic Context, then add `delta` to context MAX.
+     * Reuses cross-context identities; never creates a second faculty row for an email.
+     */
+    const applyGroupToExisting = async (existing, group, executor) => {
+      const email = group.email;
+      const primaryRow = group.rows[0];
       const outcome = await Membership.associateExistingFaculty(
         {
           faculty: existing,
-          requestedDepartment: f.department,
-          requestedName: f.name,
+          requestedDepartment: group.department,
+          requestedName: group.name,
           addedByUserId: req.user?.id || null,
         },
-        ownerOpts
+        ownerOpts,
+        executor
       );
+
+      let initializeAbsoluteMax = false;
+
       if (outcome.status === "HOME_INACTIVE") {
-        // Restored existing id — do not treat as a fresh insert for undo.
-        await Faculty.reactivateById(existing.id, { name: f.name, department: f.department });
-        return;
-      }
-      if (outcome.status === "ASSOCIATED" || outcome.status === "REACTIVATED") {
-        lastFacultyImport.associatedMembershipIds.push(outcome.membership.id);
+        await Faculty.reactivateById(
+          existing.id,
+          { name: group.name, department: group.department },
+          executor
+        );
+      } else if (outcome.status === "ASSOCIATED") {
+        // Brand-new membership defaults to MAX=1; initialize to import row count.
+        summary.associatedMembershipIds.push(outcome.membership.id);
+        initializeAbsoluteMax = true;
         if (outcome.detailsMismatch) {
-          rowIssues.push({ row: f.row, email, status: "DETAILS_KEPT", message: outcome.message });
+          summary.rowIssues.push({
+            row: primaryRow.row,
+            email,
+            status: "DETAILS_KEPT",
+            message: outcome.message,
+          });
         }
-        return;
+      } else if (outcome.status === "REACTIVATED") {
+        summary.associatedMembershipIds.push(outcome.membership.id);
+        if (outcome.detailsMismatch) {
+          summary.rowIssues.push({
+            row: primaryRow.row,
+            email,
+            status: "DETAILS_KEPT",
+            message: outcome.message,
+          });
+        }
+      } else if (outcome.status === "ALREADY_ASSOCIATED") {
+        // Already in this context — increment MAX by this import's matching rows.
+      } else {
+        for (const r of group.rows) {
+          summary.skippedEmails.push(email);
+          summary.rowIssues.push({
+            row: r.row,
+            email,
+            status: outcome.status,
+            message: outcome.message,
+          });
+        }
+        summary.rejected += group.count;
+        return { ok: false };
       }
-      lastFacultyImport.skippedEmails.push(email);
-      if (outcome.status !== "ALREADY_ASSOCIATED") {
-        rowIssues.push({ row: f.row, email, status: outcome.status, message: outcome.message });
+
+      const bumped = initializeAbsoluteMax
+        ? await Faculty.setMaxClassroomsAbsolute(
+            existing.id,
+            group.count,
+            ownerOpts,
+            executor
+          )
+        : await Faculty.incrementMaxClassroomsBy(
+            existing.id,
+            group.count,
+            ownerOpts,
+            executor
+          );
+      if (!bumped.ok) {
+        for (const r of group.rows) {
+          summary.rowIssues.push({
+            row: r.row,
+            email,
+            status: bumped.code || "MAX_LIMIT",
+            message: `Row ${r.row}: ${bumped.message}`,
+          });
+        }
+        summary.rejected += group.count;
+        return { ok: false };
       }
+
+      summary.membershipsUpdated += 1;
+      summary.duplicateRowsMerged += Math.max(0, group.count - 1);
+      summary.maxAdjustments.push({
+        email,
+        facultyId: existing.id,
+        previousMax: bumped.previousMax,
+        nextMax: bumped.nextMax,
+        delta: initializeAbsoluteMax ? group.count : group.count,
+      });
+      return { ok: true };
     };
 
-    for (const f of formattedData) {
-      const email = String(f.email || "").trim().toLowerCase();
-      if (seenEmails.has(email)) {
-        lastFacultyImport.skippedEmails.push(email);
-        rowIssues.push({
-          row: f.row,
-          email,
-          status: "DUPLICATE_IN_FILE",
-          message: `Row ${f.row}: ${email} appears more than once in this file; only the first row was used.`,
-        });
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+
+    for (const group of groups) {
+      const emailGroups = byEmail.get(group.email) || [group];
+      if (emailGroups[0] !== group) {
+        for (const r of group.rows) {
+          summary.rowIssues.push({
+            row: r.row,
+            email: group.email,
+            status: "CONFLICTING_IDENTITY",
+            message: `Row ${r.row}: ${group.email} already appears in this file with a different name or department; those rows were kept.`,
+          });
+          summary.skippedEmails.push(group.email);
+        }
+        summary.rejected += group.count;
         continue;
       }
-      seenEmails.add(email);
+
       try {
-        const name = f.name?.trim();
-        const department = f.department || null;
-        const existing = await Faculty.findByEmail(email);
+        // Serialize concurrent imports for the same email (transaction-scoped advisory lock).
+        await conn.query(`SELECT pg_advisory_xact_lock(hashtext(?))`, [group.email]);
+
+        const existing = await Faculty.findByEmail(group.email, conn);
 
         if (existing) {
-          await handleExisting(existing, { ...f, name, department }, email);
+          await applyGroupToExisting(existing, group, conn);
           continue;
         }
 
-        const [result] = await Faculty.create({ name, department, email }, ownerOpts);
+        const [result] = await Faculty.create(
+          {
+            name: group.name,
+            department: group.department,
+            email: group.email,
+            maxClassrooms: group.count,
+          },
+          ownerOpts,
+          conn
+        );
         const id = result?.insertId ?? result?.insertid;
-        if (id != null) lastFacultyImport.insertedIds.push(id);
+        if (id != null) {
+          summary.insertedIds.push(id);
+          summary.identitiesCreated += 1;
+          summary.duplicateRowsMerged += Math.max(0, group.count - 1);
+          summary.maxAdjustments.push({
+            email: group.email,
+            facultyId: id,
+            previousMax: 0,
+            nextMax: group.count,
+            delta: group.count,
+          });
+        }
       } catch (err) {
-        // MySQL: ER_DUP_ENTRY | PostgreSQL: 23505 (unique_violation)
-        const isDuplicate = err.code === "ER_DUP_ENTRY" ||
+        const isDuplicate =
+          err.code === "ER_DUP_ENTRY" ||
           err.code === "23505" ||
           err.original?.code === "23505" ||
           err.parent?.code === "23505";
-        if (isDuplicate) {
-          const existing = await Faculty.findByEmail(email);
-          if (existing) {
-            await handleExisting(existing, { ...f, name: f.name?.trim() }, email);
-          } else {
-            lastFacultyImport.skippedEmails.push(email || f.email);
+        if (err.code === "VALIDATION") {
+          for (const r of group.rows) {
+            summary.rowIssues.push({
+              row: r.row,
+              email: group.email,
+              status: "VALIDATION",
+              message: `Row ${r.row}: ${err.message}`,
+            });
           }
-        } else {
-          throw err;
+          summary.rejected += group.count;
+          continue;
         }
+        if (isDuplicate) {
+          // Rare race if lock unavailable; reuse identity and increment MAX.
+          const existing = await Faculty.findByEmail(group.email, conn);
+          if (existing) {
+            await applyGroupToExisting(existing, group, conn);
+          } else {
+            summary.skippedEmails.push(group.email);
+            summary.rejected += group.count;
+          }
+          continue;
+        }
+        throw err;
       }
     }
-    lastFacultyImport.rowIssues = rowIssues;
+
+    await conn.commit();
+    conn.release();
+    conn = null;
+
+    lastFacultyImport = {
+      ...summary,
+      // Keep legacy fields used by undo + UI
+      insertedIds: summary.insertedIds,
+      associatedMembershipIds: summary.associatedMembershipIds,
+      skippedEmails: summary.skippedEmails,
+      rowIssues: summary.rowIssues,
+    };
 
     res.json({
       message: "Faculty import completed",
-      inserted: lastFacultyImport.insertedIds.length,
-      associated: lastFacultyImport.associatedMembershipIds.length,
-      skipped: lastFacultyImport.skippedEmails.length,
-      skippedEmails: lastFacultyImport.skippedEmails,
-      rowIssues,
+      inserted: summary.identitiesCreated,
+      identitiesCreated: summary.identitiesCreated,
+      associated: summary.associatedMembershipIds.length,
+      membershipsUpdated: summary.membershipsUpdated,
+      duplicateRowsMerged: summary.duplicateRowsMerged,
+      rejected: summary.rejected,
+      skipped: summary.skippedEmails.length,
+      skippedEmails: summary.skippedEmails,
+      rowIssues: summary.rowIssues,
+      maxAdjustments: summary.maxAdjustments,
     });
-
   } catch (error) {
+    if (conn) {
+      try {
+        await conn.rollback();
+      } catch {
+        /* ignore */
+      }
+      try {
+        conn.release();
+      } catch {
+        /* ignore */
+      }
+      conn = null;
+    }
     console.error("FACULTY IMPORT ERROR:", error);
     res.status(500).json({
       message: "Faculty import failed",
-      error: error.message
+      error: error.message,
     });
   } finally {
     if (req.file) fs.unlink(req.file.path, () => {});
