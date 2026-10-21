@@ -238,10 +238,10 @@ async function countActiveMembershipsExcluding(facultyId, excludeContextId = nul
  *
  * @returns {Promise<{status: string, httpStatus: number, message: string, membership?: object, faculty?: object, detailsMismatch?: boolean}>}
  *   status: ASSOCIATED | REACTIVATED | ALREADY_ASSOCIATED | HOME_INACTIVE |
- *           NO_DEPARTMENT | FORBIDDEN_DEPARTMENT | IDENTITY_INACTIVE
+ *           NO_DEPARTMENT | IDENTITY_INACTIVE
  */
 async function associateExistingFaculty(
-  { faculty, requestedDepartment = null, requestedName = null, addedByUserId = null },
+  { faculty, requestedName = null, addedByUserId = null },
   opts = {},
   executor = db
 ) {
@@ -272,14 +272,9 @@ async function associateExistingFaculty(
     };
   }
 
-  const requested = String(requestedDepartment || "").trim().toUpperCase();
-  if (requested && requested !== managed.department) {
-    return {
-      status: "FORBIDDEN_DEPARTMENT",
-      httpStatus: 403,
-      message: `You can only add existing faculty to your own department (${managed.department}), not ${requested}.`,
-    };
-  }
+  // Association always targets the caller's managed department (Academic Context).
+  // A submitted/home department that differs (e.g. SFS FI entering CSE for an existing
+  // CSE identity) must not block creating the caller's membership.
 
   if (scope.faculty?.is_active === false || scope.faculty?.isactive === false) {
     return {

@@ -244,23 +244,34 @@ async function main() {
     assert.strictEqual((await one(`SELECT name FROM faculty WHERE email = 'priya@kct.ac.in'`)).name, "Priya S");
   });
 
-  await step("7. unauthorized department association is rejected", async () => {
+  await step("7. home-dept form value still associates; unauthorized roles stay rejected", async () => {
+    // SFS/IT FI submits the faculty's home department (CSE) — must still create an IT membership.
     await api("csefi", "POST", "/faculty", { name: "Kavin", department: "CSE", email: "kavin@kct.ac.in" });
-    const wrongDept = await api("itfi", "POST", "/faculty", { name: "Kavin", department: "CSE", email: "kavin@kct.ac.in" });
-    assert.strictEqual(wrongDept.status, 403);
-    assert.strictEqual(wrongDept.body.code, "FORBIDDEN_DEPARTMENT");
+    const share = await api("itfi", "POST", "/faculty", { name: "Kavin", department: "CSE", email: "kavin@kct.ac.in" });
+    assert.strictEqual(share.status, 201, JSON.stringify(share.body));
+    assert.strictEqual(share.body.data.associated, true);
+    assert.strictEqual(share.body.data.department, "IT");
+    assert.deepStrictEqual((await rowFor("itfi", "kavin@kct.ac.in")).departments, ["CSE", "IT"]);
+    assert.deepStrictEqual((await rowFor("csefi", "kavin@kct.ac.in")).departments, ["CSE", "IT"]);
+
+    // Reverse: IT-home faculty associated by CSE while submitting department=IT.
+    await api("itfi", "POST", "/faculty", { name: "Sita", department: "IT", email: "sita@kct.ac.in" });
+    const reverse = await api("csefi", "POST", "/faculty", { name: "Sita", department: "IT", email: "sita@kct.ac.in" });
+    assert.strictEqual(reverse.status, 201, JSON.stringify(reverse.body));
+    assert.strictEqual(reverse.body.data.department, "CSE");
+    assert.deepStrictEqual((await rowFor("csefi", "sita@kct.ac.in")).departments, ["IT", "CSE"]);
+
     const hod = await api("ithod", "POST", "/faculty", { name: "Kavin", department: "IT", email: "kavin@kct.ac.in" });
     assert.strictEqual(hod.status, 403, "HOD role cannot create associations");
-    const kavin = await one(`SELECT id FROM faculty WHERE email = 'kavin@kct.ac.in'`);
-    assert.strictEqual(
-      num((await one(`SELECT COUNT(*) c FROM faculty_department_memberships WHERE faculty_id = ?`, [kavin.id])).c),
-      0
-    );
-    // IT cannot change CSE's counters for a faculty not shared with IT.
-    const kRow = await rowFor("csefi", "kavin@kct.ac.in");
-    const put = await api("itfi", "PUT", `/faculty/${kRow.uuid}/max-classrooms`, { max_classrooms: 9 });
+    const adminNoCtx = await api("admin", "POST", "/faculty", { name: "Kavin", department: "IT", email: "kavin@kct.ac.in" });
+    assert.ok([403, 409].includes(adminNoCtx.status), "admin without department context cannot associate");
+
+    // Faculty never shared with IT remains invisible to IT.
+    await api("csefi", "POST", "/faculty", { name: "OnlyCse", department: "CSE", email: "onlycse@kct.ac.in" });
+    assert.strictEqual(await rowFor("itfi", "onlycse@kct.ac.in"), null);
+    const onlyRow = await rowFor("csefi", "onlycse@kct.ac.in");
+    const put = await api("itfi", "PUT", `/faculty/${onlyRow.uuid}/max-classrooms`, { max_classrooms: 9 });
     assert.strictEqual(put.status, 404);
-    assert.strictEqual(await rowFor("itfi", "kavin@kct.ac.in"), null, "no cross-department visibility");
   });
 
   await step("8. concurrent requests with the same email create one identity", async () => {
@@ -397,7 +408,7 @@ async function main() {
       assert.strictEqual(new Set(uuids).size, uuids.length, "no duplicate identities");
     }
     const it = await availability("itfi", "2026-10-30", "09:00", "11:00");
-    assert.ok(!it.body.facultyStatus.some((f) => f.name === "Kavin"), "non-shared CSE faculty hidden from IT");
+    assert.ok(!it.body.facultyStatus.some((f) => f.name === "OnlyCse"), "non-shared CSE faculty hidden from IT");
   });
 
   await step("14/19. CSE duty blocks an overlapping IT assignment (stored details, IT cannot see venue)", async () => {
@@ -479,17 +490,18 @@ async function main() {
       { NAME: "Ravi", DEPT: "IT", MAIL: "RAVI@kct.ac.in" },
       { NAME: "Ravi again", DEPT: "IT", MAIL: "ravi@kct.ac.in" },
       { NAME: "Arun Kumar", DEPT: "IT", MAIL: ARUN },
-      { NAME: "Kavin", DEPT: "CSE", MAIL: "kavin@kct.ac.in" },
+      { NAME: "OnlyCse", DEPT: "CSE", MAIL: "onlycse@kct.ac.in" },
     ]);
     assert.strictEqual(r.status, 200, JSON.stringify(r.body));
     assert.strictEqual(r.body.inserted, 1);
-    assert.strictEqual(r.body.associated, 1);
+    // Ravi (IT dept column) + OnlyCse (home dept CSE in DEPT column) both associate to IT.
+    assert.strictEqual(r.body.associated, 2, JSON.stringify(r.body));
     const statuses = r.body.rowIssues.map((x) => x.status).sort();
-    assert.deepStrictEqual(statuses, ["DUPLICATE_IN_FILE", "FORBIDDEN_DEPARTMENT"]);
+    assert.deepStrictEqual(statuses, ["DUPLICATE_IN_FILE"]);
     assert.ok(r.body.skippedEmails.includes(ARUN), "existing association reported as skipped");
     assert.strictEqual(num((await one(`SELECT COUNT(*) c FROM faculty WHERE email = 'ravi@kct.ac.in'`)).c), 1);
     assert.deepStrictEqual((await rowFor("itfi", "ravi@kct.ac.in")).departments, ["CSE", "IT"]);
-    assert.strictEqual(await rowFor("itfi", "kavin@kct.ac.in"), null);
+    assert.deepStrictEqual((await rowFor("itfi", "onlycse@kct.ac.in")).departments, ["CSE", "IT"]);
     const undo = await api("itfi", "POST", "/import/undo-faculty-import");
     assert.strictEqual(undo.status, 200, JSON.stringify(undo.body));
     assert.strictEqual(await rowFor("itfi", "ravi@kct.ac.in"), null, "undo removed the IT association");
