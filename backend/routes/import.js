@@ -477,7 +477,8 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
     summary.rejected += rejectedRows.length;
 
     /**
-     * Ensure identity is in this Academic Context, then add `delta` to context MAX.
+     * Ensure identity is in this Academic Context, then apply import row-count to MAX.
+     * next MAX = max(current, group.count) — first row counted once; reimports are idempotent.
      * Reuses cross-context identities; never creates a second faculty row for an email.
      */
     const applyGroupToExisting = async (existing, group, executor) => {
@@ -494,27 +495,13 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
         executor
       );
 
-      let initializeAbsoluteMax = false;
-
       if (outcome.status === "HOME_INACTIVE") {
         await Faculty.reactivateById(
           existing.id,
           { name: group.name, department: group.department },
           executor
         );
-      } else if (outcome.status === "ASSOCIATED") {
-        // Brand-new membership defaults to MAX=1; initialize to import row count.
-        summary.associatedMembershipIds.push(outcome.membership.id);
-        initializeAbsoluteMax = true;
-        if (outcome.detailsMismatch) {
-          summary.rowIssues.push({
-            row: primaryRow.row,
-            email,
-            status: "DETAILS_KEPT",
-            message: outcome.message,
-          });
-        }
-      } else if (outcome.status === "REACTIVATED") {
+      } else if (outcome.status === "ASSOCIATED" || outcome.status === "REACTIVATED") {
         summary.associatedMembershipIds.push(outcome.membership.id);
         if (outcome.detailsMismatch) {
           summary.rowIssues.push({
@@ -525,7 +512,7 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
           });
         }
       } else if (outcome.status === "ALREADY_ASSOCIATED") {
-        // Already in this context — increment MAX by this import's matching rows.
+        // Already in this context — raise MAX to at least this file's matching row count.
       } else {
         for (const r of group.rows) {
           summary.skippedEmails.push(email);
@@ -540,19 +527,13 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
         return { ok: false };
       }
 
-      const bumped = initializeAbsoluteMax
-        ? await Faculty.setMaxClassroomsAbsolute(
-            existing.id,
-            group.count,
-            ownerOpts,
-            executor
-          )
-        : await Faculty.incrementMaxClassroomsBy(
-            existing.id,
-            group.count,
-            ownerOpts,
-            executor
-          );
+      // New memberships default to MAX=1; applyImport uses max(current, N) so 1+4 rows → 4, not 5.
+      const bumped = await Faculty.applyImportMaxClassrooms(
+        existing.id,
+        group.count,
+        ownerOpts,
+        executor
+      );
       if (!bumped.ok) {
         for (const r of group.rows) {
           summary.rowIssues.push({
@@ -573,7 +554,8 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
         facultyId: existing.id,
         previousMax: bumped.previousMax,
         nextMax: bumped.nextMax,
-        delta: initializeAbsoluteMax ? group.count : group.count,
+        delta: bumped.nextMax - bumped.previousMax,
+        changed: bumped.changed,
       });
       return { ok: true };
     };

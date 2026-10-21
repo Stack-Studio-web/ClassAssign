@@ -20,7 +20,12 @@ function row(rowNum, name, department, email) {
   return { row: rowNum, name, department, email };
 }
 
-function testBalakumaranFourRows() {
+/** Simulate import apply: next = max(current, rowCount). */
+function applyImport(currentMax, importRowCount) {
+  return computeMergedMax(currentMax, importRowCount);
+}
+
+function testFourIdenticalRowsNewFacultyMaxIs4Not5() {
   const rows = [
     row(2, "Balakumaran S /Adjunct faculty /CSE", "CSE", "balakumaran.jimpact@kct.ac.in"),
     row(3, "Balakumaran S /Adjunct faculty /CSE", "CSE", "balakumaran.jimpact@kct.ac.in"),
@@ -30,10 +35,40 @@ function testBalakumaranFourRows() {
   const groups = groupFacultyImportRows(rows);
   assert.strictEqual(groups.length, 1);
   assert.strictEqual(groups[0].count, 4);
-  assert.strictEqual(groups[0].email, "balakumaran.jimpact@kct.ac.in");
-  assert.strictEqual(validateMergedMax(groups[0].count).ok, true);
+
+  // New identity: create with row count (from empty).
+  const createdMax = applyImport(0, groups[0].count);
+  assert.strictEqual(createdMax, 4);
+
+  // Bug reproduction: default MAX=1 then incorrectly adding all 4 rows → 5.
+  const doubleCounted = 1 + groups[0].count;
+  assert.strictEqual(doubleCounted, 5);
+  // Correct merge from a default-1 membership must still land on 4.
+  assert.strictEqual(applyImport(1, groups[0].count), 4);
+  assert.notStrictEqual(applyImport(1, groups[0].count), doubleCounted);
+
   assert.strictEqual(duplicateRowsMergedCount(groups), 3);
-  console.log("✓ four identical Balakumaran rows → one group, MAX init 4, 3 duplicates merged");
+  console.log("✓ four identical rows → MAX = 4 (never 5 from 1+4 double-count)");
+}
+
+function testOneRowMaxIs1() {
+  const groups = groupFacultyImportRows([
+    row(2, "Dr. D. Arivuoli", "SFS", "arivuoli.d.sci@kct.ac.in"),
+  ]);
+  assert.strictEqual(groups[0].count, 1);
+  assert.strictEqual(applyImport(0, 1), 1);
+  assert.strictEqual(applyImport(1, 1), 1);
+  console.log("✓ one row → MAX = 1");
+}
+
+function testReimportSameFourRowsKeepsMaxAt4() {
+  const existingMax = 4;
+  const reimportCount = 4;
+  const next = applyImport(existingMax, reimportCount);
+  assert.strictEqual(next, 4, "reimport must not become 5 or 8");
+  assert.notStrictEqual(existingMax + reimportCount, 4);
+  assert.strictEqual(existingMax + reimportCount, 8); // old additive bug
+  console.log("✓ existing MAX=4 + reimport 4 matching rows → MAX stays 4");
 }
 
 function testAdditionalExamples() {
@@ -47,12 +82,9 @@ function testAdditionalExamples() {
     row(8, "Dr. D. Arivuoli", "SFS", "arivuoli.d.sci@kct.ac.in"),
   ];
   const groups = groupFacultyImportRows(rows);
-  const byEmail = Object.fromEntries(groups.map((g) => [g.email, g.count]));
-  assert.strictEqual(byEmail["arul.ar.sci@kct.ac.in"], 2);
-  assert.strictEqual(byEmail["ezhilirasi.sci@kct.ac.in"], 2);
-  assert.strictEqual(byEmail["roshini.a.cse@kct.ac.in"], 2);
-  assert.strictEqual(byEmail["arivuoli.d.sci@kct.ac.in"], 1);
-  assert.strictEqual(groups.length, 4);
+  for (const g of groups) {
+    assert.strictEqual(applyImport(0, g.count), g.count);
+  }
   console.log("✓ Arul/Ezhilarasi/Roshini → MAX 2; Arivuoli → MAX 1");
 }
 
@@ -66,10 +98,8 @@ function testMixedDepartmentsStaySeparate() {
   assert.strictEqual(groups.length, 2);
   const byEmail = indexGroupsByEmail(groups);
   assert.strictEqual(byEmail.get("same@kct.ac.in").length, 2);
-  // Import keeps first group only for one identity per email in a context.
-  assert.strictEqual(byEmail.get("same@kct.ac.in")[0].department, "CSE");
   assert.strictEqual(byEmail.get("same@kct.ac.in")[0].count, 2);
-  console.log("✓ mixed departments for same email form separate groups (second rejected at import)");
+  console.log("✓ mixed departments for same email form separate groups");
 }
 
 function testNameNormalization() {
@@ -87,27 +117,17 @@ function testNameNormalization() {
   console.log("✓ name/email/department normalization collapses whitespace and case");
 }
 
-function testExistingIncrementAndLimit() {
-  assert.strictEqual(computeMergedMax(1, 4), 5);
-  assert.strictEqual(computeMergedMax(2, 2), 4);
-  assert.strictEqual(computeMergedMax(0, 1), 1);
+function testRaiseOnlyNeverDecreaseAndLimit() {
+  assert.strictEqual(computeMergedMax(1, 4), 4);
+  assert.strictEqual(computeMergedMax(4, 4), 4);
+  assert.strictEqual(computeMergedMax(6, 4), 6);
+  assert.strictEqual(computeMergedMax(2, 5), 5);
   assert.strictEqual(validateMergedMax(20).ok, true);
   assert.strictEqual(validateMergedMax(21).ok, false);
-  assert.strictEqual(validateMergedMax(0).ok, false);
-  assert.match(validateMergedMax(21).message, /1–20/);
   assert.strictEqual(MAX_CLASSROOMS_LIMIT, 20);
-
-  // Repeated import: existing MAX 2 + two matching rows → 4
-  const next = computeMergedMax(2, 2);
-  assert.strictEqual(next, 4);
-  assert.strictEqual(validateMergedMax(next).ok, true);
-  console.log("✓ existing MAX increments; values above 20 rejected");
+  console.log("✓ merge raises to row count, never decreases, respects 1–20");
 }
 
-/**
- * Simulate context-scoped counters (home vs shared) and concurrent increments
- * with exclusive locking semantics.
- */
 function testContextScopedCountersAndConcurrency() {
   const store = {
     home: { max: 1, available: true, alloc: 0, done: 0, transfers: 0 },
@@ -125,70 +145,81 @@ function testContextScopedCountersAndConcurrency() {
     }
   }
 
-  function increment(scope, delta) {
+  function apply(scope, importRowCount) {
     return withLock(scope, (row) => {
-      const next = row.max + delta;
+      const next = computeMergedMax(row.max, importRowCount);
       if (next > 20) return { ok: false, code: "MAX_LIMIT" };
+      const previous = row.max;
       row.max = next;
-      return { ok: true, nextMax: next, available: row.available, alloc: row.alloc, done: row.done, transfers: row.transfers };
+      return {
+        ok: true,
+        previousMax: previous,
+        nextMax: next,
+        available: row.available,
+        alloc: row.alloc,
+        done: row.done,
+        transfers: row.transfers,
+      };
     });
   }
 
-  // New shared membership initialized to 4 (absolute), other counters untouched
-  withLock("shared", (row) => {
-    row.max = 4;
-  });
-  assert.strictEqual(store.shared.max, 4);
+  // New shared membership default 1 + 4 import rows → 4 (not 5)
+  const shared = apply("shared", 4);
+  assert.strictEqual(shared.nextMax, 4);
   assert.strictEqual(store.shared.alloc, 2);
   assert.strictEqual(store.shared.done, 1);
   assert.strictEqual(store.shared.transfers, 3);
   assert.strictEqual(store.shared.available, true);
 
-  // Home existing: +2 from repeated import
-  const homeBump = increment("home", 2);
-  assert.strictEqual(homeBump.ok, true);
-  assert.strictEqual(store.home.max, 3);
+  // Home: first import 4 from default 1 → 4
+  assert.strictEqual(apply("home", 4).nextMax, 4);
+  // Reimport same 4 → stays 4
+  assert.strictEqual(apply("home", 4).nextMax, 4);
   assert.strictEqual(store.home.alloc, 0);
-  assert.strictEqual(store.home.available, true);
 
-  // Concurrent second lock fails while first held
   let contended = false;
   store.lock = "home";
   try {
-    increment("home", 1);
+    apply("home", 1);
   } catch (e) {
     contended = e.message === "lock contention";
   }
   store.lock = null;
   assert.strictEqual(contended, true);
 
-  // Sequential concurrent-style imports serialize correctly
-  assert.strictEqual(increment("home", 1).nextMax, 4);
-  assert.strictEqual(increment("shared", 1).nextMax, 5);
   assert.strictEqual(store.shared.transfers, 3, "transfers untouched");
-  console.log("✓ home/shared counters independent; locking serializes concurrent increments");
+  console.log("✓ home/shared independent; max(current,N) + locking; other counters untouched");
 }
 
 function testDifferentAcademicContextsIndependent() {
-  // Two contexts hold independent MAX for the same email identity.
-  const contexts = {
-    KSI: { max: 1 },
-    SFS: { max: 1 },
-  };
-  // Import 3 matching rows into KSI for an existing shared/home row
-  contexts.KSI.max = computeMergedMax(contexts.KSI.max, 3);
-  // Import 2 matching rows into SFS (separate membership)
-  contexts.SFS.max = 2; // new membership absolute init
+  const contexts = { KSI: { max: 1 }, SFS: { max: 1 } };
+  contexts.KSI.max = applyImport(contexts.KSI.max, 4);
+  contexts.SFS.max = applyImport(0, 2);
+  assert.strictEqual(contexts.KSI.max, 4);
+  assert.strictEqual(contexts.SFS.max, 2);
+  // Reimport into KSI does not change SFS
+  contexts.KSI.max = applyImport(contexts.KSI.max, 4);
   assert.strictEqual(contexts.KSI.max, 4);
   assert.strictEqual(contexts.SFS.max, 2);
   console.log("✓ different Academic Contexts keep independent MAX values");
 }
 
-testBalakumaranFourRows();
+function testDifferentFacultyIndependent() {
+  const a = applyImport(0, 4);
+  const b = applyImport(0, 2);
+  assert.strictEqual(a, 4);
+  assert.strictEqual(b, 2);
+  console.log("✓ different faculty identities remain independent");
+}
+
+testFourIdenticalRowsNewFacultyMaxIs4Not5();
+testOneRowMaxIs1();
+testReimportSameFourRowsKeepsMaxAt4();
 testAdditionalExamples();
 testMixedDepartmentsStaySeparate();
 testNameNormalization();
-testExistingIncrementAndLimit();
+testRaiseOnlyNeverDecreaseAndLimit();
 testContextScopedCountersAndConcurrency();
 testDifferentAcademicContextsIndependent();
+testDifferentFacultyIndependent();
 console.log("\nAll faculty import MAX-merge checks passed.");

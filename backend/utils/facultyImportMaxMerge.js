@@ -71,11 +71,20 @@ function indexGroupsByEmail(groups) {
   return byEmail;
 }
 
-/** next MAX after adding `additionalRows` onto an existing counter. */
-function computeMergedMax(currentMax, additionalRows) {
+/**
+ * Apply N matching import rows onto a context-scoped MAX without double-counting.
+ *
+ * Matching rows in one file mean "this person should have capacity N", not "+N on top
+ * of an already-initialized slot". Examples:
+ *   current 0/absent + 4 rows → 4
+ *   current 1 (default first slot) + 4 rows → 4  (never 5)
+ *   current 4 + reimport 4 rows → 4  (idempotent)
+ *   current 6 + import 4 rows → 6  (never decrease)
+ */
+function computeMergedMax(currentMax, importRowCount) {
   const current = Math.max(0, Number(currentMax) || 0);
-  const add = Math.max(0, Number(additionalRows) || 0);
-  return current + add;
+  const rows = Math.max(0, Number(importRowCount) || 0);
+  return Math.max(current, rows);
 }
 
 function validateMergedMax(nextMax, { limit = MAX_CLASSROOMS_LIMIT } = {}) {

@@ -721,6 +721,95 @@ const Faculty = {
   },
 
   /**
+   * Apply import row-count to context-scoped MAX: next = max(current, importRowCount).
+   * Prevents double-counting the first row (1 + N → N+1) and keeps reimports idempotent.
+   * Does not modify is_available / transfers / allocation history.
+   */
+  applyImportMaxClassrooms: async (id, importRowCount, opts = {}, executor = db) => {
+    const { computeMergedMax, validateMergedMax } = require("../utils/facultyImportMaxMerge");
+    const rows = Number(importRowCount);
+    if (!Number.isFinite(rows) || rows < 1 || !Number.isInteger(rows)) {
+      return {
+        ok: false,
+        code: "VALIDATION",
+        message: "Import row count must be a positive integer",
+      };
+    }
+
+    const scope = await Membership.resolveFacultyScope(id, opts, executor);
+
+    if (scope.kind === "shared") {
+      const membershipId = Number(scope.membership?.id ?? scope.membership?.ID);
+      const [locked] = await executor.query(
+        `SELECT id, max_classrooms FROM faculty_department_memberships
+         WHERE id = ? AND is_active = TRUE FOR UPDATE`,
+        [membershipId]
+      );
+      if (!locked?.[0]) {
+        return { ok: false, code: "NOT_FOUND", message: "Membership not found or inactive" };
+      }
+      const previousMax = Number(locked[0].max_classrooms ?? locked[0].maxclassrooms ?? 1) || 1;
+      const nextMax = computeMergedMax(previousMax, rows);
+      const valid = validateMergedMax(nextMax);
+      if (!valid.ok) {
+        return { ok: false, code: "MAX_LIMIT", message: valid.message, previousMax, nextMax };
+      }
+      if (nextMax !== previousMax) {
+        await executor.query(
+          `UPDATE faculty_department_memberships
+           SET max_classrooms = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE id = ? AND is_active = TRUE`,
+          [nextMax, membershipId]
+        );
+      }
+      return {
+        ok: true,
+        previousMax,
+        nextMax,
+        changed: nextMax !== previousMax,
+        scope: "shared",
+        membershipId,
+        facultyId: Number(id),
+      };
+    }
+
+    if (scope.kind !== "home") {
+      return { ok: false, code: "NOT_IN_SCOPE", message: "Faculty is not in your Academic Context" };
+    }
+
+    const { sql: ownerSql, params: ownerParams } = ownerAndFromOpts(opts);
+    const [locked] = await executor.query(
+      `SELECT id, max_classrooms FROM faculty
+       WHERE id = ? AND ${ACTIVE_ONLY_SQL}${ownerSql} FOR UPDATE`,
+      [id, ...ownerParams]
+    );
+    if (!locked?.[0]) {
+      return { ok: false, code: "NOT_FOUND", message: "Faculty not found or not allowed" };
+    }
+    const previousMax = Number(locked[0].max_classrooms ?? locked[0].maxclassrooms ?? 1) || 1;
+    const nextMax = computeMergedMax(previousMax, rows);
+    const valid = validateMergedMax(nextMax);
+    if (!valid.ok) {
+      return { ok: false, code: "MAX_LIMIT", message: valid.message, previousMax, nextMax };
+    }
+    if (nextMax !== previousMax) {
+      await executor.query(
+        `UPDATE faculty SET max_classrooms = ? WHERE id = ?${ownerSql}`,
+        [nextMax, id, ...ownerParams]
+      );
+    }
+    return {
+      ok: true,
+      previousMax,
+      nextMax,
+      changed: nextMax !== previousMax,
+      scope: "home",
+      membershipId: null,
+      facultyId: Number(id),
+    };
+  },
+
+  /**
    * Set context-scoped MAX to an absolute value (new membership init from import).
    * Does not modify is_available / transfers / allocation history.
    */
