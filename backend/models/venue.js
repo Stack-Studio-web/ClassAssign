@@ -33,7 +33,7 @@ function toVenueRow(row, { canManage = false } = {}) {
   const benchesRow = Number(row.benchesrow ?? row.benchesRow ?? 0) || 1;
   const benchesCol = Number(row.benchescol ?? row.benchesCol ?? 0) || 1;
   const isAvailable = (row.isavailable ?? row.isAvailable ?? true) !== false;
-  // Strict: only explicit true is in the global allotment pool (default OFF)
+  // Context-scoped: only true when selected for the request's Academic Context
   const useForAllotment = Boolean(
     row.use_for_allotment ?? row.useforallotment ?? row.useForAllotment ?? false
   );
@@ -49,7 +49,7 @@ function toVenueRow(row, { canManage = false } = {}) {
     isAvailable: archived ? false : isAvailable,
     /** Alias of isAvailable — global "Use It" enable flag (not date availability). */
     isActive: archived ? false : isAvailable,
-    /** Eligible for allotment seating generation (does not reserve a time slot). */
+    /** Eligible for allotment in the current Academic Context (does not reserve a slot). */
     useForAllotment: archived ? false : useForAllotment,
     isArchived: archived,
     archivedAt: row.archived_at ?? row.archivedat ?? null,
@@ -83,10 +83,83 @@ function formatTimeValue(t) {
   return String(t).slice(0, 5);
 }
 
+function normalizeContextId(academicContextId) {
+  const n = Number(academicContextId);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+async function isSelectedForContext(venueId, academicContextId, executor = db) {
+  const ctxId = normalizeContextId(academicContextId);
+  if (!venueId || !ctxId) return false;
+  const [rows] = await executor.query(
+    `SELECT 1 AS ok
+     FROM venue_allotment_selections
+     WHERE venue_id = ? AND academic_context_id = ?
+     LIMIT 1`,
+    [venueId, ctxId]
+  );
+  return Array.isArray(rows) && rows.length > 0;
+}
+
+/**
+ * FI may only manage selections for their own Academic Context.
+ * Admin may manage selections when a context is resolved on the request.
+ */
+async function assertCanModifyAllotmentSelection(user, academicContextId) {
+  const ctxId = normalizeContextId(academicContextId);
+  if (!ctxId) {
+    const err = new Error(
+      "Academic Context is required to manage Use for Allotment selections"
+    );
+    err.statusCode = 400;
+    err.code = "ACADEMIC_CONTEXT_REQUIRED";
+    throw err;
+  }
+  const role = user?.role;
+  if (role === "admin") return ctxId;
+  if (role !== "faculty_incharge") {
+    const err = new Error("Not authorized to change Use for Allotment");
+    err.statusCode = 403;
+    throw err;
+  }
+  const userId = Number(user?.id);
+  if (!userId) {
+    const err = new Error("Not authorized to change Use for Allotment");
+    err.statusCode = 403;
+    throw err;
+  }
+  const [memberRows] = await db.query(
+    `SELECT 1 AS ok
+     FROM academic_context_members
+     WHERE academic_context_id = ? AND user_id = ?
+     LIMIT 1`,
+    [ctxId, userId]
+  );
+  if (Array.isArray(memberRows) && memberRows.length > 0) return ctxId;
+
+  const [userRows] = await db.query(
+    `SELECT academic_context_id FROM users WHERE id = ? LIMIT 1`,
+    [userId]
+  );
+  const homeCtx = normalizeContextId(
+    userRows?.[0]?.academic_context_id ?? userRows?.[0]?.academiccontextid
+  );
+  if (homeCtx === ctxId) return ctxId;
+
+  const err = new Error(
+    "Not authorized to change Use for Allotment for this Academic Context"
+  );
+  err.statusCode = 403;
+  throw err;
+}
+
 const Venue = {
   canManageVenue,
   creatorId,
   toVenueRow,
+  normalizeContextId,
+  isSelectedForContext,
+  assertCanModifyAllotmentSelection,
 
   create: async (venue, opts = {}) => {
     const {
@@ -103,8 +176,12 @@ const Venue = {
     } = venue;
 
     const ownership = insertOwnership(opts);
+    const contextId = normalizeContextId(
+      opts.academicContextId ?? venue.academicContextId
+    );
     const capacity =
       benchesRow * benchConfig.reduce((sum, seats) => sum + (Number(seats) || 0), 0);
+    // Legacy column kept for schema/backfill compatibility; runtime uses selections table.
     const cols = [
       "name",
       "type",
@@ -123,7 +200,7 @@ const Venue = {
       benchesRow,
       benchesCol,
       isAvailable !== false,
-      useForAllotment === true,
+      false,
       blockId || null,
       code || name,
     ];
@@ -173,6 +250,17 @@ const Venue = {
         );
       }
 
+      if (useForAllotment === true && contextId) {
+        const selector = opts.ownerUserId ?? opts.user?.id ?? null;
+        await conn.query(
+          `INSERT INTO venue_allotment_selections
+             (venue_id, academic_context_id, selected_by_user_id)
+           VALUES (?, ?, ?)
+           ON CONFLICT (venue_id, academic_context_id) DO NOTHING`,
+          [venueId, contextId, selector]
+        );
+      }
+
       await conn.commit();
       return venueId;
     } catch (err) {
@@ -185,12 +273,14 @@ const Venue = {
 
   /**
    * Global venue list (no createdBy / owner filter on visibility).
+   * useForAllotment is scoped to opts.academicContextId (default OFF when unset).
    * Filters: blockId, blockUuid (resolved by caller), unassignedOnly, search, type.
    * By default excludes archived venues. Pass archivedOnly / includeArchived to change.
    */
   getAll: async (opts = {}) => {
     const clauses = [];
     const params = [];
+    const contextId = normalizeContextId(opts.academicContextId);
 
     if (opts.archivedOnly) {
       clauses.push(`v.archived_at IS NOT NULL`);
@@ -239,6 +329,17 @@ const Venue = {
     }
 
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const selectParams = contextId != null ? [contextId, ...params] : params;
+    const selectionJoin =
+      contextId != null
+        ? `LEFT JOIN venue_allotment_selections vas
+             ON vas.venue_id = v.id AND vas.academic_context_id = ?`
+        : "";
+    const selectionExpr =
+      contextId != null
+        ? `CASE WHEN vas.venue_id IS NOT NULL THEN TRUE ELSE FALSE END`
+        : `FALSE`;
+
     const [rawVenues] = await db.query(
       `SELECT
         v.id,
@@ -250,7 +351,7 @@ const Venue = {
         v.benches_row AS benchesRow,
         v.benches_col AS benchesCol,
         v.is_available AS isAvailable,
-        COALESCE(v.use_for_allotment, FALSE) AS useForAllotment,
+        ${selectionExpr} AS useForAllotment,
         v.archived_at,
         v.block_id,
         v.owner_user_id,
@@ -261,9 +362,10 @@ const Venue = {
       FROM venues v
       LEFT JOIN blocks b ON b.id = v.block_id
       LEFT JOIN users u ON u.id = v.owner_user_id
+      ${selectionJoin}
       ${where}
       ORDER BY b.name NULLS LAST, v.name ASC`,
-      params
+      selectParams
     );
 
     const user = opts.user || {
@@ -422,6 +524,8 @@ const Venue = {
 
   /**
    * Full allotment eligibility + time-slot check for one venue.
+   * Use for Allotment is scoped to opts.academicContextId.
+   * Slot conflicts remain global (any context's booking blocks the interval).
    * Returns { ok, status, conflicts, venueName, message }.
    */
   checkAllotmentSlot: async (venueId, date, startTime, endTime, executor = db, opts = {}) => {
@@ -450,9 +554,8 @@ const Venue = {
     }
 
     const useIt = (venueRow.is_available ?? venueRow.isavailable ?? true) !== false;
-    const useForAllotment = Boolean(
-      venueRow.use_for_allotment ?? venueRow.useforallotment ?? false
-    );
+    const contextId = normalizeContextId(opts.academicContextId);
+    const useForAllotment = await isSelectedForContext(venueId, contextId, executor);
 
     if (!useIt) {
       return {
@@ -464,13 +567,23 @@ const Venue = {
       };
     }
 
+    if (!contextId) {
+      return {
+        ok: false,
+        status: "NOT_ELIGIBLE",
+        conflicts: [],
+        venueName,
+        message: `Academic Context is required to use ${venueName} for allotment.`,
+      };
+    }
+
     if (!useForAllotment) {
       return {
         ok: false,
         status: "NOT_ELIGIBLE",
         conflicts: [],
         venueName,
-        message: `${venueName} is not in the global Use for Allotment pool.`,
+        message: `${venueName} is not selected for Use for Allotment in the current Academic Context.`,
       };
     }
 
@@ -606,19 +719,17 @@ const Venue = {
   },
 
   /**
-   * Global "Use for Allotment" flag — venue-level, shared by all Faculty Incharges.
-   * Any authorized Venue Management role (admin / faculty_incharge) may toggle.
-   * Not creator-owned. Does not reserve a date/time slot.
+   * Context-scoped "Use for Allotment" — independent per Academic Context.
+   * Same physical venue may be selected by KSI and SFS independently.
+   * Does not reserve a date/time slot.
    */
-  setUseForAllotment: async (id, useForAllotment, user) => {
+  setUseForAllotment: async (id, useForAllotment, user, opts = {}) => {
     const row = await Venue.findById(id);
     if (!row) return false;
-    const role = user?.role;
-    if (role !== "admin" && role !== "faculty_incharge") {
-      const err = new Error("Not authorized to change Use for Allotment");
-      err.statusCode = 403;
-      throw err;
-    }
+    const contextId = await assertCanModifyAllotmentSelection(
+      user,
+      opts.academicContextId
+    );
     if (isArchivedRow(row)) {
       const err = new Error(
         "Archived venues cannot be selected for new allotments. Restore the venue first."
@@ -627,20 +738,41 @@ const Venue = {
       err.code = "VENUE_ARCHIVED";
       throw err;
     }
-    await db.query(
-      `UPDATE venues SET use_for_allotment = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-      [useForAllotment === true, id]
-    );
+    if (useForAllotment === true) {
+      await db.query(
+        `INSERT INTO venue_allotment_selections
+           (venue_id, academic_context_id, selected_by_user_id, updated_at)
+         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT (venue_id, academic_context_id) DO UPDATE
+           SET selected_by_user_id = EXCLUDED.selected_by_user_id,
+               updated_at = CURRENT_TIMESTAMP`,
+        [id, contextId, user?.id ?? null]
+      );
+    } else {
+      await db.query(
+        `DELETE FROM venue_allotment_selections
+         WHERE venue_id = ? AND academic_context_id = ?`,
+        [id, contextId]
+      );
+    }
     return true;
   },
 
   /**
-   * Global allotment venue pool: Use It ON + Use for Allotment ON.
+   * Allotment venue pool for the current Academic Context:
+   * Use It ON + selected for Use for Allotment in that context.
    * Optionally annotate each venue with time-slot availability for date/start/end.
-   * Shared by all Faculty Incharges — not creator-scoped.
+   * Slot conflicts remain global across contexts.
    */
-  getAllotmentPool: async ({ date = null, startTime = null, endTime = null, user = null } = {}) => {
-    const all = await Venue.getAll({ user });
+  getAllotmentPool: async ({
+    date = null,
+    startTime = null,
+    endTime = null,
+    user = null,
+    academicContextId = null,
+  } = {}) => {
+    const contextId = normalizeContextId(academicContextId);
+    const all = await Venue.getAll({ user, academicContextId: contextId });
     const pool = (all || []).filter(
       (v) => v.isAvailable !== false && v.useForAllotment === true
     );
@@ -698,7 +830,9 @@ const Venue = {
         venueId,
         dateOnly,
         startTime,
-        endTime
+        endTime,
+        db,
+        { academicContextId: contextId }
       );
       const first = check.conflicts?.[0];
       results.push({
@@ -728,6 +862,7 @@ const Venue = {
       date: dateOnly,
       startTime: hasSlot ? formatTimeValue(startTime) : null,
       endTime: hasSlot ? formatTimeValue(endTime) : null,
+      academicContextId: contextId,
       venues: results,
     };
   },
@@ -737,13 +872,17 @@ const Venue = {
    * With start+end: occupied only if an existing saved allotment overlaps that interval.
    * Without times: lists all booked intervals on that date (venue is not "whole-day blocked").
    */
-  getScheduleAvailability: async (venueId, { date, startTime = null, endTime = null } = {}) => {
+  getScheduleAvailability: async (
+    venueId,
+    { date, startTime = null, endTime = null, academicContextId = null } = {}
+  ) => {
     const venueRow = await Venue.findById(venueId);
     if (!venueRow) return null;
 
     const isActive = (venueRow.is_available ?? venueRow.isavailable ?? true) !== false;
-    const useForAllotment = Boolean(
-      venueRow.use_for_allotment ?? venueRow.useforallotment ?? false
+    const useForAllotment = await isSelectedForContext(
+      venueId,
+      academicContextId
     );
     const dateOnly = String(date || "").includes("T")
       ? String(date).split("T")[0]
@@ -1082,6 +1221,10 @@ const Venue = {
              use_for_allotment = FALSE,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ? AND archived_at IS NULL`,
+        [id]
+      );
+      await conn.query(
+        `DELETE FROM venue_allotment_selections WHERE venue_id = ?`,
         [id]
       );
       await conn.commit();

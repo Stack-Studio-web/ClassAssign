@@ -49,6 +49,10 @@ assert(
   "ensureBlockVenueSchema must ensure active-only uniqueness"
 );
 assert(
+  /DELETE FROM venue_allotment_selections WHERE venue_id/.test(venueModel),
+  "archive must clear context-scoped allotment selections"
+);
+assert(
   !/UNIQUE\(name, type\)/.test(initSql),
   "init.sql must not keep table-level UNIQUE(name, type) that blocks recreate"
 );

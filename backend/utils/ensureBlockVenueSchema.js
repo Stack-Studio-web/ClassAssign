@@ -158,6 +158,59 @@ async function ensureBlockVenueSchema() {
     /* ignore */
   }
 
+  // Per-Academic-Context "Use for Allotment" selections (not a global venue boolean)
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS venue_allotment_selections (
+        id SERIAL PRIMARY KEY,
+        venue_id INT NOT NULL REFERENCES venues(id) ON DELETE CASCADE,
+        academic_context_id INT NOT NULL REFERENCES academic_contexts(id) ON DELETE CASCADE,
+        selected_by_user_id INT REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT venue_allotment_selections_unique UNIQUE (venue_id, academic_context_id)
+      )
+    `);
+  } catch (err) {
+    console.warn("ensureBlockVenueSchema venue_allotment_selections:", err.message);
+  }
+
+  try {
+    await db.query(`
+      CREATE INDEX IF NOT EXISTS idx_venue_allotment_selections_context
+        ON venue_allotment_selections (academic_context_id)
+    `);
+  } catch {
+    /* ignore */
+  }
+  try {
+    await db.query(`
+      CREATE INDEX IF NOT EXISTS idx_venue_allotment_selections_venue
+        ON venue_allotment_selections (venue_id)
+    `);
+  } catch {
+    /* ignore */
+  }
+
+  // One-time attribution: global ON → creator's Academic Context only (never every context)
+  try {
+    await db.query(`
+      INSERT INTO venue_allotment_selections (venue_id, academic_context_id, selected_by_user_id)
+      SELECT
+        v.id,
+        u.academic_context_id,
+        v.owner_user_id
+      FROM venues v
+      JOIN users u ON u.id = v.owner_user_id
+      WHERE COALESCE(v.use_for_allotment, FALSE) = TRUE
+        AND u.academic_context_id IS NOT NULL
+        AND v.archived_at IS NULL
+      ON CONFLICT (venue_id, academic_context_id) DO NOTHING
+    `);
+  } catch (err) {
+    console.warn("ensureBlockVenueSchema allotment selection backfill:", err.message);
+  }
+
   console.log("✅ Block + Venue schema OK (global visibility, creator ownership)");
   return true;
 }

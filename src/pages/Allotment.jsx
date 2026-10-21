@@ -806,7 +806,7 @@ const Allotment = () => {
     return `${d}/${mo}/${y}`;
   };
 
-  // Time-slot availability for the global Use-for-Allotment pool (not whole-day block)
+  // Time-slot availability for the current Academic Context's Use-for-Allotment pool
   useEffect(() => {
     const checkVenueSlots = async () => {
       if (!hasWriteAccess) {
@@ -2428,8 +2428,8 @@ const Allotment = () => {
                     <div className="space-y-2 max-h-56 overflow-y-auto">
                       {venues.length === 0 ? (
                         <p className="text-sm text-gray-500">
-                          No venues in the global Use for Allotment pool. Enable venues in Venue
-                          Management (Use It ON and Use for Allotment checked).
+                          No venues selected for allotment in this Academic Context. Enable venues in
+                          Venue Management (Use It ON and Use for Allotment checked for your context).
                         </p>
                       ) : null}
                       {venues.map((v) => {

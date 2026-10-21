@@ -2,6 +2,7 @@
  * Venue + Block routes — Phase 1 global Block → Venue management.
  * Visibility: global for admin / faculty_incharge.
  * Mutations: creator (owner_user_id) or admin only. 403 otherwise.
+ * Use for Allotment: scoped to the session Academic Context (not a global flag).
  */
 const express = require("express");
 const router = express.Router();
@@ -66,10 +67,12 @@ router.get(
       const row = await Block.findById(req.internalId);
       if (!row) return res.status(404).json({ error: "Block not found" });
       const user = currentUser(req);
+      const ownerOpts = await resolveOwnerOpts(req);
       const venues = await Venue.getAll({
         blockId: req.internalId,
         user,
         role: user.role,
+        academicContextId: ownerOpts.academicContextId,
       });
       res.json({ ...Block.toPublic(row, user), venues });
     } catch (err) {
@@ -214,6 +217,7 @@ router.get("/", sessionAuth, checkRole(VENUE_ROLES), async (req, res) => {
       req.query.archivedOnly === "true" ||
       req.query.status === "archived";
     const includeArchived = req.query.includeArchived === "true";
+    const ownerOpts = await resolveOwnerOpts(req);
 
     const venues = await Venue.getAll({
       blockId,
@@ -224,6 +228,7 @@ router.get("/", sessionAuth, checkRole(VENUE_ROLES), async (req, res) => {
       includeArchived: includeArchived && !archivedOnly,
       user,
       role: user.role,
+      academicContextId: ownerOpts.academicContextId,
     });
     res.json(venues);
   } catch (err) {
@@ -234,9 +239,15 @@ router.get("/", sessionAuth, checkRole(VENUE_ROLES), async (req, res) => {
 router.get("/stats", sessionAuth, checkRole(VENUE_ROLES), async (req, res) => {
   try {
     const user = currentUser(req);
+    const ownerOpts = await resolveOwnerOpts(req);
+    const ctxOpts = {
+      user,
+      role: user.role,
+      academicContextId: ownerOpts.academicContextId,
+    };
     const [venues, archivedVenues, blocks] = await Promise.all([
-      Venue.getAll({ user, role: user.role }),
-      Venue.getAll({ user, role: user.role, archivedOnly: true }),
+      Venue.getAll(ctxOpts),
+      Venue.getAll({ ...ctxOpts, archivedOnly: true }),
       Block.list({}),
     ]);
     const totalVenues = venues.length;
@@ -411,7 +422,7 @@ router.patch(
   }
 );
 
-/** Global Use for Allotment pool for Allotment module (all FIs share this list). */
+/** Use for Allotment pool for the current Academic Context. */
 router.get("/allotment", sessionAuth, checkRole(VENUE_ROLES), async (req, res) => {
   try {
     const date = req.query.date || null;
@@ -427,11 +438,13 @@ router.get("/allotment", sessionAuth, checkRole(VENUE_ROLES), async (req, res) =
         error: "date is required when startTime/endTime are provided",
       });
     }
+    const ownerOpts = await resolveOwnerOpts(req);
     const result = await Venue.getAllotmentPool({
       date,
       startTime,
       endTime,
       user: currentUser(req),
+      academicContextId: ownerOpts.academicContextId,
     });
     res.json(result);
   } catch (err) {
@@ -443,7 +456,7 @@ router.get("/allotment", sessionAuth, checkRole(VENUE_ROLES), async (req, res) =
   }
 });
 
-/** Use for Allotment — GLOBAL venue flag (any admin / faculty_incharge). */
+/** Use for Allotment — scoped to the session Academic Context. */
 router.put(
   "/:uuid/use-for-allotment",
   sessionAuth,
@@ -457,11 +470,15 @@ router.put(
         return res.status(400).json({ error: "useForAllotment (boolean) is required" });
       }
       const user = currentUser(req);
-      await Venue.setUseForAllotment(req.internalId, useForAllotment, user);
+      const ownerOpts = await resolveOwnerOpts(req);
+      await Venue.setUseForAllotment(req.internalId, useForAllotment, user, {
+        academicContextId: ownerOpts.academicContextId,
+      });
       res.json({
         message: "Use for Allotment updated",
         uuid: req.publicUuid,
         useForAllotment,
+        academicContextId: ownerOpts.academicContextId ?? null,
       });
     } catch (err) {
       res.status(err.statusCode || 500).json({ error: err.message || "Server error" });
@@ -482,11 +499,15 @@ router.patch(
         return res.status(400).json({ error: "useForAllotment (boolean) is required" });
       }
       const user = currentUser(req);
-      await Venue.setUseForAllotment(req.internalId, useForAllotment, user);
+      const ownerOpts = await resolveOwnerOpts(req);
+      await Venue.setUseForAllotment(req.internalId, useForAllotment, user, {
+        academicContextId: ownerOpts.academicContextId,
+      });
       res.json({
         message: "Use for Allotment updated",
         uuid: req.publicUuid,
         useForAllotment,
+        academicContextId: ownerOpts.academicContextId ?? null,
       });
     } catch (err) {
       res.status(err.statusCode || 500).json({ error: err.message || "Server error" });
@@ -496,7 +517,7 @@ router.patch(
 
 /**
  * Batch time-slot availability for Allotment venue list.
- * Same global pool as GET /venues/allotment (Use It + Use for Allotment).
+ * Same context-scoped pool as GET /venues/allotment (Use It + context selection).
  */
 router.post(
   "/check-slot-availability",
@@ -511,11 +532,13 @@ router.post(
         });
       }
 
+      const ownerOpts = await resolveOwnerOpts(req);
       const result = await Venue.getAllotmentPool({
         date,
         startTime,
         endTime,
         user: currentUser(req),
+        academicContextId: ownerOpts.academicContextId,
       });
 
       res.json({
@@ -565,10 +588,12 @@ router.get(
           error: "Provide both startTime and endTime, or neither",
         });
       }
+      const ownerOpts = await resolveOwnerOpts(req);
       const result = await Venue.getScheduleAvailability(req.internalId, {
         date,
         startTime,
         endTime,
+        academicContextId: ownerOpts.academicContextId,
       });
       if (!result) return res.status(404).json({ error: "Venue not found" });
       res.json(result);

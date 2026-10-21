@@ -281,7 +281,7 @@ async function updateSlot(slotUuid, { startTime, endTime, slotIndex }) {
   return toSlotRow(rows?.[0]);
 }
 
-async function setSlotVenues(slotUuid, venueUuids = []) {
+async function setSlotVenues(slotUuid, venueUuids = [], ownerOpts = {}) {
   const slot = await getSlotInternal(slotUuid);
   if (!slot) {
     const err = new Error("LAB slot not found");
@@ -301,6 +301,7 @@ async function setSlotVenues(slotUuid, venueUuids = []) {
   const dateOnly = normalizeDate(exam?.exam_date);
   const start = normalizeTime(slot.start_time);
   const end = normalizeTime(slot.end_time);
+  const academicContextId = ownerOpts.academicContextId ?? null;
 
   const resolved = [];
   const conflicts = [];
@@ -314,6 +315,7 @@ async function setSlotVenues(slotUuid, venueUuids = []) {
     }
     const check = await Venue.checkAllotmentSlot(venueId, dateOnly, start, end, db, {
       lock: false,
+      academicContextId,
     });
     // venues has no department column; do not join optional block columns here.
     const [vrows] = await db.query(
@@ -970,7 +972,10 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
         start,
         end,
         conn,
-        { lock: true }
+        {
+          lock: true,
+          academicContextId: ownerOpts.academicContextId ?? null,
+        }
       );
       if (!check.ok) {
         const err = new Error(check.message || `${v.name} is not available`);

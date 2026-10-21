@@ -1655,8 +1655,8 @@ export default function AddVenue() {
                   </h3>
                   <p className="text-xs text-gray-500 mt-0.5">
                     {filterBlock
-                      ? `Venues in ${selectedBlockMeta.label} with “Use for Allotment” enabled`
-                      : "Venues across campus with “Use for Allotment” enabled"}
+                      ? `Venues in ${selectedBlockMeta.label} selected for allotment in your Academic Context`
+                      : "Venues selected for allotment in your Academic Context"}
                   </p>
                 </div>
                 <p className="text-sm font-medium text-blue-700 tabular-nums">

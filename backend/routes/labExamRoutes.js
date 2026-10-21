@@ -116,12 +116,14 @@ router.get("/venues/available", sessionAuth, checkRole(WRITE_ROLES), async (req,
     if (!date || !startTime || !endTime) {
       return Api.validationError(res, "date, startTime, and endTime are required");
     }
-    // Reuse hall allotment pool + slot check; labs may use any available venue.
+    // Context-scoped hall allotment pool + global slot conflict check.
+    const ownerOpts = await resolveOwnerOpts(req);
     const pool = await Venue.getAllotmentPool({
       date: String(date).slice(0, 10),
       startTime,
       endTime,
       user: req.user,
+      academicContextId: ownerOpts.academicContextId,
     });
     return Api.success(res, "Available venues", pool);
   } catch (err) {
@@ -146,7 +148,12 @@ router.put(
   async (req, res) => {
     try {
       const venueIds = req.body?.venueIds || req.body?.venues || [];
-      const venues = await LabExamService.setSlotVenues(req.params.slotUuid, venueIds);
+      const ownerOpts = await resolveOwnerOpts(req);
+      const venues = await LabExamService.setSlotVenues(
+        req.params.slotUuid,
+        venueIds,
+        ownerOpts
+      );
       return Api.success(res, "Venues assigned", venues);
     } catch (err) {
       if (err.conflicts) {

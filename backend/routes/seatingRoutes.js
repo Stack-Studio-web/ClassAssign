@@ -196,6 +196,7 @@ router.post(
       const resolvedVenues = await resolveVenuesUsedIds(venuesUsed);
 
       const dateOnly = examDate.includes("T") ? examDate.split("T")[0] : examDate;
+      const allotmentOwnerOpts = await resolveOwnerOpts(req);
 
       // Atomic venue eligibility + time-slot conflict check (FOR UPDATE per venue)
       const unavailableVenues = [];
@@ -206,7 +207,10 @@ router.post(
           examStartTime,
           examEndTime,
           connection,
-          { lock: true }
+          {
+            lock: true,
+            academicContextId: allotmentOwnerOpts.academicContextId,
+          }
         );
         if (!check.ok) {
           unavailableVenues.push({
