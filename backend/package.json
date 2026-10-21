@@ -4,7 +4,7 @@
   "description": "ClassAssign Exam Seating System API",
   "main": "server.js",
   "scripts": {
-    "test": "node scripts/validateSameDayFacultyConflict.js && node scripts/validateMaxCountFacultyAllotment.mjs && node scripts/validateLabExamImport.mjs && node scripts/validateHallExportOrder.mjs && node scripts/validateSeatingCourseOrder.mjs && node scripts/validateFacultyMembershipUnit.js && node scripts/validateTimetableImportBatchLink.mjs && node scripts/validateFacultyImportMaxMerge.mjs && node scripts/validateVenueArchive.mjs && node scripts/validateBenchSeats.mjs",
+    "test": "node scripts/validateSameDayFacultyConflict.js && node scripts/validateMaxCountFacultyAllotment.mjs && node scripts/validateLabExamImport.mjs && node scripts/validateHallExportOrder.mjs && node scripts/validateSeatingCourseOrder.mjs && node scripts/validateFacultyMembershipUnit.js && node scripts/validateTimetableImportBatchLink.mjs && node scripts/validateFacultyImportMaxMerge.mjs && node scripts/validateVenueArchive.mjs && node scripts/validateBenchSeats.mjs && node scripts/validateCourseVenueMapping.mjs",
     "test:cross-dept": "node scripts/validateCrossDepartmentFaculty.js",
     "start": "node server.js"
   },

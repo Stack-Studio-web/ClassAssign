@@ -139,12 +139,18 @@ router.post(
         facultyMode,
         courseSeatingConfig = null,
         courseEntryKeys = null,
+        courseVenueMappings = null,
+        seatingMode = null,
       } = req.body;
 
       const {
         validateCourseSeatingConfig,
         extractScheduledKeysFromSavePayload,
       } = require("../utils/seatingCourseOrder");
+      const {
+        normalizeCourseVenueMappings,
+        validateSeatingHonorsMappings,
+      } = require("../utils/courseVenueMapping");
 
       let normalizedCourseSeatingConfig = null;
       if (courseSeatingConfig && courseSeatingConfig.useCustomOrder) {
@@ -231,6 +237,36 @@ router.post(
               : first.message,
           unavailableVenues,
         });
+      }
+
+      // Manual venue mode: mapped courses must only appear in their mapped venues.
+      // Mappings are session-scoped (not permanent venue restrictions).
+      const normalizedMappings =
+        String(seatingMode || "").toLowerCase() === "manual"
+          ? normalizeCourseVenueMappings(courseVenueMappings)
+          : {};
+      if (Object.keys(normalizedMappings).length > 0) {
+        const honor = validateSeatingHonorsMappings({
+          courseVenueMappings: normalizedMappings,
+          venuesUsed: (venuesUsed || []).map((v) => ({
+            venueId: String(v.venueId ?? ""),
+            venueName: v.venueName,
+            seatingArrangement: v.seatingArrangement,
+          })),
+        });
+        if (!honor.ok) {
+          await connection.rollback();
+          return res.status(400).json({
+            error: "Course venue mapping violation",
+            details:
+              honor.errors[0]?.message ||
+              "Seating does not match course venue mappings.",
+            message:
+              honor.errors[0]?.message ||
+              "Seating does not match course venue mappings.",
+            errors: honor.errors,
+          });
+        }
       }
 
       // Validate faculty allocation for BOTH AUTO and MANUAL modes.

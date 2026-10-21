@@ -38,6 +38,12 @@ import {
   saveCourseSeatingConfigToStorage,
   clearCourseSeatingConfigStorage,
 } from "../lib/seatingCourseOrder";
+import {
+  normalizeCourseVenueMappings,
+  validateMappedCourseCapacity,
+  resolveVenuesForCourse,
+  toggleVenueInMapping,
+} from "../lib/courseVenueMapping";
 
 // Normalize student/ineligible objects (PostgreSQL may return lowercase keys)
 const normalizeStudent = (s) => ({
@@ -209,6 +215,11 @@ const Allotment = () => {
   const [seatingMode, setSeatingMode] = useState("auto");
   const [manualVenueId, setManualVenueId] = useState("");
   const [selectedVenues, setSelectedVenues] = useState([]);
+  /**
+   * Manual mode only: courseEntryKey → venue uuid[].
+   * Session-scoped (cleared when date/session/time changes). Empty = general allotment.
+   */
+  const [courseVenueMappings, setCourseVenueMappings] = useState({});
   /** uuid -> { status, available, conflicts, message } for current exam slot */
   const [venueSlotStatus, setVenueSlotStatus] = useState({});
   const [venueSlotWarning, setVenueSlotWarning] = useState(null);
@@ -577,6 +588,11 @@ const Allotment = () => {
  
     fetchCoursesFromTimetable();
   }, [examDate, examStartTime, examEndTime, examSession, hasWriteAccess]);
+
+  // Course→venue mappings are session-scoped — never reuse across date/session/time.
+  useEffect(() => {
+    setCourseVenueMappings({});
+  }, [examDate, examSession, examStartTime, examEndTime]);
 
   // Sync / restore custom course order + pairing for the current exam slot
   useEffect(() => {
@@ -947,14 +963,37 @@ const Allotment = () => {
       return setError("No courses found in timetable for selected date/time/session.");
  
     setIsGenerating(true);
- 
-    const venuesToUse = seatingMode === "auto"
-      ? [...availableVenuesForSlot].sort((a, b) => b.capacity - a.capacity)
-      : [...selectedVenues].filter((v) => {
-          const st = venueSlotStatus[v.uuid];
-          return !st || st.available;
-        });
- 
+
+    const isAvailableVenue = (v) => {
+      const st = venueSlotStatus[v.uuid];
+      return !st || st.available;
+    };
+
+    const generalPool =
+      seatingMode === "auto"
+        ? [...availableVenuesForSlot].sort((a, b) => b.capacity - a.capacity)
+        : [...selectedVenues].filter(isAvailableVenue);
+
+    const activeMappings =
+      seatingMode === "manual"
+        ? normalizeCourseVenueMappings(courseVenueMappings)
+        : {};
+
+    const venuesById = {};
+    for (const v of venues) {
+      venuesById[v.uuid] = v;
+    }
+
+    // Include general-pool venues plus any manually mapped venues (must still be available).
+    const venueIdSet = new Set(generalPool.map((v) => String(v.uuid)));
+    for (const ids of Object.values(activeMappings)) {
+      for (const id of ids) venueIdSet.add(String(id));
+    }
+
+    const venuesToUse = [...venueIdSet]
+      .map((id) => venuesById[id])
+      .filter((v) => v && isAvailableVenue(v));
+
     if (venuesToUse.length === 0) {
       setIsGenerating(false);
       return setError(
@@ -962,6 +1001,25 @@ const Allotment = () => {
           ? "No venues are available for the selected date and time. Occupied venues cannot be used."
           : "No venues available."
       );
+    }
+
+    if (seatingMode === "manual") {
+      const mappedIds = new Set(Object.values(activeMappings).flat().map(String));
+      for (const id of mappedIds) {
+        const v = venuesById[id];
+        if (!v) {
+          setIsGenerating(false);
+          return setError(
+            `Mapped venue is no longer in the allotment pool. Remove it from the course mapping and try again.`
+          );
+        }
+        if (!isAvailableVenue(v)) {
+          setIsGenerating(false);
+          return setError(
+            `${v.name} is occupied for this session and cannot be used for a course mapping. Choose another venue.`
+          );
+        }
+      }
     }
  
     // Build student list BY COURSE-DEPARTMENT COMBINATION
@@ -1008,7 +1066,8 @@ const Allotment = () => {
         courseEligibleStudents.push({
           ...student,
           courseDescription: courseCode,
-          department: department
+          department: department,
+          courseEntryKey: uniqueKey,
         });
       });
  
@@ -1066,6 +1125,48 @@ const Allotment = () => {
         if (error === infoMsg) setError("");
       }, 8000);
     }
+
+    // Mapped courses: capacity must fit mapped venues only (no silent fallback).
+    if (seatingMode === "manual" && Object.keys(activeMappings).length > 0) {
+      const courseStudentCounts = {};
+      for (const { key, students } of sortedCourses) {
+        courseStudentCounts[key] = students.length;
+      }
+      const mappedCap = validateMappedCourseCapacity({
+        courseVenueMappings: activeMappings,
+        courseStudentCounts,
+        venuesById,
+      });
+      if (!mappedCap.ok) {
+        setIsGenerating(false);
+        return setError(`❌ ${mappedCap.errors[0]?.message || "Mapped venue capacity error."}`);
+      }
+    }
+
+    const generalPoolIds = new Set(generalPool.map((v) => String(v.uuid)));
+    const unmappedStudents = sortedCourses
+      .filter(({ key }) => !activeMappings[key]?.length)
+      .reduce((sum, { students }) => sum + students.length, 0);
+    const generalCapacity = generalPool.reduce(
+      (sum, v) => sum + (Number(v.capacity) || 0),
+      0
+    );
+
+    if (seatingMode === "manual" && unmappedStudents > 0 && generalPool.length === 0) {
+      setIsGenerating(false);
+      return setError(
+        "Some courses are unmapped (general allotment). Select venues in Venue Selection, or map every course to venues."
+      );
+    }
+
+    if (seatingMode === "manual" && unmappedStudents > generalCapacity) {
+      setIsGenerating(false);
+      return setError(
+        `❌ CAPACITY ERROR: ${unmappedStudents} unmapped student(s) need general-allotment seats, ` +
+          `but only ${generalCapacity} are available in the selected Venue Selection pool.\n` +
+          `Add venues to Venue Selection or map more courses to specific venues.`
+      );
+    }
  
     const totalCapacity = venuesToUse.reduce((sum, v) => sum + v.capacity, 0);
     
@@ -1094,11 +1195,33 @@ const Allotment = () => {
       const courseData = sortedCourses[courseIdx];
       const { key, students } = courseData;
       let studentIndex = 0;
+
+      const venueTarget = resolveVenuesForCourse(
+        key,
+        activeMappings,
+        generalPoolIds
+      );
+      const targetIdSet = new Set(venueTarget.venueIds.map(String));
+      const courseVenueGrids = venueGrids.filter((vg) =>
+        targetIdSet.has(String(vg.venue.uuid))
+      );
+
+      if (courseVenueGrids.length === 0 && students.length > 0) {
+        setIsGenerating(false);
+        return setError(
+          venueTarget.mode === "mapped"
+            ? `❌ No available mapped venues for ${key}. Remap the course or free a venue for this session.`
+            : `❌ No general-allotment venues available for unmapped course ${key}. Select venues in Venue Selection or map this course.`
+        );
+      }
  
-      logger.log(`\n🎯 PASS ${courseIdx + 1}: Filling ${key} (${students.length} students)`);
+      logger.log(
+        `\n🎯 PASS ${courseIdx + 1}: Filling ${key} (${students.length} students) ` +
+          `[${venueTarget.mode}: ${courseVenueGrids.map((g) => g.venue.name).join(", ") || "none"}]`
+      );
  
-      // ✅ CRITICAL: Fill ALL venues completely for this course before next course
-      venueLoop: for (const venueData of venueGrids) {
+      // ✅ CRITICAL: Fill target venues completely for this course before next course
+      venueLoop: for (const venueData of courseVenueGrids) {
         const { venue, grid, benchConfig } = venueData;
        
         logger.log(`  📍 Venue: ${venue.name}`);
@@ -1188,14 +1311,18 @@ const Allotment = () => {
         if (!allowAdjacentSeating) {
           setIsGenerating(false);
           return setError(
-            `❌ SEATING INCOMPLETE: ${unplaced} students from ${key} could not be seated.\n` +
-            `This is due to anti-cheating adjacency rules.\n` +
-            `Enable "Allow adjacent seating when required" to continue with a warning.`
+            venueTarget.mode === "mapped"
+              ? `❌ SEATING INCOMPLETE: ${unplaced} students from ${key} could not be seated in the mapped venue(s).\n` +
+                `Add more mapped venues, enable adjacent seating, or clear the mapping to use general allotment.\n` +
+                `Mapped venues are never silently replaced.`
+              : `❌ SEATING INCOMPLETE: ${unplaced} students from ${key} could not be seated.\n` +
+                `This is due to anti-cheating adjacency rules.\n` +
+                `Enable "Allow adjacent seating when required" to continue with a warning.`
           );
         }
 
-        // Fallback pass: place remaining students in any empty slots, ignoring adjacency checks.
-        for (const venueData of venueGrids) {
+        // Fallback pass: place remaining students in any empty slots of THIS course's venues only.
+        for (const venueData of courseVenueGrids) {
           const { venue, grid, benchConfig } = venueData;
           for (let c = 0; c < venue.benchesCol; c++) {
             const seatsInCol = benchConfig[c] || 2;
@@ -1488,6 +1615,11 @@ const Allotment = () => {
       courseSeatingConfig,
       students: allottedStudents,
       facultyMode,
+      seatingMode,
+      courseVenueMappings:
+        seatingMode === "manual"
+          ? normalizeCourseVenueMappings(courseVenueMappings)
+          : {},
       venuesUsed: generatedSeating.map(v => {
         const manualIds = getVenueFacultyIds(manualFacultyAssignments, v.venue.uuid);
         return {
@@ -1529,6 +1661,7 @@ const Allotment = () => {
       setAutoPlanValidation(null);
       setError("");
       setSelectedVenues([]);
+      setCourseVenueMappings({});
 
       // Refresh global allotment pool / time-slot status after save
       try {
@@ -1921,6 +2054,11 @@ const Allotment = () => {
                         <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider min-w-[140px]">
                           Pair with
                         </th>
+                        {seatingMode === "manual" ? (
+                          <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider min-w-[220px]">
+                            Venue mapping
+                          </th>
+                        ) : null}
                         <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider w-20">
                           Actions
                         </th>
@@ -1941,8 +2079,17 @@ const Allotment = () => {
                             const taken = getPairPartner(courseSeatingConfig, k);
                             return !taken || taken === uniqueKey;
                           });
+                        const mappedVenueIds = courseVenueMappings[uniqueKey] || [];
+                        const isCourseMapped = mappedVenueIds.length > 0;
                         return (
-                          <tr key={uniqueKey} className="hover:bg-gray-50/50">
+                          <tr
+                            key={uniqueKey}
+                            className={`hover:bg-gray-50/50 ${
+                              seatingMode === "manual" && isCourseMapped
+                                ? "bg-indigo-50/40"
+                                : ""
+                            }`}
+                          >
                             <td className="px-3 py-3">
                               <div className="flex items-center gap-1">
                                 <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-indigo-50 text-xs font-bold text-indigo-700">
@@ -2032,6 +2179,123 @@ const Allotment = () => {
                                 </span>
                               )}
                             </td>
+                            {seatingMode === "manual" ? (
+                              <td className="px-4 py-3 align-top">
+                                <div className="space-y-1.5 min-w-[200px]">
+                                  {!isCourseMapped ? (
+                                    <p className="text-[11px] font-medium text-gray-500">
+                                      General allotment
+                                    </p>
+                                  ) : (
+                                    <p className="text-[11px] font-semibold text-indigo-700">
+                                      Mapped · {mappedVenueIds.length} venue
+                                      {mappedVenueIds.length === 1 ? "" : "s"}
+                                    </p>
+                                  )}
+                                  <div className="flex flex-wrap gap-1">
+                                    {mappedVenueIds.map((vid) => {
+                                      const v = venues.find((x) => String(x.uuid) === String(vid));
+                                      const st = venueSlotStatus[vid];
+                                      return (
+                                        <span
+                                          key={vid}
+                                          className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-900"
+                                          title={[
+                                            v?.name,
+                                            v?.blockName || v?.blockCode
+                                              ? `Block: ${[v.blockName, v.blockCode].filter(Boolean).join(" ")}`
+                                              : null,
+                                            v?.capacity != null ? `Cap ${v.capacity}` : null,
+                                            st && !st.available ? "Occupied" : "Available",
+                                          ]
+                                            .filter(Boolean)
+                                            .join(" · ")}
+                                        >
+                                          {v?.name || vid}
+                                          {v?.capacity != null ? ` · ${v.capacity}` : ""}
+                                          {hasWriteAccess ? (
+                                            <button
+                                              type="button"
+                                              className="ml-0.5 text-indigo-600 hover:text-red-600"
+                                              title="Remove venue from mapping"
+                                              onClick={() =>
+                                                setCourseVenueMappings((prev) =>
+                                                  toggleVenueInMapping(prev, uniqueKey, vid)
+                                                )
+                                              }
+                                            >
+                                              ×
+                                            </button>
+                                          ) : null}
+                                        </span>
+                                      );
+                                    })}
+                                  </div>
+                                  {hasWriteAccess ? (
+                                    <select
+                                      className="w-full h-8 px-2 rounded border border-gray-200 text-xs bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                                      value=""
+                                      disabled={
+                                        !examDate ||
+                                        !examStartTime ||
+                                        !examEndTime ||
+                                        availableVenuesForSlot.length === 0
+                                      }
+                                      onChange={(e) => {
+                                        const id = e.target.value;
+                                        if (!id) return;
+                                        setCourseVenueMappings((prev) =>
+                                          toggleVenueInMapping(prev, uniqueKey, id)
+                                        );
+                                      }}
+                                      aria-label={`Map venues for ${course.courseCode}`}
+                                    >
+                                      <option value="">
+                                        {availableVenuesForSlot.length
+                                          ? "+ Add venue…"
+                                          : "No available venues"}
+                                      </option>
+                                      {availableVenuesForSlot
+                                        .filter(
+                                          (v) =>
+                                            !mappedVenueIds.some(
+                                              (id) => String(id) === String(v.uuid)
+                                            )
+                                        )
+                                        .map((v) => {
+                                          const block =
+                                            v.blockName || v.blockCode
+                                              ? ` · ${[v.blockName, v.blockCode]
+                                                  .filter(Boolean)
+                                                  .join(" ")}`
+                                              : "";
+                                          return (
+                                            <option key={v.uuid} value={v.uuid}>
+                                              {v.name}
+                                              {block} · Cap {v.capacity}
+                                            </option>
+                                          );
+                                        })}
+                                    </select>
+                                  ) : null}
+                                  {isCourseMapped && hasWriteAccess ? (
+                                    <button
+                                      type="button"
+                                      className="text-[11px] font-medium text-gray-600 hover:text-gray-900 underline"
+                                      onClick={() =>
+                                        setCourseVenueMappings((prev) => {
+                                          const next = { ...prev };
+                                          delete next[uniqueKey];
+                                          return next;
+                                        })
+                                      }
+                                    >
+                                      Clear mapping (use general allotment)
+                                    </button>
+                                  ) : null}
+                                </div>
+                              </td>
+                            ) : null}
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-2">
                                 {hasWriteAccess && (
@@ -2124,6 +2388,11 @@ const Allotment = () => {
                 ) : null}
                 {seatingMode === "manual" ? (
                   <div className="space-y-2">
+                    <p className="text-xs text-gray-600">
+                      Select venues for <span className="font-semibold">general allotment</span>{" "}
+                      (unmapped courses). Optionally map specific courses to venues in the
+                      Scheduled Courses table — mapped courses use only those venues.
+                    </p>
                     {!examDate || !examStartTime || !examEndTime ? (
                       <p className="text-sm text-gray-500">
                         Select date, start time, and end time to check venue availability.
