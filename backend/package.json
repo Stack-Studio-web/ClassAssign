@@ -4,7 +4,7 @@
   "description": "ClassAssign Exam Seating System API",
   "main": "server.js",
   "scripts": {
-    "test": "node scripts/validateSameDayFacultyConflict.js && node scripts/validateMaxCountFacultyAllotment.mjs && node scripts/validateLabExamImport.mjs",
+    "test": "node scripts/validateSameDayFacultyConflict.js && node scripts/validateMaxCountFacultyAllotment.mjs && node scripts/validateLabExamImport.mjs && node scripts/validateHallExportOrder.mjs",
     "start": "node server.js"
   },
   "license": "ISC",

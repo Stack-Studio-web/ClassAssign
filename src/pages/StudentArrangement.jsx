@@ -14,6 +14,7 @@ import {
   HALLORA_VERIFY_PRINT_CSS,
   sha256Hex,
 } from "../lib/reportVerification";
+import { groupHallsByExamTime, sortHallsForExport } from "../lib/hallExportOrder";
 
 const getNumericPart = (rollNo) => {
   if (!rollNo) return NaN;
@@ -193,66 +194,67 @@ const ExamHallAllotment = () => {
       return;
     }
 
-    const filtered = seatingPlans
-      .filter((plan) => {
+    // Sort plans by date + start time before flattening so export groups stay chronological
+    // even when the API returns later sessions first (e.g. 11:15 before 08:30).
+    const filteredPlans = sortHallsForExport(
+      seatingPlans.filter((plan) => {
         const planDateStr = normalizeDateToYYYYMMDD(plan.examDate);
         const matchesDate = date ? planDateStr === date : true;
         const matchesSession = session ? plan.examSession === session : true;
         return matchesDate && matchesSession;
       })
-      .flatMap((plan) => {
-        if (!plan.venuesUsed) return [];
-        return plan.venuesUsed.map((venue) => {
-          const allStudents = [];
-          venue.seatingArrangement?.forEach((row) => {
-            row.forEach((cell) => {
-              const students = getStudentsFromCell(cell);
-              allStudents.push(...students);
-            });
-          });
+    );
 
-          const prefixMap = {};
-          allStudents.forEach(({ regn_no, course }) => {
-            const match = regn_no.match(/^[0-9]*[A-Z]+/);
-            if (match) {
-              const prefix = match[0];
-              if (!prefixMap[prefix]) prefixMap[prefix] = { rolls: [], courses: new Set() };
-              prefixMap[prefix].rolls.push(regn_no);
-              if (course) prefixMap[prefix].courses.add(course);
-            }
+    const filtered = filteredPlans.flatMap((plan) => {
+      if (!plan.venuesUsed) return [];
+      return plan.venuesUsed.map((venue) => {
+        const allStudents = [];
+        venue.seatingArrangement?.forEach((row) => {
+          row.forEach((cell) => {
+            const students = getStudentsFromCell(cell);
+            allStudents.push(...students);
           });
+        });
 
-          const batchRows = Object.keys(prefixMap).map((prefix) => {
-            const { rolls, courses } = prefixMap[prefix];
-            return {
-              yearBranch: prefix,
-              rollNos: generateRollNumberRanges(rolls),
-              count: rolls.length,
-              courseCodes: courses.size > 0 ? [...courses] : plan.selectedCourses || [],
-            };
-          });
+        const prefixMap = {};
+        allStudents.forEach(({ regn_no, course }) => {
+          const match = regn_no.match(/^[0-9]*[A-Z]+/);
+          if (match) {
+            const prefix = match[0];
+            if (!prefixMap[prefix]) prefixMap[prefix] = { rolls: [], courses: new Set() };
+            prefixMap[prefix].rolls.push(regn_no);
+            if (course) prefixMap[prefix].courses.add(course);
+          }
+        });
 
+        const batchRows = Object.keys(prefixMap).map((prefix) => {
+          const { rolls, courses } = prefixMap[prefix];
           return {
-            hallNo: venue.venueName || "N/A",
-            rows: batchRows,
-            overallCount: batchRows.reduce((sum, r) => sum + r.count, 0),
-            examDate: plan.examDate,
-            examSession: plan.examSession,
-            examStartTime: plan.examStartTime,
-            examEndTime: plan.examEndTime,
+            yearBranch: prefix,
+            rollNos: generateRollNumberRanges(rolls),
+            count: rolls.length,
+            courseCodes: courses.size > 0 ? [...courses] : plan.selectedCourses || [],
           };
         });
-      });
 
-    setFilteredHalls(filtered);
+        return {
+          hallNo: venue.venueName || "N/A",
+          rows: batchRows,
+          overallCount: batchRows.reduce((sum, r) => sum + r.count, 0),
+          examDate: plan.examDate,
+          examSession: plan.examSession,
+          examStartTime: plan.examStartTime,
+          examEndTime: plan.examEndTime,
+          id: plan.uuid || plan.id || null,
+        };
+      });
+    });
+
+    setFilteredHalls(sortHallsForExport(filtered));
   }, [filters, seatingPlans]);
 
-  const hallsByTime = filteredHalls.reduce((acc, hall) => {
-    const key = `${hall.examStartTime}-${hall.examEndTime}`;
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(hall);
-    return acc;
-  }, {});
+  // Chronological groups for on-screen view and PDF export (date → start time).
+  const hallsByTimeEntries = groupHallsByExamTime(filteredHalls);
 
   if (loading) return <div className="text-center p-6 text-gray-700">Loading...</div>;
   if (error) return <div className="text-center p-6 text-red-500">{error}</div>;
@@ -410,10 +412,10 @@ const ExamHallAllotment = () => {
           <p>AY {ay} - {semester} SEM ({category})</p>
         </div>
 
-        {Object.keys(hallsByTime).length === 0 ? (
+        {hallsByTimeEntries.length === 0 ? (
           <p className="text-center text-gray-500 italic py-10">No records found for the selected date/session.</p>
         ) : (
-          Object.entries(hallsByTime).map(([time, halls]) => (
+          hallsByTimeEntries.map(([time, halls]) => (
             <div key={time} className="mb-8 page-break-inside-avoid">
               <h3 className="font-bold text-sm sm:text-md mb-1 text-center bg-gray-100 py-1">
                 Exam Time: {formatTime(halls[0].examStartTime, halls[0].examEndTime)} | {new Date(halls[0].examDate).toLocaleDateString()}
