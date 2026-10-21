@@ -16,12 +16,14 @@ const checkRole = require("../middleware/checkRole");
 const auditLogger = require("../middleware/auditLogger");
 const { resolveEntity } = require("../middleware/resolvePublicId");
 const { TABLE, getPublicUuid, resolveInternalId } = require("../utils/publicId");
-const { ACTIVE_ALLOCATION_SQL } = require("../utils/facultyAllocationStatus");
 const {
   resolveOccupancyWindow,
   findActiveSameDayConflictsBulk,
   lockFacultyRowsForUpdate,
+  conflictViewerFromOpts,
+  presentConflictForViewer,
 } = require("../utils/facultyTimeConflict");
+const { attributionUserIdFromOpts } = require("../utils/facultyMembership");
 
 async function resolveVenuesUsedIds(venuesUsed) {
   const resolved = [];
@@ -273,6 +275,10 @@ router.post(
       const facultyIdsToLock = [...slotsByFaculty.keys()];
       await lockFacultyRowsForUpdate(connection, facultyIdsToLock);
 
+      // Max/Alloc: the saving department's counters. Same-day conflicts: all departments.
+      const saveOwnerOpts = await resolveOwnerOpts(req);
+      const attributionUserId = attributionUserIdFromOpts(saveOwnerOpts);
+      const conflictViewer = conflictViewerFromOpts(saveOwnerOpts);
       for (const [fId, slotsOnThisPlan] of slotsByFaculty.entries()) {
         const validation = await Faculty.validateFacultyForAllocation(
           fId,
@@ -281,6 +287,8 @@ router.post(
             examStartTime,
             examEndTime,
             additionalSlots: slotsOnThisPlan,
+            attributionUserId,
+            viewer: conflictViewer,
           },
           connection
         );
@@ -541,7 +549,10 @@ router.post(
       const facultyIds = (facultyRows || [])
         .map((r) => r.faculty_id ?? r.facultyid)
         .filter((id) => id != null);
-      const facultySummaries = await Faculty.getAllocationSummariesByIds(facultyIds);
+      const facultySummaries = await Faculty.getAllocationSummariesByIds(
+        facultyIds,
+        await resolveOwnerOpts(req)
+      );
 
       return Api.success(res, `Marked ${updated} report(s) as completed.`, {
         updated,
@@ -764,45 +775,41 @@ router.post("/check-faculty-availability",
         examEndTime,
       });
 
-      // Active faculty only — soft-deleted faculty stay in DB for history but cannot be assigned.
-      const [allFaculty] = await db.query(
-        `SELECT 
-          f.id,
-          f.public_uuid,
-          f.name,
-          f.department,
-          COALESCE(f.max_classrooms, 1) AS max_classrooms,
-          COALESCE(f.is_available, true) AS is_available,
-          (
-            SELECT COUNT(spvf.id)
-            FROM seating_plan_venue_faculty spvf
-            JOIN seating_plan_venues spv ON spv.id = spvf.seating_plan_venue_id
-            JOIN seating_plans sp ON sp.id = spv.seating_plan_id
-            WHERE spvf.faculty_id = f.id
-              AND (${ACTIVE_ALLOCATION_SQL})
-          ) AS current_allocation
-         FROM faculty f
-         WHERE COALESCE(f.is_active, TRUE) = TRUE`
-      );
+      // Active faculty visible to this department (home + shared memberships), one row per
+      // identity, with this department's Max / Alloc. Same-day conflicts span all departments.
+      const ownerOpts = await resolveOwnerOpts(req);
+      const allFaculty = await Faculty.getAllWithAllocation(ownerOpts);
+      const facultyIdByUuid = new Map();
+      if (allFaculty.length) {
+        const [idRows] = await db.query(
+          `SELECT id, public_uuid FROM faculty WHERE public_uuid IN (?)`,
+          [allFaculty.map((f) => f.uuid)]
+        );
+        for (const r of idRows || []) {
+          facultyIdByUuid.set(String(r.public_uuid ?? r.publicuuid), Number(r.id));
+        }
+      }
 
       const conflictByFaculty = await findActiveSameDayConflictsBulk(db, {
-        facultyIds: (allFaculty || []).map((f) => f.id),
+        facultyIds: [...facultyIdByUuid.values()],
         examDate: dateOnly,
       });
+      const viewer = conflictViewerFromOpts(ownerOpts);
 
-      const facultyStatus = (allFaculty || []).map((f) => {
-        const conflict = conflictByFaculty.get(Number(f.id)) || null;
+      const facultyStatus = allFaculty.map((f) => {
+        const rawConflict = conflictByFaculty.get(facultyIdByUuid.get(String(f.uuid))) || null;
+        const conflict = presentConflictForViewer(rawConflict, viewer);
 
-        const maxClassrooms = Number(f.max_classrooms ?? f.maxclassrooms ?? 1) || 1;
-        const currentAlloc = Number(f.current_allocation ?? f.currentallocation ?? 0) || 0;
+        const maxClassrooms = Number(f.maxClassrooms ?? 1) || 1;
+        const currentAlloc = Number(f.allocation ?? 0) || 0;
         const remaining = Math.max(0, maxClassrooms - currentAlloc);
-        const facultyMarkedAvailable =
-          f.is_available !== false && f.isavailable !== false;
+        const facultyMarkedAvailable = f.isAvailable !== false;
 
         return {
-          uuid: f.public_uuid,
+          uuid: f.uuid,
           name: f.name,
           department: f.department,
+          departments: f.departments,
           canAllocate: remaining > 0 && facultyMarkedAvailable,
           hasTimeConflict: !!conflict,
           conflictInfo: conflict,

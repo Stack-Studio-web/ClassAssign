@@ -20,6 +20,7 @@ const {
   assertSemesterMutableByBatchInternalId,
 } = require("../utils/semesterGuards");
 const { resolveFacultyDepartment } = require("../utils/facultyDepartments");
+const Membership = require("../utils/facultyMembership");
 
 const router = express.Router();
 const { resolveOwnerOpts } = require("../utils/rbac");
@@ -38,10 +39,11 @@ function assertValidUpload(req, res) {
   return true;
 }
 
-let lastFacultyImport = {
-  insertedIds: [],
-  skippedEmails: []
-};
+function emptyFacultyImport() {
+  return { insertedIds: [], associatedMembershipIds: [], skippedEmails: [], rowIssues: [] };
+}
+
+let lastFacultyImport = emptyFacultyImport();
 
 let lastStudentImport = {
   batchId: null,
@@ -362,13 +364,18 @@ router.delete("/delete-all-faculty", sessionAuth, checkRole(["admin", "faculty_i
   try {
     const result = await Faculty.deleteAll(await resolveOwnerOpts(req));
     const removed = Number(result?.removed ?? 0) || 0;
+    const skippedShared = Number(result?.skippedShared ?? 0) || 0;
+    const sharedNote = skippedShared
+      ? ` ${skippedShared} faculty shared with another department were kept active.`
+      : "";
     res.json({
       success: true,
       message:
-        removed > 0
+        (removed > 0
           ? `Successfully removed ${removed} faculty record${removed === 1 ? "" : "s"} from active management.`
-          : "No active faculty records to remove.",
+          : "No active faculty records to remove.") + sharedNote,
       removed,
+      skippedShared,
     });
   } catch (error) {
     console.error("DELETE ALL FACULTY:", error?.message || error);
@@ -384,7 +391,7 @@ router.delete("/delete-all-faculty", sessionAuth, checkRole(["admin", "faculty_i
 ===================================================== */
 router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharge"]), importLimiter, upload.single("file"), async (req, res) => {
   try {
-    lastFacultyImport = { insertedIds: [], skippedEmails: [] };
+    lastFacultyImport = emptyFacultyImport();
 
     if (!req.file) {
       return res.status(400).json({ message: "No file uploaded." });
@@ -425,6 +432,7 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
       }
 
       formattedData.push({
+        row: excelRow,
         name,
         email: emailRaw,
         department: resolved.code, // stored representation: code (or null)
@@ -444,27 +452,63 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
       });
     }
 
+    const ownerOpts = await resolveOwnerOpts(req);
+    const seenEmails = new Set();
+    const rowIssues = [];
+
+    // Existing email → reuse identity; add this department's membership when missing.
+    const handleExisting = async (existing, f, email) => {
+      const outcome = await Membership.associateExistingFaculty(
+        {
+          faculty: existing,
+          requestedDepartment: f.department,
+          requestedName: f.name,
+          addedByUserId: req.user?.id || null,
+        },
+        ownerOpts
+      );
+      if (outcome.status === "HOME_INACTIVE") {
+        // Restored existing id — do not treat as a fresh insert for undo.
+        await Faculty.reactivateById(existing.id, { name: f.name, department: f.department });
+        return;
+      }
+      if (outcome.status === "ASSOCIATED" || outcome.status === "REACTIVATED") {
+        lastFacultyImport.associatedMembershipIds.push(outcome.membership.id);
+        if (outcome.detailsMismatch) {
+          rowIssues.push({ row: f.row, email, status: "DETAILS_KEPT", message: outcome.message });
+        }
+        return;
+      }
+      lastFacultyImport.skippedEmails.push(email);
+      if (outcome.status !== "ALREADY_ASSOCIATED") {
+        rowIssues.push({ row: f.row, email, status: outcome.status, message: outcome.message });
+      }
+    };
+
     for (const f of formattedData) {
+      const email = String(f.email || "").trim().toLowerCase();
+      if (seenEmails.has(email)) {
+        lastFacultyImport.skippedEmails.push(email);
+        rowIssues.push({
+          row: f.row,
+          email,
+          status: "DUPLICATE_IN_FILE",
+          message: `Row ${f.row}: ${email} appears more than once in this file; only the first row was used.`,
+        });
+        continue;
+      }
+      seenEmails.add(email);
       try {
-        const email = String(f.email || "").trim().toLowerCase();
         const name = f.name?.trim();
         const department = f.department || null;
         const existing = await Faculty.findByEmail(email);
 
         if (existing) {
-          if (existing.is_active === false) {
-            await Faculty.reactivateById(existing.id, { name, department });
-            // Restored existing id — do not treat as a fresh insert for undo.
-          } else {
-            lastFacultyImport.skippedEmails.push(email);
-          }
+          await handleExisting(existing, { ...f, name, department }, email);
           continue;
         }
 
-        const [result] = await Faculty.create(
-          { name, department, email },
-          await resolveOwnerOpts(req)
-        );
+        const [result] = await Faculty.create({ name, department, email }, ownerOpts);
         const id = result?.insertId ?? result?.insertid;
         if (id != null) lastFacultyImport.insertedIds.push(id);
       } catch (err) {
@@ -474,13 +518,9 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
           err.original?.code === "23505" ||
           err.parent?.code === "23505";
         if (isDuplicate) {
-          const email = String(f.email || "").trim().toLowerCase();
           const existing = await Faculty.findByEmail(email);
-          if (existing && existing.is_active === false) {
-            await Faculty.reactivateById(existing.id, {
-              name: f.name?.trim(),
-              department: f.department || null,
-            });
+          if (existing) {
+            await handleExisting(existing, { ...f, name: f.name?.trim() }, email);
           } else {
             lastFacultyImport.skippedEmails.push(email || f.email);
           }
@@ -489,12 +529,15 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
         }
       }
     }
+    lastFacultyImport.rowIssues = rowIssues;
 
     res.json({
       message: "Faculty import completed",
       inserted: lastFacultyImport.insertedIds.length,
+      associated: lastFacultyImport.associatedMembershipIds.length,
       skipped: lastFacultyImport.skippedEmails.length,
-      skippedEmails: lastFacultyImport.skippedEmails
+      skippedEmails: lastFacultyImport.skippedEmails,
+      rowIssues,
     });
 
   } catch (error) {
@@ -671,7 +714,8 @@ router.get("/last-faculty-import", sessionAuth, checkRole(["admin", "faculty_inc
 
 router.post("/undo-faculty-import", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (req, res) => {
   try {
-    if (lastFacultyImport.insertedIds.length === 0) {
+    const membershipIds = lastFacultyImport.associatedMembershipIds || [];
+    if (lastFacultyImport.insertedIds.length === 0 && membershipIds.length === 0) {
       return Api.validationError(res, "No import to undo", "There is no faculty import from this session to revert.");
     }
 
@@ -686,12 +730,37 @@ router.post("/undo-faculty-import", sessionAuth, checkRole(["admin", "faculty_in
       );
     }
 
-    await Faculty.deleteByIds(lastFacultyImport.insertedIds, await resolveOwnerOpts(req));
+    const ownerOpts = await resolveOwnerOpts(req);
+    const { removed: deletedCount, skippedShared } = await Faculty.deleteByIds(
+      lastFacultyImport.insertedIds,
+      ownerOpts
+    );
 
-    const deletedCount = lastFacultyImport.insertedIds.length;
-    lastFacultyImport = { insertedIds: [], skippedEmails: [] };
+    // Department associations added to existing identities: remove only those memberships.
+    let membershipsRemoved = 0;
+    const contextId = Number(ownerOpts.academicContextId);
+    if (membershipIds.length > 0 && Number.isFinite(contextId) && contextId > 0) {
+      const [result] = await db.query(
+        `UPDATE faculty_department_memberships
+         SET is_active = FALSE, removed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+         WHERE id IN (?) AND academic_context_id = ? AND is_active = TRUE`,
+        [membershipIds, contextId]
+      );
+      membershipsRemoved = Number(result?.affectedRows ?? 0) || 0;
+    }
+    lastFacultyImport = emptyFacultyImport();
 
-    return Api.success(res, `Undo successful. Removed ${deletedCount} faculty records.`, { deletedCount });
+    const sharedNote = skippedShared.length
+      ? ` ${skippedShared.length} record(s) were kept because another department now shares them.`
+      : "";
+    const memberNote = membershipsRemoved
+      ? ` Removed ${membershipsRemoved} department association(s).`
+      : "";
+    return Api.success(
+      res,
+      `Undo successful. Removed ${deletedCount} faculty records.${memberNote}${sharedNote}`,
+      { deletedCount, membershipsRemoved, skippedShared: skippedShared.length }
+    );
   } catch (error) {
     return Api.fromError(res, error);
   }

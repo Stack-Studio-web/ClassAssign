@@ -42,6 +42,29 @@ async function remapFacultyId(fromId, toId) {
   ]);
 
   await db.query(`UPDATE attendance SET faculty_id = ? WHERE faculty_id = ?`, [toId, fromId]);
+
+  const [fdm] = await db.query(
+    `SELECT to_regclass('public.faculty_department_memberships') IS NOT NULL AS present`
+  );
+  if (fdm?.[0]?.present) {
+    // Keep the canonical row's membership when both rows share a department context.
+    await db.query(
+      `UPDATE faculty_department_memberships m
+       SET faculty_id = ?
+       WHERE m.faculty_id = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM faculty_department_memberships keep
+           WHERE keep.faculty_id = ? AND keep.academic_context_id = m.academic_context_id
+         )`,
+      [toId, fromId, toId]
+    );
+    await db.query(
+      `UPDATE faculty_department_memberships
+       SET is_active = FALSE, removed_at = COALESCE(removed_at, CURRENT_TIMESTAMP)
+       WHERE faculty_id = ?`,
+      [fromId]
+    );
+  }
 }
 
 async function ensureFacultyEmailIdentity() {

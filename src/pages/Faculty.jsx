@@ -17,6 +17,13 @@ const DEPT_ICON_COLORS = [
   { bg: "bg-indigo-100", text: "text-indigo-600" },
 ];
 
+function membershipsOf(f) {
+  if (Array.isArray(f?.departments) && f.departments.length > 0) {
+    return f.departments.map((d) => String(d).trim().toUpperCase()).filter(Boolean);
+  }
+  return [String(f?.department || "").trim().toUpperCase() || "UNASSIGNED"];
+}
+
 export default function Faculty() {
   const toast = useToast();
   const showConfirm = useConfirm();
@@ -37,7 +44,8 @@ export default function Faculty() {
 
   // Import/Status States
   const [skippedEmails, setSkippedEmails] = useState([]);
-  const [insertedCount, setInsertedCount] = useState(0);
+  const [importIssues, setImportIssues] = useState([]);
+  const [, setInsertedCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
   const [message, setMessage] = useState("");
@@ -111,6 +119,8 @@ export default function Faculty() {
   }, []);
 
   /* ================= EDIT LOGIC ================= */
+  const isSharedRow = (f) => f?.canEditIdentity === false;
+
   const handleEditClick = (f) => {
     setEditingId(f.uuid);
     setEditForm({
@@ -132,10 +142,36 @@ export default function Faculty() {
     setMessage("");
   };
 
-  const handleSaveFacultyDetails = async (id) => {
+  const handleSaveFacultyDetails = async (f) => {
+    const id = f.uuid;
     const name = editForm.name.trim();
     const email = editForm.email.trim().toLowerCase();
     const maxClassrooms = Number(editForm.maxClassrooms);
+
+    if (isSharedRow(f)) {
+      if (!Number.isFinite(maxClassrooms) || maxClassrooms < 1 || maxClassrooms > 20) {
+        setMessage("⚠️ Max classrooms must be between 1 and 20");
+        toast.error("Max classrooms must be between 1 and 20");
+        return;
+      }
+      setUpdatingId(id);
+      try {
+        await api.put(`/faculty/${id}`, {
+          maxClassrooms,
+          isAvailable: editForm.isAvailable !== false,
+        });
+        toast.success(`Updated for ${f.scopedDepartment || "your department"}`);
+        setMessage("✅ Department settings updated");
+        setEditingId(null);
+        await fetchFaculty();
+      } catch (err) {
+        toast.error(getApiError(err, "Failed to update faculty"), getApiErrorTitle(err, "Update failed"));
+        setMessage(`❌ ${getApiError(err, "Failed to update faculty")}`);
+      } finally {
+        setUpdatingId(null);
+      }
+      return;
+    }
 
     if (!name || !email) {
       setMessage("⚠️ Name and Email are required");
@@ -231,10 +267,14 @@ export default function Faculty() {
       });
 
       const inserted = res.data?.inserted ?? 0;
+      const associated = res.data?.associated ?? 0;
       const skipped = res.data?.skipped ?? res.data?.skippedEmails?.length ?? 0;
       setInsertedCount(inserted);
       setSkippedEmails(res.data?.skippedEmails || []);
-      setMessage(`🎉 Added: ${inserted}, Skipped: ${skipped}`);
+      setImportIssues(Array.isArray(res.data?.rowIssues) ? res.data.rowIssues : []);
+      setMessage(
+        `🎉 Added: ${inserted}${associated ? `, Linked existing faculty: ${associated}` : ""}, Skipped: ${skipped}`
+      );
 
       setSelectedFile(null);
       if (document.getElementById("fileInput")) {
@@ -278,6 +318,7 @@ export default function Faculty() {
       toast.success(res.data?.message || "Import undone");
       setInsertedCount(0);
       setSkippedEmails([]);
+      setImportIssues([]);
       fetchFaculty();
       fetchFacultyStats();
     } catch (err) {
@@ -315,11 +356,18 @@ export default function Faculty() {
         email,
         department: deptResolved.code || null,
       });
-      setMessage("✅ Faculty Added Successfully");
-      setCreateSuccess({
-        email: res.data.data?.email || res.data.email || email,
-        generatedPassword: res.data.data?.generatedPassword || res.data.generatedPassword,
-      });
+      if (res.data.data?.associated) {
+        setMessage(
+          `${res.data.data.detailsMismatch ? "⚠️" : "✅"} ${res.data.message || "Existing faculty added to your department"}`
+        );
+        setCreateSuccess(null);
+      } else {
+        setMessage("✅ Faculty Added Successfully");
+        setCreateSuccess({
+          email: res.data.data?.email || res.data.email || email,
+          generatedPassword: res.data.data?.generatedPassword || res.data.generatedPassword,
+        });
+      }
       setManualData({ name: "", department: "", email: "" });
       fetchFaculty();
       fetchFacultyStats();
@@ -333,20 +381,23 @@ export default function Faculty() {
   };
 
   /* ================= DELETE ================= */
-  const handleDelete = async (id) => {
+  const handleDelete = async (f) => {
+    const id = f.uuid;
+    const shared = isSharedRow(f);
     const ok = await showConfirm({
-      title: "Remove Faculty?",
-      message:
-        "This will remove the faculty from active faculty management and prevent new assignments.\n\nExisting seating plans, student allocations, attendance, reports, and exam history will be preserved.",
-      confirmLabel: "Remove Faculty",
+      title: shared ? `Remove from ${f.scopedDepartment || "your department"}?` : "Remove Faculty?",
+      message: shared
+        ? "This only removes the faculty member from your department. Their login, other department memberships, and exam history stay unchanged."
+        : "This will remove the faculty from active faculty management and prevent new assignments.\n\nExisting seating plans, student allocations, attendance, reports, and exam history will be preserved.",
+      confirmLabel: shared ? "Remove from Department" : "Remove Faculty",
       cancelLabel: "Cancel",
     });
     if (!ok) return;
 
     setDeletingId(id);
     try {
-      await api.delete(`/faculty/${id}`);
-      toast.success("Faculty removed. Historical exam data was preserved.");
+      const res = await api.delete(`/faculty/${id}`);
+      toast.success(res.data?.message || "Faculty removed. Historical exam data was preserved.");
       fetchFaculty();
       fetchFacultyStats();
     } catch (err) {
@@ -409,11 +460,8 @@ export default function Faculty() {
           String(f.email || "")
             .toLowerCase()
             .includes(q) ||
-          String(f.department || "")
-            .toLowerCase()
-            .includes(q);
-        const dept = String(f.department || "").trim().toUpperCase() || "UNASSIGNED";
-        const matchesDept = !deptFilter || dept === deptFilter;
+          membershipsOf(f).some((d) => d.toLowerCase().includes(q));
+        const matchesDept = !deptFilter || membershipsOf(f).includes(deptFilter);
         return matchesSearch && matchesDept;
       })
       .sort((a, b) =>
@@ -426,8 +474,9 @@ export default function Faculty() {
   const departmentCounts = useMemo(() => {
     const counts = new Map();
     for (const f of faculty) {
-      const dept = String(f.department || "").trim().toUpperCase() || "UNASSIGNED";
-      counts.set(dept, (counts.get(dept) || 0) + 1);
+      for (const dept of membershipsOf(f)) {
+        counts.set(dept, (counts.get(dept) || 0) + 1);
+      }
     }
     return [...counts.entries()]
       .map(([department, count]) => ({ department, count }))
@@ -635,6 +684,18 @@ export default function Faculty() {
                     </div>
                   </div>
                 )}
+                {importIssues.length > 0 && (
+                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl">
+                    <h4 className="font-semibold text-amber-800 mb-2 text-sm">Rows needing attention</h4>
+                    <div className="max-h-40 overflow-y-auto space-y-1">
+                      {importIssues.map((issue, index) => (
+                        <div key={index} className="text-xs text-amber-700 bg-white/60 px-2 py-1 rounded">
+                          {issue.message || `Row ${issue.row}: ${issue.email} — ${issue.status}`}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -689,7 +750,7 @@ export default function Faculty() {
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-100">
                     <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Name</th>
-                    <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Department</th>
+                    <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide" title="Departments this faculty member belongs to. Counters below are for your department.">Dept. Memberships</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide hidden sm:table-cell">Email</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide" title="Maximum concurrent exam halls">Max</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide" title="Active exams (attendance or report still pending)">Alloc</th>
@@ -703,10 +764,12 @@ export default function Faculty() {
                 <tbody className="divide-y divide-gray-100">
                   {filteredFaculty.map((f) => {
                     const isEditing = editingId === f.uuid;
+                    const shared = isSharedRow(f);
+                    const editIdentity = isEditing && !shared;
                     return (
                     <tr key={f.uuid} className="hover:bg-gray-50/50 transition-colors">
                       <td className="px-4 md:px-6 py-3 md:py-4 font-medium text-gray-800">
-                        {isEditing ? (
+                        {editIdentity ? (
                           <input
                             type="text"
                             value={editForm.name}
@@ -719,7 +782,7 @@ export default function Faculty() {
                         )}
                       </td>
                       <td className="px-4 md:px-6 py-3 md:py-4 text-gray-600">
-                        {isEditing ? (
+                        {editIdentity ? (
                           <div className="min-w-[220px]">
                             <FacultyDepartmentSelect
                               value={editForm.department || ""}
@@ -731,11 +794,21 @@ export default function Faculty() {
                             />
                           </div>
                         ) : (
-                          f.department || "—"
+                          <div>
+                            <span>{membershipsOf(f).join(", ")}</span>
+                            {shared && (
+                              <span
+                                className="ml-2 text-[11px] font-medium text-sky-700 bg-sky-50 border border-sky-200 px-1.5 py-0.5 rounded"
+                                title="Shared from another department. Only Max and Available can be changed here."
+                              >
+                                Shared
+                              </span>
+                            )}
+                          </div>
                         )}
                       </td>
                       <td className="px-4 md:px-6 py-3 md:py-4 text-gray-500 text-sm hidden sm:table-cell">
-                        {isEditing ? (
+                        {editIdentity ? (
                           <input
                             type="email"
                             value={editForm.email}
@@ -799,7 +872,7 @@ export default function Faculty() {
                             <button
                               type="button"
                               disabled={updatingId === f.uuid}
-                              onClick={() => handleSaveFacultyDetails(f.uuid)}
+                              onClick={() => handleSaveFacultyDetails(f)}
                               className="px-3 py-1.5 rounded-xl bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm font-medium"
                             >
                               {updatingId === f.uuid ? "Saving..." : "Save"}
@@ -816,7 +889,7 @@ export default function Faculty() {
                         ) : (
                           <div className="flex flex-wrap gap-2">
                             <button type="button" onClick={() => handleEditClick(f)} className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium">Edit</button>
-                            <button type="button" disabled={deletingId === f.uuid || loading} onClick={() => handleDelete(f.uuid)} className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium">{deletingId === f.uuid ? "Removing..." : "Remove"}</button>
+                            <button type="button" disabled={deletingId === f.uuid || loading} onClick={() => handleDelete(f)} className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium">{deletingId === f.uuid ? "Removing..." : "Remove"}</button>
                           </div>
                         )}
                       </td>

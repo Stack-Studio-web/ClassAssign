@@ -13,6 +13,7 @@ installProductionConsoleSilence();
 const ensureHodSchema = require("./utils/ensureHodSchema");
 const ensureHodWorkspaceScope = require("./utils/ensureHodWorkspaceScope");
 const ensureFacultyEmailIdentity = require("./utils/ensureFacultyEmailIdentity");
+const ensureFacultyMembershipSchema = require("./utils/ensureFacultyMembershipSchema");
 const ensureAttendanceSchema = require("./utils/ensureAttendanceSchema");
 const ensureAttendanceLifecycleSchema = require("./utils/ensureAttendanceLifecycleSchema");
 const ensureHallNotificationSchema = require("./utils/ensureHallNotificationSchema");
@@ -187,6 +188,7 @@ async function start() {
       await ensureTimetableSchema();
       await ensureFacultyActiveSchema();
       await ensureFacultyEmailIdentity();
+      await ensureFacultyMembershipSchema();
       console.info("[startup] schema ensures complete");
       break;
     } catch (e) {

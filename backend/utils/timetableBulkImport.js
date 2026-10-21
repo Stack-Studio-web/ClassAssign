@@ -208,6 +208,23 @@ function parseTimetableRow(row, rowNum) {
   };
 }
 
+/**
+ * Pick the batch (from listBatchesForCourse) whose name matches the Excel Batch cell.
+ * When several linked batches share the name, prefer formalBatchId; otherwise ambiguous.
+ */
+function resolveLinkedBatch(linkedBatches, batchName, formalBatchId = null) {
+  const wanted = String(batchName || "").trim().toUpperCase();
+  if (!wanted) return { batch: null, ambiguous: false };
+  const matches = (linkedBatches || []).filter(
+    (b) => b && b.id != null && String(b.name || "").trim().toUpperCase() === wanted
+  );
+  if (matches.length === 1) return { batch: matches[0], ambiguous: false };
+  if (matches.length === 0) return { batch: null, ambiguous: false };
+  const preferred = matches.find((b) => Number(b.id) === Number(formalBatchId));
+  if (preferred) return { batch: preferred, ambiguous: false };
+  return { batch: null, ambiguous: true };
+}
+
 async function validateTimetableRows(rawRows, opts = {}, helpers = {}) {
   const {
     findBatchByName,
@@ -290,8 +307,11 @@ async function validateTimetableRows(rawRows, opts = {}, helpers = {}) {
           courseCheck?.message ||
             `Course Code ${parsed.courseCode} was not found for Department ${parsed.department} / Batch ${parsed.batch}.`
         );
-      } else if (courseCheck.courseName && !parsed.courseName) {
-        parsed.courseName = courseCheck.courseName;
+      } else {
+        if (courseCheck.batchId != null) parsed.batchId = courseCheck.batchId;
+        if (courseCheck.courseName && !parsed.courseName) {
+          parsed.courseName = courseCheck.courseName;
+        }
       }
     }
 
@@ -336,6 +356,7 @@ module.exports = {
   BATCH_PATTERN: LEGACY_BATCH_PATTERN,
   LEGACY_BATCH_PATTERN,
   parseTimetableRow,
+  resolveLinkedBatch,
   validateTimetableRows,
   parseDateCell,
   parseTimeCell,

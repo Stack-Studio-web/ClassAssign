@@ -573,7 +573,9 @@ const FacultyTransferService = {
     }
 
     // Transfer counter is independent of normal allocation capacity.
-    await Faculty.incrementTransferCount(currentFacultyId);
+    await Faculty.incrementTransferCount(currentFacultyId, undefined, {
+      seatingPlanVenueId: ctx.seatingPlanVenueId,
+    });
 
     const [created] = await db.query(
       `SELECT public_uuid FROM faculty_transfer_requests WHERE id = ?`,
@@ -1593,7 +1595,9 @@ const FacultyTransferService = {
         userAgent,
       });
 
-      await Faculty.incrementTransferCount(ctx.facultyId, conn);
+      await Faculty.incrementTransferCount(ctx.facultyId, conn, {
+        seatingPlanVenueId: ctx.seatingPlanVenueId,
+      });
 
       await conn.commit();
 

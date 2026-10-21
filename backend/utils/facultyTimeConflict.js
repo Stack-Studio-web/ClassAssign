@@ -1,4 +1,5 @@
 const { ACTIVE_ALLOCATION_SQL } = require("./facultyAllocationStatus");
+const { PLAN_DEPARTMENT_SQL } = require("./facultyMembership");
 
 function normalizeExamTime(value) {
   if (value == null || value === "") return null;
@@ -46,20 +47,53 @@ function buildTimeConflictMessage({
   examDate,
   examStartTime,
   examEndTime,
+  assignedDepartment = null,
+  hideVenue = false,
 }) {
   const name = facultyName || "This faculty";
   const venue = venueName || "another venue";
   const date = formatDateDisplay(normalizeExamDate(examDate));
   const start = formatTime12h(examStartTime);
   const end = formatTime12h(examEndTime);
+  const venuePart = hideVenue ? "" : ` at ${venue}`;
   const when =
     start && end
-      ? ` at ${venue} (${start}–${end})`
-      : venue
-        ? ` at ${venue}`
-        : "";
+      ? `${venuePart} (${start}–${end})`
+      : venuePart;
   const datePart = date ? ` on ${date}` : "";
-  return `${name} is already assigned to an exam${datePart}${when}. Please select another faculty member.`;
+  const byPart = assignedDepartment ? ` by ${assignedDepartment}` : "";
+  return `${name} is already assigned${byPart} to an exam${datePart}${when}. Please select another faculty member.`;
+}
+
+/** Viewer used to decide whether another department's venue may be revealed. */
+function conflictViewerFromOpts(opts = {}) {
+  if (!opts || opts.role === "admin") return { isAdmin: true, ownerIds: null };
+  const ids = Array.isArray(opts.ownerIds)
+    ? opts.ownerIds
+    : opts.ownerUserId
+      ? [opts.ownerUserId]
+      : [];
+  return { isAdmin: false, ownerIds: ids.map(Number).filter((id) => id > 0) };
+}
+
+/**
+ * Redact venue / plan ids when the conflicting assignment belongs to a department
+ * outside the viewer's scope. Date, times and department stay visible so the
+ * block can be explained.
+ */
+function presentConflictForViewer(conflict, viewer) {
+  if (!conflict || !viewer || viewer.isAdmin) return conflict;
+  const owner = Number(conflict.ownerUserId);
+  const visible = Number.isFinite(owner) && (viewer.ownerIds || []).includes(owner);
+  if (visible) return conflict;
+  return {
+    ...conflict,
+    venueName: null,
+    seatingPlanId: null,
+    spvId: null,
+    crossDepartment: true,
+    message: buildTimeConflictMessage({ ...conflict, hideVenue: true }),
+  };
 }
 
 function laterTime(a, b) {
@@ -134,6 +168,8 @@ function mapConflictRow(row) {
   const examStartTime = row.exam_start_time ?? row.examstarttime ?? null;
   const examEndTime = row.exam_end_time ?? row.examendtime ?? null;
   const examDate = normalizeExamDate(row.exam_date ?? row.examdate ?? null);
+  const ownerUserId = row.owner_user_id ?? row.owneruserid ?? null;
+  const assignedDepartment = row.assigned_department ?? row.assigneddepartment ?? null;
   return {
     seatingPlanId: row.seating_plan_id ?? row.seatingplanid ?? null,
     spvId: row.spv_id ?? row.spvid ?? row.id ?? null,
@@ -144,12 +180,15 @@ function mapConflictRow(row) {
     examStartTime,
     examEndTime,
     occupancyEndTime: examEndTime,
+    ownerUserId: ownerUserId != null ? Number(ownerUserId) : null,
+    assignedDepartment,
     message: buildTimeConflictMessage({
       facultyName,
       venueName,
       examDate,
       examStartTime,
       examEndTime,
+      assignedDepartment,
     }),
   };
 }
@@ -198,6 +237,8 @@ async function findActiveTimeConflict(
        sp.exam_date,
        sp.exam_start_time,
        sp.exam_end_time,
+       sp.owner_user_id,
+       ${PLAN_DEPARTMENT_SQL} AS assigned_department,
        f.name AS faculty_name
      FROM seating_plan_venue_faculty spvf
      JOIN seating_plan_venues spv ON spv.id = spvf.seating_plan_venue_id
@@ -252,6 +293,8 @@ async function findActiveSameDayConflictsBulk(
        sp.exam_date,
        sp.exam_start_time,
        sp.exam_end_time,
+       sp.owner_user_id,
+       ${PLAN_DEPARTMENT_SQL} AS assigned_department,
        f.name AS faculty_name
      FROM seating_plan_venue_faculty spvf
      JOIN seating_plan_venues spv ON spv.id = spvf.seating_plan_venue_id
@@ -304,6 +347,8 @@ module.exports = {
   formatTime12h,
   formatDateDisplay,
   buildTimeConflictMessage,
+  conflictViewerFromOpts,
+  presentConflictForViewer,
   findActiveTimeConflict,
   findActiveSameDayConflictsBulk,
   lockFacultyRowsForUpdate,

@@ -481,7 +481,7 @@ router.post("/bulk-import",
 async function runTimetableValidation(data, ownerOpts) {
   const Student = require("../models/Student");
   const Batch = require("../models/Batch");
-  const { validateTimetableRows } = require("../utils/timetableBulkImport");
+  const { validateTimetableRows, resolveLinkedBatch } = require("../utils/timetableBulkImport");
 
   let knownDepartments = [];
   try {
@@ -515,32 +515,39 @@ async function runTimetableValidation(data, ownerOpts) {
         ownerOpts.ownerIds
       );
 
-      // Prefer formal Batch.id (same relationship as Add Schedule)
+      // Formal batch: same students.batch_id → batches relationship as Manual Entry.
+      // Batch names are not unique across departments/semesters, so match by name
+      // among the batches this department's course students are actually linked to.
       if (batchId != null && Number.isFinite(Number(batchId))) {
+        const linked = await listBatchesForCourse(department, courseCode, ownerOpts);
+        const resolved = resolveLinkedBatch(linked, batch, batchId);
+        if (resolved.ambiguous) {
+          return {
+            ok: false,
+            message: `Batch ${batch} is ambiguous for Course Code ${courseCode} in Department ${department} (multiple batches share this name).`,
+          };
+        }
+        if (!resolved.batch) {
+          return {
+            ok: false,
+            message: `Course Code ${courseCode} is not linked to Batch ${batch} for Department ${department}.`,
+          };
+        }
         const [rows] = await db.query(
           `
           SELECT st.course_name AS "courseName"
           FROM students st
           WHERE st.course_description = ?
             AND st.batch_id = ?
-            AND (
-              UPPER(TRIM(COALESCE(st.department, ''))) = ?
-              OR UPPER((regexp_match(UPPER(TRIM(st.regn_no)), '^[0-9]{2}([A-Z]+)'))[1]) = ?
-            )
             ${ownerSql}
           LIMIT 1
           `,
-          [courseCode, Number(batchId), department, department, ...ownerParams]
+          [courseCode, Number(resolved.batch.id), ...ownerParams]
         );
-        if (!rows?.length) {
-          return {
-            ok: false,
-            message: `Course Code ${courseCode} is not linked to Batch ${batch} for Department ${department}.`,
-          };
-        }
         return {
           ok: true,
-          courseName: rows[0].courseName ?? rows[0].coursename ?? null,
+          batchId: Number(resolved.batch.id),
+          courseName: rows?.[0]?.courseName ?? rows?.[0]?.coursename ?? null,
         };
       }
 

@@ -10,7 +10,11 @@ const {
   readWorkbookSheets,
 } = require("../utils/labStudentImport");
 const { TABLE, getPublicUuid, resolveInternalId } = require("../utils/publicId");
-const { lockFacultyRowsForUpdate } = require("../utils/facultyTimeConflict");
+const {
+  lockFacultyRowsForUpdate,
+  conflictViewerFromOpts,
+} = require("../utils/facultyTimeConflict");
+const { attributionUserIdFromOpts } = require("../utils/facultyMembership");
 
 const STATUSES = ["draft", "validated", "finalized", "attendance_open", "completed"];
 
@@ -790,7 +794,7 @@ function labPlanExamSession(slot) {
  * Faculty page "remaining" counts invigilation duties (SPVF rows), not students.
  * Each distinct faculty in a finalized LAB slot consumes 1 duty.
  */
-async function buildFinalizeSummary(students, byFaculty, venuesUsed) {
+async function buildFinalizeSummary(students, byFaculty, venuesUsed, attributionUserId = null) {
   const facultyAssignments = [];
   for (const [facultyId, group] of byFaculty.entries()) {
     const sample = group[0];
@@ -798,7 +802,7 @@ async function buildFinalizeSummary(students, byFaculty, venuesUsed) {
       venuesUsed.find((v) =>
         (v.facultyIds || []).map(Number).includes(Number(facultyId))
       ) || null;
-    const capacity = await Faculty.getCapacitySummary(Number(facultyId));
+    const capacity = await Faculty.getCapacitySummary(Number(facultyId), db, { attributionUserId });
     facultyAssignments.push({
       facultyId: Number(facultyId),
       facultyUuid: sample.facultyUuid || null,
@@ -854,7 +858,12 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
     }
     const planId = slot.seating_plan_id || slot.seatingplanid;
     const planUuid = await getPublicUuid(TABLE.seatingPlans, planId);
-    const summary = await buildFinalizeSummary(students, byFaculty, []);
+    const summary = await buildFinalizeSummary(
+      students,
+      byFaculty,
+      [],
+      attributionUserIdFromOpts(ownerOpts)
+    );
     return {
       alreadyFinalized: true,
       seatingPlanId: planId,
@@ -939,7 +948,12 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
         seatingPlanUuid: planUuid,
         attendanceAssignmentsSynced: 0,
         examStatus: "finalized",
-        summary: await buildFinalizeSummary(studentsLocked, byFac, []),
+        summary: await buildFinalizeSummary(
+          studentsLocked,
+          byFac,
+          [],
+          attributionUserIdFromOpts(ownerOpts)
+        ),
         slot: toSlotRow({
           ...slot,
           seating_plan_id: planId,
@@ -968,7 +982,10 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
     const facultyIds = [...byFaculty.keys()].map(Number);
     await lockFacultyRowsForUpdate(conn, facultyIds);
 
-    // Capacity unit = 1 invigilation duty per faculty (not student count).
+    // Capacity unit = 1 invigilation duty per faculty (not student count), counted for
+    // the finalizing department; same-day conflicts are checked across all departments.
+    const attributionUserId = attributionUserIdFromOpts(ownerOpts);
+    const viewer = conflictViewerFromOpts(ownerOpts);
     for (const facultyId of facultyIds) {
       const validation = await Faculty.validateFacultyForAllocation(
         facultyId,
@@ -977,6 +994,8 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
           examStartTime: start,
           examEndTime: end,
           additionalSlots: 1,
+          attributionUserId,
+          viewer,
         },
         conn
       );
@@ -1151,7 +1170,7 @@ async function finalizeSlot(slotUuid, ownerOpts = {}) {
     let summary;
     try {
       planUuid = await getPublicUuid(TABLE.seatingPlans, seatingPlanId);
-      summary = await buildFinalizeSummary(students, byFaculty, venuesUsed);
+      summary = await buildFinalizeSummary(students, byFaculty, venuesUsed, attributionUserId);
     } catch (postErr) {
       console.error("LAB finalize post-commit summary error:", postErr?.message || postErr);
       summary = {

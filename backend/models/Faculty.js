@@ -6,16 +6,92 @@ const {
   pickCanonicalFaculty,
   pickFacultyForLogin,
 } = require("../utils/facultyIdentity");
-const {
-  ATTENDANCE_DONE_SQL,
-  REPORT_DONE_SQL,
-  FULLY_COMPLETED_SQL,
-  ACTIVE_ALLOCATION_SQL,
-} = require("../utils/facultyAllocationStatus");
+const { ACTIVE_ALLOCATION_SQL } = require("../utils/facultyAllocationStatus");
 const {
   findActiveTimeConflict,
   buildTimeConflictMessage,
+  presentConflictForViewer,
 } = require("../utils/facultyTimeConflict");
+const Membership = require("../utils/facultyMembership");
+
+function validContextId(opts = {}) {
+  const id = Number(opts.academicContextId);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+/**
+ * Faculty visible to the caller: owned by the caller's scope (home) OR shared with the
+ * caller's Academic Context through an active membership. Alias f; joins alias sm.
+ * Params order: select (home), join (context), where (home).
+ */
+function visibleFacultySql(opts = {}) {
+  const home = Membership.homePredicate(opts, "f.");
+  const contextId = validContextId(opts);
+  if (!contextId) {
+    return {
+      selectSql: `${home.sql} AS is_home,
+        NULL::int AS shared_membership_id, NULL::int AS shared_max,
+        NULL::boolean AS shared_available, NULL::int AS shared_transfer_count,
+        NULL::text AS shared_department`,
+      selectParams: home.params,
+      joinSql: "",
+      joinParams: [],
+      whereSql: home.sql,
+      whereParams: home.params,
+    };
+  }
+  return {
+    selectSql: `${home.sql} AS is_home,
+      sm.id AS shared_membership_id, sm.max_classrooms AS shared_max,
+      sm.is_available AS shared_available, sm.transfer_count AS shared_transfer_count,
+      sm.department AS shared_department`,
+    selectParams: home.params,
+    joinSql: `LEFT JOIN faculty_department_memberships sm
+      ON sm.faculty_id = f.id AND sm.academic_context_id = ? AND sm.is_active = TRUE`,
+    joinParams: [contextId],
+    whereSql: `(${home.sql} OR sm.id IS NOT NULL)`,
+    whereParams: home.params,
+  };
+}
+
+const HOME_DEPARTMENT_SQL = `COALESCE(
+  NULLIF(TRIM(f.department), ''),
+  (SELECT ac.department FROM users ou
+     JOIN academic_contexts ac ON ac.id = ou.academic_context_id
+    WHERE ou.id = f.owner_user_id LIMIT 1)
+)`;
+
+/** Merge visible faculty rows with per-department counters (pure apart from toFacultyRow). */
+function mergeScopedRows(rows, bucketRows) {
+  const buckets = Membership.indexBuckets(bucketRows);
+  return (rows || []).map((r) => {
+    const isHome = r.is_home === true || r.ishome === true;
+    const sharedId = isHome ? null : r.shared_membership_id ?? r.sharedmembershipid ?? null;
+    const counts = buckets.get(Number(r.id))?.get(Membership.bucketKey(sharedId));
+    const settings =
+      sharedId != null
+        ? {
+            maxClassrooms: r.shared_max ?? r.sharedmax,
+            transferCount: r.shared_transfer_count ?? r.sharedtransfercount,
+            isAvailable: (r.shared_available ?? r.sharedavailable) !== false,
+          }
+        : {
+            maxClassrooms: r.max_classrooms ?? r.maxclassrooms,
+            transferCount: r.transfer_count ?? r.transfercount,
+            isAvailable: (r.is_available ?? r.isavailable) !== false,
+          };
+    const homeDepartment = r.home_department ?? r.homedepartment ?? null;
+    const shared = r.shared_departments ?? r.shareddepartments ?? [];
+    return toFacultyRow({
+      ...r,
+      ...Membership.scopedCounters(settings, counts),
+      departments: Membership.membershipLabels(homeDepartment, shared),
+      membership_type: sharedId != null ? "shared" : "home",
+      scoped_department:
+        sharedId != null ? r.shared_department ?? r.shareddepartment : homeDepartment,
+    });
+  });
+}
 
 // PostgreSQL returns unquoted column names in lowercase; map to camelCase for API
 function toFacultyRow(row) {
@@ -53,6 +129,17 @@ function toFacultyRow(row) {
     totalAssignments: Number(row.total_assignments ?? row.totalAssignments ?? allocation + completed) || 0,
     isAvailable,
     isActive: row.is_active === false || row.isactive === false ? false : true,
+    ...(row.departments
+      ? {
+          /** Home department first, then shared department memberships. */
+          departments: row.departments,
+          /** "home" = owned by the caller's department; "shared" = membership row. */
+          membershipType: row.membership_type,
+          /** Department whose counters are shown in this row. */
+          scopedDepartment: row.scoped_department ?? null,
+          canEditIdentity: row.membership_type !== "shared",
+        }
+      : {}),
   };
 }
 
@@ -137,25 +224,18 @@ const Faculty = {
     return db.query(sql, vals);
   },
 
-  getAll: async (opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = ownerWhereFromOpts(opts);
-    const [rows] = await db.query(
-      `SELECT * FROM faculty
-       ${ownerSql || "WHERE 1=1"}
-       AND ${ACTIVE_ONLY_SQL}
-       ORDER BY name ASC`,
-      ownerParams
-    );
-    return (rows || []).map(toFacultyRow);
-  },
+  getAll: async (opts = {}) => Faculty.getAllWithAllocation(opts),
 
+  /** Distinct active faculty identities visible to the caller (home + shared). */
   count: async (opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = ownerWhereFromOpts(opts);
+    const vis = visibleFacultySql(opts);
     const [rows] = await db.query(
-      `SELECT COUNT(*) AS totalFaculty FROM faculty
-       ${ownerSql || "WHERE 1=1"}
-       AND ${ACTIVE_ONLY_SQL}`,
-      ownerParams
+      `SELECT COUNT(DISTINCT f.id) AS totalFaculty
+       FROM faculty f
+       ${vis.joinSql}
+       WHERE ${vis.whereSql}
+         AND ${ACTIVE_ONLY_F_SQL}`,
+      [...vis.joinParams, ...vis.whereParams]
     );
     const r = rows?.[0];
     return {
@@ -163,7 +243,19 @@ const Faculty = {
     };
   },
 
+  /** Updates the caller's department Max only (home → faculty row, shared → membership). */
   updateMaxClassrooms: async (id, max, opts = {}) => {
+    const scope = await Membership.resolveFacultyScope(id, opts);
+    if (scope.kind === "shared") {
+      const [result] = await db.query(
+        `UPDATE faculty_department_memberships
+         SET max_classrooms = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND is_active = TRUE`,
+        [max, scope.membership.id]
+      );
+      return (result.affectedRows ?? 0) > 0;
+    }
+    if (scope.kind !== "home") return false;
     const { sql: ownerSql, params: ownerParams } = ownerAndFromOpts(opts);
     const [result] = await db.query(
       `UPDATE faculty SET max_classrooms = ? WHERE id = ? AND ${ACTIVE_ONLY_SQL}${ownerSql}`,
@@ -181,6 +273,17 @@ const Faculty = {
     { name, department, email, maxClassrooms, isAvailable } = {},
     opts = {}
   ) => {
+    const scope = await Membership.resolveFacultyScope(id, opts);
+    if (scope.kind === "shared") {
+      return Faculty.updateSharedMembershipDetails(scope, {
+        name,
+        department,
+        email,
+        maxClassrooms,
+        isAvailable,
+      });
+    }
+
     const { sql: ownerSql, params: ownerParams } = ownerAndFromOpts(opts);
     const [match] = await db.query(
       `SELECT id, name, department, email, max_classrooms, is_available
@@ -311,7 +414,71 @@ const Faculty = {
     }
   },
 
+  /**
+   * Shared department edit: only its own Max / Available. Identity fields (name, email,
+   * department) belong to the home department and are rejected when changed.
+   */
+  updateSharedMembershipDetails: async (
+    scope,
+    { name, department, email, maxClassrooms, isAvailable } = {}
+  ) => {
+    const current = scope.faculty;
+    if (current?.is_active === false || current?.isactive === false) {
+      return { ok: false, code: "NOT_FOUND", message: "Faculty not found or not allowed" };
+    }
+    const changedName =
+      name != null && Membership.normalizeName(name) !== Membership.normalizeName(current.name);
+    const changedEmail =
+      email != null && normalizeFacultyEmail(email) !== normalizeFacultyEmail(current.email);
+    const currentDept = String(current.department || "").trim().toUpperCase();
+    const changedDept =
+      department !== undefined && String(department || "").trim().toUpperCase() !== currentDept;
+    if (changedName || changedEmail || changedDept) {
+      return {
+        ok: false,
+        code: "FORBIDDEN",
+        message:
+          "This faculty member is shared from another department. Only their home department can change name, email, or department. You can update your department's Max and Available settings.",
+      };
+    }
+
+    const m = scope.membership;
+    const nextMax =
+      maxClassrooms != null ? Number(maxClassrooms) : Number(m.max_classrooms ?? 1) || 1;
+    if (!Number.isFinite(nextMax) || nextMax < 1 || nextMax > 20) {
+      return { ok: false, code: "VALIDATION", message: "max_classrooms must be between 1 and 20" };
+    }
+    const nextAvailable = typeof isAvailable === "boolean" ? isAvailable : m.is_available !== false;
+    await db.query(
+      `UPDATE faculty_department_memberships
+       SET max_classrooms = ?, is_available = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND is_active = TRUE`,
+      [nextMax, nextAvailable, m.id]
+    );
+    return {
+      ok: true,
+      faculty: {
+        name: current.name,
+        department: current.department ?? null,
+        email: current.email,
+        maxClassrooms: nextMax,
+        isAvailable: nextAvailable,
+      },
+    };
+  },
+
   updateAvailability: async (id, isAvailable, opts = {}) => {
+    const scope = await Membership.resolveFacultyScope(id, opts);
+    if (scope.kind === "shared") {
+      const [result] = await db.query(
+        `UPDATE faculty_department_memberships
+         SET is_available = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND is_active = TRUE`,
+        [isAvailable, scope.membership.id]
+      );
+      return (result.affectedRows ?? 0) > 0;
+    }
+    if (scope.kind !== "home") return false;
     const { sql: ownerSql, params: ownerParams } = ownerAndFromOpts(opts);
     const [match] = await db.query(
       `SELECT id FROM faculty WHERE id = ? AND ${ACTIVE_ONLY_SQL}${ownerSql}`,
@@ -352,6 +519,17 @@ const Faculty = {
       [id, ...ownerParams]
     );
     if (!Array.isArray(match) || match.length === 0) return false;
+
+    // Identity + login are shared: never deactivate while another department still uses it.
+    const others = await Membership.countActiveMembershipsExcluding(id);
+    if (others > 0) {
+      const err = new Error(
+        "This faculty member is also shared with another department. Their identity and login stay active; ask the other department(s) to remove them first, or contact an administrator."
+      );
+      err.statusCode = 409;
+      err.code = "FACULTY_SHARED";
+      throw err;
+    }
 
     const email = match[0].email;
     const conn = await db.getConnection();
@@ -412,11 +590,44 @@ const Faculty = {
 
   deleteById: async (id, opts = {}) => Faculty.softDeleteById(id, opts),
 
-  deleteByIds: async (ids, opts = {}) => {
-    if (ids.length === 0) return;
-    for (const id of ids) {
-      await Faculty.softDeleteById(id, opts);
+  /**
+   * Remove a faculty member from the caller's department.
+   * shared → deactivate only this department's membership (history + counters kept).
+   * home   → existing soft-delete (blocked while other departments share the identity).
+   * @returns {Promise<{ok: boolean, kind?: string, code?: string, message?: string}>}
+   */
+  removeFromDepartment: async (id, opts = {}) => {
+    const scope = await Membership.resolveFacultyScope(id, opts);
+    if (scope.kind === "shared") {
+      const [result] = await db.query(
+        `UPDATE faculty_department_memberships
+         SET is_active = FALSE, removed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND is_active = TRUE`,
+        [scope.membership.id]
+      );
+      const ok = (result.affectedRows ?? 0) > 0;
+      return ok
+        ? { ok, kind: "shared", department: scope.membership.department }
+        : { ok, code: "NOT_FOUND" };
     }
+    if (scope.kind !== "home") return { ok: false, code: "NOT_FOUND" };
+    const ok = await Faculty.softDeleteById(id, opts);
+    return ok ? { ok, kind: "home" } : { ok, code: "NOT_FOUND" };
+  },
+
+  /** @returns {Promise<{removed: number, skippedShared: number[]}>} */
+  deleteByIds: async (ids, opts = {}) => {
+    const skippedShared = [];
+    let removed = 0;
+    for (const id of ids || []) {
+      try {
+        if (await Faculty.softDeleteById(id, opts)) removed += 1;
+      } catch (err) {
+        if (err.code !== "FACULTY_SHARED") throw err;
+        skippedShared.push(id);
+      }
+    }
+    return { removed, skippedShared };
   },
 
   /**
@@ -439,6 +650,12 @@ const Faculty = {
 
     const { sql: ownerSql, params: ownerParams } = ownerWhereFromOpts(opts);
     const whereBase = ownerSql || "WHERE 1=1";
+    // Identities still used by another department keep their login and stay active.
+    const notSharedSql = `NOT EXISTS (
+      SELECT 1 FROM faculty_department_memberships fdm
+      WHERE fdm.faculty_id = faculty.id AND fdm.is_active = TRUE
+    )`;
+    const contextId = validContextId(opts);
 
     const conn = await db.getConnection();
     try {
@@ -448,10 +665,20 @@ const Faculty = {
         `SELECT email FROM faculty
          ${whereBase}
            AND ${ACTIVE_ONLY_SQL}
+           AND ${notSharedSql}
            AND email IS NOT NULL
            AND TRIM(email) <> ''`,
         ownerParams
       );
+
+      const [sharedRows] = await conn.query(
+        `SELECT COUNT(*)::int AS cnt FROM faculty
+         ${whereBase}
+           AND ${ACTIVE_ONLY_SQL}
+           AND NOT ${notSharedSql}`,
+        ownerParams
+      );
+      const skippedShared = Number(sharedRows?.[0]?.cnt ?? 0) || 0;
 
       const [result] = await conn.query(
         `UPDATE faculty
@@ -459,10 +686,21 @@ const Faculty = {
              is_available = FALSE,
              deleted_at = CURRENT_TIMESTAMP
          ${whereBase}
-           AND ${ACTIVE_ONLY_SQL}`,
+           AND ${ACTIVE_ONLY_SQL}
+           AND ${notSharedSql}`,
         ownerParams
       );
-      const removed = Number(result?.affectedRows ?? result?.rowCount ?? 0) || 0;
+      let removed = Number(result?.affectedRows ?? result?.rowCount ?? 0) || 0;
+
+      if (contextId) {
+        const [memberResult] = await conn.query(
+          `UPDATE faculty_department_memberships
+           SET is_active = FALSE, removed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+           WHERE academic_context_id = ? AND is_active = TRUE`,
+          [contextId]
+        );
+        removed += Number(memberResult?.affectedRows ?? 0) || 0;
+      }
 
       const emailList = (Array.isArray(emails) ? emails : [])
         .map((r) => String(r.email || "").trim().toLowerCase())
@@ -478,7 +716,7 @@ const Faculty = {
       }
 
       await conn.commit();
-      return { removed };
+      return { removed, skippedShared };
     } catch (err) {
       await conn.rollback();
       throw err;
@@ -488,27 +726,36 @@ const Faculty = {
   },
 
   /* =====================================
-     ACTIVE ALLOCATION COUNT (global)
+     ACTIVE ALLOCATION COUNT (one department)
      Counts seating_plan_venues still active
-     (attendance OR report not both completed).
-     Completed/historical plans do NOT count.
+     (attendance OR report not both completed) that are attributed to
+     membershipId (null = home department). Completed/historical plans do NOT count.
   ===================================== */
-  countActiveAllocations: async (facultyId, executor = db) => {
-  const [rows] = await executor.query(
-    `
-    SELECT COUNT(spvf.id) AS cnt
-    FROM seating_plan_venue_faculty spvf
-    JOIN seating_plan_venues spv ON spv.id = spvf.seating_plan_venue_id
-    JOIN seating_plans sp ON sp.id = spv.seating_plan_id
-    WHERE spvf.faculty_id = ?
-      AND (${ACTIVE_ALLOCATION_SQL})
-    `,
-    [facultyId]
-  );
+  countActiveAllocations: async (facultyId, executor = db, membershipId = null) => {
+    const bucketSql =
+      membershipId == null ? "attr.membership_id IS NULL" : "attr.membership_id = ?";
+    const params = membershipId == null ? [facultyId] : [facultyId, Number(membershipId)];
+    const [rows] = await executor.query(
+      `
+      SELECT COUNT(spvf.id) AS cnt
+      FROM seating_plan_venue_faculty spvf
+      JOIN seating_plan_venues spv ON spv.id = spvf.seating_plan_venue_id
+      JOIN seating_plans sp ON sp.id = spv.seating_plan_id
+      ${Membership.ATTRIBUTION_LATERAL_SQL}
+      WHERE spvf.faculty_id = ?
+        AND ${bucketSql}
+        AND (${ACTIVE_ALLOCATION_SQL})
+      `,
+      params
+    );
     return Number(rows?.[0]?.cnt ?? rows?.[0]?.CNT ?? 0) || 0;
   },
 
-  getCapacitySummary: async (facultyId, executor = db) => {
+  /**
+   * Capacity for the department an assignment by attributionUserId would count toward.
+   * attributionUserId = seating_plans.owner_user_id the new plan will carry.
+   */
+  getCapacitySummary: async (facultyId, executor = db, { attributionUserId = null } = {}) => {
     const [rows] = await executor.query(
       `
       SELECT
@@ -523,25 +770,40 @@ const Faculty = {
     );
     if (!rows?.length) return null;
     const r = rows[0];
-    const maxClassrooms = Number(r.max_classrooms ?? r.maxclassrooms ?? 1) || 1;
-    const allocation = await Faculty.countActiveAllocations(facultyId, executor);
+    const membership = attributionUserId
+      ? await Membership.findMembershipForAttributionUser(facultyId, attributionUserId, executor)
+      : null;
+    const maxClassrooms = membership
+      ? Number(membership.max_classrooms ?? 1) || 1
+      : Number(r.max_classrooms ?? r.maxclassrooms ?? 1) || 1;
+    const allocation = await Faculty.countActiveAllocations(
+      facultyId,
+      executor,
+      membership ? membership.id : null
+    );
+    const isAvailable = membership
+      ? membership.is_available !== false
+      : !(r.is_available === false || r.isavailable === false);
     return {
       maxClassrooms,
       allocation,
-      // Remaining is global across exam days: Max − active assignments.
+      // Remaining for this department across exam days: Max − active assignments.
       remaining: Math.max(0, maxClassrooms - allocation),
-      isAvailable: !(r.is_available === false || r.isavailable === false),
+      isAvailable,
       isActive: !(r.is_active === false || r.isactive === false),
+      membershipActive: membership ? membership.is_active !== false : true,
+      department: membership ? membership.department : null,
+      scope: membership ? "shared" : "home",
     };
   },
 
   /* =====================================
      CHECK IF FACULTY CAN BE ALLOCATED
-     Capacity = global active seating assignments (not slot-scoped).
+     Capacity = department-scoped active seating assignments (not slot-scoped).
      Time-slot conflicts are checked separately at save time.
   ===================================== */
-  canAllocate: async (facultyId, { additionalSlots = 1 } = {}) => {
-    const summary = await Faculty.getCapacitySummary(facultyId);
+  canAllocate: async (facultyId, { additionalSlots = 1, attributionUserId = null } = {}) => {
+    const summary = await Faculty.getCapacitySummary(facultyId, db, { attributionUserId });
     if (!summary) return false;
     if (!summary.isActive || !summary.isAvailable) return false;
     const need = Math.max(1, Number(additionalSlots) || 1);
@@ -557,6 +819,10 @@ const Faculty = {
    * @param {object} opts
    * @param {boolean} [opts.ignoreCapacity=false] - When true (faculty transfer),
    *   skip normal allocation-limit check; still enforce same-day conflict / active status.
+   * @param {number|null} [opts.attributionUserId] - Owner of the plan being created;
+   *   selects which department's Max / Alloc applies.
+   * @param {object|null} [opts.viewer] - conflictViewerFromOpts(); hides other departments' venues.
+   * Same-day conflicts are always checked across ALL departments.
    */
   validateFacultyForAllocation: async (
     facultyId,
@@ -569,10 +835,12 @@ const Faculty = {
       excludeSpvId = null,
       ignoreCapacity = false,
       forUpdate = false,
+      attributionUserId = null,
+      viewer = null,
     } = {},
     executor = db
   ) => {
-    const summary = await Faculty.getCapacitySummary(facultyId, executor);
+    const summary = await Faculty.getCapacitySummary(facultyId, executor, { attributionUserId });
     if (!summary) {
       return {
         allowed: false,
@@ -588,22 +856,32 @@ const Faculty = {
           "Faculty has been removed from active management and cannot be assigned to new exams",
       };
     }
+    if (!summary.membershipActive) {
+      return {
+        allowed: false,
+        code: "INACTIVE",
+        message: `Faculty has been removed from ${summary.department || "this department"}'s active management and cannot be assigned by it`,
+      };
+    }
     if (!summary.isAvailable) {
       return {
         allowed: false,
         code: "UNAVAILABLE",
-        message: "Faculty is marked unavailable",
+        message: summary.department
+          ? `Faculty is marked unavailable for ${summary.department}`
+          : "Faculty is marked unavailable",
       };
     }
 
     if (!ignoreCapacity) {
       const slots = Math.max(1, Number(additionalSlots) || 1);
       if (summary.remaining < slots) {
+        const forDept = summary.department ? ` for ${summary.department}` : "";
         return {
           allowed: false,
           code: "CAPACITY",
           message:
-            `Faculty allocation limit reached. ${summary.maxClassrooms} max, ${summary.allocation} already assigned, ${summary.remaining} remaining.`,
+            `Faculty allocation limit reached${forDept}. ${summary.maxClassrooms} max, ${summary.allocation} already assigned, ${summary.remaining} remaining.`,
           currentAllocation: summary.allocation,
           maxClassrooms: summary.maxClassrooms,
           remaining: summary.remaining,
@@ -623,11 +901,12 @@ const Faculty = {
         forUpdate,
       });
       if (conflict) {
+        const shown = presentConflictForViewer(conflict, viewer);
         return {
           allowed: false,
           code: "TIME_CONFLICT",
-          message: conflict.message || buildTimeConflictMessage(conflict),
-          conflict,
+          message: shown.message || buildTimeConflictMessage(shown),
+          conflict: shown,
         };
       }
     }
@@ -640,9 +919,34 @@ const Faculty = {
     };
   },
 
-  /** Increment independent transfer counter (does not affect allocation capacity). */
-  incrementTransferCount: async (facultyId, executor = db) => {
+  /**
+   * Increment independent transfer counter (does not affect allocation capacity).
+   * Counted for the department that owns the transferred assignment's seating plan.
+   */
+  incrementTransferCount: async (facultyId, executor = db, { seatingPlanVenueId = null } = {}) => {
     if (!facultyId) return;
+    if (seatingPlanVenueId) {
+      const [owners] = await executor.query(
+        `SELECT sp.owner_user_id
+         FROM seating_plan_venues spv
+         JOIN seating_plans sp ON sp.id = spv.seating_plan_id
+         WHERE spv.id = ?`,
+        [seatingPlanVenueId]
+      );
+      const ownerId = owners?.[0]?.owner_user_id ?? owners?.[0]?.owneruserid ?? null;
+      const membership = ownerId
+        ? await Membership.findMembershipForAttributionUser(facultyId, ownerId, executor)
+        : null;
+      if (membership) {
+        await executor.query(
+          `UPDATE faculty_department_memberships
+           SET transfer_count = transfer_count + 1, updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [membership.id]
+        );
+        return;
+      }
+    }
     await executor.query(
       `UPDATE faculty
        SET transfer_count = COALESCE(transfer_count, 0) + 1
@@ -659,8 +963,35 @@ const Faculty = {
        Remaining  = max_classrooms − Allocated (free slots to allocate again)
        Invariant  = max_classrooms = Allocated + Remaining (when Allocated ≤ max)
   ===================================== */
-  getAllWithAllocation: async (opts = {}) => {
-    const { sql: ownerSql, params: ownerParams } = ownerWhereFromOpts(opts, "f.");
+  getAllWithAllocation: async (opts = {}) =>
+    Faculty.queryScopedRows(opts, { applyVisibility: true }),
+
+  /**
+   * Allocation summaries for specific faculty internal IDs (derived, idempotent).
+   * With opts, shared faculty report the caller's department counters.
+   */
+  getAllocationSummariesByIds: async (facultyIds = [], opts = null) => {
+    const ids = [...new Set((facultyIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+    if (ids.length === 0) return [];
+    return Faculty.queryScopedRows(opts || { role: "admin" }, { ids, applyVisibility: false });
+  },
+
+  /**
+   * One row per faculty identity with department-scoped Max / Alloc / Done / Rem /
+   * Transfers / Available plus department memberships.
+   */
+  queryScopedRows: async (opts = {}, { ids = null, applyVisibility = true } = {}) => {
+    const vis = visibleFacultySql(opts);
+    const params = [...vis.selectParams, ...vis.joinParams];
+    const where = ["1=1"];
+    if (applyVisibility) {
+      where.push(ACTIVE_ONLY_F_SQL, vis.whereSql);
+      params.push(...vis.whereParams);
+    }
+    if (ids) {
+      where.push(`f.id IN (${ids.map(() => "?").join(", ")})`);
+      params.push(...ids);
+    }
     const [rows] = await db.query(
       `
       SELECT
@@ -672,74 +1003,26 @@ const Faculty = {
         COALESCE(f.max_classrooms, 1) AS max_classrooms,
         COALESCE(f.is_available, true) AS is_available,
         COALESCE(f.transfer_count, 0) AS transfer_count,
-        COUNT(spvf.id) AS total_assignments,
-        COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${ACTIVE_ALLOCATION_SQL})) AS allocation,
-        COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${FULLY_COMPLETED_SQL})) AS completed,
-        (
-          COALESCE(f.max_classrooms, 1)
-          - COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${ACTIVE_ALLOCATION_SQL}))
-        ) AS remaining,
-        COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${ATTENDANCE_DONE_SQL})) AS attendance_completed,
-        COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${REPORT_DONE_SQL})) AS report_completed
+        ${HOME_DEPARTMENT_SQL} AS home_department,
+        ARRAY(
+          SELECT m.department FROM faculty_department_memberships m
+          WHERE m.faculty_id = f.id AND m.is_active = TRUE
+          ORDER BY m.department
+        ) AS shared_departments,
+        ${vis.selectSql}
       FROM faculty f
-      LEFT JOIN seating_plan_venue_faculty spvf
-        ON spvf.faculty_id = f.id
-      LEFT JOIN seating_plan_venues spv
-        ON spv.id = spvf.seating_plan_venue_id
-      LEFT JOIN seating_plans sp
-        ON sp.id = spv.seating_plan_id
-      ${ownerSql || "WHERE 1=1"}
-        AND ${ACTIVE_ONLY_F_SQL}
-      GROUP BY f.id, f.public_uuid, f.name, f.department, f.email, f.max_classrooms, f.is_available, f.transfer_count
+      ${vis.joinSql}
+      WHERE ${where.join("\n        AND ")}
       ORDER BY f.name ASC
       `,
-      ownerParams
+      params
     );
-    return (rows || []).map(toFacultyRow);
-  },
-
-  /**
-   * Allocation summaries for specific faculty internal IDs (derived, idempotent).
-   */
-  getAllocationSummariesByIds: async (facultyIds = []) => {
-    const ids = [...new Set((facultyIds || []).map((id) => Number(id)).filter((id) => id > 0))];
-    if (ids.length === 0) return [];
-
-    const placeholders = ids.map(() => "?").join(", ");
-    const [rows] = await db.query(
-      `
-      SELECT
-        f.id,
-        f.public_uuid,
-        f.name,
-        f.department,
-        f.email,
-        COALESCE(f.max_classrooms, 1) AS max_classrooms,
-        COALESCE(f.is_available, true) AS is_available,
-        COUNT(spvf.id) AS total_assignments,
-        COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${ACTIVE_ALLOCATION_SQL})) AS allocation,
-        COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${FULLY_COMPLETED_SQL})) AS completed,
-        (
-          COALESCE(f.max_classrooms, 1)
-          - COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${ACTIVE_ALLOCATION_SQL}))
-        ) AS remaining,
-        COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${ATTENDANCE_DONE_SQL})) AS attendance_completed,
-        COUNT(spvf.id) FILTER (WHERE spvf.id IS NOT NULL AND (${REPORT_DONE_SQL})) AS report_completed
-      FROM faculty f
-      LEFT JOIN seating_plan_venue_faculty spvf
-        ON spvf.faculty_id = f.id
-      LEFT JOIN seating_plan_venues spv
-        ON spv.id = spvf.seating_plan_venue_id
-      LEFT JOIN seating_plans sp
-        ON sp.id = spv.seating_plan_id
-      WHERE f.id IN (${placeholders})
-      GROUP BY f.id, f.public_uuid, f.name, f.department, f.email, f.max_classrooms, f.is_available
-      ORDER BY f.name ASC
-      `,
-      ids
-    );
-    return (rows || []).map(toFacultyRow);
+    const list = rows || [];
+    const buckets = await Membership.countAssignmentBuckets(list.map((r) => r.id));
+    return mergeScopedRows(list, buckets);
   },
 };
+
+Faculty._mergeScopedRows = mergeScopedRows;
 
 module.exports = Faculty;

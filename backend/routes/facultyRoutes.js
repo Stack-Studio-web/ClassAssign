@@ -18,6 +18,8 @@ const {
 } = require("../utils/password");
 const FacultyScheduleService = require("../services/facultyScheduleService");
 const { resolveFacultyDepartment } = require("../utils/facultyDepartments");
+const Membership = require("../utils/facultyMembership");
+const { conflictViewerFromOpts } = require("../utils/facultyTimeConflict");
 
 function normalizeIncomingDepartment(raw) {
   if (raw === undefined) return { ok: true, code: null };
@@ -135,24 +137,17 @@ router.post("/", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (r
       return Api.validationError(res, deptNorm.error);
     }
     const departmentCode = deptNorm.code;
+    const opts = await resolveOwnerOpts(req);
 
     const existingFaculty = await Faculty.findByEmail(email);
     if (existingFaculty) {
-      const inactive = existingFaculty.is_active === false;
-      if (inactive) {
-        await Faculty.reactivateById(existingFaculty.id, {
-          name: name.trim(),
-          department: departmentCode,
-        });
-        const plainPassword = passwordFromEmail(email);
-        return Api.success(
-          res,
-          "Faculty restored to active management (was previously removed).",
-          { email, restored: true, facultyId: existingFaculty.id, generatedPassword: plainPassword },
-          200
-        );
-      }
-      return Api.conflict(res, "DUPLICATE_EMAIL", "Faculty with this email already exists.");
+      return respondExistingFaculty(res, existingFaculty, {
+        email,
+        name: name.trim(),
+        departmentCode,
+        opts,
+        userId: req.user?.id || null,
+      });
     }
 
     const existingUser = await User.findByEmailAny(email);
@@ -173,7 +168,6 @@ router.post("/", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (r
     }
 
     const hashedPassword = await hashPassword(plainPassword);
-    const opts = await resolveOwnerOpts(req);
     const { col, val } = insertField(opts.role, opts.ownerUserId);
     const facultyVals = [name.trim(), departmentCode, email];
     if (val != null) facultyVals.push(val);
@@ -201,8 +195,26 @@ router.post("/", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (r
       201
     );
   } catch (err) {
-    if (conn) await conn.rollback();
-    if (err.code === "ER_DUP_ENTRY" || err.code === "23505") {
+    if (conn) await conn.rollback().catch(() => {});
+    const pgCode = err.code || err.parent?.code || err.original?.code;
+    if (pgCode === "ER_DUP_ENTRY" || pgCode === "23505") {
+      // Concurrent create with the same email: resolve to the identity that won.
+      try {
+        const email = String(req.body?.email || "").trim().toLowerCase();
+        const winner = await Faculty.findByEmail(email);
+        if (winner) {
+          const deptNorm = normalizeIncomingDepartment(req.body?.department);
+          return respondExistingFaculty(res, winner, {
+            email,
+            name: String(req.body?.name || "").trim(),
+            departmentCode: deptNorm.ok ? deptNorm.code : null,
+            opts: await resolveOwnerOpts(req),
+            userId: req.user?.id || null,
+          });
+        }
+      } catch (resolveErr) {
+        return Api.serverError(res, resolveErr, "POST /faculty (duplicate resolve)");
+      }
       return Api.conflict(res, "DUPLICATE_RECORD", "Faculty or user with this email already exists.");
     }
     return Api.serverError(res, err, "POST /faculty");
@@ -210,6 +222,53 @@ router.post("/", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (r
     if (conn) conn.release();
   }
 });
+
+/**
+ * Existing email → reuse the faculty identity and login.
+ * Home department: existing reactivate / duplicate behaviour.
+ * Other department: add a department membership (never overwrites identity or credentials).
+ */
+async function respondExistingFaculty(res, existingFaculty, { email, name, departmentCode, opts, userId }) {
+  const result = await Membership.associateExistingFaculty(
+    {
+      faculty: existingFaculty,
+      requestedDepartment: departmentCode,
+      requestedName: name,
+      addedByUserId: userId,
+    },
+    opts
+  );
+
+  if (result.status === "HOME_INACTIVE") {
+    await Faculty.reactivateById(existingFaculty.id, { name, department: departmentCode });
+    const plainPassword = passwordFromEmail(email);
+    return Api.success(
+      res,
+      "Faculty restored to active management (was previously removed).",
+      { email, restored: true, facultyId: existingFaculty.id, generatedPassword: plainPassword },
+      200
+    );
+  }
+  if (result.status === "ASSOCIATED" || result.status === "REACTIVATED") {
+    return Api.success(
+      res,
+      result.message,
+      {
+        email,
+        associated: true,
+        reactivatedMembership: result.status === "REACTIVATED",
+        department: result.membership.department,
+        detailsMismatch: !!result.detailsMismatch,
+        existingName: result.faculty?.name ?? null,
+      },
+      result.httpStatus
+    );
+  }
+  if (result.httpStatus === 403) {
+    return Api.fail(res, 403, result.status, result.message);
+  }
+  return Api.conflict(res, result.status, result.message);
+}
 
 router.put("/:uuid/max-classrooms", sessionAuth, checkRole(["admin", "faculty_incharge"]), resolveEntity(TABLE.faculty), async (req, res) => {
   try {
@@ -276,6 +335,9 @@ router.put("/:uuid", sessionAuth, checkRole(["admin", "faculty_incharge"]), reso
       if (result.code === "DUPLICATE_EMAIL") {
         return Api.conflict(res, "DUPLICATE_EMAIL", result.message);
       }
+      if (result.code === "FORBIDDEN") {
+        return Api.forbidden(res, result.message);
+      }
       return Api.validationError(res, result.message || "Invalid faculty details");
     }
 
@@ -307,9 +369,17 @@ router.delete("/:uuid", sessionAuth, checkRole(["admin", "faculty_incharge"]), r
 
     // Soft-delete only — never block on seating/attendance assignments.
     // Historical plans keep faculty_id; faculty row stays with is_active=false.
-    const deleted = await Faculty.softDeleteById(facultyId, await resolveOwnerOpts(req));
-    if (!deleted) {
+    // Shared faculty: only this department's membership is deactivated.
+    const result = await Faculty.removeFromDepartment(facultyId, await resolveOwnerOpts(req));
+    if (!result.ok) {
       return Api.notFound(res, "Faculty not found or already removed");
+    }
+    if (result.kind === "shared") {
+      return Api.success(
+        res,
+        `Faculty removed from ${result.department}. Their login, other departments, and historical exam data were preserved.`,
+        { scope: "shared" }
+      );
     }
 
     return Api.success(
@@ -317,7 +387,9 @@ router.delete("/:uuid", sessionAuth, checkRole(["admin", "faculty_incharge"]), r
       "Faculty removed from active management. Historical seating and attendance data were preserved."
     );
   } catch (err) {
-    console.error("FACULTY SOFT DELETE ERROR:", err);
+    if (!err.statusCode || err.statusCode >= 500) {
+      console.error("FACULTY SOFT DELETE ERROR:", err);
+    }
     return Api.fromError(res, err);
   }
 });
@@ -325,13 +397,17 @@ router.delete("/:uuid", sessionAuth, checkRole(["admin", "faculty_incharge"]), r
 router.get("/:uuid/can-allocate", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), resolveEntity(TABLE.faculty, { allowLegacyNumeric: true }), async (req, res) => {
   try {
     const { examDate, examStartTime, examEndTime } = req.query;
+    const opts = await resolveOwnerOpts(req);
+    const attributionUserId = Membership.attributionUserIdFromOpts(opts);
     const validation = await Faculty.validateFacultyForAllocation(req.internalId, {
       examDate,
       examStartTime,
       examEndTime,
       additionalSlots: 1,
+      attributionUserId,
+      viewer: conflictViewerFromOpts(opts),
     });
-    const summary = await Faculty.getCapacitySummary(req.internalId);
+    const summary = await Faculty.getCapacitySummary(req.internalId, undefined, { attributionUserId });
     if (!summary) {
       return Api.notFound(res, "Faculty not found");
     }
