@@ -146,6 +146,22 @@ function membershipLabels(homeDepartment, sharedDepartments = []) {
   return out;
 }
 
+/**
+ * UI label for Dept. Memberships column.
+ * Main department = original faculty identity department (home), never the latest share.
+ * One membership → "CSE"; two or more → "Shared - CSE".
+ */
+function membershipDisplayLabel(homeDepartment, sharedDepartments = []) {
+  const all = membershipLabels(homeDepartment, sharedDepartments);
+  const main = String(homeDepartment || "").trim().toUpperCase() || all[0] || "";
+  if (all.length <= 1) return main || "—";
+  return main ? `Shared - ${main}` : "Shared";
+}
+
+function isSharedMembership(homeDepartment, sharedDepartments = []) {
+  return membershipLabels(homeDepartment, sharedDepartments).length > 1;
+}
+
 function normalizeName(name) {
   return String(name || "").trim().replace(/\s+/g, " ").toLowerCase();
 }
@@ -343,6 +359,8 @@ module.exports = {
   indexBuckets,
   scopedCounters,
   membershipLabels,
+  membershipDisplayLabel,
+  isSharedMembership,
   normalizeName,
   homePredicate,
   resolveManagedDepartment,

@@ -82,10 +82,14 @@ function mergeScopedRows(rows, bucketRows) {
           };
     const homeDepartment = r.home_department ?? r.homedepartment ?? null;
     const shared = r.shared_departments ?? r.shareddepartments ?? [];
+    const departments = Membership.membershipLabels(homeDepartment, shared);
     return toFacultyRow({
       ...r,
       ...Membership.scopedCounters(settings, counts),
-      departments: Membership.membershipLabels(homeDepartment, shared),
+      departments,
+      main_department: String(homeDepartment || "").trim().toUpperCase() || departments[0] || null,
+      membership_label: Membership.membershipDisplayLabel(homeDepartment, shared),
+      is_shared: Membership.isSharedMembership(homeDepartment, shared),
       membership_type: sharedId != null ? "shared" : "home",
       scoped_department:
         sharedId != null ? r.shared_department ?? r.shareddepartment : homeDepartment,
@@ -133,6 +137,12 @@ function toFacultyRow(row) {
       ? {
           /** Home department first, then shared department memberships. */
           departments: row.departments,
+          /** Original creation/import department — never changed by later shares. */
+          mainDepartment: row.main_department ?? null,
+          /** "CSE" or "Shared - CSE" from membership count + main department. */
+          membershipLabel: row.membership_label ?? null,
+          /** True when the identity belongs to more than one department. */
+          isShared: row.is_shared === true,
           /** "home" = owned by the caller's department; "shared" = membership row. */
           membershipType: row.membership_type,
           /** Department whose counters are shown in this row. */

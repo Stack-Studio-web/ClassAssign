@@ -22,11 +22,40 @@ const Membership = require("../utils/facultyMembership");
 const { conflictViewerFromOpts } = require("../utils/facultyTimeConflict");
 
 function normalizeIncomingDepartment(raw) {
-  if (raw === undefined) return { ok: true, code: null };
+  if (raw === undefined || raw === null || String(raw).trim() === "") {
+    return { ok: true, code: null };
+  }
   const resolved = resolveFacultyDepartment(raw);
-  if (!resolved.ok) return resolved;
-  return { ok: true, code: resolved.code };
+  if (resolved.ok) return { ok: true, code: resolved.code };
+  // Academic Context codes (e.g. KSI) may exist before the static JSON list is updated.
+  const code = String(raw).trim().toUpperCase();
+  if (/^[A-Z0-9&]{2,12}$/.test(code)) return { ok: true, code };
+  return resolved;
 }
+
+router.get(
+  "/department-options",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge", "hod"]),
+  async (req, res) => {
+    try {
+      const AcademicContextService = require("../services/academicContextService");
+      const departments = await AcademicContextService.listDepartments();
+      const managed = await Membership.resolveManagedDepartment(await resolveOwnerOpts(req));
+      const currentDepartment =
+        managed?.department ||
+        (req.user?.department ? String(req.user.department).trim().toUpperCase() : null);
+      return Api.success(res, "Faculty department options", {
+        departments,
+        currentDepartment,
+        /** Other departments only — for the Add Faculty dropdown. */
+        otherDepartments: departments.filter((d) => d.code !== currentDepartment),
+      });
+    } catch (err) {
+      return Api.serverError(res, err, "GET /faculty/department-options");
+    }
+  }
+);
 
 router.get("/", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), async (req, res) => {
   try {
@@ -136,8 +165,18 @@ router.post("/", sessionAuth, checkRole(["admin", "faculty_incharge"]), async (r
     if (!deptNorm.ok) {
       return Api.validationError(res, deptNorm.error);
     }
-    const departmentCode = deptNorm.code;
     const opts = await resolveOwnerOpts(req);
+    // New identities default main department to the caller's Academic Context.
+    // A selected other department (Add Faculty dropdown) becomes the main department
+    // only for a brand-new row; associations never overwrite faculty.department.
+    const managed = await Membership.resolveManagedDepartment(opts);
+    const departmentCode = deptNorm.code || managed?.department || null;
+    if (!departmentCode) {
+      return Api.validationError(
+        res,
+        "Department is required (select one, or work inside an Academic Context)."
+      );
+    }
 
     const existingFaculty = await Faculty.findByEmail(email);
     if (existingFaculty) {

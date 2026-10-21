@@ -39,6 +39,30 @@ router.get("/meta/candidates", sessionAuth, checkRole(["admin"]), async (_req, r
   }
 });
 
+/** Distinct departments from active Academic Contexts (for Faculty Add dropdown). */
+router.get(
+  "/meta/departments",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge", "hod"]),
+  async (req, res) => {
+    try {
+      const departments = await AcademicContextService.listDepartments();
+      const ctx = await AcademicContextService.getForUser(req.user.id);
+      const currentDepartment = ctx?.department
+        ? String(ctx.department).trim().toUpperCase()
+        : req.user?.department
+          ? String(req.user.department).trim().toUpperCase()
+          : null;
+      return Api.success(res, "Academic context departments", {
+        departments,
+        currentDepartment,
+      });
+    } catch (err) {
+      return Api.fromError(res, err);
+    }
+  }
+);
+
 router.post("/", sessionAuth, checkRole(["admin"]), async (req, res) => {
   try {
     const body = req.body || {};

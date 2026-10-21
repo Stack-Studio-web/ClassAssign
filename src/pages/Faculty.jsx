@@ -3,6 +3,7 @@ import api from "../lib/api";
 import { UserGroupIcon, BuildingOffice2Icon } from "@heroicons/react/24/outline";
 import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
+import { useAuth } from "../hooks/useAuth";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
 import { downloadTemplate } from "../lib/downloadTemplate";
 import FacultyDepartmentSelect from "../Components/FacultyDepartmentSelect";
@@ -24,12 +25,28 @@ function membershipsOf(f) {
   return [String(f?.department || "").trim().toUpperCase() || "UNASSIGNED"];
 }
 
+/** Prefer backend membershipLabel ("CSE" / "Shared - CSE"); fall back for older payloads. */
+function membershipDisplayOf(f) {
+  if (f?.membershipLabel) return f.membershipLabel;
+  const main = String(f?.mainDepartment || f?.department || "").trim().toUpperCase();
+  const all = membershipsOf(f);
+  if (all.length <= 1) return main || all[0] || "—";
+  return main ? `Shared - ${main}` : "Shared";
+}
+
 export default function Faculty() {
   const toast = useToast();
   const showConfirm = useConfirm();
+  const { user } = useAuth();
+  const currentContextDepartment = String(
+    user?.academicContext?.department || user?.department || ""
+  )
+    .trim()
+    .toUpperCase();
   const [totalFaculty, setTotalFaculty] = useState(0);
   const [faculty, setFaculty] = useState([]);
   const [activeTab, setActiveTab] = useState("add");
+  const [contextDepartments, setContextDepartments] = useState([]);
 
   // Edit States
   const [editingId, setEditingId] = useState(null);
@@ -97,6 +114,25 @@ export default function Faculty() {
     fetchFaculty();
     fetchLastImport();
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get("/faculty/department-options");
+        const data = res.data?.data ?? res.data ?? {};
+        const others = data.otherDepartments ?? data.departments ?? [];
+        if (!cancelled) setContextDepartments(Array.isArray(others) ? others : []);
+      } catch {
+        if (!cancelled) setContextDepartments([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentContextDepartment]);
+
+  const addFacultyDepartmentOptions = contextDepartments;
 
   // Keep Alloc/Done/Rem derived from backend after attendance or report updates.
   useEffect(() => {
@@ -341,11 +377,12 @@ export default function Faculty() {
       setCreateSuccess(null);
       return;
     }
-    const deptResolved = resolveFacultyDepartment(manualData.department);
-    if (!deptResolved.ok) {
-      setMessage(`⚠️ ${deptResolved.error}`);
-      setCreateSuccess(null);
-      return;
+    const rawDept = String(manualData.department || "").trim();
+    let departmentCode = null;
+    if (rawDept) {
+      const deptResolved = resolveFacultyDepartment(rawDept);
+      // Context-only codes (not in the static JSON) are still valid department codes.
+      departmentCode = deptResolved.ok ? deptResolved.code : rawDept.toUpperCase();
     }
 
     setLoading(true);
@@ -354,7 +391,7 @@ export default function Faculty() {
       const res = await api.post("/faculty", {
         ...manualData,
         email,
-        department: deptResolved.code || null,
+        department: departmentCode,
       });
       if (res.data.data?.associated) {
         setMessage(
@@ -605,10 +642,17 @@ export default function Faculty() {
                     onChange={(code) =>
                       setManualData({ ...manualData, department: code })
                     }
-                    placeholder="Search department name or code…"
+                    options={addFacultyDepartmentOptions}
+                    placeholder={
+                      currentContextDepartment
+                        ? `Other departments (default: ${currentContextDepartment})`
+                        : "Search department…"
+                    }
                   />
                   <p className="mt-1 text-xs text-gray-500">
-                    Select from the predefined list (optional).
+                    {currentContextDepartment
+                      ? `Leave blank to use your Academic Context (${currentContextDepartment}). Options exclude the current context.`
+                      : "Loaded from active Academic Contexts."}
                   </p>
                 </div>
                 <div>
@@ -750,7 +794,7 @@ export default function Faculty() {
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-100">
                     <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide">Name</th>
-                    <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide" title="Departments this faculty member belongs to. Counters below are for your department.">Dept. Memberships</th>
+                    <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide" title="Main department, or Shared - [main] when the faculty belongs to more than one department. Counters below are for your department.">Dept. Memberships</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide hidden sm:table-cell">Email</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide" title="Maximum concurrent exam halls">Max</th>
                     <th className="px-4 md:px-6 py-3 md:py-4 text-center text-xs font-semibold text-gray-600 uppercase tracking-wide" title="Active exams (attendance or report still pending)">Alloc</th>
@@ -794,17 +838,15 @@ export default function Faculty() {
                             />
                           </div>
                         ) : (
-                          <div>
-                            <span>{membershipsOf(f).join(", ")}</span>
-                            {shared && (
-                              <span
-                                className="ml-2 text-[11px] font-medium text-sky-700 bg-sky-50 border border-sky-200 px-1.5 py-0.5 rounded"
-                                title="Shared from another department. Only Max and Available can be changed here."
-                              >
-                                Shared
-                              </span>
-                            )}
-                          </div>
+                          <span
+                            title={
+                              f.isShared || membershipsOf(f).length > 1
+                                ? `Main department ${f.mainDepartment || membershipsOf(f)[0] || ""}. Shared across ${membershipsOf(f).join(", ")}.`
+                                : undefined
+                            }
+                          >
+                            {membershipDisplayOf(f)}
+                          </span>
                         )}
                       </td>
                       <td className="px-4 md:px-6 py-3 md:py-4 text-gray-500 text-sm hidden sm:table-cell">

@@ -8,6 +8,9 @@ import {
 /**
  * Searchable department dropdown for Faculty Import / edit.
  * Value stored/emitted is the department code (or "").
+ *
+ * @param {Array<{code:string,label?:string,name?:string}>|null} [options]
+ *   When provided, use these instead of the static facultyDepartments.json list.
  */
 export default function FacultyDepartmentSelect({
   value = "",
@@ -17,6 +20,7 @@ export default function FacultyDepartmentSelect({
   id: idProp,
   placeholder = "Search department name or code…",
   className = "",
+  options: optionsProp = null,
 }) {
   const autoId = useId();
   const id = idProp || autoId;
@@ -25,7 +29,24 @@ export default function FacultyDepartmentSelect({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
 
-  const selectedLabel = value ? departmentLabelForCode(value) : "";
+  const catalog = useMemo(() => {
+    if (!Array.isArray(optionsProp)) return FACULTY_DEPARTMENTS;
+    return optionsProp.map((d) => {
+      const code = String(d.code || d.department || "").trim().toUpperCase();
+      const name = d.name || d.label || code;
+      const label = d.label || (d.name ? `${d.name} (${code})` : code);
+      return { code, name, label };
+    }).filter((d) => d.code);
+  }, [optionsProp]);
+
+  const labelFor = (code) => {
+    if (!code) return "";
+    const hit = catalog.find((d) => d.code === String(code).trim().toUpperCase());
+    if (hit) return hit.label;
+    return departmentLabelForCode(code) || String(code);
+  };
+
+  const selectedLabel = value ? labelFor(value) : "";
 
   useEffect(() => {
     if (!open) {
@@ -44,10 +65,18 @@ export default function FacultyDepartmentSelect({
     return () => document.removeEventListener("mousedown", onDoc);
   }, [selectedLabel]);
 
-  const options = useMemo(
-    () => (open ? filterFacultyDepartments(query) : FACULTY_DEPARTMENTS),
-    [open, query]
-  );
+  const options = useMemo(() => {
+    if (!open) return catalog;
+    if (!Array.isArray(optionsProp)) return filterFacultyDepartments(query);
+    const q = String(query || "").trim().toLowerCase();
+    if (!q) return catalog;
+    return catalog.filter(
+      (d) =>
+        d.code.toLowerCase().includes(q) ||
+        String(d.name || "").toLowerCase().includes(q) ||
+        String(d.label || "").toLowerCase().includes(q)
+    );
+  }, [open, query, catalog, optionsProp]);
 
   const selectDept = (dept) => {
     onChange?.(dept.code);

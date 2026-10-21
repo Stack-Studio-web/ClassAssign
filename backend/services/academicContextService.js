@@ -113,6 +113,21 @@ const AcademicContextService = {
     return ids.length ? ids : [Number(userId)];
   },
 
+  /** Distinct department codes from active Academic Contexts (no hardcoded list). */
+  listDepartments: async () => {
+    const [rows] = await db.query(
+      `SELECT DISTINCT UPPER(TRIM(department)) AS department
+       FROM academic_contexts
+       WHERE is_active = TRUE
+         AND NULLIF(TRIM(department), '') IS NOT NULL
+       ORDER BY 1 ASC`
+    );
+    return (rows || [])
+      .map((r) => String(r.department || "").trim().toUpperCase())
+      .filter(Boolean)
+      .map((code) => ({ code, label: code }));
+  },
+
   listAll: async () => {
     const [rows] = await db.query(
       `SELECT ac.*, h.username AS hod_name

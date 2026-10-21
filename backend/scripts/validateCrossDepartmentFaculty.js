@@ -189,6 +189,10 @@ async function main() {
     const f = await one(`SELECT id FROM faculty WHERE email = ?`, [ARUN]);
     arunId = Number(f.id);
     originalHash = (await one(`SELECT password FROM users WHERE email = ?`, [ARUN])).password;
+    const row = await rowFor("csefi", ARUN);
+    assert.strictEqual(row.membershipLabel, "CSE");
+    assert.strictEqual(row.mainDepartment, "CSE");
+    assert.strictEqual(row.isShared, false);
   });
 
   await step("2. IT adds the same email (case/space variant) and reuses the identity", async () => {
@@ -213,6 +217,11 @@ async function main() {
     assert.strictEqual(cse.uuid, it.uuid);
     assert.deepStrictEqual(cse.departments, ["CSE", "IT"]);
     assert.deepStrictEqual(it.departments, ["CSE", "IT"]);
+    assert.strictEqual(cse.mainDepartment, "CSE");
+    assert.strictEqual(it.mainDepartment, "CSE");
+    assert.strictEqual(cse.membershipLabel, "Shared - CSE");
+    assert.strictEqual(it.membershipLabel, "Shared - CSE");
+    assert.strictEqual(cse.isShared, true);
     assert.strictEqual(cse.membershipType, "home");
     assert.strictEqual(it.membershipType, "shared");
     const stats = await api("itfi", "GET", "/faculty/stats");
@@ -253,6 +262,8 @@ async function main() {
     assert.strictEqual(share.body.data.department, "IT");
     assert.deepStrictEqual((await rowFor("itfi", "kavin@kct.ac.in")).departments, ["CSE", "IT"]);
     assert.deepStrictEqual((await rowFor("csefi", "kavin@kct.ac.in")).departments, ["CSE", "IT"]);
+    assert.strictEqual((await rowFor("itfi", "kavin@kct.ac.in")).membershipLabel, "Shared - CSE");
+    assert.strictEqual((await rowFor("csefi", "kavin@kct.ac.in")).membershipLabel, "Shared - CSE");
 
     // Reverse: IT-home faculty associated by CSE while submitting department=IT.
     await api("itfi", "POST", "/faculty", { name: "Sita", department: "IT", email: "sita@kct.ac.in" });
@@ -260,15 +271,24 @@ async function main() {
     assert.strictEqual(reverse.status, 201, JSON.stringify(reverse.body));
     assert.strictEqual(reverse.body.data.department, "CSE");
     assert.deepStrictEqual((await rowFor("csefi", "sita@kct.ac.in")).departments, ["IT", "CSE"]);
+    assert.strictEqual((await rowFor("csefi", "sita@kct.ac.in")).membershipLabel, "Shared - IT");
+    assert.strictEqual((await rowFor("itfi", "sita@kct.ac.in")).membershipLabel, "Shared - IT");
+    assert.strictEqual(
+      (await one(`SELECT department FROM faculty WHERE email = 'kavin@kct.ac.in'`)).department,
+      "CSE",
+      "main department unchanged after IT association"
+    );
 
     const hod = await api("ithod", "POST", "/faculty", { name: "Kavin", department: "IT", email: "kavin@kct.ac.in" });
     assert.strictEqual(hod.status, 403, "HOD role cannot create associations");
     const adminNoCtx = await api("admin", "POST", "/faculty", { name: "Kavin", department: "IT", email: "kavin@kct.ac.in" });
     assert.ok([403, 409].includes(adminNoCtx.status), "admin without department context cannot associate");
 
-    // Faculty never shared with IT remains invisible to IT.
+    // Faculty never shared with IT remains invisible to IT; CSE-only label is not Shared.
     await api("csefi", "POST", "/faculty", { name: "OnlyCse", department: "CSE", email: "onlycse@kct.ac.in" });
     assert.strictEqual(await rowFor("itfi", "onlycse@kct.ac.in"), null);
+    assert.strictEqual((await rowFor("csefi", "onlycse@kct.ac.in")).membershipLabel, "CSE");
+    assert.strictEqual((await rowFor("csefi", "onlycse@kct.ac.in")).isShared, false);
     const onlyRow = await rowFor("csefi", "onlycse@kct.ac.in");
     const put = await api("itfi", "PUT", `/faculty/${onlyRow.uuid}/max-classrooms`, { max_classrooms: 9 });
     assert.strictEqual(put.status, 404);
@@ -535,6 +555,9 @@ async function main() {
     assert.strictEqual(await rowFor("itfi", ARUN), null);
     const cse = await rowFor("csefi", ARUN);
     assert.deepStrictEqual(cse.departments, ["CSE"]);
+    assert.strictEqual(cse.membershipLabel, "CSE");
+    assert.strictEqual(cse.isShared, false);
+    assert.strictEqual(cse.mainDepartment, "CSE");
     assert.strictEqual((await one(`SELECT COALESCE(is_active, TRUE) a FROM users WHERE email = ?`, [ARUN])).a, true);
     // Re-adding reactivates the same membership row (counters/history kept).
     const readd = await api("itfi", "POST", "/faculty", { name: "Arun Kumar", department: "IT", email: ARUN });

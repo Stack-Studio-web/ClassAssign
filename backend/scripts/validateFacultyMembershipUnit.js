@@ -8,6 +8,8 @@ const {
   indexBuckets,
   scopedCounters,
   membershipLabels,
+  membershipDisplayLabel,
+  isSharedMembership,
   attributionUserIdFromOpts,
   normalizeName,
 } = require("../utils/facultyMembership");
@@ -65,6 +67,11 @@ function testBucketsAndMergeAreDepartmentScoped() {
   );
   assert.deepStrictEqual(cse.departments, ["CSE", "IT"]);
   assert.deepStrictEqual(it.departments, ["CSE", "IT"]);
+  assert.strictEqual(cse.mainDepartment, "CSE");
+  assert.strictEqual(it.mainDepartment, "CSE");
+  assert.strictEqual(cse.membershipLabel, "Shared - CSE");
+  assert.strictEqual(it.membershipLabel, "Shared - CSE");
+  assert.strictEqual(cse.isShared, true);
   assert.strictEqual(cse.uuid, it.uuid, "same identity in both departments");
   assert.strictEqual(it.canEditIdentity, false);
   console.log("✓ per-department buckets merge into one row per identity");
@@ -74,6 +81,14 @@ function testMembershipLabels() {
   assert.deepStrictEqual(membershipLabels("cse", ["IT", "AIDS", "it"]), ["CSE", "AIDS", "IT"]);
   assert.deepStrictEqual(membershipLabels(null, ["IT"]), ["IT"]);
   assert.deepStrictEqual(membershipLabels("MECH", []), ["MECH"]);
+  assert.strictEqual(membershipDisplayLabel("CSE", []), "CSE");
+  assert.strictEqual(membershipDisplayLabel("SFS", []), "SFS");
+  assert.strictEqual(membershipDisplayLabel("CSE", ["SFS"]), "Shared - CSE");
+  assert.strictEqual(membershipDisplayLabel("CSE", ["KSI"]), "Shared - CSE");
+  assert.strictEqual(membershipDisplayLabel("CSE", ["SFS", "KSI"]), "Shared - CSE");
+  assert.strictEqual(membershipDisplayLabel("SFS", ["CSE"]), "Shared - SFS");
+  assert.strictEqual(isSharedMembership("CSE", []), false);
+  assert.strictEqual(isSharedMembership("CSE", ["SFS"]), true);
   console.log("✓ department membership labels");
 }
 
