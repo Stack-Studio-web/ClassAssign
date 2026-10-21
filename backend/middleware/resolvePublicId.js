@@ -16,18 +16,17 @@ function resolveEntity(table, options = {}) {
   return async (req, res, next) => {
     try {
       const raw = req.params[paramKey] ?? req.params[legacyParamKey];
-      if (!raw) {
+      if (!raw || raw === "undefined" || raw === "null") {
         return Api.notFound(res, "Not found");
       }
 
-      if (!PublicId.isValidUuid(raw) && !allowLegacyNumeric) {
-        return Api.notFound(res, "Not found");
-      }
+      const looksLikeUuid =
+        PublicId.isValidUuid(raw) ||
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          String(raw).trim()
+        );
 
-      if (
-        !PublicId.isValidUuid(raw) &&
-        !PublicId.isLegacyNumericId(raw)
-      ) {
+      if (!looksLikeUuid && !(allowLegacyNumeric && PublicId.isLegacyNumericId(raw))) {
         return Api.notFound(res, "Not found");
       }
 

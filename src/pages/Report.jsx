@@ -151,12 +151,20 @@ const Report = () => {
     printWindow.print();
   };
 
-  const handleDeletePlan = async (planId) => {
+  const handleDeletePlan = async (plan) => {
+    const planId = plan?.uuid || plan?.public_uuid || plan?.publicUuid || null;
+    if (!planId || planId === "undefined" || planId === "null") {
+      toast.error(
+        "This seating plan has no public ID. Refresh the page and try again.",
+        "Cannot delete seating plan"
+      );
+      return;
+    }
     const ok = await showConfirm("Are you sure you want to delete this seating plan?");
     if (!ok) return;
     setDeletingPlanId(planId);
     try {
-      await api.delete(`/seating/delete-plan/${planId}`);
+      await api.delete(`/seating/delete-plan/${encodeURIComponent(planId)}`);
       toast.success("Seating plan deleted successfully.");
       fetchPlans();
     } catch (err) {
@@ -463,9 +471,10 @@ const Report = () => {
             No saved seating plans yet.
           </div>
         )}
-        {plans.map((plan) => {
-          const planId = plan.uuid;
+        {plans.map((plan, index) => {
+          const planId = plan.uuid || plan.public_uuid || plan.publicUuid || `plan-${index}`;
           const venuesText = (plan.venuesUsed || []).map((v) => v.venueName ?? v.venue_name ?? "—").join(", ") || "—";
+          const canDelete = Boolean(plan.uuid || plan.public_uuid || plan.publicUuid);
           return (
             <div
               key={planId}
@@ -474,8 +483,9 @@ const Report = () => {
               <div className="flex items-start sm:items-center gap-4 flex-1 min-w-0">
                 <input
                   type="checkbox"
-                  checked={selectedPlans.includes(planId)}
-                  onChange={() => handleCheckboxChange(planId)}
+                  checked={selectedPlans.includes(plan.uuid)}
+                  onChange={() => plan.uuid && handleCheckboxChange(plan.uuid)}
+                  disabled={!plan.uuid}
                   className="mt-1 sm:mt-0 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 shrink-0"
                 />
                 <div
@@ -509,12 +519,12 @@ const Report = () => {
 
               {(userRole === 'admin' || userRole === 'faculty_incharge') && (
                 <button
-                  onClick={(e) => { e.stopPropagation(); handleDeletePlan(planId); }}
-                  disabled={deletingPlanId === planId}
+                  onClick={(e) => { e.stopPropagation(); handleDeletePlan(plan); }}
+                  disabled={!canDelete || deletingPlanId === (plan.uuid || plan.public_uuid)}
                   className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-medium shrink-0 transition-colors"
                 >
                   <TrashIcon className="h-5 w-5" />
-                  {deletingPlanId === planId ? "Deleting..." : "Delete"}
+                  {deletingPlanId === (plan.uuid || plan.public_uuid) ? "Deleting..." : "Delete"}
                 </button>
               )}
             </div>

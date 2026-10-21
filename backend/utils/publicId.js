@@ -49,19 +49,33 @@ async function resolveInternalId(table, param, { allowLegacyNumeric = false } = 
   if (param == null || param === "") return null;
 
   const raw = String(param).trim();
+  // Guard against FE sending the literal strings "undefined" / "null".
+  if (raw === "undefined" || raw === "null") return null;
 
   if (isValidUuid(raw)) {
     const [rows] = await db.query(
-      `SELECT id FROM ${table} WHERE public_uuid = ? LIMIT 1`,
+      `SELECT id FROM ${table} WHERE public_uuid = ?::uuid LIMIT 1`,
       [raw]
     );
-    return rows[0]?.id ?? null;
+    const id = rows[0]?.id ?? rows[0]?.ID ?? null;
+    return id != null ? Number(id) || id : null;
+  }
+
+  // Loose UUID-shaped strings (hyphenated 36-char hex) — still try DB lookup.
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw)) {
+    const [rows] = await db.query(
+      `SELECT id FROM ${table} WHERE public_uuid::text ILIKE ? LIMIT 1`,
+      [raw]
+    );
+    const id = rows[0]?.id ?? rows[0]?.ID ?? null;
+    if (id != null) return Number(id) || id;
   }
 
   if (allowLegacyNumeric && isLegacyNumericId(raw)) {
     const numId = parseInt(raw, 10);
     const [rows] = await db.query(`SELECT id FROM ${table} WHERE id = ? LIMIT 1`, [numId]);
-    return rows[0]?.id ?? null;
+    const id = rows[0]?.id ?? rows[0]?.ID ?? null;
+    return id != null ? Number(id) || id : null;
   }
 
   return null;

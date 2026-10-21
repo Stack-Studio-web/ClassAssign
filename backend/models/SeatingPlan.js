@@ -290,8 +290,30 @@ const SeatingPlan = {
 
     for (let row of rows) {
       const planId = row._id ?? row.id;
+      let publicUuid = row.public_uuid ?? row.publicuuid ?? null;
+      if (publicUuid != null && typeof publicUuid !== "string") {
+        publicUuid = String(publicUuid);
+      }
+      // Older rows / partial migrations can leave public_uuid unusable for API deletes.
+      if (!publicUuid && planId != null) {
+        try {
+          const [fixed] = await db.query(
+            `UPDATE seating_plans
+             SET public_uuid = COALESCE(public_uuid, gen_random_uuid())
+             WHERE id = ?
+             RETURNING public_uuid`,
+            [planId]
+          );
+          publicUuid = fixed?.[0]?.public_uuid ?? fixed?.[0]?.publicuuid ?? null;
+          if (publicUuid != null && typeof publicUuid !== "string") {
+            publicUuid = String(publicUuid);
+          }
+        } catch (e) {
+          console.error("Failed to backfill seating_plans.public_uuid:", e?.message || e);
+        }
+      }
       const plan = {
-        uuid: row.public_uuid ?? row.publicuuid,
+        uuid: publicUuid,
         examDate: row.exam_date ?? row.examdate,
         examSession: row.exam_session ?? row.examsession,
         examType: row.exam_type ?? row.examtype,
