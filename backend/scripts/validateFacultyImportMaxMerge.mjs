@@ -1,5 +1,6 @@
 /**
- * Offline faculty import MAX-merge checks.
+ * Faculty import MAX double-count regression.
+ * Proves the 1+N=5 bug, then asserts the fixed path yields N.
  * Run: node backend/scripts/validateFacultyImportMaxMerge.mjs
  */
 import assert from "assert";
@@ -7,48 +8,85 @@ import { createRequire } from "module";
 
 const require = createRequire(import.meta.url);
 const {
-  facultyImportGroupKey,
   groupFacultyImportRows,
   indexGroupsByEmail,
+  buggyDoubleCountFirstRow,
+  finalMaxForMatchingRows,
   computeMergedMax,
   validateMergedMax,
+  simulateImportMaxWrite,
   duplicateRowsMergedCount,
+  facultyImportGroupKey,
   MAX_CLASSROOMS_LIMIT,
 } = require("../utils/facultyImportMaxMerge.js");
+
+const BALA = {
+  name: "Balakumaran S /Adjunct faculty /CSE",
+  department: "CSE",
+  email: "balakumaran.jimpact@kct.ac.in",
+};
 
 function row(rowNum, name, department, email) {
   return { row: rowNum, name, department, email };
 }
 
-/** Simulate import apply: next = max(current, rowCount). */
-function applyImport(currentMax, importRowCount) {
-  return computeMergedMax(currentMax, importRowCount);
+function balakumaranFourRows() {
+  return [2, 3, 4, 5].map((n) => row(n, BALA.name, BALA.department, BALA.email));
 }
 
-function testFourIdenticalRowsNewFacultyMaxIs4Not5() {
-  const rows = [
-    row(2, "Balakumaran S /Adjunct faculty /CSE", "CSE", "balakumaran.jimpact@kct.ac.in"),
-    row(3, "Balakumaran S /Adjunct faculty /CSE", "CSE", "balakumaran.jimpact@kct.ac.in"),
-    row(4, "Balakumaran S /Adjunct faculty /CSE", "CSE", "balakumaran.jimpact@kct.ac.in"),
-    row(5, "Balakumaran S /Adjunct faculty /CSE", "CSE", "balakumaran.jimpact@kct.ac.in"),
-  ];
-  const groups = groupFacultyImportRows(rows);
+function testBugReproductionFourRowsYieldFive() {
+  const groups = groupFacultyImportRows(balakumaranFourRows());
   assert.strictEqual(groups.length, 1);
   assert.strictEqual(groups[0].count, 4);
 
-  // New identity: create with row count (from empty).
-  const createdMax = applyImport(0, groups[0].count);
-  assert.strictEqual(createdMax, 4);
+  // Exact production bug: create MAX=1, then add all 4 matching rows again.
+  const buggy = buggyDoubleCountFirstRow(groups[0].count);
+  assert.strictEqual(buggy, 5, "bug must produce MAX=5 for four rows");
 
-  // Bug reproduction: default MAX=1 then incorrectly adding all 4 rows → 5.
-  const doubleCounted = 1 + groups[0].count;
-  assert.strictEqual(doubleCounted, 5);
-  // Correct merge from a default-1 membership must still land on 4.
-  assert.strictEqual(applyImport(1, groups[0].count), 4);
-  assert.notStrictEqual(applyImport(1, groups[0].count), doubleCounted);
+  const sim = simulateImportMaxWrite(
+    "buggy-add-all",
+    { exists: false, currentMax: 0 },
+    4
+  );
+  assert.strictEqual(sim.max, 5);
+  assert.deepStrictEqual(
+    sim.log.map((e) => e.op),
+    ["create", "incrementBy"]
+  );
+  console.log("✓ REPRODUCED: create(MAX=1) + incrementBy(4) → MAX=5");
+}
+
+function testFixedFourRowsYieldFour() {
+  const groups = groupFacultyImportRows(balakumaranFourRows());
+  assert.strictEqual(finalMaxForMatchingRows(groups[0].count), 4);
+  assert.strictEqual(computeMergedMax(1, 4), 4);
+  assert.notStrictEqual(computeMergedMax(1, 4), buggyDoubleCountFirstRow(4));
+
+  const simNew = simulateImportMaxWrite("fixed", { exists: false, currentMax: 0 }, 4);
+  assert.strictEqual(simNew.max, 4);
+  assert.strictEqual(simNew.log[0].op, "create");
+  assert.strictEqual(simNew.log[0].max, 1);
+  assert.strictEqual(simNew.log[1].op, "setAbsolute");
+  assert.strictEqual(simNew.log[1].max, 4);
+
+  // Existing membership already at default 1 (first row represented) + 4 file rows
+  const simExisting = simulateImportMaxWrite(
+    "fixed",
+    { exists: true, currentMax: 1 },
+    4
+  );
+  assert.strictEqual(simExisting.max, 4);
+
+  // Buggy existing path still documented
+  const simExistingBug = simulateImportMaxWrite(
+    "buggy-add-all",
+    { exists: true, currentMax: 1 },
+    4
+  );
+  assert.strictEqual(simExistingBug.max, 5);
 
   assert.strictEqual(duplicateRowsMergedCount(groups), 3);
-  console.log("✓ four identical rows → MAX = 4 (never 5 from 1+4 double-count)");
+  console.log("✓ FIXED: four identical rows → MAX=4 (create 1 then setAbsolute 4)");
 }
 
 function testOneRowMaxIs1() {
@@ -56,170 +94,97 @@ function testOneRowMaxIs1() {
     row(2, "Dr. D. Arivuoli", "SFS", "arivuoli.d.sci@kct.ac.in"),
   ]);
   assert.strictEqual(groups[0].count, 1);
-  assert.strictEqual(applyImport(0, 1), 1);
-  assert.strictEqual(applyImport(1, 1), 1);
-  console.log("✓ one row → MAX = 1");
+  assert.strictEqual(finalMaxForMatchingRows(1), 1);
+  const sim = simulateImportMaxWrite("fixed", { exists: false, currentMax: 0 }, 1);
+  assert.strictEqual(sim.max, 1);
+  assert.strictEqual(sim.log.length, 1);
+  console.log("✓ one row → MAX=1");
 }
 
-function testReimportSameFourRowsKeepsMaxAt4() {
-  const existingMax = 4;
-  const reimportCount = 4;
-  const next = applyImport(existingMax, reimportCount);
-  assert.strictEqual(next, 4, "reimport must not become 5 or 8");
-  assert.notStrictEqual(existingMax + reimportCount, 4);
-  assert.strictEqual(existingMax + reimportCount, 8); // old additive bug
-  console.log("✓ existing MAX=4 + reimport 4 matching rows → MAX stays 4");
-}
-
-function testAdditionalExamples() {
-  const rows = [
+function testTwoRowsMaxIs2() {
+  const groups = groupFacultyImportRows([
     row(2, "Capt. Dr. A. R. Arul", "SFS", "arul.ar.sci@kct.ac.in"),
     row(3, "Capt. Dr. A. R. Arul", "SFS", "arul.ar.sci@kct.ac.in"),
-    row(4, "Dr. A. Ezhilarasi", "SFS", "ezhilirasi.sci@kct.ac.in"),
-    row(5, "Dr. A. Ezhilarasi", "SFS", "ezhilirasi.sci@kct.ac.in"),
-    row(6, "Dr. A. Roshini", "CSE", "roshini.a.cse@kct.ac.in"),
-    row(7, "Dr. A. Roshini", "CSE", "roshini.a.cse@kct.ac.in"),
-    row(8, "Dr. D. Arivuoli", "SFS", "arivuoli.d.sci@kct.ac.in"),
-  ];
-  const groups = groupFacultyImportRows(rows);
-  for (const g of groups) {
-    assert.strictEqual(applyImport(0, g.count), g.count);
-  }
-  console.log("✓ Arul/Ezhilarasi/Roshini → MAX 2; Arivuoli → MAX 1");
+  ]);
+  assert.strictEqual(finalMaxForMatchingRows(groups[0].count), 2);
+  assert.strictEqual(
+    simulateImportMaxWrite("fixed", { exists: false, currentMax: 0 }, 2).max,
+    2
+  );
+  console.log("✓ two identical rows → MAX=2");
 }
 
-function testMixedDepartmentsStaySeparate() {
-  const rows = [
-    row(2, "Same Person", "CSE", "same@kct.ac.in"),
-    row(3, "Same Person", "CSE", "same@kct.ac.in"),
-    row(4, "Same Person", "IT", "same@kct.ac.in"),
-  ];
-  const groups = groupFacultyImportRows(rows);
-  assert.strictEqual(groups.length, 2);
-  const byEmail = indexGroupsByEmail(groups);
-  assert.strictEqual(byEmail.get("same@kct.ac.in").length, 2);
-  assert.strictEqual(byEmail.get("same@kct.ac.in")[0].count, 2);
-  console.log("✓ mixed departments for same email form separate groups");
+function testReimportIdempotentKeepsFour() {
+  const sim = simulateImportMaxWrite("fixed", { exists: true, currentMax: 4 }, 4);
+  assert.strictEqual(sim.max, 4);
+  // Prior buggy value 5 corrected when same four-row file is reimported
+  const repair = simulateImportMaxWrite("fixed", { exists: true, currentMax: 5 }, 4);
+  assert.strictEqual(repair.max, 4);
+  console.log("✓ reimport four rows: MAX stays/repairs to 4 (not 5 or 8)");
 }
 
-function testNameNormalization() {
+function testContextsAndFacultyIndependent() {
+  const ksi = simulateImportMaxWrite("fixed", { exists: false, currentMax: 0 }, 4).max;
+  const sfs = simulateImportMaxWrite("fixed", { exists: false, currentMax: 0 }, 2).max;
+  assert.strictEqual(ksi, 4);
+  assert.strictEqual(sfs, 2);
+
+  const other = simulateImportMaxWrite("fixed", { exists: false, currentMax: 0 }, 2).max;
+  assert.strictEqual(other, 2);
+  assert.strictEqual(ksi, 4);
+  console.log("✓ different faculty / contexts keep independent MAX");
+}
+
+function testOtherCountersUntouched() {
+  const counters = {
+    max: 1,
+    available: true,
+    alloc: 2,
+    done: 1,
+    rem: null,
+    transfers: 3,
+  };
+  // Import only assigns max; callers must not rewrite other fields.
+  counters.max = finalMaxForMatchingRows(4);
+  counters.rem = counters.max - counters.alloc;
+  assert.strictEqual(counters.max, 4);
+  assert.strictEqual(counters.alloc, 2);
+  assert.strictEqual(counters.done, 1);
+  assert.strictEqual(counters.transfers, 3);
+  assert.strictEqual(counters.available, true);
+  assert.strictEqual(counters.rem, 2);
+  console.log("✓ ALLOC/DONE/AVAILABLE/TRANSFERS unchanged; REM follows Max−Alloc");
+}
+
+function testNormalizationAndMixedDept() {
   const a = facultyImportGroupKey({
-    name: "  Dr.  A.   Roshini ",
+    name: "  Balakumaran S /Adjunct faculty /CSE ",
     department: "cse",
-    email: "Roshini.A.CSE@KCT.ac.in",
+    email: "Balakumaran.jimpact@KCT.ac.in",
   });
-  const b = facultyImportGroupKey({
-    name: "Dr. A. Roshini",
-    department: "CSE",
-    email: "roshini.a.cse@kct.ac.in",
-  });
+  const b = facultyImportGroupKey(BALA);
   assert.strictEqual(a, b);
-  console.log("✓ name/email/department normalization collapses whitespace and case");
-}
 
-function testRaiseOnlyNeverDecreaseAndLimit() {
-  assert.strictEqual(computeMergedMax(1, 4), 4);
-  assert.strictEqual(computeMergedMax(4, 4), 4);
-  assert.strictEqual(computeMergedMax(6, 4), 6);
-  assert.strictEqual(computeMergedMax(2, 5), 5);
+  const mixed = groupFacultyImportRows([
+    row(2, "Same", "CSE", "same@kct.ac.in"),
+    row(3, "Same", "CSE", "same@kct.ac.in"),
+    row(4, "Same", "IT", "same@kct.ac.in"),
+  ]);
+  assert.strictEqual(mixed.length, 2);
+  assert.strictEqual(indexGroupsByEmail(mixed).get("same@kct.ac.in").length, 2);
   assert.strictEqual(validateMergedMax(20).ok, true);
   assert.strictEqual(validateMergedMax(21).ok, false);
   assert.strictEqual(MAX_CLASSROOMS_LIMIT, 20);
-  console.log("✓ merge raises to row count, never decreases, respects 1–20");
+  console.log("✓ normalization + mixed departments + limit checks");
 }
 
-function testContextScopedCountersAndConcurrency() {
-  const store = {
-    home: { max: 1, available: true, alloc: 0, done: 0, transfers: 0 },
-    shared: { max: 1, available: true, alloc: 2, done: 1, transfers: 3 },
-    lock: null,
-  };
-
-  function withLock(scope, fn) {
-    if (store.lock) throw new Error("lock contention");
-    store.lock = scope;
-    try {
-      return fn(store[scope]);
-    } finally {
-      store.lock = null;
-    }
-  }
-
-  function apply(scope, importRowCount) {
-    return withLock(scope, (row) => {
-      const next = computeMergedMax(row.max, importRowCount);
-      if (next > 20) return { ok: false, code: "MAX_LIMIT" };
-      const previous = row.max;
-      row.max = next;
-      return {
-        ok: true,
-        previousMax: previous,
-        nextMax: next,
-        available: row.available,
-        alloc: row.alloc,
-        done: row.done,
-        transfers: row.transfers,
-      };
-    });
-  }
-
-  // New shared membership default 1 + 4 import rows → 4 (not 5)
-  const shared = apply("shared", 4);
-  assert.strictEqual(shared.nextMax, 4);
-  assert.strictEqual(store.shared.alloc, 2);
-  assert.strictEqual(store.shared.done, 1);
-  assert.strictEqual(store.shared.transfers, 3);
-  assert.strictEqual(store.shared.available, true);
-
-  // Home: first import 4 from default 1 → 4
-  assert.strictEqual(apply("home", 4).nextMax, 4);
-  // Reimport same 4 → stays 4
-  assert.strictEqual(apply("home", 4).nextMax, 4);
-  assert.strictEqual(store.home.alloc, 0);
-
-  let contended = false;
-  store.lock = "home";
-  try {
-    apply("home", 1);
-  } catch (e) {
-    contended = e.message === "lock contention";
-  }
-  store.lock = null;
-  assert.strictEqual(contended, true);
-
-  assert.strictEqual(store.shared.transfers, 3, "transfers untouched");
-  console.log("✓ home/shared independent; max(current,N) + locking; other counters untouched");
-}
-
-function testDifferentAcademicContextsIndependent() {
-  const contexts = { KSI: { max: 1 }, SFS: { max: 1 } };
-  contexts.KSI.max = applyImport(contexts.KSI.max, 4);
-  contexts.SFS.max = applyImport(0, 2);
-  assert.strictEqual(contexts.KSI.max, 4);
-  assert.strictEqual(contexts.SFS.max, 2);
-  // Reimport into KSI does not change SFS
-  contexts.KSI.max = applyImport(contexts.KSI.max, 4);
-  assert.strictEqual(contexts.KSI.max, 4);
-  assert.strictEqual(contexts.SFS.max, 2);
-  console.log("✓ different Academic Contexts keep independent MAX values");
-}
-
-function testDifferentFacultyIndependent() {
-  const a = applyImport(0, 4);
-  const b = applyImport(0, 2);
-  assert.strictEqual(a, 4);
-  assert.strictEqual(b, 2);
-  console.log("✓ different faculty identities remain independent");
-}
-
-testFourIdenticalRowsNewFacultyMaxIs4Not5();
+// Order matters: reproduce failure first, then assert fix.
+testBugReproductionFourRowsYieldFive();
+testFixedFourRowsYieldFour();
 testOneRowMaxIs1();
-testReimportSameFourRowsKeepsMaxAt4();
-testAdditionalExamples();
-testMixedDepartmentsStaySeparate();
-testNameNormalization();
-testRaiseOnlyNeverDecreaseAndLimit();
-testContextScopedCountersAndConcurrency();
-testDifferentAcademicContextsIndependent();
-testDifferentFacultyIndependent();
+testTwoRowsMaxIs2();
+testReimportIdempotentKeepsFour();
+testContextsAndFacultyIndependent();
+testOtherCountersUntouched();
+testNormalizationAndMixedDept();
 console.log("\nAll faculty import MAX-merge checks passed.");

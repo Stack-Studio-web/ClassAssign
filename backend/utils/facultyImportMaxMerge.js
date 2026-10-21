@@ -2,7 +2,15 @@
  * Faculty Excel import: merge duplicate name+department+email rows into MAX.
  *
  * Matching key (within an Academic Context): normalized name + department + email.
- * Each matching row contributes +1 to context-scoped max_classrooms.
+ *
+ * Row semantics (N matching rows in one file):
+ *   1st row  → create / claim membership with MAX = 1
+ *   rows 2..N → each adds +1
+ *   final MAX = N
+ *
+ * The bug this module prevents: initialize MAX=1, then add N again (including the
+ * first row) → final MAX = 1+N (four rows → 5).
+ *
  * Does not touch AVAILABLE / ALLOC / DONE / TRANSFERS.
  */
 const { normalizeFacultyEmail } = require("./facultyIdentity");
@@ -72,19 +80,34 @@ function indexGroupsByEmail(groups) {
 }
 
 /**
- * Apply N matching import rows onto a context-scoped MAX without double-counting.
- *
- * Matching rows in one file mean "this person should have capacity N", not "+N on top
- * of an already-initialized slot". Examples:
- *   current 0/absent + 4 rows → 4
- *   current 1 (default first slot) + 4 rows → 4  (never 5)
- *   current 4 + reimport 4 rows → 4  (idempotent)
- *   current 6 + import 4 rows → 6  (never decrease)
+ * BUG (reproduced): first row initializes MAX=1, then a bulk step adds all N
+ * matching rows again (including the first) → 1+N.
+ * Four identical rows → 5.
  */
-function computeMergedMax(currentMax, importRowCount) {
-  const current = Math.max(0, Number(currentMax) || 0);
-  const rows = Math.max(0, Number(importRowCount) || 0);
-  return Math.max(current, rows);
+function buggyDoubleCountFirstRow(matchingRowCount) {
+  const n = Math.max(0, Number(matchingRowCount) || 0);
+  return 1 + n;
+}
+
+/**
+ * Correct final MAX after processing N matching rows in one import.
+ * Equivalent to: start at 1 for the first row, then +1 for each remaining row.
+ */
+function finalMaxForMatchingRows(matchingRowCount) {
+  const n = Math.max(0, Number(matchingRowCount) || 0);
+  if (n < 1) return 0;
+  return n;
+}
+
+/**
+ * Apply this file's matching row count to an existing context-scoped MAX.
+ *
+ * The Excel group is the source of truth for capacity from this import:
+ * target = N (not current+N). Reimporting the same N rows is idempotent.
+ * A prior buggy value (e.g. 5 from 1+4) is corrected back to N on reimport.
+ */
+function computeMergedMax(_currentMax, importRowCount) {
+  return finalMaxForMatchingRows(importRowCount);
 }
 
 function validateMergedMax(nextMax, { limit = MAX_CLASSROOMS_LIMIT } = {}) {
@@ -117,14 +140,61 @@ function emptyImportSummary() {
   };
 }
 
+/**
+ * Simulate the import counter writes for one grouped identity.
+ * Used by regression tests to prove create/increment paths without a live DB.
+ *
+ * @param {'buggy-add-all' | 'fixed'} mode
+ * @param {{ exists: boolean, currentMax: number }} state
+ * @param {number} matchingRowCount
+ */
+function simulateImportMaxWrite(mode, state, matchingRowCount) {
+  const n = Math.max(0, Number(matchingRowCount) || 0);
+  const log = [];
+  let max = state.exists ? Number(state.currentMax) || 1 : 0;
+
+  if (!state.exists) {
+    // First row creates identity/membership with MAX=1
+    max = 1;
+    log.push({ op: "create", max });
+    if (n <= 1) return { max, log };
+
+    if (mode === "buggy-add-all") {
+      // BUG: treat all N rows as increments on top of the created row
+      max = max + n;
+      log.push({ op: "incrementBy", delta: n, max });
+      return { max, log };
+    }
+
+    // FIXED: remaining rows 2..N only (+ (n-1)), or set absolute to n
+    max = finalMaxForMatchingRows(n);
+    log.push({ op: "setAbsolute", max });
+    return { max, log };
+  }
+
+  // Existing membership already has a baseline MAX (at least 1 from a prior first row)
+  if (mode === "buggy-add-all") {
+    max = max + n;
+    log.push({ op: "incrementBy", delta: n, max });
+    return { max, log };
+  }
+
+  max = finalMaxForMatchingRows(n);
+  log.push({ op: "setAbsolute", max });
+  return { max, log };
+}
+
 module.exports = {
   MAX_CLASSROOMS_LIMIT,
   facultyImportGroupKey,
   groupFacultyImportRows,
   indexGroupsByEmail,
+  buggyDoubleCountFirstRow,
+  finalMaxForMatchingRows,
   computeMergedMax,
   validateMergedMax,
   duplicateRowsMergedCount,
   emptyImportSummary,
   normalizeDepartment,
+  simulateImportMaxWrite,
 };

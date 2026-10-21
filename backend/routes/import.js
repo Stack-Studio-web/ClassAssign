@@ -477,9 +477,11 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
     summary.rejected += rejectedRows.length;
 
     /**
-     * Ensure identity is in this Academic Context, then apply import row-count to MAX.
-     * next MAX = max(current, group.count) — first row counted once; reimports are idempotent.
-     * Reuses cross-context identities; never creates a second faculty row for an email.
+     * Ensure identity is in this Academic Context, then set MAX = matching row count.
+     *
+     * Critical: never do currentMax + group.count. Membership/faculty defaults to MAX=1
+     * on create; adding all N rows on top double-counts the first row (1+4 → 5).
+     * Target MAX for N matching rows is exactly N (setAbsolute), idempotent on reimport.
      */
     const applyGroupToExisting = async (existing, group, executor) => {
       const email = group.email;
@@ -512,7 +514,7 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
           });
         }
       } else if (outcome.status === "ALREADY_ASSOCIATED") {
-        // Already in this context — raise MAX to at least this file's matching row count.
+        // Already in this context — set MAX from this file's matching row count.
       } else {
         for (const r of group.rows) {
           summary.skippedEmails.push(email);
@@ -527,8 +529,8 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
         return { ok: false };
       }
 
-      // New memberships default to MAX=1; applyImport uses max(current, N) so 1+4 rows → 4, not 5.
-      const bumped = await Faculty.applyImportMaxClassrooms(
+      // Absolute set to N. Do NOT incrementMaxClassroomsBy(N) after a default MAX=1.
+      const bumped = await Faculty.setMaxClassroomsAbsolute(
         existing.id,
         group.count,
         ownerOpts,
@@ -555,7 +557,7 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
         previousMax: bumped.previousMax,
         nextMax: bumped.nextMax,
         delta: bumped.nextMax - bumped.previousMax,
-        changed: bumped.changed,
+        changed: bumped.previousMax !== bumped.nextMax,
       });
       return { ok: true };
     };
@@ -590,18 +592,42 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
           continue;
         }
 
+        // First matching row creates the identity with MAX=1.
         const [result] = await Faculty.create(
           {
             name: group.name,
             department: group.department,
             email: group.email,
-            maxClassrooms: group.count,
+            maxClassrooms: 1,
           },
           ownerOpts,
           conn
         );
         const id = result?.insertId ?? result?.insertid;
         if (id != null) {
+          // Rows 2..N: raise MAX to N in one write (never +N on top of the initial 1).
+          let nextMax = 1;
+          if (group.count > 1) {
+            const raised = await Faculty.setMaxClassroomsAbsolute(
+              id,
+              group.count,
+              ownerOpts,
+              conn
+            );
+            if (!raised.ok) {
+              for (const r of group.rows) {
+                summary.rowIssues.push({
+                  row: r.row,
+                  email: group.email,
+                  status: raised.code || "MAX_LIMIT",
+                  message: `Row ${r.row}: ${raised.message}`,
+                });
+              }
+              summary.rejected += group.count;
+              continue;
+            }
+            nextMax = raised.nextMax;
+          }
           summary.insertedIds.push(id);
           summary.identitiesCreated += 1;
           summary.duplicateRowsMerged += Math.max(0, group.count - 1);
@@ -609,8 +635,8 @@ router.post("/import-faculty", sessionAuth, checkRole(["admin", "faculty_incharg
             email: group.email,
             facultyId: id,
             previousMax: 0,
-            nextMax: group.count,
-            delta: group.count,
+            nextMax,
+            delta: nextMax,
           });
         }
       } catch (err) {
