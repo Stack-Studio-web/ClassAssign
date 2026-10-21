@@ -65,9 +65,12 @@ export async function fetchStudentsPage(params) {
   return { students: [], pagination: defaultPagination };
 }
 
-export async function fetchStudentFilterOptions(batchId) {
+export async function fetchStudentFilterOptions(batchId, semesterId) {
   const res = await api.get("/students/filter-options", {
-    params: batchId ? { batchId } : undefined,
+    params: {
+      ...(batchId ? { batchId } : {}),
+      ...(!batchId && semesterId ? { semesterId } : {}),
+    },
   });
   return res.data?.data ?? res.data ?? {};
 }
@@ -76,8 +79,11 @@ export async function fetchStudentCourseStats(params = {}) {
   const res = await api.get("/students/course-stats", {
     params: {
       page: params.page ?? 1,
-      limit: params.limit ?? 12,
+      limit: params.limit ?? 500,
       ...(params.batchId ? { batchId: params.batchId } : {}),
+      ...(!params.batchId && params.semesterId
+        ? { semesterId: params.semesterId }
+        : {}),
       ...(params.department ? { department: params.department } : {}),
     },
   });
@@ -116,10 +122,11 @@ export async function fetchStudentCourseStats(params = {}) {
   return { courses: [], pagination: defaultPagination };
 }
 
-export async function fetchStudentStatsTotal(batchId, department) {
+export async function fetchStudentStatsTotal(batchId, department, semesterId) {
   const res = await api.get("/students/stats", {
     params: {
       ...(batchId ? { batchId } : {}),
+      ...(!batchId && semesterId ? { semesterId } : {}),
       ...(department ? { department } : {}),
     },
   });
@@ -140,6 +147,7 @@ export function buildStudentsQueryParams({
   sortBy = "studentName",
   sortOrder = "asc",
   batchId = null,
+  semesterId = null,
 }) {
   const params = {
     page,
@@ -148,6 +156,7 @@ export function buildStudentsQueryParams({
     sortOrder,
   };
   if (batchId) params.batchId = batchId;
+  else if (semesterId) params.semesterId = semesterId;
   const q = String(search || "").trim();
   if (q) params.search = q;
   if (filters.year) params.year = filters.year;

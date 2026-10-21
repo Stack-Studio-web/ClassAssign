@@ -18,6 +18,7 @@ export function useStudentsQuery({
   sortBy,
   sortOrder,
   batchId,
+  semesterId = null,
   contextReady = false,
   enabled = true,
 }) {
@@ -30,6 +31,7 @@ export function useStudentsQuery({
     sortBy,
     sortOrder,
     batchId,
+    semesterId,
   });
 
   const canFetch = enabled && (Boolean(batchId) || contextReady);
@@ -52,21 +54,44 @@ export function useStudentsQuery({
       sortBy,
       sortOrder,
       batchId,
+      semesterId,
     });
     queryClient.prefetchQuery({
       queryKey: [STUDENTS_QUERY_KEY, nextParams],
       queryFn: () => fetchStudentsPage(nextParams),
       staleTime: 60_000,
     });
-  }, [canFetch, batchId, page, limit, search, filters, sortBy, sortOrder, query.data, queryClient]);
+  }, [
+    canFetch,
+    batchId,
+    semesterId,
+    page,
+    limit,
+    search,
+    filters,
+    sortBy,
+    sortOrder,
+    query.data,
+    queryClient,
+  ]);
 
   return query;
 }
 
-export function useStudentFilterOptions(batchId, enabled = true, contextReady = false) {
+export function useStudentFilterOptions(
+  batchId,
+  enabled = true,
+  contextReady = false,
+  semesterId = null
+) {
   return useQuery({
-    queryKey: [STUDENTS_QUERY_KEY, "filter-options", batchId ?? "all"],
-    queryFn: () => fetchStudentFilterOptions(batchId),
+    queryKey: [
+      STUDENTS_QUERY_KEY,
+      "filter-options",
+      batchId ?? "all",
+      semesterId ?? "no-sem",
+    ],
+    queryFn: () => fetchStudentFilterOptions(batchId, semesterId),
     enabled: enabled && (Boolean(batchId) || contextReady),
     staleTime: 5 * 60_000,
   });
@@ -74,8 +99,9 @@ export function useStudentFilterOptions(batchId, enabled = true, contextReady = 
 
 export function useStudentCourseStats({
   page = 1,
-  limit = 12,
+  limit = 500,
   batchId,
+  semesterId = null,
   department = "",
   contextReady = false,
   enabled = true,
@@ -84,19 +110,38 @@ export function useStudentCourseStats({
     queryKey: [
       STUDENTS_QUERY_KEY,
       "course-stats",
-      { page, limit, batchId: batchId ?? "all", department: department || "all" },
+      {
+        page,
+        limit,
+        batchId: batchId ?? "all",
+        semesterId: semesterId ?? "no-sem",
+        department: department || "all",
+      },
     ],
-    queryFn: () => fetchStudentCourseStats({ page, limit, batchId, department }),
+    queryFn: () =>
+      fetchStudentCourseStats({ page, limit, batchId, semesterId, department }),
     enabled: enabled && (Boolean(batchId) || contextReady),
     staleTime: 60_000,
     placeholderData: keepPreviousData,
   });
 }
 
-export function useStudentStatsTotal(batchId, enabled = true, contextReady = false, department = "") {
+export function useStudentStatsTotal(
+  batchId,
+  enabled = true,
+  contextReady = false,
+  department = "",
+  semesterId = null
+) {
   return useQuery({
-    queryKey: [STUDENTS_QUERY_KEY, "stats", batchId ?? "all", department || "all"],
-    queryFn: () => fetchStudentStatsTotal(batchId, department),
+    queryKey: [
+      STUDENTS_QUERY_KEY,
+      "stats",
+      batchId ?? "all",
+      semesterId ?? "no-sem",
+      department || "all",
+    ],
+    queryFn: () => fetchStudentStatsTotal(batchId, department, semesterId),
     enabled: enabled && (Boolean(batchId) || contextReady),
     staleTime: 60_000,
   });

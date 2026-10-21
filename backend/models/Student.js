@@ -66,11 +66,11 @@ const SORT_COLUMNS = {
   email: "st.email",
 };
 
-function deriveDepartmentFromRegnNo(regnNo) {
-  if (!regnNo) return null;
-  const match = String(regnNo).trim().toUpperCase().match(/^[0-9]{2}([A-Z]+)/);
-  return match ? match[1] : null;
-}
+const {
+  deriveDepartmentFromRegnNo,
+  studentDepartmentMatchSql,
+  programFromRegnSql,
+} = require("../utils/studentDepartmentMatch");
 
 function buildStudentListQuery(filters = {}, opts = {}) {
   const { studentScopeWhere } = require("../utils/ownerFilter");
@@ -100,11 +100,8 @@ function buildStudentListQuery(filters = {}, opts = {}) {
 
   const department = String(filters.department || "").trim().toUpperCase();
   if (department) {
-    // Match students.department column OR register-number department segment (e.g. 24BCS001 → BCS)
-    conditions.push(`(
-      UPPER(TRIM(COALESCE(st.department, ''))) = ?
-      OR UPPER((regexp_match(UPPER(TRIM(st.regn_no)), '^[0-9]{2}([A-Z]+)'))[1]) = ?
-    )`);
+    // Same rules as Manual Entry / timetable form-options (regn program preferred).
+    conditions.push(studentDepartmentMatchSql("st"));
     params.push(department, department);
   }
 
@@ -182,9 +179,14 @@ const Student = {
       s.batchId,
     ];
 
-    if (opts.department) {
+    // Prefer program code from register number so shared courses (e.g. 24MEI101)
+    // stay visible under each student's department, not only the importer's dept.
+    const stampedDept =
+      deriveDepartmentFromRegnNo(s.regnNo) ||
+      (opts.department ? String(opts.department).trim().toUpperCase() : null);
+    if (stampedDept) {
       cols.push("department");
-      vals.push(opts.department);
+      vals.push(stampedDept);
     }
     if (opts.academicYearId) {
       cols.push("academic_year_id");
@@ -350,9 +352,10 @@ const Student = {
     );
 
     const [deptRows] = await db.query(
-      `SELECT DISTINCT UPPER((regexp_match(st.regn_no, '^[0-9]{2}([A-Z]+)'))[1]) AS value
+      `SELECT DISTINCT ${programFromRegnSql("st")} AS value
        FROM students st${whereSql}
-         AND st.regn_no ~ '^[0-9]{2}[A-Z]+'
+         AND UPPER(TRIM(st.regn_no)) ~ '^[0-9]{2}[A-Z]+'
+         AND ${programFromRegnSql("st")} IS NOT NULL
        ORDER BY value`,
       params
     );
@@ -409,7 +412,8 @@ const Student = {
 
   getCourseStats: async (opts = {}, pagination = {}, filters = {}) => {
     const page = Math.max(1, Number(pagination.page) || 1);
-    const limit = Math.min(50, Math.max(1, Number(pagination.limit) || 12));
+    // Cap high enough for Student Browser course cards (was 50 and hid lower-count courses).
+    const limit = Math.min(500, Math.max(1, Number(pagination.limit) || 12));
     const offset = (page - 1) * limit;
     const { whereSql, params } = buildStudentListQuery(filters, opts);
 

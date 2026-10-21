@@ -22,10 +22,10 @@
  */
 const db = require("../config/db");
 const { andClause } = require("../utils/ownerFilter");
-
-function normalizeDept(department) {
-  return String(department || "").trim().toUpperCase();
-}
+const {
+  normalizeDept,
+  studentDepartmentMatchSql,
+} = require("./studentDepartmentMatch");
 
 function normalizeCourse(courseCode) {
   return String(courseCode || "").trim();
@@ -47,27 +47,6 @@ function isBatchPublicUuid(value) {
 }
 
 /**
- * Match students to a Timetable department dropdown value (e.g. BCS).
- *
- * Must stay aligned with Student.getFilterOptions departments extraction.
- *
- * Prefer students.department when it stores the same code.
- * Always also match the register-number department segment so students whose
- * department column is blank OR holds a different label still resolve
- * (this was why courses?department=BCS returned []).
- *
- * Binds two params: dept, dept.
- *
- * Note: regn parsing here is for DEPARTMENT only — never for batch.
- */
-function studentDepartmentMatchSql() {
-  return `(
-    UPPER(TRIM(COALESCE(st.department, ''))) = ?
-    OR UPPER((regexp_match(UPPER(TRIM(st.regn_no)), '^[0-9]{2}([A-Z]+)'))[1]) = ?
-  )`;
-}
-
-/**
  * Unique courses enrolled by students of the selected department.
  * No batch filter at this stage.
  */
@@ -83,7 +62,7 @@ async function listCoursesByDepartment(department, opts = {}) {
       st.course_name AS "courseName",
       COUNT(*)::int AS count
     FROM students st
-    WHERE ${studentDepartmentMatchSql()}
+    WHERE ${studentDepartmentMatchSql("st")}
       AND NULLIF(TRIM(COALESCE(st.course_description, '')), '') IS NOT NULL
       ${ownerSql}
     GROUP BY st.course_description, st.course_name
@@ -123,7 +102,7 @@ async function listBatchesForCourse(department, courseCode, opts = {}) {
     FROM students st
     INNER JOIN batches b ON b.id = st.batch_id
     WHERE ${courseMatchSql("st")}
-      AND ${studentDepartmentMatchSql()}
+      AND ${studentDepartmentMatchSql("st")}
       AND st.batch_id IS NOT NULL
       ${ownerSql}
     GROUP BY b.id, b.public_uuid, b.name
@@ -206,7 +185,7 @@ async function listStudentsForCourseBatch(
     FROM students st
     INNER JOIN batches b ON b.id = st.batch_id
     WHERE ${courseMatchSql("st")}
-      AND ${studentDepartmentMatchSql()}
+      AND ${studentDepartmentMatchSql("st")}
       AND st.batch_id = ?
       ${ownerSql}
     ORDER BY st.regn_no ASC, st.id ASC

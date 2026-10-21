@@ -80,6 +80,10 @@ router.get("/", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]), as
       if (batchInternalId == null && res.headersSent) return;
       if (!batchInternalId) return Api.notFound(res, "Batch not found");
       filters.batchId = batchInternalId;
+    } else if (req.query.semesterId) {
+      const sem = await Semester.getInternalIdByUuid(req.query.semesterId);
+      if (!sem?.id) return Api.notFound(res, "Semester not found");
+      filters.semesterId = sem.id;
     }
 
     if (req.query.createdBy) {
@@ -112,6 +116,10 @@ router.get("/filter-options", sessionAuth, checkRole(["admin", "faculty_incharge
       if (batchInternalId == null && res.headersSent) return;
       if (!batchInternalId) return Api.notFound(res, "Batch not found");
       filters.batchId = batchInternalId;
+    } else if (req.query.semesterId) {
+      const sem = await Semester.getInternalIdByUuid(req.query.semesterId);
+      if (!sem?.id) return Api.notFound(res, "Semester not found");
+      filters.semesterId = sem.id;
     }
     const options = await Student.getFilterOptions(await resolveOwnerOpts(req), filters);
     return Api.success(res, "Student filter options", options);
@@ -129,13 +137,19 @@ router.get("/course-stats", sessionAuth, checkRole(["admin", "faculty_incharge",
       if (batchInternalId == null && res.headersSent) return;
       if (!batchInternalId) return Api.notFound(res, "Batch not found");
       listFilters.batchId = batchInternalId;
+    } else if (req.query.semesterId) {
+      // All Batches within the selected semester (same scope as export)
+      const sem = await Semester.getInternalIdByUuid(req.query.semesterId);
+      if (!sem?.id) return Api.notFound(res, "Semester not found");
+      listFilters.semesterId = sem.id;
     }
     if (req.query.department) {
       listFilters.department = String(req.query.department).trim();
     }
     const result = await Student.getCourseStats(await resolveOwnerOpts(req), {
       page: req.query.page,
-      limit: req.query.limit,
+      // Browser summary needs the full course set for the scope, not a tiny page.
+      limit: req.query.limit || 500,
     }, listFilters);
     return Api.success(res, "Student course stats", result);
   } catch (error) {
@@ -228,6 +242,10 @@ router.get("/stats", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]
       if (batchInternalId == null && res.headersSent) return;
       if (!batchInternalId) return res.status(404).json({ message: "Batch not found" });
       filters.batchId = batchInternalId;
+    } else if (req.query.semesterId) {
+      const sem = await Semester.getInternalIdByUuid(req.query.semesterId);
+      if (!sem?.id) return res.status(404).json({ message: "Semester not found" });
+      filters.semesterId = sem.id;
     }
     if (req.query.department) {
       filters.department = String(req.query.department).trim();

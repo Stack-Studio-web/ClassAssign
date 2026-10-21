@@ -42,8 +42,16 @@ module.exports = {
     if (ownerIds) return ownerInClause(ownerIds, prefix, "WHERE");
     if (role === "hod") {
       if (!department) return { sql: " WHERE 1=0", params: [] };
-      const col = prefix ? `${prefix}department` : "department";
-      return { sql: ` WHERE ${col} = ?`, params: [department] };
+      const alias = prefix && prefix.endsWith(".") ? prefix.slice(0, -1) : "st";
+      const {
+        studentDepartmentMatchSql,
+        normalizeDept,
+      } = require("./studentDepartmentMatch");
+      const dept = normalizeDept(department);
+      return {
+        sql: ` WHERE ${studentDepartmentMatchSql(alias || "st")}`,
+        params: [dept, dept],
+      };
     }
     if (!userId) return { sql: " WHERE 1=0", params: [] };
     const col = ownerColumn(prefix);
@@ -55,8 +63,16 @@ module.exports = {
     if (ownerIds) return ownerInClause(ownerIds, prefix, "AND");
     if (role === "hod") {
       if (!department) return { sql: " AND 1=0", params: [] };
-      const col = prefix ? `${prefix}department` : "department";
-      return { sql: ` AND ${col} = ?`, params: [department] };
+      const alias = prefix && prefix.endsWith(".") ? prefix.slice(0, -1) : "st";
+      const {
+        studentDepartmentMatchSql,
+        normalizeDept,
+      } = require("./studentDepartmentMatch");
+      const dept = normalizeDept(department);
+      return {
+        sql: ` AND ${studentDepartmentMatchSql(alias || "st")}`,
+        params: [dept, dept],
+      };
     }
     if (!userId) return { sql: " AND 1=0", params: [] };
     const col = ownerColumn(prefix);
@@ -96,9 +112,14 @@ module.exports = {
       if (!department) {
         return { sql: "0", params: [] };
       }
+      const {
+        studentDepartmentMatchSql,
+        normalizeDept,
+      } = require("./studentDepartmentMatch");
+      const dept = normalizeDept(department);
       return {
-        sql: `(SELECT COUNT(*)::int FROM students st WHERE st.batch_id = ${batchCol} AND st.department = ?)`,
-        params: [department],
+        sql: `(SELECT COUNT(*)::int FROM students st WHERE st.batch_id = ${batchCol} AND ${studentDepartmentMatchSql("st")})`,
+        params: [dept, dept],
       };
     }
     if (!userId) {

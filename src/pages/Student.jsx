@@ -133,21 +133,25 @@ export default function StudentBrowserPage() {
     if (batch) selectBatch(batch);
   }, [filters.batchUuid, batches, selectedBatch?.uuid, selectBatch]);
 
+  const semesterUuid = selectedSemester?.uuid || null;
   const { data: statsTotal = 0 } = useStudentStatsTotal(
     effectiveBatchId,
     canBrowse,
     contextReady,
-    departmentFilter
+    departmentFilter,
+    semesterUuid
   );
   const { data: filterOptions = {} } = useStudentFilterOptions(
     effectiveBatchId,
     canBrowse,
-    contextReady
+    contextReady,
+    semesterUuid
   );
   const { data: courseStatsData, isFetching: courseStatsFetching } = useStudentCourseStats({
     page: 1,
-    limit: 50,
+    limit: 500,
     batchId: effectiveBatchId,
+    semesterId: semesterUuid,
     department: departmentFilter,
     contextReady,
     enabled: canBrowse,
@@ -174,6 +178,7 @@ export default function StudentBrowserPage() {
     sortBy,
     sortOrder,
     batchId: effectiveBatchId,
+    semesterId: semesterUuid,
     contextReady,
     enabled: canBrowse && courseSelected,
   });

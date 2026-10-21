@@ -39,11 +39,20 @@ const STUDENTS = [
   })),
   ...["BBT", "BEE"].map((d, i) => ({
     regn_no: `26${d}01${i}`,
-    department: i === 0 ? "" : d, // BBT matched only via regn prefix
+    // Importer often stamps offering dept (MEI); program comes from regn.
+    department: i === 0 ? "MEI" : d,
     course_description: "24MEI103",
     course_name: "Basic Workshop",
     batch_id: BATCHES.find((b) => b.department === d).id,
   })),
+  // BAE student taking EG but stamped with importer's MEI department column
+  {
+    regn_no: "26BAE088",
+    department: "MEI",
+    course_description: "24MEI101",
+    course_name: "Engineering Graphics",
+    batch_id: 11,
+  },
   {
     regn_no: "26BEE020",
     department: "BEE",
@@ -61,10 +70,10 @@ const STUDENTS = [
   },
 ];
 
+const { studentMatchesDepartment } = require("../utils/studentDepartmentMatch.js");
+
 function deptMatches(st, dept) {
-  if (String(st.department || "").trim().toUpperCase() === dept) return true;
-  const m = String(st.regn_no || "").trim().toUpperCase().match(/^[0-9]{2}([A-Z]+)/);
-  return Boolean(m && m[1] === dept);
+  return studentMatchesDepartment(st, dept);
 }
 
 function courseMatches(st, courseCode) {

@@ -536,7 +536,7 @@ async function runTimetableValidation(data, ownerOpts) {
           SELECT b.id, b.public_uuid AS uuid, TRIM(b.name) AS name
           FROM students st
           INNER JOIN batches b ON b.id = st.batch_id
-          WHERE ${studentDepartmentMatchSql()}
+          WHERE ${studentDepartmentMatchSql("st")}
             AND st.batch_id IS NOT NULL
             ${ownerSql}
           GROUP BY b.id, b.public_uuid, b.name
