@@ -18,11 +18,26 @@ import {
   UserGroupIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  ChevronUpIcon,
+  ChevronDownIcon,
   InformationCircleIcon,
   BoltIcon,
   PlusIcon,
   TrashIcon,
 } from "@heroicons/react/24/outline";
+import {
+  legacyCourseEntryKey,
+  syncCourseSeatingConfig,
+  emptyCourseSeatingConfig,
+  moveCourseInOrder,
+  setCoursePair,
+  getPairPartner,
+  resolveSeatingCourseOrder,
+  validateCourseSeatingConfig,
+  loadCourseSeatingConfigFromStorage,
+  saveCourseSeatingConfigToStorage,
+  clearCourseSeatingConfigStorage,
+} from "../lib/seatingCourseOrder";
 
 // Normalize student/ineligible objects (PostgreSQL may return lowercase keys)
 const normalizeStudent = (s) => ({
@@ -217,6 +232,8 @@ const Allotment = () => {
   const [occupancyEndTime, setOccupancyEndTime] = useState("");
  
   const [excludedBatches, setExcludedBatches] = useState({});
+  /** Custom seating course order + pairing (persisted per exam slot in localStorage + save-plan). */
+  const [courseSeatingConfig, setCourseSeatingConfig] = useState(emptyCourseSeatingConfig);
   const [facultyMode, setFacultyMode] = useState("AUTO");
   const [allFaculty, setAllFaculty] = useState([]);
   const [manualFacultyAssignments, setManualFacultyAssignments] = useState({});
@@ -560,6 +577,60 @@ const Allotment = () => {
  
     fetchCoursesFromTimetable();
   }, [examDate, examStartTime, examEndTime, examSession, hasWriteAccess]);
+
+  // Sync / restore custom course order + pairing for the current exam slot
+  useEffect(() => {
+    if (!examDate || !examStartTime || !examEndTime || !examSession) {
+      setCourseSeatingConfig(emptyCourseSeatingConfig());
+      return;
+    }
+    if (!timetableCourses.length) {
+      setCourseSeatingConfig(emptyCourseSeatingConfig());
+      return;
+    }
+    const slot = { examDate, examSession, examStartTime, examEndTime, examType };
+    setCourseSeatingConfig((prev) => {
+      const courseKeys = timetableCourses.map((c) => legacyCourseEntryKey(c));
+      const prevSet = new Set(prev.order || []);
+      const sameMembership =
+        courseKeys.length === prevSet.size &&
+        courseKeys.every((k) => prevSet.has(k));
+      if (sameMembership && (prev.order || []).length) {
+        return syncCourseSeatingConfig(timetableCourses, prev);
+      }
+      const stored = loadCourseSeatingConfigFromStorage(slot);
+      return syncCourseSeatingConfig(timetableCourses, stored || prev);
+    });
+  }, [timetableCourses, examDate, examSession, examStartTime, examEndTime, examType]);
+
+  useEffect(() => {
+    if (!examDate || !examStartTime || !examEndTime || !examSession) return;
+    if (!timetableCourses.length) return;
+    saveCourseSeatingConfigToStorage(
+      { examDate, examSession, examStartTime, examEndTime, examType },
+      courseSeatingConfig
+    );
+  }, [courseSeatingConfig, examDate, examSession, examStartTime, examEndTime, examType, timetableCourses.length]);
+
+  const orderedTimetableCourses = useMemo(() => {
+    if (!timetableCourses.length) return [];
+    const byKey = new Map(
+      timetableCourses.map((c) => [legacyCourseEntryKey(c), c])
+    );
+    const ordered = [];
+    const seen = new Set();
+    for (const k of courseSeatingConfig.order || []) {
+      if (byKey.has(k) && !seen.has(k)) {
+        ordered.push(byKey.get(k));
+        seen.add(k);
+      }
+    }
+    for (const c of timetableCourses) {
+      const k = legacyCourseEntryKey(c);
+      if (!seen.has(k)) ordered.push(c);
+    }
+    return ordered;
+  }, [timetableCourses, courseSeatingConfig.order]);
  
   // ✅ Fetch ineligible students
   useEffect(() => {
@@ -949,11 +1020,33 @@ const Allotment = () => {
       }
     });
  
-    const sortedCourses = Object.entries(studentsByCourseKey)
-      .sort(([, studentsA], [, studentsB]) => studentsB.length - studentsA.length)
-      .map(([key, students]) => ({ key, students }));
- 
-    logger.log('\n📊 ===== COURSE-DEPARTMENT PRIORITY ORDER (By Student Count) =====');
+    const eligibleEntries = Object.entries(studentsByCourseKey).map(
+      ([key, students]) => ({ key, students })
+    );
+
+    if (courseSeatingConfig.useCustomOrder) {
+      const validation = validateCourseSeatingConfig(
+        courseSeatingConfig,
+        timetableCourses.map((c) => legacyCourseEntryKey(c))
+      );
+      if (!validation.ok) {
+        setIsGenerating(false);
+        return setError(
+          `Invalid course order / pairing: ${validation.errors[0] || "check Scheduled Courses"}`
+        );
+      }
+    }
+
+    const sortedCourses = resolveSeatingCourseOrder(
+      eligibleEntries,
+      courseSeatingConfig
+    );
+
+    logger.log(
+      courseSeatingConfig.useCustomOrder
+        ? "\n📊 ===== COURSE ORDER (CUSTOM USER ORDER / PAIRS) ====="
+        : "\n📊 ===== COURSE-DEPARTMENT PRIORITY ORDER (By Student Count) ====="
+    );
     sortedCourses.forEach(({ key, students }, index) => {
       logger.log(`${index + 1}. ${key}: ${students.length} students`);
     });
@@ -1370,7 +1463,20 @@ const Allotment = () => {
     }
  
     const selectedCourses = [...new Set(timetableCourses.map(c => c.courseCode))];
- 
+    const courseEntryKeys = timetableCourses.map((c) => legacyCourseEntryKey(c));
+
+    if (courseSeatingConfig.useCustomOrder) {
+      const validation = validateCourseSeatingConfig(
+        courseSeatingConfig,
+        courseEntryKeys
+      );
+      if (!validation.ok) {
+        return setError(
+          `Invalid course order / pairing: ${validation.errors[0] || "check Scheduled Courses"}`
+        );
+      }
+    }
+
     const payload = {
       examDate,
       examStartTime,
@@ -1378,6 +1484,8 @@ const Allotment = () => {
       examSession,
       examType,
       selectedCourses,
+      courseEntryKeys,
+      courseSeatingConfig,
       students: allottedStudents,
       facultyMode,
       venuesUsed: generatedSeating.map(v => {
@@ -1405,6 +1513,14 @@ const Allotment = () => {
       setLoading(true);
       await api.post("/seating/save-plan", payload);
       toast.success("Seating plan saved successfully.");
+      clearCourseSeatingConfigStorage({
+        examDate,
+        examSession,
+        examStartTime,
+        examEndTime,
+        examType,
+      });
+      setCourseSeatingConfig(emptyCourseSeatingConfig());
       setGeneratedSeating(null);
       setAllottedStudents([]);
       setTimetableCourses([]);
@@ -1727,18 +1843,44 @@ const Allotment = () => {
             {/* 3. SCHEDULED COURSES */}
             <section className="bg-white border border-gray-100 rounded-xl sm:rounded-2xl shadow-sm overflow-hidden">
               <div className="px-4 sm:px-5 md:px-6 py-3 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                <h3 className="font-bold text-base sm:text-lg text-gray-900">
-                  3. Scheduled Courses
-                </h3>
-                <button
-                  type="button"
-                  disabled
-                  title="Courses are loaded from timetable based on date and session"
-                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-gray-400 bg-gray-100 cursor-not-allowed"
-                >
-                  <PlusIcon className="h-4 w-4" />
-                  Add Course
-                </button>
+                <div>
+                  <h3 className="font-bold text-base sm:text-lg text-gray-900">
+                    3. Scheduled Courses
+                  </h3>
+                  {timetableCourses.length > 0 && (
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {courseSeatingConfig.useCustomOrder
+                        ? "Custom order & pairing will be used for seating generation."
+                        : "Default seating order (largest course first). Reorder or set a pair to use a custom order."}
+                    </p>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {hasWriteAccess && courseSeatingConfig.useCustomOrder && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCourseSeatingConfig((prev) => ({
+                          ...syncCourseSeatingConfig(timetableCourses, prev),
+                          useCustomOrder: false,
+                          pairs: [],
+                        }))
+                      }
+                      className="inline-flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200"
+                    >
+                      Reset to default order
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    disabled
+                    title="Courses are loaded from timetable based on date and session"
+                    className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-gray-400 bg-gray-100 cursor-not-allowed"
+                  >
+                    <PlusIcon className="h-4 w-4" />
+                    Add Course
+                  </button>
+                </div>
               </div>
  
               {timetableCourses.length === 0 ? (
@@ -1761,6 +1903,9 @@ const Allotment = () => {
                   <table className="w-full">
                     <thead>
                       <tr className="bg-gray-50 border-b border-gray-200">
+                        <th className="px-3 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider w-24">
+                          Order
+                        </th>
                         <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">
                           Course Code
                         </th>
@@ -1773,20 +1918,70 @@ const Allotment = () => {
                         <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider">
                           Department
                         </th>
+                        <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider min-w-[140px]">
+                          Pair with
+                        </th>
                         <th className="px-4 py-3 text-left text-xs font-bold text-gray-800 uppercase tracking-wider w-20">
                           Actions
                         </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                      {timetableCourses.map((course) => {
+                      {orderedTimetableCourses.map((course, index) => {
                         const batchName = String(course.batchName || "").trim().toUpperCase();
-                        const uniqueKey = `${course.courseCode}-${course.department}-${batchName}`;
+                        const uniqueKey = legacyCourseEntryKey(course);
                         const totalStudents = studentsByCourse[uniqueKey]?.length || 0;
                         const ineligibleCount = ineligibilityStats.byCourse[uniqueKey] || 0;
                         const eligibleCount = totalStudents - ineligibleCount;
+                        const partnerKey = getPairPartner(courseSeatingConfig, uniqueKey);
+                        const pairOptions = orderedTimetableCourses
+                          .map((c) => legacyCourseEntryKey(c))
+                          .filter((k) => k !== uniqueKey)
+                          .filter((k) => {
+                            const taken = getPairPartner(courseSeatingConfig, k);
+                            return !taken || taken === uniqueKey;
+                          });
                         return (
                           <tr key={uniqueKey} className="hover:bg-gray-50/50">
+                            <td className="px-3 py-3">
+                              <div className="flex items-center gap-1">
+                                <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-indigo-50 text-xs font-bold text-indigo-700">
+                                  {index + 1}
+                                </span>
+                                {hasWriteAccess && (
+                                  <div className="flex flex-col">
+                                    <button
+                                      type="button"
+                                      disabled={index === 0}
+                                      title="Move up"
+                                      onClick={() =>
+                                        setCourseSeatingConfig((prev) =>
+                                          moveCourseInOrder(prev, uniqueKey, "up")
+                                        )
+                                      }
+                                      className="p-0.5 rounded text-gray-500 hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                                      aria-label="Move course up"
+                                    >
+                                      <ChevronUpIcon className="h-4 w-4" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={index === orderedTimetableCourses.length - 1}
+                                      title="Move down"
+                                      onClick={() =>
+                                        setCourseSeatingConfig((prev) =>
+                                          moveCourseInOrder(prev, uniqueKey, "down")
+                                        )
+                                      }
+                                      className="p-0.5 rounded text-gray-500 hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                                      aria-label="Move course down"
+                                    >
+                                      <ChevronDownIcon className="h-4 w-4" />
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </td>
                             <td className="px-4 py-3 text-sm font-semibold text-blue-600">
                               {course.courseCode}
                             </td>
@@ -1801,12 +1996,50 @@ const Allotment = () => {
                               {course.batchName ? ` · ${course.batchName}` : ""}
                             </td>
                             <td className="px-4 py-3">
+                              {hasWriteAccess ? (
+                                <select
+                                  value={partnerKey || ""}
+                                  onChange={(e) => {
+                                    const next = e.target.value || null;
+                                    setCourseSeatingConfig((prev) =>
+                                      setCoursePair(prev, uniqueKey, next)
+                                    );
+                                  }}
+                                  className="w-full max-w-[180px] h-8 px-2 rounded border border-gray-200 text-xs bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                                  title="Pair this course with another for seating"
+                                >
+                                  <option value="">— Unpaired —</option>
+                                  {pairOptions.map((k) => {
+                                    const other = orderedTimetableCourses.find(
+                                      (c) => legacyCourseEntryKey(c) === k
+                                    );
+                                    if (!other) return null;
+                                    return (
+                                      <option key={k} value={k}>
+                                        {other.courseCode} · {other.department}
+                                        {other.batchName ? ` · ${other.batchName}` : ""}
+                                      </option>
+                                    );
+                                  })}
+                                </select>
+                              ) : (
+                                <span className="text-xs text-gray-500">
+                                  {partnerKey
+                                    ? orderedTimetableCourses.find(
+                                        (c) => legacyCourseEntryKey(c) === partnerKey
+                                      )?.courseCode || partnerKey
+                                    : "—"}
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3">
                               <div className="flex items-center gap-2">
                                 {hasWriteAccess && (
                                   <input
                                     type="text"
-                                    placeholder="Exclude prefix"
+                                    placeholder="Exclude pref"
                                     className="max-w-[90px] h-8 px-2 rounded border border-gray-200 text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                                    value={excludedBatches[uniqueKey] || ""}
                                     onChange={(e) =>
                                       setExcludedBatches((prev) => ({
                                         ...prev,

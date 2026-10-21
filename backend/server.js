@@ -18,6 +18,7 @@ const ensureAttendanceLifecycleSchema = require("./utils/ensureAttendanceLifecyc
 const ensureHallNotificationSchema = require("./utils/ensureHallNotificationSchema");
 const ensureSeatingReportSchema = require("./utils/ensureSeatingReportSchema");
 const ensureSeatingVenueFacultySchema = require("./utils/ensureSeatingVenueFacultySchema");
+const ensureCourseSeatingConfigSchema = require("./utils/ensureCourseSeatingConfigSchema");
 const ensureLabExamSchema = require("./utils/ensureLabExamSchema");
 const ensureInvigilationEmailSchema = require("./utils/ensureInvigilationEmailSchema");
 const ensureUuidSchema = require("./utils/ensureUuidSchema");
@@ -164,6 +165,7 @@ async function start() {
       await ensureAttendanceLifecycleSchema();
       await ensureSeatingReportSchema();
       await ensureSeatingVenueFacultySchema();
+      await ensureCourseSeatingConfigSchema();
       await ensureInvigilationEmailSchema();
       await ensureHallNotificationSchema();
       await ensureTransferSchema();

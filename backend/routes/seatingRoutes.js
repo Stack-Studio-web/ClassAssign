@@ -134,8 +134,38 @@ router.post(
         selectedCourses,
         venuesUsed,
         students,
-        facultyMode
+        facultyMode,
+        courseSeatingConfig = null,
+        courseEntryKeys = null,
       } = req.body;
+
+      const {
+        validateCourseSeatingConfig,
+        extractScheduledKeysFromSavePayload,
+      } = require("../utils/seatingCourseOrder");
+
+      let normalizedCourseSeatingConfig = null;
+      if (courseSeatingConfig && courseSeatingConfig.useCustomOrder) {
+        const scheduledKeys =
+          Array.isArray(courseEntryKeys) && courseEntryKeys.length
+            ? courseEntryKeys.map(String)
+            : extractScheduledKeysFromSavePayload(req.body);
+        const validation = validateCourseSeatingConfig(
+          courseSeatingConfig,
+          scheduledKeys
+        );
+        if (!validation.ok) {
+          return res.status(400).json({
+            error: "Invalid course seating order / pairing",
+            details: validation.errors.join(" "),
+            message: validation.errors[0] || "Invalid course seating configuration",
+            errors: validation.errors,
+          });
+        }
+        normalizedCourseSeatingConfig = validation.config;
+      } else if (courseSeatingConfig && typeof courseSeatingConfig === "object") {
+        normalizedCourseSeatingConfig = courseSeatingConfig;
+      }
 
       await connection.beginTransaction();
 
@@ -286,7 +316,8 @@ router.post(
         selectedCourses,
         students,
         venuesUsed: resolvedVenues,
-        facultyMode
+        facultyMode,
+        courseSeatingConfig: normalizedCourseSeatingConfig,
       }, await resolveOwnerOpts(req), connection);
 
       const attendanceSync = await AttendanceService.syncAssignmentsFromSeatingPlan(seatingPlanId, connection);

@@ -80,6 +80,7 @@ const SeatingPlan = {
       venuesUsed = [],
       facultyMode = "AUTO",
       planKind = null,
+      courseSeatingConfig = null,
     } = planData;
 
     const { col, val } = insertField(opts.role, opts.ownerUserId);
@@ -87,6 +88,12 @@ const SeatingPlan = {
       planKind === "lab" || planKind === "hall" ? planKind : null;
     const kindCol = kind ? ", plan_kind" : "";
     const kindPlaceholder = kind ? ", ?" : "";
+    const configJson =
+      courseSeatingConfig && typeof courseSeatingConfig === "object"
+        ? JSON.stringify(courseSeatingConfig)
+        : null;
+    const configCol = configJson != null ? ", course_seating_config" : "";
+    const configPlaceholder = configJson != null ? ", ?" : "";
     const vals = [
       examDate,
       examSession,
@@ -97,6 +104,7 @@ const SeatingPlan = {
       facultyMode,
     ];
     if (kind) vals.push(kind);
+    if (configJson != null) vals.push(configJson);
     if (val != null) vals.push(val);
 
     const conn = externalConn || (await db.getConnection());
@@ -109,15 +117,15 @@ const SeatingPlan = {
       try {
         [planResult] = await conn.query(
           `INSERT INTO seating_plans 
-           (exam_date, exam_session, exam_type, exam_start_time, exam_end_time, selected_courses, faculty_mode${kindCol}${col}) 
-           VALUES (?, ?, ?, ?, ?, ?, ?${kindPlaceholder}${val != null ? ", ?" : ""})`,
+           (exam_date, exam_session, exam_type, exam_start_time, exam_end_time, selected_courses, faculty_mode${kindCol}${configCol}${col}) 
+           VALUES (?, ?, ?, ?, ?, ?, ?${kindPlaceholder}${configPlaceholder}${val != null ? ", ?" : ""})`,
           vals
         );
       } catch (insertErr) {
-        // Older DBs may lack plan_kind — retry without it (caller can UPDATE later).
+        // Older DBs may lack plan_kind / course_seating_config — retry without optional cols.
         const code = insertErr?.code || insertErr?.parent?.code;
         const msg = String(insertErr?.message || "");
-        if (kind && (code === "42703" || /plan_kind/i.test(msg))) {
+        if (code === "42703" || /plan_kind|course_seating_config/i.test(msg)) {
           const fallbackVals = [
             examDate,
             examSession,
