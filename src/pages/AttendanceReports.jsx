@@ -212,7 +212,7 @@ export default function AttendanceReports() {
     const minutes = await showPrompt({
       title: "Attendance window",
       message: "Close attendance how many minutes after exam start?",
-      defaultValue: String(a.closeOffsetMinutes || 60),
+      defaultValue: String(a.closeOffsetMinutes || 30),
       inputType: "number",
       confirmLabel: "Save",
     });

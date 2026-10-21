@@ -539,7 +539,7 @@ export default function FacultyAttendance() {
           >
             {windowInfo.status === "OPEN" && (
               <p>
-                Attendance is open.
+                {windowInfo.message || "Attendance is open."}
                 {computeRemainingSeconds(windowInfo, tick) != null && (
                   <> Closes in {formatCountdown(computeRemainingSeconds(windowInfo, tick))}.</>
                 )}

@@ -124,6 +124,16 @@ function resolveVenueStudentsWithCourses({
   return out;
 }
 
+/** Natural alphanumeric roll sort; blank regNos last. */
+function compareRegnNo(a, b) {
+  const ra = String(a || "").trim();
+  const rb = String(b || "").trim();
+  if (!ra && !rb) return 0;
+  if (!ra) return 1;
+  if (!rb) return -1;
+  return ra.localeCompare(rb, undefined, { numeric: true, sensitivity: "base" });
+}
+
 function groupStudentsByCourse(students = [], courseNameMap = {}) {
   const courseMap = {};
   for (const s of students) {
@@ -144,7 +154,10 @@ function groupStudentsByCourse(students = [], courseNameMap = {}) {
       courseMap[courseCode].studentRegNos.add(regNo);
     }
   }
-  return Object.values(courseMap).map(({ studentRegNos, ...rest }) => rest);
+  return Object.values(courseMap).map(({ studentRegNos, students: courseStudents, ...rest }) => ({
+    ...rest,
+    students: [...courseStudents].sort((a, b) => compareRegnNo(a.regNo, b.regNo)),
+  }));
 }
 
 module.exports = {
@@ -152,4 +165,5 @@ module.exports = {
   buildRegnCourseMap,
   resolveVenueStudentsWithCourses,
   groupStudentsByCourse,
+  compareRegnNo,
 };

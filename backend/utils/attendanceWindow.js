@@ -9,7 +9,8 @@ function getInstitutionTimezone() {
 
 function getDefaultCloseOffsetMinutes() {
   const n = Number(process.env.DEFAULT_ATTENDANCE_CLOSE_OFFSET_MINUTES);
-  return Number.isFinite(n) && n > 0 ? n : 60;
+  // Grace period after scheduled exam end (not after start).
+  return Number.isFinite(n) && n > 0 ? n : 30;
 }
 
 function formatTimeForMessage(isoString, tz) {
@@ -36,7 +37,9 @@ function toSessionRow(row) {
     attendanceOpenTime: row.attendance_open_time ?? row.attendanceopentime,
     attendanceCloseTime: row.attendance_close_time ?? row.attendanceclosetime,
     attendanceStatus: row.attendance_status ?? row.attendancestatus,
-    closeOffsetMinutes: Number(row.close_offset_minutes ?? row.closeoffsetminutes ?? 60),
+    closeOffsetMinutes: Number(
+      row.close_offset_minutes ?? row.closeoffsetminutes ?? getDefaultCloseOffsetMinutes()
+    ),
     manuallyChangedBy: row.manually_changed_by ?? row.manuallychangedby ?? null,
     manuallyChangedAt: row.manually_changed_at ?? row.manuallychangedat ?? null,
     examDate: row.exam_date ?? row.examdate ?? null,
@@ -85,17 +88,39 @@ async function computeExamEndUtc(examDate, endTime, executor = db) {
 }
 
 /**
- * Compute open/close UTC timestamps from exam date + start time in institution TZ.
+ * Compute open/close UTC timestamps in institution TZ.
+ * Open = exam start; close = exam end + grace minutes (handles end-after-midnight).
  */
-async function computeWindowTimes(examDate, startTime, closeOffsetMinutes, executor = db) {
+async function computeWindowTimes(
+  examDate,
+  startTime,
+  endTime,
+  closeOffsetMinutes,
+  executor = db
+) {
   const tz = getInstitutionTimezone();
   const offset = closeOffsetMinutes ?? getDefaultCloseOffsetMinutes();
   const start = startTime || "09:00:00";
+  const end = endTime || "11:00:00";
   const [rows] = await executor.query(
     `SELECT
        ((?::date + ?::time) AT TIME ZONE ?) AS open_utc,
-       ((?::date + ?::time) AT TIME ZONE ?) + (? || ' minutes')::interval AS close_utc`,
-    [examDate, start, tz, examDate, start, tz, String(offset)]
+       (
+         ((?::date + ?::time) AT TIME ZONE ?)
+         + CASE WHEN ?::time < ?::time THEN INTERVAL '1 day' ELSE INTERVAL '0' END
+         + (? || ' minutes')::interval
+       ) AS close_utc`,
+    [
+      examDate,
+      start,
+      tz,
+      examDate,
+      end,
+      tz,
+      end,
+      start,
+      String(offset),
+    ]
   );
   const r = rows[0] || {};
   return {
@@ -125,27 +150,21 @@ async function upsertSessionFromExam({
   closeOffsetMinutes,
   executor = db,
 }) {
-  // Preserve an already-configured offset unless the caller overrides it.
-  let offsetInput = closeOffsetMinutes;
-  if (offsetInput == null) {
-    const existing = await fetchSession(examId, venueId, executor);
-    if (existing?.closeOffsetMinutes) {
-      offsetInput = existing.closeOffsetMinutes;
-    }
-  }
-
-  const { openUtc, closeUtc, closeOffsetMinutes: offset } = await computeWindowTimes(
-    examDate,
-    startTime,
-    offsetInput,
-    executor
-  );
-
   let resolvedEndTime = endTime;
   if (resolvedEndTime == null) {
     const [examRows] = await executor.query(`SELECT exam_time FROM exams WHERE id = ?`, [examId]);
     resolvedEndTime = parseEndTimeFromExamTime(examRows[0]?.exam_time ?? examRows[0]?.examtime);
   }
+
+  const offsetInput = closeOffsetMinutes ?? getDefaultCloseOffsetMinutes();
+  const { openUtc, closeUtc, closeOffsetMinutes: offset } = await computeWindowTimes(
+    examDate,
+    startTime,
+    resolvedEndTime,
+    offsetInput,
+    executor
+  );
+
   const examEndUtc = await computeExamEndUtc(examDate, resolvedEndTime, executor);
 
   await executor.query(
@@ -167,24 +186,35 @@ async function upsertSessionFromExam({
 }
 
 async function ensureSession(examId, venueId, executor = db) {
-  let session = await fetchSession(examId, venueId, executor);
-  if (session) return session;
+  const session = await fetchSession(examId, venueId, executor);
 
   const [examRows] = await executor.query(
     `SELECT id, exam_date, exam_time, exam_session FROM exams WHERE id = ?`,
     [examId]
   );
   const exam = examRows[0];
-  if (!exam) return null;
+  if (!exam) return session || null;
+
+  // Manual lock/unlock, or admin-edited window times, must not be overwritten.
+  if (
+    session &&
+    (MANUAL_STATUSES.has(session.attendanceStatus) || session.manuallyChangedBy)
+  ) {
+    return session;
+  }
 
   const examDate = exam.exam_date ?? exam.examdate;
-  const startTime = parseStartTimeFromExamTime(exam.exam_time ?? exam.examtime);
+  const examTime = exam.exam_time ?? exam.examtime;
+  const startTime = parseStartTimeFromExamTime(examTime);
+  const endTime = parseEndTimeFromExamTime(examTime);
 
+  // Create missing sessions, and refresh auto windows from exam end + grace.
   return upsertSessionFromExam({
     examId,
     venueId,
     examDate,
     startTime,
+    endTime,
     executor,
   });
 }
@@ -277,25 +307,32 @@ async function evaluateWindow(session, serverNow, executor = db) {
   }
 
   if (serverNow <= closeAt) {
+    const closesLabel = formatTimeForMessage(closeAt.toISOString(), tz);
+    const grace = session.closeOffsetMinutes || getDefaultCloseOffsetMinutes();
     return {
       ...base,
       status: "OPEN",
       canRead: true,
       canWrite: true,
       code: null,
-      message: null,
+      message: closesLabel
+        ? `Attendance closes at ${closesLabel} (${grace} minutes after exam end).`
+        : null,
       closesAt: closeAt.toISOString(),
       remainingSeconds: Math.max(0, Math.floor((closeAt - serverNow) / 1000)),
     };
   }
 
+  const closedLabel = formatTimeForMessage(closeAt.toISOString(), tz);
   return {
     ...base,
     status: "LOCKED",
     canRead: true,
     canWrite: false,
     code: "ATTENDANCE_CLOSED",
-    message: "Attendance window has closed.",
+    message: closedLabel
+      ? `Attendance window closed at ${closedLabel}.`
+      : "Attendance window has closed.",
   };
 }
 
@@ -445,10 +482,12 @@ async function updateWindowConfig({
   if (!openUtc || !closeUtc) {
     const examDate = session.examDate;
     const startTime = parseStartTimeFromExamTime(session.examTime);
+    const endTime = parseEndTimeFromExamTime(session.examTime);
     const computed = await computeWindowTimes(
       examDate,
       startTime,
-      closeOffsetMinutes ?? session.closeOffsetMinutes
+      endTime,
+      closeOffsetMinutes ?? session.closeOffsetMinutes ?? getDefaultCloseOffsetMinutes()
     );
     openUtc = openUtc || computed.openUtc;
     closeUtc = closeUtc || computed.closeUtc;

@@ -28,6 +28,32 @@ function parseExamTimeRangeString(examTime) {
   };
 }
 
+/** Calendar YYYY-MM-DD from DATE / ISO — not created_at / assigned_date. */
+function examDateSortKey(value) {
+  if (value == null || value === "") return "";
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const y = value.getUTCFullYear();
+    const m = String(value.getUTCMonth() + 1).padStart(2, "0");
+    const d = String(value.getUTCDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+  const s = String(value).trim();
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  return s.slice(0, 10);
+}
+
+/** Stable My Exams order: exam date DESC, then start time ASC. */
+function sortMyExams(exams) {
+  return [...(exams || [])].sort((a, b) => {
+    const dateCmp = examDateSortKey(b.examDate).localeCompare(examDateSortKey(a.examDate));
+    if (dateCmp !== 0) return dateCmp;
+    const aStart = formatTimePart(a.startTime) || "99:99";
+    const bStart = formatTimePart(b.startTime) || "99:99";
+    return aStart.localeCompare(bStart);
+  });
+}
+
 function toAssignmentRow(row) {
   if (!row) return null;
   const parsed = parseExamTimeRangeString(row.exam_time ?? row.examtime);
@@ -70,7 +96,11 @@ function toAssignmentRow(row) {
     windowStatus: row.window_status ?? row.windowstatus ?? null,
     opensAt: row.opens_at ?? row.opensat ?? null,
     closesAt: row.closes_at ?? row.closesat ?? null,
-    closeOffsetMinutes: Number(row.close_offset_minutes ?? row.closeoffsetminutes ?? 60),
+    closeOffsetMinutes: Number(
+      row.close_offset_minutes ??
+        row.closeoffsetminutes ??
+        AttendanceWindow.getDefaultCloseOffsetMinutes()
+    ),
   };
 }
 
@@ -467,7 +497,7 @@ const AttendanceService = {
       JOIN venues v ON v.id = fa.venue_id
       ${SESSION_JOIN}
       WHERE fa.faculty_id = ?
-      ORDER BY e.exam_date DESC, COALESCE(fa.start_time::text, e.exam_time) ASC
+      ORDER BY e.exam_date DESC, fa.start_time ASC NULLS LAST
       `,
       [facultyId]
     );
@@ -486,7 +516,8 @@ const AttendanceService = {
         /* keep exam-level name if venue course lookup fails */
       }
     }
-    return active;
+    // Re-sort after filter/enrich so order is not left to raw fetch order.
+    return sortMyExams(active);
   },
 
   /**
