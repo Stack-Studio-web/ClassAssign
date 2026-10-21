@@ -43,14 +43,21 @@ function examDateSortKey(value) {
   return s.slice(0, 10);
 }
 
-/** Stable My Exams order: exam date DESC, then start time ASC. */
+/** Stable My Exams order: exam date ASC, then start time ASC, then uuid. */
 function sortMyExams(exams) {
   return [...(exams || [])].sort((a, b) => {
-    const dateCmp = examDateSortKey(b.examDate).localeCompare(examDateSortKey(a.examDate));
-    if (dateCmp !== 0) return dateCmp;
+    const dateA = examDateSortKey(a.examDate);
+    const dateB = examDateSortKey(b.examDate);
+    // Empty dates last.
+    if (dateA !== dateB) {
+      if (!dateA) return 1;
+      if (!dateB) return -1;
+      return dateA.localeCompare(dateB);
+    }
     const aStart = formatTimePart(a.startTime) || "99:99";
     const bStart = formatTimePart(b.startTime) || "99:99";
-    return aStart.localeCompare(bStart);
+    if (aStart !== bStart) return aStart.localeCompare(bStart);
+    return String(a.uuid || "").localeCompare(String(b.uuid || ""));
   });
 }
 
@@ -497,7 +504,7 @@ const AttendanceService = {
       JOIN venues v ON v.id = fa.venue_id
       ${SESSION_JOIN}
       WHERE fa.faculty_id = ?
-      ORDER BY e.exam_date DESC, fa.start_time ASC NULLS LAST
+      ORDER BY e.exam_date ASC, fa.start_time ASC NULLS LAST, fa.id ASC
       `,
       [facultyId]
     );
