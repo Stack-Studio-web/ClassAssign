@@ -602,12 +602,14 @@ const SeatingPlan = {
       );
 
       // 4️⃣ Delete main seating plan (with owner check)
-      await conn.query(
+      const [delResult] = await conn.query(
         `DELETE FROM seating_plans WHERE id = ?${ownerSql}`,
         [planId, ...ownerParams]
       );
+      const removed = Number(delResult?.affectedRows ?? delResult?.rowCount ?? 0) > 0;
 
       if (ownsTxn) await conn.commit();
+      return removed;
     } catch (err) {
       if (ownsTxn) await conn.rollback();
       throw err;

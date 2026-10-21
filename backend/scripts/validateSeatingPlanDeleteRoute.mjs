@@ -43,6 +43,19 @@ assert(
   "Delete handler must guard against double-submit"
 );
 assert(
+  /setPlans\(\(prev\) => prev\.filter/.test(report),
+  "Delete success must remove the card from local state immediately"
+);
+assert(
+  !/Promise\.all\(\[\s*api\.get\("\/seating"/.test(report),
+  "Report list refresh must not block on /faculty via Promise.all"
+);
+assert(
+  /Lightweight existence \+ ownership check/.test(routes) ||
+    /FROM seating_plans\s+WHERE id = \?/.test(routes),
+  "Delete route must load seating_plans by id before deleting"
+);
+assert(
   /notFoundMessage/.test(resolveMw),
   "resolveEntity must support notFoundMessage"
 );

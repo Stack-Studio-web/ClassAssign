@@ -131,8 +131,7 @@ const DependencyChecks = {
   },
 
   async seatingPlanDeleteBlockers(planId) {
-    const plans = await db.query(`SELECT id FROM seating_plans WHERE id = ?`, [planId]);
-    const [rows] = plans;
+    const [rows] = await db.query(`SELECT id FROM seating_plans WHERE id = ?`, [planId]);
     if (!rows?.length) return { blocked: false, notFound: true };
 
     const venues = await db.query(

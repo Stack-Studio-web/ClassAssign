@@ -382,19 +382,41 @@ router.delete(
     try {
       await connection.beginTransaction();
 
+      // Lightweight existence + ownership check (avoid full getPlanById hydration).
+      const [planRows] = await connection.query(
+        `SELECT id, public_uuid, owner_user_id, exam_date, exam_session, exam_type,
+                exam_start_time, exam_end_time, faculty_mode
+         FROM seating_plans
+         WHERE id = ?
+         LIMIT 1`,
+        [planId]
+      );
+      if (!planRows?.length) {
+        await connection.rollback();
+        return Api.notFound(res, "Seating plan not found");
+      }
+      const planRow = planRows[0];
+      const opts = await resolveOwnerOpts(req);
+      const ownerUserId = planRow.owner_user_id ?? planRow.owneruserid ?? null;
+      if (opts.role !== "admin") {
+        const allowed = Array.isArray(opts.ownerIds) && opts.ownerIds.length > 0
+          ? opts.ownerIds.map(Number).includes(Number(ownerUserId))
+          : Number(ownerUserId) === Number(opts.ownerUserId);
+        if (!allowed) {
+          await connection.rollback();
+          return Api.forbidden(
+            res,
+            "You do not have permission to delete this seating plan"
+          );
+        }
+      }
+
       const blockers = await DependencyChecks.seatingPlanDeleteBlockers(planId);
       if (blockers.blocked) {
         await connection.rollback();
         return Api.conflict(res, blockers.code, blockers.message, blockers.details);
       }
       if (blockers.notFound) {
-        await connection.rollback();
-        return Api.notFound(res, "Seating plan not found");
-      }
-
-      let opts = await resolveOwnerOpts(req);
-      const plan = await SeatingPlan.getPlanById(planId, opts);
-      if (!plan) {
         await connection.rollback();
         return Api.notFound(res, "Seating plan not found");
       }
@@ -406,41 +428,35 @@ router.delete(
         [planId]
       );
 
-      const [examDetails] = await connection.query(
-        `SELECT exam_date, exam_start_time, exam_end_time, faculty_mode
-         FROM seating_plans
-         WHERE id = ?`,
-        [planId]
-      );
+      const examDate = planRow.exam_date ?? planRow.examdate;
+      const examStartTime = planRow.exam_start_time ?? planRow.examstarttime;
+      const examEndTime = planRow.exam_end_time ?? planRow.examendtime;
 
-      if (examDetails.length > 0) {
-        const r = examDetails[0];
-        const examDate = r.exam_date ?? r.examdate;
-        const examStartTime = r.exam_start_time ?? r.examstarttime;
-        const examEndTime = r.exam_end_time ?? r.examendtime;
-
-        for (const v of venues || []) {
-          const venueId = v.venue_id ?? v.venueid;
-          if (venueId != null) {
-            await Venue.removeSession(venueId, examDate, examStartTime, examEndTime);
-          }
+      for (const v of venues || []) {
+        const venueId = v.venue_id ?? v.venueid;
+        if (venueId != null) {
+          await Venue.removeSession(venueId, examDate, examStartTime, examEndTime);
         }
       }
 
       const cleanup = await AttendanceService.removeAssignmentsForSeatingPlan(planId, connection);
 
-      await SeatingPlan.deletePlan(planId, opts, connection);
+      const deleted = await SeatingPlan.deletePlan(planId, opts, connection);
+      if (!deleted) {
+        await connection.rollback();
+        return Api.notFound(res, "Seating plan not found");
+      }
 
       await connection.commit();
 
       return Api.success(res, "Seating plan deleted successfully", {
-        uuid: req.publicUuid,
+        uuid: req.publicUuid || planRow.public_uuid || planRow.publicuuid,
         attendanceRecordsRemoved: cleanup.attendanceRemoved ?? 0,
         facultyAssignmentsRemoved: cleanup.removed ?? 0,
         deletedPlan: {
-          examDate: plan.examDate,
-          examType: plan.examType,
-          examSession: plan.examSession,
+          examDate,
+          examType: planRow.exam_type ?? planRow.examtype,
+          examSession: planRow.exam_session ?? planRow.examsession,
           venuesCount: venues.length,
         },
       });

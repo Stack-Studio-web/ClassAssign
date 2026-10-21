@@ -75,15 +75,17 @@ const Report = () => {
   const fetchPlans = async () => {
     try {
       setLoading(true);
-      // ✅ 4. Use 'api' instance instead of raw 'axios' to fix 401 Unauthorized
-      const [plansRes, facultyRes] = await Promise.all([
-        api.get("/seating", { params: { status: "active" } }),
-        api.get("/faculty")
-      ]);
+      // Load reports independently of faculty — a faculty failure must not keep stale plan cards.
+      const plansRes = await api.get("/seating", { params: { status: "active" } });
       setPlans(Array.isArray(plansRes.data) ? plansRes.data : []);
-      setAllFaculty(Array.isArray(facultyRes.data) ? facultyRes.data : []);
       setSelectedPlans([]);
       setError(null);
+      try {
+        const facultyRes = await api.get("/faculty");
+        setAllFaculty(Array.isArray(facultyRes.data) ? facultyRes.data : []);
+      } catch (facultyErr) {
+        console.warn("Failed to load faculty for reports:", facultyErr);
+      }
     } catch (err) {
       console.error("Failed to fetch data:", err);
       if (err.response?.status === 401) {
@@ -170,15 +172,22 @@ const Report = () => {
       setDeletingPlanId(planId);
       try {
         await api.delete(`/seating/delete-plan/${encodeURIComponent(planId)}`);
+        // Remove immediately so a failed secondary refresh cannot resurrect the card.
+        setPlans((prev) => prev.filter((p) => (p.uuid || p.public_uuid) !== planId));
+        setSelectedPlans((prev) => prev.filter((id) => id !== planId));
         toast.success("Seating plan deleted successfully.");
         await fetchPlans();
       } catch (err) {
         const status = err?.response?.status;
-        // Keep the card on failure; if the plan is already gone, refresh so the list matches the DB.
         if (status === 404) {
+          // Plan already gone — sync UI; do not keep a ghost card.
+          setPlans((prev) => prev.filter((p) => (p.uuid || p.public_uuid) !== planId));
+          setSelectedPlans((prev) => prev.filter((id) => id !== planId));
           await fetchPlans();
+          toast.info("That report is no longer in the saved list.", "Already removed");
+        } else {
+          toast.error(getApiError(err), "Cannot delete seating plan");
         }
-        toast.error(getApiError(err), getApiErrorTitle(err, "Cannot delete seating plan"));
       } finally {
         setDeletingPlanId(null);
       }
@@ -508,7 +517,17 @@ const Report = () => {
                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
                     <span className="inline-flex items-center gap-1.5 text-gray-700">
                       <CalendarIcon className="h-4 w-4 text-gray-400 shrink-0" />
-                      <strong>Date:</strong> {plan.examDate ? new Date(plan.examDate).toLocaleDateString() : "—"}
+                      <strong>Date:</strong>{" "}
+                      {plan.examDate
+                        ? (() => {
+                            const raw = String(plan.examDate);
+                            const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+                            // Calendar date only — avoid UTC shift from Date parsing.
+                            if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+                            const d = new Date(raw);
+                            return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString("en-IN");
+                          })()
+                        : "—"}
                     </span>
                     <span className="inline-flex items-center gap-1.5 text-gray-700">
                       <UserIcon className="h-4 w-4 text-gray-400 shrink-0" />
