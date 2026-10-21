@@ -641,11 +641,11 @@ export default function Faculty() {
                     required
                     placeholder="Search faculty department (CSE, IT, …)"
                   />
-                  <p className="mt-1 text-xs text-gray-500">
+                  {/* <p className="mt-1 text-xs text-gray-500">
                     {currentContextLabel
                       ? `Adds the faculty to Academic Context “${currentContextLabel}”. Department is the faculty's branch (CSE, IT), not the context name.`
                       : "Select the faculty's department (CSE, IT, …). Destination is your current Academic Context."}
-                  </p>
+                  </p> */}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-600 mb-2">Email (@kct.ac.in) *</label>

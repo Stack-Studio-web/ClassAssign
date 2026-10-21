@@ -95,11 +95,48 @@ function listCoursesByDepartment(department) {
 }
 
 /** Batch.findByNameInScope: newest batch with that name, department-agnostic. */
-function findBatchByName(name) {
+function findBatchByNameGlobal(name) {
   const wanted = normalizeBatchName(name);
   const hits = BATCHES.filter((b) => normalizeBatchName(b.name) === wanted);
   const row = hits.sort((a, b) => b.id - a.id)[0];
   return row ? { id: row.id, name: row.name } : null;
+}
+
+/**
+ * Mirrors runTimetableValidation findBatchByName: prefer dept+course linked batch
+ * (Manual Entry), then fall back to global same-name lookup.
+ */
+function findBatchByName(name, department, courseCode) {
+  const wanted = normalizeBatchName(name);
+  if (department && courseCode && wanted) {
+    const linked = listBatchesForCourse(department, courseCode);
+    const resolved = resolveLinkedBatch(linked, name, null);
+    if (resolved.batch) return { id: resolved.batch.id, name: resolved.batch.name };
+  }
+  return findBatchByNameGlobal(name);
+}
+
+/** Original importer bug: treated Batch cell as register-number prefix. */
+async function oldRegnPrefixCheck(courseCode, department, batch) {
+  const students = STUDENTS.filter(
+    (st) => courseMatches(st, courseCode) && deptMatches(st, department)
+  );
+  if (!students.length) {
+    return {
+      ok: false,
+      message: `Course Code ${courseCode} was not found for Department ${department} in the selected academic context.`,
+    };
+  }
+  const batchUpper = String(batch || "").toUpperCase();
+  const inBatch = students.some((s) =>
+    String(s.regn_no || "").toUpperCase().startsWith(batchUpper)
+  );
+  return inBatch
+    ? { ok: true }
+    : {
+        ok: false,
+        message: `Course Code ${courseCode} is not linked to Batch ${batch} for Department ${department}.`,
+      };
 }
 
 /** Previous importer rule: students.batch_id must equal the name-resolved batch id. */
@@ -151,31 +188,47 @@ function row(department, courseCode, courseName = "Course", batch = "2026-2030")
   };
 }
 
-const REPORTED = [
-  ["BAE", "24MEI101"],
-  ["BAU", "24MEI101"],
-  ["BCE", "24MEI101"],
-  ["BME", "24MEI101"],
-  ["BMC", "24MEI101"],
-  ["BTT", "24MEI101"],
-  ["BBT", "24MEI103"],
-  ["BEE", "24MEI103"],
-  ["BEE", "24MET105"],
+/** Exact failing rows from the report (row 30 duplicates BEE+24MEI103). */
+const REPORTED_ROWS = [
+  ["BAE", "24MEI101", "Engineering Graphics"],
+  ["BAU", "24MEI101", "Engineering Graphics"],
+  ["BBT", "24MEI103", "Basic Workshop"],
+  ["BCE", "24MEI101", "Engineering Graphics"],
+  ["BEE", "24MEI103", "Basic Workshop"],
+  ["BEE", "24MET105", "Engineering Mechanics"],
+  ["BEE", "24MEI103", "Basic Workshop"],
+  ["BME", "24MEI101", "Engineering Graphics"],
+  ["BMC", "24MEI101", "Engineering Graphics"],
+  ["BTT", "24MEI101", "Engineering Graphics"],
 ];
 
-const helpers = (courseExistsForDeptBatch) => ({
-  findBatchByName: async (name) => findBatchByName(name),
+const helpers = (courseExistsForDeptBatch, findBatch = findBatchByName) => ({
+  findBatchByName: async (name, department, courseCode) => findBatch(name, department, courseCode),
   courseExistsForDeptBatch,
   departmentExists: async () => true,
 });
 
-async function testOldRuleReproducesBug() {
+async function testOldRegnPrefixReproducesBug() {
   const result = await validateTimetableRows(
-    REPORTED.map(([d, c]) => row(d, c)),
+    REPORTED_ROWS.map(([d, c, n]) => row(d, c, n)),
     {},
-    helpers(oldCourseCheck)
+    helpers(oldRegnPrefixCheck, findBatchByNameGlobal)
   );
-  assert.strictEqual(result.errorCount, REPORTED.length, "old rule rejects every reported row");
+  assert.strictEqual(result.errorCount, REPORTED_ROWS.length, "regn-prefix rule rejects every reported row");
+  assert.match(
+    result.rows[0].error,
+    /Course Code 24MEI101 is not linked to Batch 2026-2030 for Department BAE\./
+  );
+  console.log("✓ original regn.startsWith(batchName) rule reproduces the reported rejection");
+}
+
+async function testOldBatchIdRuleReproducesBug() {
+  const result = await validateTimetableRows(
+    REPORTED_ROWS.map(([d, c, n]) => row(d, c, n)),
+    {},
+    helpers(oldCourseCheck, findBatchByNameGlobal)
+  );
+  assert.strictEqual(result.errorCount, REPORTED_ROWS.length, "old batch_id rule rejects every reported row");
   assert.match(
     result.rows[0].error,
     /Course Code 24MEI101 is not linked to Batch 2026-2030 for Department BAE\./
@@ -185,17 +238,26 @@ async function testOldRuleReproducesBug() {
 
 async function testReportedRowsValidWithFix() {
   const result = await validateTimetableRows(
-    REPORTED.map(([d, c]) => row(d, c)),
+    REPORTED_ROWS.map(([d, c, n]) => row(d, c, n)),
     {},
     helpers(newCourseCheck)
   );
   assert.strictEqual(result.errorCount, 0, JSON.stringify(result.rows.filter((r) => r.error)));
   assert.strictEqual(result.canImport, true);
+  assert.strictEqual(result.validCount, 10);
   for (const r of result.rows) {
     const own = BATCHES.find((b) => b.department === r.department);
     assert.strictEqual(r.batchId, own.id, `${r.department} links to its own batch id`);
   }
-  console.log("✓ reported rows validate and link to the department's own batch_id");
+  console.log("✓ all 10 reported rows validate and link to the department's own batch_id");
+}
+
+async function testCourseScopedFindBatchIgnoresGlobalNewest() {
+  const found = findBatchByName("2026-2030", "BAE", "24MEI101");
+  assert.strictEqual(found.id, 11, "course-scoped find returns BAE batch, not global id 99");
+  const global = findBatchByNameGlobal("2026-2030");
+  assert.strictEqual(global.id, 99, "sanity: global newest is still 99");
+  console.log("✓ course-scoped findBatchByName ignores newer same-named batch in another department");
 }
 
 async function testUnlinkedCombinationsStillRejected() {
@@ -249,6 +311,17 @@ async function testWhitespaceAndCaseInCourseCode() {
   console.log("✓ leading/trailing whitespace and course-code case are accepted");
 }
 
+async function testWhitespaceInBatchName() {
+  const result = await validateTimetableRows(
+    [row("BAE", "24MEI101", "Engineering Graphics", " 2026-2030 ")],
+    {},
+    helpers(newCourseCheck)
+  );
+  assert.strictEqual(result.errorCount, 0, JSON.stringify(result.rows));
+  assert.strictEqual(result.rows[0].batchId, 11);
+  console.log("✓ leading/trailing whitespace in batch name is accepted");
+}
+
 async function testMixedValidAndInvalidRows() {
   const result = await validateTimetableRows(
     [row("BAE", "24MEI101"), row("BEE", "24MEI101"), row("BEE", "24MET105")],
@@ -283,6 +356,25 @@ async function testMissingBatchNameStillRejected() {
   console.log("✓ unknown batch name still reports 'does not exist'");
 }
 
+async function testSharedCourseAcrossDepartments() {
+  // 24MEI101 is shared across BAE/BAU/BCE/… — each links to its own batch id
+  const result = await validateTimetableRows(
+    [
+      row("BAE", "24MEI101", "Engineering Graphics"),
+      row("BAU", "24MEI101", "Engineering Graphics"),
+      row("BCE", "24MEI101", "Engineering Graphics"),
+    ],
+    {},
+    helpers(newCourseCheck)
+  );
+  assert.strictEqual(result.errorCount, 0);
+  assert.deepStrictEqual(
+    result.rows.map((r) => r.batchId),
+    [11, 12, 14]
+  );
+  console.log("✓ shared course across departments links each to its own batch");
+}
+
 function testResolveLinkedBatch() {
   const linked = [
     { id: 5, name: "2026-2030" },
@@ -297,14 +389,19 @@ function testResolveLinkedBatch() {
   assert.strictEqual(resolveLinkedBatch(linked, "").batch, null);
   assert.strictEqual(resolveLinkedBatch([{ id: 3, name: "2026–2030" }], "2026-2030").batch.id, 3);
   assert.strictEqual(normalizeBatchName(" 2026–2030 "), "2026-2030");
-  console.log("✓ resolveLinkedBatch: case/trim/dash match, formal-id tie-break, ambiguity");
+  assert.strictEqual(normalizeBatchName("2026-2030\u200B"), "2026-2030");
+  console.log("✓ resolveLinkedBatch: case/trim/dash/zwsp match, formal-id tie-break, ambiguity");
 }
 
-await testOldRuleReproducesBug();
+await testOldRegnPrefixReproducesBug();
+await testOldBatchIdRuleReproducesBug();
+await testCourseScopedFindBatchIgnoresGlobalNewest();
 await testReportedRowsValidWithFix();
+await testSharedCourseAcrossDepartments();
 await testUnlinkedCombinationsStillRejected();
 await testNonexistentCourseAndBatch();
 await testWhitespaceAndCaseInCourseCode();
+await testWhitespaceInBatchName();
 await testMixedValidAndInvalidRows();
 await testCourseInOtherDepartmentRejected();
 await testMissingBatchNameStillRejected();

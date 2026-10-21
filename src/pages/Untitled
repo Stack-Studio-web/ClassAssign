@@ -1,1 +1,1 @@
- DB is missing faculty.is_active
+Adds the faculty to Academic Context “SFS Academic Context”. Department is the faculty's branch (CSE, IT), not the context name.

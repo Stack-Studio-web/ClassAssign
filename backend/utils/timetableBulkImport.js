@@ -211,6 +211,7 @@ function parseTimetableRow(row, rowNum) {
 /** Normalize batch display names for comparison (trim, case, unicode dashes → ASCII). */
 function normalizeBatchName(name) {
   return String(name || "")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
     .trim()
     .toUpperCase()
     .replace(/[\u2010-\u2015\u2212]/g, "-");
@@ -284,7 +285,12 @@ async function validateTimetableRows(rawRows, opts = {}, helpers = {}) {
       !parsed.errors.some((e) => e.includes("Batch")) &&
       typeof findBatchByName === "function"
     ) {
-      const found = await findBatchByName(parsed.batch, parsed.department);
+      // Pass courseCode so resolvers can use the same dept+course→batches link as Manual Entry.
+      const found = await findBatchByName(
+        parsed.batch,
+        parsed.department,
+        parsed.courseCode
+      );
       if (!found) {
         parsed.errors.push(
           `Batch "${parsed.batch}" does not exist for the selected academic context. Use the Batch name from Batch Management (e.g. 2024-2028).`

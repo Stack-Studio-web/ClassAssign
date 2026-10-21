@@ -500,7 +500,7 @@ async function runTimetableValidation(data, ownerOpts) {
 
   return validateTimetableRows(data, ownerOpts, {
     knownDepartments,
-    findBatchByName: async (batchName, department) => {
+    findBatchByName: async (batchName, department, courseCode) => {
       const db = require("../config/db");
       const { andClause } = require("../utils/ownerFilter");
       const { sql: ownerSql, params: ownerParams } = andClause(
@@ -510,29 +510,43 @@ async function runTimetableValidation(data, ownerOpts) {
         ownerOpts.ownerIds
       );
       const dept = String(department || "").trim().toUpperCase();
+      const course = String(courseCode || "").trim();
       const wanted = normalizeBatchName(batchName);
 
-      // Prefer a formal batch that this department's students actually use (any course).
-      // Avoids Batch.findByNameInScope picking another semester/department's same-named row.
+      // 1) Same source of truth as Manual Entry (/timetable/form-options/batches):
+      //    students in this department enrolled in this course → batches via batch_id.
+      //    Do NOT use Batch.findByNameInScope here — batch names repeat across depts/semesters.
+      if (dept && course && wanted) {
+        const linked = await listBatchesForCourse(department, courseCode, ownerOpts);
+        const resolved = resolveLinkedBatch(linked, batchName, null);
+        if (resolved.batch) {
+          return {
+            id: Number(resolved.batch.id),
+            uuid: resolved.batch.uuid ?? null,
+            name: String(resolved.batch.name || "").trim(),
+          };
+        }
+      }
+
+      // 2) Formal batch this department's students use (any course). Filter names in JS so
+      //    unicode dashes / spacing match normalizeBatchName (SQL UPPER/TRIM alone is not enough).
       if (dept && wanted) {
         const [rows] = await db.query(
           `
           SELECT b.id, b.public_uuid AS uuid, TRIM(b.name) AS name
           FROM students st
           INNER JOIN batches b ON b.id = st.batch_id
-          WHERE UPPER(TRIM(b.name)) = ?
-            AND ${studentDepartmentMatchSql()}
+          WHERE ${studentDepartmentMatchSql()}
             AND st.batch_id IS NOT NULL
             ${ownerSql}
           GROUP BY b.id, b.public_uuid, b.name
           HAVING COUNT(st.id) > 0
           ORDER BY b.id DESC
-          LIMIT 5
+          LIMIT 50
           `,
-          [wanted, dept, dept, ...ownerParams]
+          [dept, dept, ...ownerParams]
         );
-        const hit =
-          (rows || []).find((b) => normalizeBatchName(b.name) === wanted) || rows?.[0];
+        const hit = (rows || []).find((b) => normalizeBatchName(b.name) === wanted);
         if (hit?.id != null) {
           return {
             id: Number(hit.id),
@@ -598,7 +612,9 @@ async function runTimetableValidation(data, ownerOpts) {
         };
       }
 
-      // Legacy YY+Dept code fallback (e.g. 24BCS) when Excel still uses register prefixes
+      // Legacy YY+Dept code fallback (e.g. 24BCS) when Excel still uses register prefixes.
+      // Formal names like 2026-2030 must NEVER be checked via regn.startsWith — that was the
+      // original bug (Manual Entry uses students.batch_id; import used register prefixes).
       const batchUpper = String(batch || "").trim().toUpperCase();
       if (/^[0-9]{2}[A-Z]+$/.test(batchUpper)) {
         const students = await Student.getByCourseAndDepartment(courseCode, department, ownerOpts);
