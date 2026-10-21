@@ -192,7 +192,8 @@ async function ensureBlockVenueSchema() {
     /* ignore */
   }
 
-  // One-time attribution: global ON → creator's Academic Context only (never every context)
+  // One-time attribution: legacy global ON → creator's Academic Context only.
+  // Never copies into every context. Unresolved creators are left ambiguous (no invent).
   try {
     await db.query(`
       INSERT INTO venue_allotment_selections (venue_id, academic_context_id, selected_by_user_id)
@@ -209,6 +210,31 @@ async function ensureBlockVenueSchema() {
     `);
   } catch (err) {
     console.warn("ensureBlockVenueSchema allotment selection backfill:", err.message);
+  }
+
+  try {
+    const [ambiguous] = await db.query(`
+      SELECT COUNT(*)::int AS n
+      FROM venues v
+      LEFT JOIN users u ON u.id = v.owner_user_id
+      WHERE COALESCE(v.use_for_allotment, FALSE) = TRUE
+        AND v.archived_at IS NULL
+        AND (
+          v.owner_user_id IS NULL
+          OR u.academic_context_id IS NULL
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM venue_allotment_selections vas WHERE vas.venue_id = v.id
+        )
+    `);
+    const n = Number(ambiguous?.[0]?.n ?? ambiguous?.[0]?.N ?? 0) || 0;
+    if (n > 0) {
+      console.warn(
+        `ensureBlockVenueSchema: ${n} venue(s) have legacy use_for_allotment=ON but no resolvable Academic Context — left unselected (ambiguous; not copied to all contexts)`
+      );
+    }
+  } catch {
+    /* ignore — table/column may be mid-migrate */
   }
 
   console.log("✅ Block + Venue schema OK (global visibility, creator ownership)");

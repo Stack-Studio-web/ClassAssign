@@ -685,7 +685,7 @@ export default function AddVenue() {
     [filteredVenues]
   );
 
-  /** Venues with Use for Allotment enabled in the current block scope (not affected by search/sort). */
+  /** Context-specific Use for Allotment selections in the current block scope. */
   const allotmentSelectedVenues = useMemo(() => {
     return [...venuesInSelectedScope]
       .filter((v) => v.useForAllotment === true)
@@ -697,6 +697,11 @@ export default function AddVenue() {
       );
   }, [venuesInSelectedScope]);
 
+  const allotmentEligibleVenues = useMemo(
+    () => allotmentSelectedVenues.filter((v) => v.isAvailable !== false),
+    [allotmentSelectedVenues]
+  );
+
   const allotmentSelectedCapacity = useMemo(
     () =>
       allotmentSelectedVenues.reduce(
@@ -704,6 +709,15 @@ export default function AddVenue() {
         0
       ),
     [allotmentSelectedVenues]
+  );
+
+  const allotmentEligibleCapacity = useMemo(
+    () =>
+      allotmentEligibleVenues.reduce(
+        (sum, v) => sum + (Number(v.capacity) || 0),
+        0
+      ),
+    [allotmentEligibleVenues]
   );
 
   const searchActive = searchQuery.trim().length > 0;
@@ -819,7 +833,9 @@ export default function AddVenue() {
     const useIt = !archived && venue.isAvailable !== false;
     const useForAllotment = !archived && venue.useForAllotment === true;
     const canManage = Boolean(venue.canManage);
-    const allowAllotmentToggle = canManage && canToggleUseForAllotment && !archived;
+    // Use for Allotment is context preference — any authorized FI/admin for this context.
+    // Available (Use It) remains creator/admin only.
+    const allowAllotmentToggle = canToggleUseForAllotment && !archived;
     const layoutLabel =
       venue.benchesRow != null && venue.benchesCol != null
         ? `${venue.benchesRow} × ${venue.benchesCol}`
@@ -888,26 +904,32 @@ export default function AddVenue() {
               </span>
             </div>
 
-            <label
-              className={`inline-flex items-center gap-2 text-sm font-semibold text-gray-700 ${
-                !allowAllotmentToggle || !useIt
-                  ? "opacity-60 cursor-not-allowed"
-                  : "cursor-pointer"
-              }`}
-            >
-              <input
-                type="checkbox"
-                checked={useForAllotment}
-                disabled={
-                  !allowAllotmentToggle ||
-                  !useIt ||
-                  togglingVenueId === venue.uuid
-                }
-                onChange={(e) => handleToggleUseForAllotment(venue, e.target.checked)}
-                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-              />
-              Use for Allotment
-            </label>
+            <div className="space-y-1">
+              <label
+                className={`inline-flex items-center gap-2 text-sm font-semibold text-gray-700 ${
+                  !allowAllotmentToggle
+                    ? "opacity-60 cursor-not-allowed"
+                    : "cursor-pointer"
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={useForAllotment}
+                  disabled={
+                    !allowAllotmentToggle || togglingVenueId === venue.uuid
+                  }
+                  onChange={(e) => handleToggleUseForAllotment(venue, e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                />
+                Use for Allotment
+              </label>
+              {useForAllotment && !useIt ? (
+                <p className="text-xs font-medium text-amber-800 pl-6">
+                  Selected for this Academic Context, but Available is OFF — not eligible for new
+                  allotments until Available is turned ON.
+                </p>
+              ) : null}
+            </div>
           </>
         )}
 
@@ -1659,13 +1681,25 @@ export default function AddVenue() {
                       : "Venues selected for allotment in your Academic Context"}
                   </p>
                 </div>
-                <p className="text-sm font-medium text-blue-700 tabular-nums">
-                  {allotmentSelectedVenues.length.toLocaleString()}{" "}
-                  {allotmentSelectedVenues.length === 1 ? "venue" : "venues"}
-                  {allotmentSelectedCapacity > 0
-                    ? ` · ${allotmentSelectedCapacity.toLocaleString()} seats`
-                    : ""}
-                </p>
+                <div className="text-right text-sm font-medium text-blue-700 tabular-nums">
+                  <p>
+                    {allotmentSelectedVenues.length.toLocaleString()}{" "}
+                    {allotmentSelectedVenues.length === 1 ? "venue" : "venues"}
+                    {allotmentSelectedCapacity > 0
+                      ? ` · ${allotmentSelectedCapacity.toLocaleString()} seats`
+                      : ""}
+                  </p>
+                  {allotmentSelectedVenues.length >
+                  allotmentEligibleVenues.length ? (
+                    <p className="text-xs font-medium text-amber-700 mt-0.5">
+                      {allotmentEligibleVenues.length.toLocaleString()} eligible
+                      {allotmentEligibleCapacity > 0
+                        ? ` · ${allotmentEligibleCapacity.toLocaleString()} seats`
+                        : ""}{" "}
+                      (Available ON)
+                    </p>
+                  ) : null}
+                </div>
               </div>
               {allotmentSelectedVenues.length === 0 ? (
                 <p className="text-sm text-gray-500">
@@ -1676,29 +1710,48 @@ export default function AddVenue() {
                 </p>
               ) : (
                 <ul className="flex flex-wrap gap-2" aria-label="Venues selected for allotment">
-                  {allotmentSelectedVenues.map((v) => (
-                    <li key={v.uuid}>
-                      <span
-                        className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-800"
-                        title={[
-                          formatBlockLabel(v.blockName, v.blockCode),
-                          formatVenueType(v.type),
-                          v.capacity != null
-                            ? `Capacity ${Number(v.capacity).toLocaleString()}`
-                            : null,
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      >
-                        {v.name || v.code || "Venue"}
-                        {v.capacity != null && v.capacity !== "" ? (
-                          <span className="font-medium text-blue-600 tabular-nums">
-                            · {Number(v.capacity).toLocaleString()}
-                          </span>
-                        ) : null}
-                      </span>
-                    </li>
-                  ))}
+                  {allotmentSelectedVenues.map((v) => {
+                    const eligible = v.isAvailable !== false;
+                    return (
+                      <li key={v.uuid}>
+                        <span
+                          className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-sm font-semibold ${
+                            eligible
+                              ? "border-blue-200 bg-blue-50 text-blue-800"
+                              : "border-amber-200 bg-amber-50 text-amber-900"
+                          }`}
+                          title={[
+                            formatBlockLabel(v.blockName, v.blockCode),
+                            formatVenueType(v.type),
+                            v.capacity != null
+                              ? `Capacity ${Number(v.capacity).toLocaleString()}`
+                              : null,
+                            eligible
+                              ? null
+                              : "Available is OFF — not eligible for new allotments",
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        >
+                          {v.name || v.code || "Venue"}
+                          {v.capacity != null && v.capacity !== "" ? (
+                            <span
+                              className={`font-medium tabular-nums ${
+                                eligible ? "text-blue-600" : "text-amber-800"
+                              }`}
+                            >
+                              · {Number(v.capacity).toLocaleString()}
+                            </span>
+                          ) : null}
+                          {!eligible ? (
+                            <span className="text-[10px] font-semibold uppercase tracking-wide">
+                              Unavailable
+                            </span>
+                          ) : null}
+                        </span>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </div>

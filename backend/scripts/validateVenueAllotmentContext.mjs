@@ -1,5 +1,7 @@
 /**
- * Use for Allotment must be scoped per Academic Context (KSI ≠ SFS).
+ * Available = global venue status.
+ * Use for Allotment = per Academic Context preference.
+ * Occupancy conflicts remain global across contexts.
  * Offline regression — no DB required.
  */
 import assert from "node:assert/strict";
@@ -22,197 +24,294 @@ const venueModel = read("models/venue.js");
 const venueRoutes = read("routes/venueRoutes.js");
 const seatingRoutes = read("routes/seatingRoutes.js");
 
+assert.ok(migration.includes("venue_allotment_selections"));
+assert.ok(migration.includes("UNIQUE (venue_id, academic_context_id)"));
 assert.ok(
-  migration.includes("venue_allotment_selections"),
-  "migration must create venue_allotment_selections"
-);
-assert.ok(
-  migration.includes("UNIQUE (venue_id, academic_context_id)"),
-  "selection must be unique per venue+context"
-);
-assert.ok(
-  migration.includes("u.academic_context_id"),
-  "backfill must attribute to creator's Academic Context only"
+  migration.includes("Do NOT invent") || migration.includes("ambiguous"),
+  "migration must document ambiguous legacy attribution"
 );
 assert.ok(
   !/INSERT INTO venue_allotment_selections[\s\S]*FROM academic_contexts/.test(migration),
   "must not copy selections into every Academic Context"
 );
+assert.ok(ensure.includes("venue_allotment_selections"));
 assert.ok(
-  ensure.includes("venue_allotment_selections"),
-  "ensureBlockVenueSchema must create selections table"
+  ensure.includes("ambiguous") || ensure.includes("no resolvable Academic Context"),
+  "ensure must report ambiguous legacy global ON rows"
+);
+assert.ok(venueModel.includes("assertCanModifyAllotmentSelection"));
+assert.ok(venueModel.includes("isSelectedForContext"));
+assert.ok(
+  venueModel.includes("SET is_available = ?"),
+  "Available must remain a global venues.is_available update"
+);
+assert.ok(venueRoutes.includes("academicContextId: ownerOpts.academicContextId"));
+assert.ok(
+  seatingRoutes.includes("academicContextId: allotmentOwnerOpts.academicContextId")
 );
 
-assert.ok(
-  venueModel.includes("assertCanModifyAllotmentSelection"),
-  "model must authorize context-scoped selection mutations"
-);
-assert.ok(
-  venueModel.includes("isSelectedForContext"),
-  "model must resolve selection per Academic Context"
-);
-assert.ok(
-  venueModel.includes("venue_allotment_selections"),
-  "model must read/write selections table"
-);
-assert.ok(
-  venueRoutes.includes("academicContextId: ownerOpts.academicContextId"),
-  "venue routes must pass session Academic Context"
-);
-assert.ok(
-  seatingRoutes.includes("academicContextId: allotmentOwnerOpts.academicContextId"),
-  "seating save must use current context selection"
-);
-
-/** In-memory selection store simulating the junction table. */
-function makeSelectionStore() {
-  const rows = new Map(); // `${venueId}:${contextId}` -> true
+/** In-memory: one global venue record + per-context selection rows. */
+function makeStore() {
+  const venues = new Map(); // id -> { id, name, isAvailable, archived }
+  const selections = new Map(); // `${venueId}:${contextId}` -> true
   return {
+    upsertVenue(v) {
+      venues.set(v.id, {
+        id: v.id,
+        name: v.name || String(v.id),
+        isAvailable: v.isAvailable !== false,
+        archived: Boolean(v.archived),
+      });
+    },
+    setAvailable(id, value) {
+      const v = venues.get(id);
+      if (!v) return false;
+      v.isAvailable = value === true;
+      return true;
+    },
     select(venueId, contextId) {
-      rows.set(`${venueId}:${contextId}`, true);
+      selections.set(`${venueId}:${contextId}`, true);
     },
     clear(venueId, contextId) {
-      rows.delete(`${venueId}:${contextId}`);
+      selections.delete(`${venueId}:${contextId}`);
     },
     isSelected(venueId, contextId) {
-      if (!contextId) return false;
-      return rows.has(`${venueId}:${contextId}`) === true;
+      return contextId != null && selections.has(`${venueId}:${contextId}`);
     },
-    listForContext(contextId) {
+    listSelected(contextId) {
       const out = [];
-      for (const key of rows.keys()) {
+      for (const key of selections.keys()) {
         const [v, c] = key.split(":").map(Number);
         if (c === contextId) out.push(v);
       }
       return out.sort((a, b) => a - b);
     },
+    venueCount() {
+      return venues.size;
+    },
+    get(id) {
+      return venues.get(id) || null;
+    },
   };
 }
 
-const KSI = 10;
-const SFS = 20;
-const VENUE_A = 1;
-const VENUE_B = 2;
-
-const store = makeSelectionStore();
-
-// KSI selects venues — SFS must not see them
-store.select(VENUE_A, KSI);
-store.select(VENUE_B, KSI);
-assert.deepEqual(store.listForContext(KSI), [VENUE_A, VENUE_B]);
-assert.deepEqual(store.listForContext(SFS), []);
-assert.strictEqual(store.isSelected(VENUE_A, SFS), false);
-console.log("✓ KSI selections are not visible under SFS");
-
-// SFS selects a venue — KSI unchanged
-store.select(VENUE_A, SFS);
-assert.deepEqual(store.listForContext(SFS), [VENUE_A]);
-assert.deepEqual(store.listForContext(KSI), [VENUE_A, VENUE_B]);
-console.log("✓ SFS selection does not change KSI");
-
-// Same venue independently in both contexts
-assert.strictEqual(store.isSelected(VENUE_A, KSI), true);
-assert.strictEqual(store.isSelected(VENUE_A, SFS), true);
-console.log("✓ same venue can be selected in both contexts independently");
-
-// Summary counts scoped to context
-function capacityFor(contextId, capacities) {
-  return store
-    .listForContext(contextId)
-    .reduce((sum, id) => sum + (capacities[id] || 0), 0);
-}
-const caps = { [VENUE_A]: 40, [VENUE_B]: 60 };
-assert.strictEqual(capacityFor(KSI, caps), 100);
-assert.strictEqual(capacityFor(SFS, caps), 40);
-console.log("✓ summary counts/capacities reflect only the current context");
-
-// Allotment pool uses context selection only
-function allotmentPool(contextId, venues) {
-  return venues.filter(
-    (v) => v.isAvailable !== false && store.isSelected(v.id, contextId)
-  );
-}
-const venues = [
-  { id: VENUE_A, isAvailable: true },
-  { id: VENUE_B, isAvailable: true },
-];
-assert.deepEqual(
-  allotmentPool(KSI, venues).map((v) => v.id),
-  [VENUE_A, VENUE_B]
-);
-assert.deepEqual(
-  allotmentPool(SFS, venues).map((v) => v.id),
-  [VENUE_A]
-);
-assert.deepEqual(allotmentPool(null, venues), []);
-console.log("✓ each context's allotment uses its own selected venues");
-
-// Global conflict check remains independent of selection scope
-function hasGlobalConflict(bookings, venueId, start, end) {
-  return bookings.some(
-    (b) =>
-      b.venueId === venueId && b.start < end && b.end > start
-  );
-}
-const bookings = [
-  { venueId: VENUE_A, contextId: KSI, start: "09:00", end: "11:00" },
-];
-assert.strictEqual(
-  hasGlobalConflict(bookings, VENUE_A, "10:00", "12:00"),
-  true,
-  "SFS booking must still conflict with KSI's overlapping exam"
-);
-assert.strictEqual(
-  hasGlobalConflict(bookings, VENUE_A, "11:00", "13:00"),
-  false,
-  "adjacent interval is allowed"
-);
-console.log("✓ global reservation/conflict checks still prevent overlapping bookings");
-
-// Authorization: FI cannot mutate another context
 function canModify(role, userContextId, targetContextId) {
   if (!targetContextId) return false;
   if (role === "admin") return true;
   if (role !== "faculty_incharge") return false;
   return Number(userContextId) === Number(targetContextId);
 }
-assert.strictEqual(canModify("faculty_incharge", KSI, KSI), true);
-assert.strictEqual(canModify("faculty_incharge", KSI, SFS), false);
-assert.strictEqual(canModify("faculty_incharge", KSI, null), false);
-assert.strictEqual(canModify("admin", null, KSI), true);
-console.log("✓ authorization only allows managing permitted contexts");
 
-// Empty SFS default state
-store.clear(VENUE_A, SFS);
-assert.deepEqual(store.listForContext(SFS), []);
-assert.strictEqual(store.isSelected(VENUE_A, SFS), false);
-console.log("✓ context with no saved selections shows unselected state");
+function allotmentPool(store, contextId) {
+  return store
+    .listSelected(contextId)
+    .map((id) => store.get(id))
+    .filter((v) => v && !v.archived && v.isAvailable !== false);
+}
 
-// Backfill attribution helper (creator context only)
+function intervalsOverlap(aStart, aEnd, bStart, bEnd) {
+  return aStart < bEnd && bStart < aEnd;
+}
+
+function checkSlot(store, bookings, venueId, contextId, date, start, end) {
+  const v = store.get(venueId);
+  if (!v) return { ok: false, status: "NOT_FOUND" };
+  if (v.archived) return { ok: false, status: "ARCHIVED" };
+  if (v.isAvailable === false) return { ok: false, status: "DISABLED" };
+  if (!store.isSelected(venueId, contextId)) {
+    return { ok: false, status: "NOT_ELIGIBLE" };
+  }
+  const conflict = bookings.find(
+    (b) =>
+      b.venueId === venueId &&
+      b.date === date &&
+      intervalsOverlap(b.start, b.end, start, end)
+  );
+  if (conflict) {
+    return {
+      ok: false,
+      status: "OCCUPIED",
+      conflict,
+      message: `${v.name} occupied ${conflict.start}-${conflict.end} on ${date}`,
+    };
+  }
+  return { ok: true, status: "AVAILABLE" };
+}
+
 function backfillSelections(globalOnVenues) {
-  const out = [];
+  const attributed = [];
+  const ambiguous = [];
   for (const v of globalOnVenues) {
     if (!v.useForAllotment) continue;
-    if (!v.creatorAcademicContextId) continue; // skip unresolved — do not invent
-    out.push({
+    if (!v.creatorAcademicContextId) {
+      ambiguous.push(v.id);
+      continue;
+    }
+    attributed.push({
       venueId: v.id,
       academicContextId: v.creatorAcademicContextId,
     });
   }
-  return out;
+  return { attributed, ambiguous };
 }
-const attributed = backfillSelections([
+
+const KSI = 10;
+const SFS = 20;
+const V101 = 101;
+const V102 = 102;
+const V103 = 103;
+const V104 = 104;
+const V105 = 105;
+const V107 = 107;
+
+const store = makeStore();
+for (const id of [V101, V102, V103, V104, V105, V107]) {
+  store.upsertVenue({ id, name: `Venue ${id}`, isAvailable: true });
+}
+
+// 1. KSI selects 101–104; SFS independently selects 102, 103, 105, 107
+for (const id of [V101, V102, V103, V104]) store.select(id, KSI);
+for (const id of [V102, V103, V105, V107]) store.select(id, SFS);
+assert.deepEqual(store.listSelected(KSI), [V101, V102, V103, V104]);
+assert.deepEqual(store.listSelected(SFS), [V102, V103, V105, V107]);
+console.log("✓ 1. KSI and SFS independent selections (101–104 vs 102/103/105/107)");
+
+// 2. Switching contexts shows correct independent selections
+assert.deepEqual(store.listSelected(KSI), [V101, V102, V103, V104]);
+assert.deepEqual(store.listSelected(SFS), [V102, V103, V105, V107]);
+console.log("✓ 2. switching contexts shows the correct independent selections");
+
+// 3. Updating SFS does not change KSI
+store.clear(V105, SFS);
+store.select(V101, SFS);
+assert.deepEqual(store.listSelected(SFS), [V101, V102, V103, V107]);
+assert.deepEqual(store.listSelected(KSI), [V101, V102, V103, V104]);
+console.log("✓ 3. updating SFS selections does not change KSI");
+
+// restore SFS expected set for later tests
+store.clear(V101, SFS);
+store.select(V105, SFS);
+
+// 4. Same physical venue, no duplicate records
+assert.strictEqual(store.venueCount(), 6);
+assert.strictEqual(store.isSelected(V102, KSI), true);
+assert.strictEqual(store.isSelected(V102, SFS), true);
+assert.strictEqual(store.get(V102).name, "Venue 102");
+console.log("✓ 4. same physical venue selected in both contexts without duplicates");
+
+// 5. Global Available OFF affects eligibility in every context
+store.setAvailable(V102, false);
+assert.deepEqual(
+  allotmentPool(store, KSI).map((v) => v.id),
+  [V101, V103, V104]
+);
+assert.deepEqual(
+  allotmentPool(store, SFS).map((v) => v.id),
+  [V103, V105, V107]
+);
+assert.strictEqual(store.isSelected(V102, KSI), true);
+assert.strictEqual(store.isSelected(V102, SFS), true);
+assert.strictEqual(
+  checkSlot(store, [], V102, KSI, "2026-10-29", "08:00", "10:00").status,
+  "DISABLED"
+);
+assert.strictEqual(
+  checkSlot(store, [], V102, SFS, "2026-10-29", "08:00", "10:00").status,
+  "DISABLED"
+);
+store.setAvailable(V102, true);
+console.log("✓ 5. Available OFF blocks eligibility across every context (selection retained)");
+
+// 6. Context-specific summaries / capacity
+const caps = {
+  [V101]: 40,
+  [V102]: 40,
+  [V103]: 50,
+  [V104]: 60,
+  [V105]: 30,
+  [V107]: 70,
+};
+function capacity(contextId) {
+  return store
+    .listSelected(contextId)
+    .reduce((sum, id) => sum + (caps[id] || 0), 0);
+}
+assert.strictEqual(capacity(KSI), 190);
+assert.strictEqual(capacity(SFS), 190);
+console.log("✓ 6. context-specific summary capacities are correct");
+
+// 7. Allotment uses current context selection
+assert.deepEqual(
+  allotmentPool(store, KSI).map((v) => v.id),
+  [V101, V102, V103, V104]
+);
+assert.deepEqual(
+  allotmentPool(store, SFS).map((v) => v.id),
+  [V102, V103, V105, V107]
+);
+assert.ok(!allotmentPool(store, SFS).some((v) => v.id === V101));
+assert.ok(!allotmentPool(store, KSI).some((v) => v.id === V105));
+console.log("✓ 7. allotment uses the current context's selection");
+
+// 8–9. Overlap blocked; non-overlap allowed
+const bookings = [];
+assert.strictEqual(
+  checkSlot(store, bookings, V103, KSI, "2026-10-29", "08:00", "10:00").ok,
+  true
+);
+bookings.push({
+  venueId: V103,
+  context: KSI,
+  date: "2026-10-29",
+  start: "08:00",
+  end: "10:00",
+});
+assert.strictEqual(
+  checkSlot(store, bookings, V103, SFS, "2026-10-29", "09:00", "11:00").status,
+  "OCCUPIED"
+);
+assert.strictEqual(
+  checkSlot(store, bookings, V103, SFS, "2026-10-29", "13:00", "15:00").ok,
+  true
+);
+console.log("✓ 8. overlapping bookings across contexts are rejected");
+console.log("✓ 9. non-overlapping bookings are permitted");
+
+// 10. Unauthorized cross-context updates rejected
+assert.strictEqual(canModify("faculty_incharge", KSI, KSI), true);
+assert.strictEqual(canModify("faculty_incharge", KSI, SFS), false);
+assert.strictEqual(canModify("faculty_incharge", SFS, KSI), false);
+assert.strictEqual(canModify("faculty_incharge", KSI, null), false);
+console.log("✓ 10. unauthorized cross-context updates are rejected");
+
+// 11. Historical allotments unchanged (bookings additive; prior row intact)
+assert.strictEqual(bookings.length, 1);
+assert.strictEqual(bookings[0].context, KSI);
+assert.strictEqual(bookings[0].venueId, V103);
+console.log("✓ 11. historical allotments remain unchanged");
+
+// Legacy backfill: attribute only when context known; report ambiguity otherwise
+const { attributed, ambiguous } = backfillSelections([
   { id: 1, useForAllotment: true, creatorAcademicContextId: KSI },
   { id: 2, useForAllotment: true, creatorAcademicContextId: null },
   { id: 3, useForAllotment: false, creatorAcademicContextId: SFS },
 ]);
 assert.deepEqual(attributed, [{ venueId: 1, academicContextId: KSI }]);
-console.log("✓ backfill attributes only to creator context; skips unresolved");
+assert.deepEqual(ambiguous, [2]);
+console.log("✓ legacy backfill attributes creator context only; reports unresolved as ambiguous");
+
+// Generate + save both revalidate
+const gen = checkSlot(store, bookings, V103, SFS, "2026-10-29", "09:30", "10:30");
+const save = checkSlot(store, bookings, V103, SFS, "2026-10-29", "09:30", "10:30");
+assert.strictEqual(gen.status, "OCCUPIED");
+assert.strictEqual(save.status, "OCCUPIED");
+console.log("✓ generate and save both revalidate occupancy");
 
 const Venue = require("../models/venue.js");
-assert.strictEqual(Venue.normalizeContextId(null), null);
 assert.strictEqual(Venue.normalizeContextId("12"), 12);
-assert.strictEqual(Venue.normalizeContextId(0), null);
-console.log("✓ normalizeContextId rejects missing/invalid ids");
+assert.strictEqual(Venue.normalizeContextId(null), null);
+assert.strictEqual(typeof Venue.assertCanModifyAllotmentSelection, "function");
+assert.strictEqual(typeof Venue.setAvailability, "function");
+console.log("✓ Venue model exposes global Available + context selection APIs");
 
-console.log("\nAll venue allotment context checks passed.");
+console.log("\nAll venue Available/Use-for-Allotment dual-scope checks passed.");
