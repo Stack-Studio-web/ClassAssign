@@ -71,8 +71,9 @@ CREATE TABLE IF NOT EXISTS venues (
   benches_row INT,
   benches_col INT,
   is_available BOOLEAN DEFAULT TRUE,
-  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(name, type)
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+  -- Active-only uniqueness (name, type) is applied after archived_at exists
+  -- via migration 044 / ensureBlockVenueSchema (venues_active_name_type_unique).
 );
 
 -- Venue Bench Config

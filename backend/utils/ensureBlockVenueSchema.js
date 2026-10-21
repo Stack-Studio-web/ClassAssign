@@ -102,6 +102,7 @@ async function ensureBlockVenueSchema() {
     "use_for_allotment",
     "use_for_allotment BOOLEAN NOT NULL DEFAULT FALSE"
   );
+  await ensureColumn("venues", "archived_at", "archived_at TIMESTAMPTZ NULL");
 
   try {
     await db.query(
@@ -115,6 +116,37 @@ async function ensureBlockVenueSchema() {
     await db.query(`CREATE INDEX IF NOT EXISTS idx_venues_block_id ON venues (block_id)`);
   } catch {
     /* ignore */
+  }
+
+  try {
+    await db.query(`
+      CREATE INDEX IF NOT EXISTS idx_venues_archived_at
+        ON venues (archived_at)
+        WHERE archived_at IS NULL
+    `);
+  } catch {
+    /* ignore */
+  }
+
+  // Active-only uniqueness: archived SC314 may coexist with a new active SC314.
+  try {
+    await db.query(
+      `ALTER TABLE venues DROP CONSTRAINT IF EXISTS venues_name_type_key`
+    );
+  } catch (err) {
+    console.warn("ensureBlockVenueSchema drop venues_name_type_key:", err.message);
+  }
+  try {
+    await db.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS venues_active_name_type_unique
+        ON venues (UPPER(TRIM(name)), LOWER(TRIM(type)))
+        WHERE archived_at IS NULL
+    `);
+  } catch (err) {
+    console.warn(
+      "ensureBlockVenueSchema venues_active_name_type_unique:",
+      err.message
+    );
   }
 
   // Display/search code only — never invents a block relationship

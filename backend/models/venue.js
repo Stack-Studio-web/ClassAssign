@@ -23,6 +23,11 @@ function canManageVenue(user, rowOrCreatorId) {
   return Number(createdBy) === Number(user.id);
 }
 
+function isArchivedRow(row) {
+  const at = row?.archived_at ?? row?.archivedat ?? null;
+  return at != null && String(at).trim() !== "";
+}
+
 function toVenueRow(row, { canManage = false } = {}) {
   if (!row || typeof row !== "object") return row;
   const benchesRow = Number(row.benchesrow ?? row.benchesRow ?? 0) || 1;
@@ -32,6 +37,7 @@ function toVenueRow(row, { canManage = false } = {}) {
   const useForAllotment = Boolean(
     row.use_for_allotment ?? row.useforallotment ?? row.useForAllotment ?? false
   );
+  const archived = isArchivedRow(row);
   return {
     uuid: row.public_uuid ?? row.publicuuid ?? row.uuid,
     name: row.name,
@@ -40,11 +46,13 @@ function toVenueRow(row, { canManage = false } = {}) {
     capacity: Number(row.capacity ?? 0) || benchesRow * benchesCol * 2,
     benchesRow,
     benchesCol,
-    isAvailable,
+    isAvailable: archived ? false : isAvailable,
     /** Alias of isAvailable — global "Use It" enable flag (not date availability). */
-    isActive: isAvailable,
+    isActive: archived ? false : isAvailable,
     /** Eligible for allotment seating generation (does not reserve a time slot). */
-    useForAllotment,
+    useForAllotment: archived ? false : useForAllotment,
+    isArchived: archived,
+    archivedAt: row.archived_at ?? row.archivedat ?? null,
     blockId: row.block_id ?? row.blockid ?? null,
     blockUuid: row.block_uuid ?? row.blockuuid ?? null,
     blockName: row.block_name ?? row.blockname ?? null,
@@ -178,10 +186,17 @@ const Venue = {
   /**
    * Global venue list (no createdBy / owner filter on visibility).
    * Filters: blockId, blockUuid (resolved by caller), unassignedOnly, search, type.
+   * By default excludes archived venues. Pass archivedOnly / includeArchived to change.
    */
   getAll: async (opts = {}) => {
     const clauses = [];
     const params = [];
+
+    if (opts.archivedOnly) {
+      clauses.push(`v.archived_at IS NOT NULL`);
+    } else if (!opts.includeArchived) {
+      clauses.push(`v.archived_at IS NULL`);
+    }
 
     if (opts.unassignedOnly) {
       clauses.push(`v.block_id IS NULL`);
@@ -236,6 +251,7 @@ const Venue = {
         v.benches_col AS benchesCol,
         v.is_available AS isAvailable,
         COALESCE(v.use_for_allotment, FALSE) AS useForAllotment,
+        v.archived_at,
         v.block_id,
         v.owner_user_id,
         u.username AS creator_username,
@@ -423,6 +439,16 @@ const Venue = {
     }
 
     const venueName = venueRow.name || "";
+    if (isArchivedRow(venueRow)) {
+      return {
+        ok: false,
+        status: "ARCHIVED",
+        conflicts: [],
+        venueName,
+        message: `${venueName} is archived and cannot be used for new allotments.`,
+      };
+    }
+
     const useIt = (venueRow.is_available ?? venueRow.isavailable ?? true) !== false;
     const useForAllotment = Boolean(
       venueRow.use_for_allotment ?? venueRow.useforallotment ?? false
@@ -489,18 +515,23 @@ const Venue = {
     return conflicts.length === 0;
   },
 
+  /** True if an *active* venue already uses this name+type (archived rows ignored). */
   existsByNameAndType: async (name, type) => {
     const [rows] = await db.query(
       `SELECT id FROM venues
        WHERE UPPER(TRIM(name)) = UPPER(TRIM(?))
          AND LOWER(TRIM(type)) = LOWER(TRIM(?))
+         AND archived_at IS NULL
        LIMIT 1`,
       [name, type]
     );
     return (rows || []).length > 0;
   },
 
-  /** Returns raw venue row (with owner) for ownership checks during import. */
+  /**
+   * Active venue with this name+type (for import / create conflict checks).
+   * Archived historical rows are ignored so the same code can be re-created.
+   */
   findByNameAndType: async (name, type) => {
     const [rows] = await db.query(
       `SELECT v.*, u.username AS creator_username,
@@ -510,6 +541,7 @@ const Venue = {
        LEFT JOIN blocks b ON b.id = v.block_id
        WHERE UPPER(TRIM(v.name)) = UPPER(TRIM(?))
          AND LOWER(TRIM(v.type)) = LOWER(TRIM(?))
+         AND v.archived_at IS NULL
        LIMIT 1`,
       [name, type]
     );
@@ -519,10 +551,13 @@ const Venue = {
   existsByNameAndTypeExceptId: async (name, type, id) => {
     const [rows] = await db.query(
       `SELECT id FROM venues
-       WHERE name = ? AND type = ? AND id != ?`,
+       WHERE UPPER(TRIM(name)) = UPPER(TRIM(?))
+         AND LOWER(TRIM(type)) = LOWER(TRIM(?))
+         AND id != ?
+         AND archived_at IS NULL`,
       [name, type, id]
     );
-    return rows.length > 0;
+    return (rows || []).length > 0;
   },
 
   addSession: async (venueId, date, startTime, endTime, executor = db) => {
@@ -557,6 +592,12 @@ const Venue = {
       err.statusCode = 403;
       throw err;
     }
+    if (isArchivedRow(row)) {
+      const err = new Error("Restore this venue before changing availability");
+      err.statusCode = 409;
+      err.code = "VENUE_ARCHIVED";
+      throw err;
+    }
     await db.query(
       `UPDATE venues SET is_available = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
       [isAvailable, id]
@@ -576,6 +617,14 @@ const Venue = {
     if (role !== "admin" && role !== "faculty_incharge") {
       const err = new Error("Not authorized to change Use for Allotment");
       err.statusCode = 403;
+      throw err;
+    }
+    if (isArchivedRow(row)) {
+      const err = new Error(
+        "Archived venues cannot be selected for new allotments. Restore the venue first."
+      );
+      err.statusCode = 409;
+      err.code = "VENUE_ARCHIVED";
       throw err;
     }
     await db.query(
@@ -910,6 +959,12 @@ const Venue = {
       err.statusCode = 403;
       throw err;
     }
+    if (isArchivedRow(row)) {
+      const err = new Error("Restore this venue before editing it");
+      err.statusCode = 409;
+      err.code = "VENUE_ARCHIVED";
+      throw err;
+    }
 
     const {
       name,
@@ -965,34 +1020,70 @@ const Venue = {
     }
   },
 
-  deleteById: async (id, user) => {
+  /**
+   * Soft-archive a venue after all associated exam reports are completed.
+   * Preserves the venue row/ID and all seating/attendance/report history.
+   * Removes it from active Venue Management and new allotment pools.
+   */
+  archiveById: async (id, user) => {
     const row = await Venue.findById(id);
     if (!row) return false;
     if (!canManageVenue(user, row)) {
-      const err = new Error("Only the creator can delete this venue");
+      const err = new Error("Only the creator can archive this venue");
       err.statusCode = 403;
+      throw err;
+    }
+    if (isArchivedRow(row)) {
+      return true;
+    }
+
+    const DependencyChecks = require("../utils/dependencyChecks");
+    const blockers = await DependencyChecks.venueArchiveBlockers(id);
+    if (blockers.blocked) {
+      const err = new Error(blockers.details || blockers.message || "Cannot archive venue");
+      err.statusCode = 409;
+      err.code = blockers.code || "VENUE_REPORTS_PENDING";
+      err.details = blockers.details;
+      err.pendingPlans = blockers.pendingPlans;
       throw err;
     }
 
     const conn = await db.getConnection();
     try {
       await conn.beginTransaction();
-      const [usage] = await conn.query(
-        "SELECT COUNT(*) as count FROM seating_plan_venues WHERE venue_id = ?",
+      const [locked] = await conn.query(
+        `SELECT id, archived_at FROM venues WHERE id = ? FOR UPDATE`,
         [id]
       );
-      const usageCount = Number(usage?.[0]?.count ?? usage?.[0]?.COUNT ?? 0);
-      if (usageCount > 0) {
+      if (!locked?.[0]) {
+        await conn.rollback();
+        return false;
+      }
+      if (isArchivedRow(locked[0])) {
+        await conn.commit();
+        return true;
+      }
+
+      // Re-check inside the transaction so concurrent allotments cannot race past the gate.
+      const blockersTx = await DependencyChecks.venueArchiveBlockers(id);
+      if (blockersTx.blocked) {
         const err = new Error(
-          `This venue is linked to ${usageCount} seating plan(s).`
+          blockersTx.details || blockersTx.message || "Cannot archive venue"
         );
-        err.statusCode = 400;
-        err.code = "VENUE_IN_USE";
+        err.statusCode = 409;
+        err.code = blockersTx.code || "VENUE_REPORTS_PENDING";
+        err.details = blockersTx.details;
         throw err;
       }
-      await conn.query("DELETE FROM venue_bench_config WHERE venue_id = ?", [id]);
-      await conn.query("DELETE FROM venue_sessions WHERE venue_id = ?", [id]);
-      await conn.query("DELETE FROM venues WHERE id = ?", [id]);
+
+      await conn.query(
+        `UPDATE venues
+         SET archived_at = CURRENT_TIMESTAMP,
+             use_for_allotment = FALSE,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND archived_at IS NULL`,
+        [id]
+      );
       await conn.commit();
       return true;
     } catch (err) {
@@ -1002,6 +1093,53 @@ const Venue = {
       conn.release();
     }
   },
+
+  /** Restore an archived venue to active Venue Management (does not enable allotment). */
+  restoreById: async (id, user) => {
+    const row = await Venue.findById(id);
+    if (!row) return false;
+    if (!canManageVenue(user, row)) {
+      const err = new Error("Only the creator can restore this venue");
+      err.statusCode = 403;
+      throw err;
+    }
+    if (!isArchivedRow(row)) return true;
+
+    // Another active venue may already reuse this name/type after delete+recreate.
+    const conflict = await Venue.existsByNameAndType(row.name, row.type);
+    if (conflict) {
+      const err = new Error(
+        `Cannot restore "${row.name}": an active venue with this name and type already exists. Rename or archive the active venue first.`
+      );
+      err.statusCode = 409;
+      err.code = "VENUE_NAME_IN_USE";
+      throw err;
+    }
+
+    try {
+      const [result] = await db.query(
+        `UPDATE venues
+         SET archived_at = NULL,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND archived_at IS NOT NULL`,
+        [id]
+      );
+      return (result?.affectedRows ?? 0) > 0 || true;
+    } catch (err) {
+      if (err.code === "23505" || err.code === "ER_DUP_ENTRY") {
+        const conflictErr = new Error(
+          `Cannot restore "${row.name}": an active venue with this name and type already exists.`
+        );
+        conflictErr.statusCode = 409;
+        conflictErr.code = "VENUE_NAME_IN_USE";
+        throw conflictErr;
+      }
+      throw err;
+    }
+  },
+
+  /** @deprecated Prefer archiveById — hard delete is no longer used from Venue Management. */
+  deleteById: async (id, user) => Venue.archiveById(id, user),
 
   // Used by bulk-import undo — remains owner-scoped intentionally
   deleteByIds: async (ids, opts = {}) => {

@@ -46,8 +46,10 @@ function toBlockRow(row, { canManage = false } = {}) {
 const BLOCK_SELECT = `
   SELECT b.*,
          u.username AS creator_username,
-         (SELECT COUNT(*)::int FROM venues v WHERE v.block_id = b.id) AS venue_count,
-         (SELECT COALESCE(SUM(v.capacity), 0)::int FROM venues v WHERE v.block_id = b.id) AS total_capacity
+         (SELECT COUNT(*)::int FROM venues v
+            WHERE v.block_id = b.id AND v.archived_at IS NULL) AS venue_count,
+         (SELECT COALESCE(SUM(v.capacity), 0)::int FROM venues v
+            WHERE v.block_id = b.id AND v.archived_at IS NULL) AS total_capacity
   FROM blocks b
   LEFT JOIN users u ON u.id = b.owner_user_id
 `;
@@ -168,13 +170,13 @@ const Block = {
 
   async delete(id) {
     const [venues] = await db.query(
-      `SELECT COUNT(*)::int AS cnt FROM venues WHERE block_id = ?`,
+      `SELECT COUNT(*)::int AS cnt FROM venues WHERE block_id = ? AND archived_at IS NULL`,
       [id]
     );
     const count = Number(venues?.[0]?.cnt ?? 0);
     if (count > 0) {
       const err = new Error(
-        `Cannot delete block: ${count} venue(s) are still assigned. Reassign or delete them first.`
+        `Cannot delete block: ${count} active venue(s) are still assigned. Reassign or archive them first.`
       );
       err.statusCode = 400;
       err.code = "BLOCK_HAS_VENUES";

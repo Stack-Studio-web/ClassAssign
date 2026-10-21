@@ -182,6 +182,113 @@ const DependencyChecks = {
     }
     return blocked;
   },
+
+  /**
+   * Venue archival is blocked while any seating-plan report that used the venue
+   * is still ACTIVE (not COMPLETED), or a LAB exam on the venue is still open
+   * (not completed / not yet finalized into a completed report).
+   */
+  async venueArchiveBlockers(venueId) {
+    const id = Number(venueId);
+    if (!Number.isFinite(id) || id <= 0) {
+      return { blocked: false, notFound: true };
+    }
+
+    const [venueRows] = await db.query(`SELECT id, name FROM venues WHERE id = ? LIMIT 1`, [id]);
+    if (!venueRows?.length) return { blocked: false, notFound: true };
+
+    const [openPlans] = await db.query(
+      `SELECT sp.id,
+              sp.public_uuid,
+              sp.exam_date,
+              COALESCE(sp.report_status, 'ACTIVE') AS report_status,
+              COALESCE(sp.plan_kind, 'hall') AS plan_kind,
+              COALESCE(spv.venue_name, v.name) AS venue_name
+       FROM seating_plan_venues spv
+       JOIN seating_plans sp ON sp.id = spv.seating_plan_id
+       LEFT JOIN venues v ON v.id = spv.venue_id
+       WHERE spv.venue_id = ?
+         AND UPPER(COALESCE(sp.report_status, 'ACTIVE')) <> 'COMPLETED'
+       ORDER BY sp.exam_date DESC, sp.id DESC
+       LIMIT 20`,
+      [id]
+    );
+
+    if (Array.isArray(openPlans) && openPlans.length > 0) {
+      const sample = openPlans
+        .slice(0, 3)
+        .map((p) => {
+          const date = p.exam_date ?? p.examdate ?? "";
+          const kind = String(p.plan_kind ?? p.plankind ?? "hall").toUpperCase();
+          return `${kind} ${date}`.trim();
+        })
+        .filter(Boolean)
+        .join(", ");
+      return {
+        blocked: true,
+        code: "VENUE_REPORTS_PENDING",
+        message: "Cannot archive venue while exam reports are incomplete.",
+        details: sample
+          ? `${openPlans.length} seating plan report(s) are still active (not completed), including: ${sample}. Complete those reports before archiving.`
+          : `${openPlans.length} seating plan report(s) are still active (not completed). Complete those reports before archiving.`,
+        count: openPlans.length,
+        pendingPlans: openPlans.map((p) => ({
+          uuid: p.public_uuid ?? p.publicuuid ?? null,
+          examDate: p.exam_date ?? p.examdate ?? null,
+          reportStatus: p.report_status ?? p.reportstatus ?? "ACTIVE",
+          planKind: p.plan_kind ?? p.plankind ?? "hall",
+        })),
+      };
+    }
+
+    // LAB drafts / in-progress exams that have not produced a completed seating report yet
+    try {
+      const [openLabs] = await db.query(
+        `SELECT le.id,
+                le.public_uuid,
+                le.title,
+                le.exam_date,
+                le.status
+         FROM lab_slot_venues lsv
+         JOIN lab_exam_slots les ON les.id = lsv.lab_slot_id
+         JOIN lab_exams le ON le.id = les.lab_exam_id
+         WHERE lsv.venue_id = ?
+           AND LOWER(COALESCE(le.status, 'draft')) <> 'completed'
+           AND (
+             les.seating_plan_id IS NULL
+             OR EXISTS (
+               SELECT 1 FROM seating_plans sp
+               WHERE sp.id = les.seating_plan_id
+                 AND UPPER(COALESCE(sp.report_status, 'ACTIVE')) <> 'COMPLETED'
+             )
+           )
+         GROUP BY le.id, le.public_uuid, le.title, le.exam_date, le.status
+         ORDER BY le.exam_date DESC, le.id DESC
+         LIMIT 20`,
+        [id]
+      );
+      if (Array.isArray(openLabs) && openLabs.length > 0) {
+        const sample = openLabs
+          .slice(0, 3)
+          .map((l) => `${l.title || "LAB"} (${l.exam_date ?? l.examdate ?? l.status})`)
+          .join(", ");
+        return {
+          blocked: true,
+          code: "VENUE_LAB_REPORTS_PENDING",
+          message: "Cannot archive venue while LAB exam work is incomplete.",
+          details: `${openLabs.length} LAB exam(s) still use this venue and are not fully completed, including: ${sample}.`,
+          count: openLabs.length,
+        };
+      }
+    } catch (err) {
+      // lab_exams tables may be absent on older DBs — seating-plan check above is enough
+      if (!/relation .* does not exist/i.test(String(err.message || ""))) {
+        console.warn("venueArchiveBlockers lab check:", err.message);
+      }
+    }
+
+    return { blocked: false };
+  },
 };
 
 module.exports = DependencyChecks;

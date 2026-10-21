@@ -76,6 +76,9 @@ export default function AddVenue() {
   const [searchQuery, setSearchQuery] = useState("");
   const [sortOrder, setSortOrder] = useState("lowToHigh");
   const [filterBlock, setFilterBlock] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
+  const [archivedCount, setArchivedCount] = useState(0);
+  const [restoringId, setRestoringId] = useState(null);
 
   const [form, setForm] = useState({
     name: "",
@@ -175,14 +178,17 @@ export default function AddVenue() {
       setTotalVenues(res.data.totalVenues);
       setTotalCapacity(res.data.totalCapacity);
       setTotalBlocks(res.data.totalBlocks ?? 0);
+      setArchivedCount(Number(res.data.archivedCount) || 0);
     } catch (err) {
       if (err.response?.status !== 401) console.error("Failed to fetch stats", err);
     }
   };
 
-  const fetchVenues = async () => {
+  const fetchVenues = async (archived = showArchived) => {
     try {
-      const res = await api.get("/venues");
+      const res = await api.get("/venues", {
+        params: archived ? { archived: "true" } : undefined,
+      });
       setVenues(res.data);
     } catch (err) {
       if (err.response?.status !== 401) console.error("Failed to fetch venues", err);
@@ -209,13 +215,19 @@ export default function AddVenue() {
   };
 
   const refresh = async () => {
-    await Promise.all([fetchStats(), fetchVenues(), fetchBlocks()]);
+    await Promise.all([fetchStats(), fetchVenues(showArchived), fetchBlocks()]);
   };
 
   useEffect(() => {
     refresh();
     checkLastImport();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only bootstrap
   }, []);
+
+  useEffect(() => {
+    fetchVenues(showArchived);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refetch when archive filter toggles
+  }, [showArchived]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -269,9 +281,17 @@ export default function AddVenue() {
       if (err.response?.status === 401) return;
       if (err.response?.status === 403) {
         setError("Only the creator can edit this venue.");
-      } else if (err.response?.data?.error === "Duplicate venue") {
+      } else if (
+        err.response?.status === 400 &&
+        /already exists/i.test(
+          String(err.response?.data?.error || err.response?.data?.details || "")
+        )
+      ) {
         setIsDuplicateError(true);
-        setError(`A venue named "${form.name}" with type "${form.type}" already exists.`);
+        setError(
+          err.response?.data?.details ||
+            `An active venue named "${form.name}" with type "${form.type}" already exists.`
+        );
       } else {
         setError(getApiError(err, "Failed to save venue."));
       }
@@ -363,21 +383,51 @@ export default function AddVenue() {
 
   const handleDelete = async (id) => {
     if (!id) {
-      toast.error("Invalid venue ID.", "Cannot delete");
+      toast.error("Invalid venue ID.", "Cannot archive");
       return;
     }
-    const ok = await showConfirm("Are you sure you want to delete this venue?");
+    const ok = await showConfirm(
+      "Archive this venue? It will be removed from active venue management, but all historical exam and report records will be preserved. You can create a venue with the same name again later as a new record."
+    );
     if (!ok) return;
     setDeletingId(id);
     try {
       await api.delete(`/venues/${id}`);
-      toast.success("Venue deleted successfully.");
+      toast.success("Venue archived. Historical exam and report records were preserved.");
       await refresh();
     } catch (err) {
       if (err.response?.status === 401) return;
-      toast.error(getApiError(err), getApiErrorTitle(err, "Cannot delete venue"));
+      const data = err.response?.data;
+      const detail =
+        data?.details ||
+        data?.error ||
+        getApiError(err, "Cannot archive venue while reports are incomplete.");
+      toast.error(detail, getApiErrorTitle(err, "Cannot archive venue"));
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  const handleRestore = async (id) => {
+    if (!id) {
+      toast.error("Invalid venue ID.", "Cannot restore");
+      return;
+    }
+    const ok = await showConfirm(
+      "Restore this venue to active venue management? You can enable Use for Allotment again afterward if needed."
+    );
+    if (!ok) return;
+    setRestoringId(id);
+    try {
+      await api.post(`/venues/${id}/restore`);
+      toast.success("Venue restored to active venue management.");
+      setShowArchived(false);
+      await Promise.all([fetchStats(), fetchVenues(false), fetchBlocks()]);
+    } catch (err) {
+      if (err.response?.status === 401) return;
+      toast.error(getApiError(err), getApiErrorTitle(err, "Cannot restore venue"));
+    } finally {
+      setRestoringId(null);
     }
   };
 
@@ -755,9 +805,11 @@ export default function AddVenue() {
   );
 
   const renderVenueCard = (venue) => {
-    const useIt = venue.isAvailable !== false;
-    const useForAllotment = venue.useForAllotment === true;
+    const archived = Boolean(venue.isArchived) || showArchived;
+    const useIt = !archived && venue.isAvailable !== false;
+    const useForAllotment = !archived && venue.useForAllotment === true;
     const canManage = Boolean(venue.canManage);
+    const allowAllotmentToggle = canManage && canToggleUseForAllotment && !archived;
     const layoutLabel =
       venue.benchesRow != null && venue.benchesCol != null
         ? `${venue.benchesRow} × ${venue.benchesCol}`
@@ -766,10 +818,19 @@ export default function AddVenue() {
     return (
       <article
         key={venue.uuid}
-        className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 flex flex-col gap-4 hover:shadow-md transition-all duration-200"
+        className={`bg-white rounded-2xl shadow-sm border p-5 flex flex-col gap-4 hover:shadow-md transition-all duration-200 ${
+          archived ? "border-amber-200 bg-amber-50/40" : "border-gray-100"
+        }`}
       >
         <div className="min-w-0">
-          <h3 className="text-lg font-bold text-gray-900 truncate">{venue.name}</h3>
+          <div className="flex items-start justify-between gap-2">
+            <h3 className="text-lg font-bold text-gray-900 truncate">{venue.name}</h3>
+            {archived && (
+              <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-md bg-amber-100 text-amber-800">
+                Archived
+              </span>
+            )}
+          </div>
           <p className="text-sm text-gray-600 mt-1">{formatVenueType(venue.type)}</p>
           <p className="text-sm text-gray-700 mt-1 truncate">
             Block: {formatBlockLabel(venue.blockName, venue.blockCode)}
@@ -785,66 +846,78 @@ export default function AddVenue() {
           )}
         </div>
 
-        <div className="flex items-center gap-3">
-          <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-            Available
-          </span>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={useIt}
-            aria-label={`Available ${useIt ? "on" : "off"}`}
-            disabled={!canManage || togglingVenueId === venue.uuid}
-            onClick={() => handleToggleVenueAvailability(venue, !useIt)}
-            className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed ${
-              useIt ? "bg-emerald-500" : "bg-gray-300"
-            } ${canManage ? "cursor-pointer" : "cursor-not-allowed"}`}
-          >
-            <span
-              className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
-                useIt ? "translate-x-6" : "translate-x-1"
-              }`}
-            />
-          </button>
-          <span
-            className={`text-xs font-semibold ${
-              useIt ? "text-emerald-700" : "text-gray-500"
-            }`}
-          >
-            {useIt ? "ON" : "OFF"}
-          </span>
-        </div>
+        {!archived && (
+          <>
+            <div className="flex items-center gap-3">
+              <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                Available
+              </span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={useIt}
+                aria-label={`Available ${useIt ? "on" : "off"}`}
+                disabled={!canManage || togglingVenueId === venue.uuid}
+                onClick={() => handleToggleVenueAvailability(venue, !useIt)}
+                className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed ${
+                  useIt ? "bg-emerald-500" : "bg-gray-300"
+                } ${canManage ? "cursor-pointer" : "cursor-not-allowed"}`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
+                    useIt ? "translate-x-6" : "translate-x-1"
+                  }`}
+                />
+              </button>
+              <span
+                className={`text-xs font-semibold ${
+                  useIt ? "text-emerald-700" : "text-gray-500"
+                }`}
+              >
+                {useIt ? "ON" : "OFF"}
+              </span>
+            </div>
 
-        <label
-          className={`inline-flex items-center gap-2 text-sm font-semibold text-gray-700 ${
-            !canToggleUseForAllotment || !useIt
-              ? "opacity-60 cursor-not-allowed"
-              : "cursor-pointer"
-          }`}
-        >
-          <input
-            type="checkbox"
-            checked={useForAllotment}
-            disabled={
-              !canToggleUseForAllotment ||
-              !useIt ||
-              togglingVenueId === venue.uuid
-            }
-            onChange={(e) => handleToggleUseForAllotment(venue, e.target.checked)}
-            className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-          />
-          Use for Allotment
-        </label>
+            <label
+              className={`inline-flex items-center gap-2 text-sm font-semibold text-gray-700 ${
+                !allowAllotmentToggle || !useIt
+                  ? "opacity-60 cursor-not-allowed"
+                  : "cursor-pointer"
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={useForAllotment}
+                disabled={
+                  !allowAllotmentToggle ||
+                  !useIt ||
+                  togglingVenueId === venue.uuid
+                }
+                onChange={(e) => handleToggleUseForAllotment(venue, e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              Use for Allotment
+            </label>
+          </>
+        )}
+
+        {archived && (
+          <p className="text-sm text-amber-900/80">
+            Removed from active management. Historical exam and report records remain intact.
+          </p>
+        )}
 
         <div className="mt-auto flex flex-wrap gap-2 pt-1">
-          <button
-            type="button"
-            onClick={() => openAvailabilityCheck(venue)}
-            className="px-3 py-1.5 rounded-xl border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 text-sm font-medium transition-all"
-          >
-            Check Availability
-          </button>
-          {canManage && (
+          {!archived && (
+            <button
+              type="button"
+              onClick={() => openAvailabilityCheck(venue)}
+              className="px-3 py-1.5 rounded-xl border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 text-sm font-medium transition-all"
+            >
+              Check Availability
+            </button>
+          )}
+          {canManage && !archived && (
             <>
               <button
                 type="button"
@@ -859,9 +932,19 @@ export default function AddVenue() {
                 onClick={() => handleDelete(venue.uuid)}
                 className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium transition-all"
               >
-                {deletingId === venue.uuid ? "Deleting..." : "Delete"}
+                {deletingId === venue.uuid ? "Archiving..." : "Delete"}
               </button>
             </>
+          )}
+          {canManage && archived && (
+            <button
+              type="button"
+              disabled={restoringId === venue.uuid}
+              onClick={() => handleRestore(venue.uuid)}
+              className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-medium transition-all"
+            >
+              {restoringId === venue.uuid ? "Restoring..." : "Restore"}
+            </button>
           )}
         </div>
       </article>
@@ -1453,8 +1536,34 @@ export default function AddVenue() {
       {activeTab === "hall" && (
         <div className="px-4 md:px-8 py-6 md:py-8 space-y-5">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <h2 className="text-lg font-semibold text-gray-800">All Venues</h2>
+            <h2 className="text-lg font-semibold text-gray-800">
+              {showArchived ? "Archived Venues" : "All Venues"}
+            </h2>
             <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3 w-full md:w-auto">
+              <div className="inline-flex h-12 rounded-xl border border-gray-200 bg-white p-1 shadow-sm">
+                <button
+                  type="button"
+                  onClick={() => setShowArchived(false)}
+                  className={`px-3 rounded-lg text-sm font-medium transition-all ${
+                    !showArchived
+                      ? "bg-blue-600 text-white"
+                      : "text-gray-600 hover:bg-gray-50"
+                  }`}
+                >
+                  Active
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowArchived(true)}
+                  className={`px-3 rounded-lg text-sm font-medium transition-all ${
+                    showArchived
+                      ? "bg-amber-600 text-white"
+                      : "text-gray-600 hover:bg-gray-50"
+                  }`}
+                >
+                  Archived{archivedCount > 0 ? ` (${archivedCount})` : ""}
+                </button>
+              </div>
               <input
                 type="text"
                 placeholder="Search by venue, block, code..."
@@ -1495,95 +1604,109 @@ export default function AddVenue() {
           </div>
 
           {/* Block / campus summary — totals ignore sort; block scope ignores search */}
-          {filterBlock
-            ? renderBlockSummaryCards(blockScopeSummary, {
-                title: selectedBlockMeta.label,
-                subtitle: searchActive
-                  ? `Showing ${filteredSummary.totalVenues.toLocaleString()} of ${blockScopeSummary.totalVenues.toLocaleString()} matching search · Block capacity ${blockScopeSummary.totalCapacity.toLocaleString()}`
-                  : `${blockScopeSummary.totalVenues.toLocaleString()} venues · ${blockScopeSummary.totalCapacity.toLocaleString()} capacity`,
-              })
-            : renderBlockSummaryCards(
-                searchActive ? filteredSummary : blockScopeSummary,
-                {
-                  title: "All Blocks",
+          {!showArchived &&
+            (filterBlock
+              ? renderBlockSummaryCards(blockScopeSummary, {
+                  title: selectedBlockMeta.label,
                   subtitle: searchActive
-                    ? `Showing ${filteredSummary.totalVenues.toLocaleString()} matching search · Campus total ${blockScopeSummary.totalVenues.toLocaleString()} venues · ${blockScopeSummary.totalCapacity.toLocaleString()} capacity`
-                    : `${blockScopeSummary.totalVenues.toLocaleString()} venues · ${blockScopeSummary.totalCapacity.toLocaleString()} capacity across campus`,
-                }
-              )}
+                    ? `Showing ${filteredSummary.totalVenues.toLocaleString()} of ${blockScopeSummary.totalVenues.toLocaleString()} matching search · Block capacity ${blockScopeSummary.totalCapacity.toLocaleString()}`
+                    : `${blockScopeSummary.totalVenues.toLocaleString()} venues · ${blockScopeSummary.totalCapacity.toLocaleString()} capacity`,
+                })
+              : renderBlockSummaryCards(
+                  searchActive ? filteredSummary : blockScopeSummary,
+                  {
+                    title: "All Blocks",
+                    subtitle: searchActive
+                      ? `Showing ${filteredSummary.totalVenues.toLocaleString()} matching search · Campus total ${blockScopeSummary.totalVenues.toLocaleString()} venues · ${blockScopeSummary.totalCapacity.toLocaleString()} capacity`
+                      : `${blockScopeSummary.totalVenues.toLocaleString()} venues · ${blockScopeSummary.totalCapacity.toLocaleString()} capacity across campus`,
+                  }
+                ))}
+
+          {showArchived && (
+            <p className="text-sm text-amber-900/80 bg-amber-50 border border-amber-100 rounded-xl px-4 py-3">
+              Archived venues are excluded from active Venue Management and new allotments.
+              Historical exam, seating, attendance, and report records remain available.
+            </p>
+          )}
 
           {/* Selected for allotment — explicit list of checked venues */}
-          <div className="bg-white rounded-2xl border border-blue-100 shadow-sm p-4 md:p-5">
-            <div className="flex flex-wrap items-start justify-between gap-2 mb-3">
-              <div>
-                <h3 className="text-sm font-semibold text-gray-900">
-                  Selected for Allotment
-                </h3>
-                <p className="text-xs text-gray-500 mt-0.5">
-                  {filterBlock
-                    ? `Venues in ${selectedBlockMeta.label} with “Use for Allotment” enabled`
-                    : "Venues across campus with “Use for Allotment” enabled"}
+          {!showArchived && (
+            <div className="bg-white rounded-2xl border border-blue-100 shadow-sm p-4 md:p-5">
+              <div className="flex flex-wrap items-start justify-between gap-2 mb-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-900">
+                    Selected for Allotment
+                  </h3>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    {filterBlock
+                      ? `Venues in ${selectedBlockMeta.label} with “Use for Allotment” enabled`
+                      : "Venues across campus with “Use for Allotment” enabled"}
+                  </p>
+                </div>
+                <p className="text-sm font-medium text-blue-700 tabular-nums">
+                  {allotmentSelectedVenues.length.toLocaleString()}{" "}
+                  {allotmentSelectedVenues.length === 1 ? "venue" : "venues"}
+                  {allotmentSelectedCapacity > 0
+                    ? ` · ${allotmentSelectedCapacity.toLocaleString()} seats`
+                    : ""}
                 </p>
               </div>
-              <p className="text-sm font-medium text-blue-700 tabular-nums">
-                {allotmentSelectedVenues.length.toLocaleString()}{" "}
-                {allotmentSelectedVenues.length === 1 ? "venue" : "venues"}
-                {allotmentSelectedCapacity > 0
-                  ? ` · ${allotmentSelectedCapacity.toLocaleString()} seats`
-                  : ""}
-              </p>
+              {allotmentSelectedVenues.length === 0 ? (
+                <p className="text-sm text-gray-500">
+                  No venues selected for allotment
+                  {filterBlock ? ` in ${selectedBlockMeta.label}` : ""}. Enable{" "}
+                  <span className="font-medium text-gray-700">Use for Allotment</span> on
+                  a venue card to add it here.
+                </p>
+              ) : (
+                <ul className="flex flex-wrap gap-2" aria-label="Venues selected for allotment">
+                  {allotmentSelectedVenues.map((v) => (
+                    <li key={v.uuid}>
+                      <span
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-800"
+                        title={[
+                          formatBlockLabel(v.blockName, v.blockCode),
+                          formatVenueType(v.type),
+                          v.capacity != null
+                            ? `Capacity ${Number(v.capacity).toLocaleString()}`
+                            : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      >
+                        {v.name || v.code || "Venue"}
+                        {v.capacity != null && v.capacity !== "" ? (
+                          <span className="font-medium text-blue-600 tabular-nums">
+                            · {Number(v.capacity).toLocaleString()}
+                          </span>
+                        ) : null}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
-            {allotmentSelectedVenues.length === 0 ? (
-              <p className="text-sm text-gray-500">
-                No venues selected for allotment
-                {filterBlock ? ` in ${selectedBlockMeta.label}` : ""}. Enable{" "}
-                <span className="font-medium text-gray-700">Use for Allotment</span> on
-                a venue card to add it here.
-              </p>
-            ) : (
-              <ul className="flex flex-wrap gap-2" aria-label="Venues selected for allotment">
-                {allotmentSelectedVenues.map((v) => (
-                  <li key={v.uuid}>
-                    <span
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-800"
-                      title={[
-                        formatBlockLabel(v.blockName, v.blockCode),
-                        formatVenueType(v.type),
-                        v.capacity != null
-                          ? `Capacity ${Number(v.capacity).toLocaleString()}`
-                          : null,
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")}
-                    >
-                      {v.name || v.code || "Venue"}
-                      {v.capacity != null && v.capacity !== "" ? (
-                        <span className="font-medium text-blue-600 tabular-nums">
-                          · {Number(v.capacity).toLocaleString()}
-                        </span>
-                      ) : null}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+          )}
 
           {filteredVenues.length === 0 ? (
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center">
               <p className="text-base font-semibold text-gray-800">
                 {searchActive
                   ? "No venues match your search."
-                  : filterBlock
-                    ? `No venues found in ${selectedBlockMeta.label}.`
-                    : "No venues found."}
+                  : showArchived
+                    ? "No archived venues."
+                    : filterBlock
+                      ? `No venues found in ${selectedBlockMeta.label}.`
+                      : "No venues found."}
               </p>
               <p className="text-sm text-gray-500 mt-1">
                 {searchActive
                   ? "Try a different search term or clear the block filter."
-                  : filterBlock
-                    ? "Add a venue to this block to begin."
-                    : "Create a venue from Basic Details or Bulk Import."}
+                  : showArchived
+                    ? "Delete (archive) a venue after all its exam reports are completed to see it here."
+                    : filterBlock
+                      ? "Add a venue to this block to begin."
+                      : "Create a venue from Basic Details or Bulk Import."}
               </p>
             </div>
           ) : filterBlock ? (

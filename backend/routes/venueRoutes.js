@@ -207,11 +207,19 @@ router.get("/", sessionAuth, checkRole(VENUE_ROLES), async (req, res) => {
       blockId = Number(req.query.blockId) || null;
     }
 
+    const archivedOnly =
+      req.query.archived === "true" ||
+      req.query.archivedOnly === "true" ||
+      req.query.status === "archived";
+    const includeArchived = req.query.includeArchived === "true";
+
     const venues = await Venue.getAll({
       blockId,
       unassignedOnly,
       type: req.query.type || null,
       search: req.query.search || null,
+      archivedOnly,
+      includeArchived: includeArchived && !archivedOnly,
       user,
       role: user.role,
     });
@@ -224,15 +232,23 @@ router.get("/", sessionAuth, checkRole(VENUE_ROLES), async (req, res) => {
 router.get("/stats", sessionAuth, checkRole(VENUE_ROLES), async (req, res) => {
   try {
     const user = currentUser(req);
-    const [venues, blocks] = await Promise.all([
+    const [venues, archivedVenues, blocks] = await Promise.all([
       Venue.getAll({ user, role: user.role }),
+      Venue.getAll({ user, role: user.role, archivedOnly: true }),
       Block.list({}),
     ]);
     const totalVenues = venues.length;
     const totalCapacity = venues.reduce((sum, v) => sum + (v.capacity || 0), 0);
     const totalBlocks = blocks.length;
     const unassignedCount = venues.filter((v) => !v.blockUuid).length;
-    res.json({ totalVenues, totalCapacity, totalBlocks, unassignedCount });
+    const archivedCount = archivedVenues.length;
+    res.json({
+      totalVenues,
+      totalCapacity,
+      totalBlocks,
+      unassignedCount,
+      archivedCount,
+    });
   } catch (err) {
     res.status(err.statusCode || 500).json({ error: err.message || "Server error" });
   }
@@ -280,17 +296,28 @@ router.post(
         return res.status(400).json({ error: "Invalid blockUuid" });
       }
 
+      const trimmedName = name.trim();
+      const trimmedType = type.trim();
+      // Uniqueness is among active venues only — archived history may reuse the same name.
+      if (await Venue.existsByNameAndType(trimmedName, trimmedType)) {
+        return res.status(400).json({
+          error: "A venue with this name and type already exists.",
+          details:
+            "An active venue with this name and type already exists. Archive or rename it before creating another.",
+        });
+      }
+
       const opts = await resolveOwnerOpts(req);
       // createdBy from session only — ignore body.createdBy
       const venueId = await Venue.create(
         {
-          name: name.trim(),
-          type: type.trim(),
+          name: trimmedName,
+          type: trimmedType,
           benchesRow,
           benchesCol,
           benchConfig,
           blockId,
-          code: req.body.code || name.trim(),
+          code: req.body.code || trimmedName,
           isAvailable: isAvailable !== false,
         },
         opts
@@ -303,7 +330,7 @@ router.post(
       res.status(isDuplicate ? 400 : err.statusCode || 500).json({
         error: err.message,
         details: isDuplicate
-          ? "A venue with this name and type already exists."
+          ? "An active venue with this name and type already exists."
           : undefined,
       });
     }
@@ -615,16 +642,55 @@ router.delete(
   sessionAuth,
   checkRole(VENUE_ROLES),
   resolveEntity(TABLE.venues),
-  auditLogger("DELETE_VENUE", "Venue"),
+  auditLogger("ARCHIVE_VENUE", "Venue"),
   async (req, res) => {
     try {
       const user = currentUser(req);
-      await Venue.deleteById(req.internalId, user);
-      res.json({ message: "Venue deleted successfully", uuid: req.publicUuid });
+      await Venue.archiveById(req.internalId, user);
+      res.json({
+        message:
+          "Venue archived successfully. It was removed from active venue management; historical exam and report records were preserved.",
+        uuid: req.publicUuid,
+        archived: true,
+      });
     } catch (err) {
-      if (err.code === "VENUE_IN_USE") {
-        return res.status(400).json({
-          error: "Cannot delete venue",
+      if (
+        err.code === "VENUE_REPORTS_PENDING" ||
+        err.code === "VENUE_LAB_REPORTS_PENDING" ||
+        err.code === "VENUE_IN_USE"
+      ) {
+        return res.status(err.statusCode || 409).json({
+          error: err.message || "Cannot archive venue",
+          code: err.code,
+          details: err.details || err.message,
+          pendingPlans: err.pendingPlans,
+        });
+      }
+      res.status(err.statusCode || 500).json({ error: err.message || "Server error" });
+    }
+  }
+);
+
+router.post(
+  "/:uuid/restore",
+  sessionAuth,
+  checkRole(VENUE_ROLES),
+  resolveEntity(TABLE.venues),
+  auditLogger("RESTORE_VENUE", "Venue"),
+  async (req, res) => {
+    try {
+      const user = currentUser(req);
+      await Venue.restoreById(req.internalId, user);
+      res.json({
+        message: "Venue restored to active venue management.",
+        uuid: req.publicUuid,
+        archived: false,
+      });
+    } catch (err) {
+      if (err.code === "VENUE_NAME_IN_USE") {
+        return res.status(409).json({
+          error: err.message || "Cannot restore venue",
+          code: err.code,
           details: err.message,
         });
       }

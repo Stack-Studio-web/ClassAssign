@@ -83,7 +83,7 @@ const instructions = [
   [""],
   ["Venue Name / Venue Type:"],
   ["  • Type: Classroom, Lab, or Hall (case-insensitive)"],
-  ["  • Venue Name + Type must be unique (no duplicates)"],
+  ["  • Venue Name + Type must be unique among active venues (archived history may reuse the same name)"],
   [""],
   ["Rows / Columns / Bench Configuration:"],
   ["  • Rows and Columns must be positive integers"],
