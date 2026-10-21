@@ -121,7 +121,7 @@ function testPrintCssUsesExplicitPages() {
   assert.ok(/hall-print-page-break/i.test(HALL_ALLOTMENT_PRINT_CSS));
   assert.ok(/page-break-after:\s*always/i.test(HALL_ALLOTMENT_PRINT_CSS));
   assert.ok(/hall-screen-preview/i.test(HALL_ALLOTMENT_PRINT_CSS));
-  assert.ok(/margin:\s*12mm 10mm 22mm 10mm/i.test(HALL_ALLOTMENT_PAGE_STYLE));
+  assert.ok(/margin:\s*12mm 10mm 12mm 10mm/i.test(HALL_ALLOTMENT_PAGE_STYLE));
   assert.ok(getHallPrintUsableHeightPx() > 700);
   console.log("✓ print CSS uses explicit page blocks + footer margins");
 }

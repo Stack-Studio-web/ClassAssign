@@ -243,13 +243,11 @@ function buildSignatureSection() {
  * @param {object} args.preview - API preview payload ({ schedule, unassignedVenues, ... })
  * @param {object} args.meta - display meta (deptHeader, ayLabel, semesterLabel, program1, program2, …)
  * @param {"KCT"|"KSI"} [args.logoChoice]
- * @param {object|null} [args.verification]
  */
 export async function downloadFacultyInvigilationDocx({
   preview,
   meta = {},
   logoChoice = "KSI",
-  verification = null,
 }) {
   const logoUrl = logoChoice === "KCT" ? logoKctUrl : logoKsiUrl;
   const logoBytes = await fetchImageBytes(logoUrl);
@@ -367,15 +365,6 @@ export async function downloadFacultyInvigilationDocx({
         columnWidths: uCols,
         rows: [uHeader, ...uBody],
       })
-    );
-  }
-
-  if (verification?.verificationId) {
-    children.push(
-      p(
-        `Generated and E-Verified by HALLORA | Verification ID: ${verification.verificationId}`,
-        { size: 14, before: 240, after: 40 }
-      )
     );
   }
 

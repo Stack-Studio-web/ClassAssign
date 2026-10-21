@@ -1,15 +1,7 @@
 import React, { useMemo, useRef, useState } from "react";
-import { flushSync } from "react-dom";
 import { useReactToPrint } from "react-to-print";
 import LogoKSI from "../assets/logo KSI.png";
 import LogoKCT from "../assets/logo.png";
-import HalloraVerifiedFooter from "./HalloraVerifiedFooter";
-import {
-  createReportVerification,
-  HALLORA_VERIFY_PRINT_CSS,
-  sha256Hex,
-  finalizeReportVerification,
-} from "../lib/reportVerification";
 
 const currentYear = new Date().getFullYear();
 const AY_OPTIONS = Array.from({ length: 6 }, (_, i) => currentYear - 2 + i);
@@ -189,7 +181,6 @@ const FacultySchedule = ({ plans, onClose }) => {
 
   const currentLogo = logoType === "KCT" ? LogoKCT : LogoKSI;
 
-  const [verification, setVerification] = useState(null);
   const [verifying, setVerifying] = useState(false);
 
   const handlePrint = useReactToPrint({
@@ -197,24 +188,9 @@ const FacultySchedule = ({ plans, onClose }) => {
     documentTitle: "Faculty_Invigilation_Schedule",
   });
 
-  const runVerifiedPrint = async () => {
+  const runPrint = () => {
     setVerifying(true);
     try {
-      const v = await createReportVerification("Faculty Invigilation Schedule", {
-        planCount: Array.isArray(plans) ? plans.length : 0,
-      });
-      flushSync(() => {
-        setVerification(v);
-      });
-      handlePrint();
-      // Audit fingerprint of printable HTML (browser Save-as-PDF has no byte access)
-      if (printRef.current && v?.uuid) {
-        const html = printRef.current.innerHTML || "";
-        const hash = await sha256Hex(html);
-        await finalizeReportVerification(v.uuid, hash).catch(() => null);
-      }
-    } catch (err) {
-      console.error("Faculty schedule verification failed:", err);
       handlePrint();
     } finally {
       setVerifying(false);
@@ -393,7 +369,7 @@ const FacultySchedule = ({ plans, onClose }) => {
             </select>
           </label>
           <button
-            onClick={runVerifiedPrint}
+            onClick={runPrint}
             disabled={verifying}
             style={{
               padding: "10px 20px",
@@ -424,7 +400,6 @@ const FacultySchedule = ({ plans, onClose }) => {
         </div>
 
         <div ref={printRef}>
-          <style>{HALLORA_VERIFY_PRINT_CSS}</style>
           <style>{`
             @media print {
               @page {
@@ -669,7 +644,6 @@ const FacultySchedule = ({ plans, onClose }) => {
               );
             })
           )}
-          {verification ? <HalloraVerifiedFooter verification={verification} /> : null}
         </div>
       </div>
     </div>

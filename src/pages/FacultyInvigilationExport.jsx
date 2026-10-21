@@ -9,12 +9,6 @@ import {
 import api from "../lib/api";
 import LogoKSI from "../assets/logo KSI.png";
 import LogoKCT from "../assets/logo.png";
-import HalloraVerifiedFooter from "../Components/HalloraVerifiedFooter";
-import {
-  createReportVerification,
-  finalizeReportVerification,
-  sha256Hex,
-} from "../lib/reportVerification";
 import { downloadFacultyInvigilationDocx } from "../lib/facultyInvigilationDocx";
 import { useToast } from "../context/ToastContext";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
@@ -89,7 +83,6 @@ export default function FacultyInvigilationExport() {
   const [logoType, setLogoType] = useState(
     () => (typeof window !== "undefined" && window.localStorage.getItem("kctLogoType")) || "KSI"
   );
-  const [verification, setVerification] = useState(null);
 
   const currentLogo = logoType === "KCT" ? LogoKCT : LogoKSI;
 
@@ -203,19 +196,6 @@ export default function FacultyInvigilationExport() {
     setExporting(true);
     setError("");
     try {
-      const v = await createReportVerification("Faculty Invigilation Schedule", {
-        semester: filters.semester,
-        academicYear: filters.academicYearLabel,
-        category: filters.examType,
-        department: filters.department,
-        program1: filters.program1,
-        program2: filters.program2,
-        dateFrom: filters.dateFrom,
-        dateTo: filters.dateTo,
-        assignmentCount: preview.meta?.assignmentCount,
-      });
-      setVerification(v);
-
       const ayLabel =
         filters.academicYearLabel ||
         options.academicYears.find((y) => y.uuid === filters.academicYearUuid)?.label ||
@@ -233,10 +213,9 @@ export default function FacultyInvigilationExport() {
           : `DEPARTMENT OF ${filters.department}`
         : "—";
 
-      const filename = await downloadFacultyInvigilationDocx({
+      await downloadFacultyInvigilationDocx({
         preview,
         logoChoice: logoType,
-        verification: v,
         meta: {
           deptHeader,
           ayLabel,
@@ -247,19 +226,6 @@ export default function FacultyInvigilationExport() {
           dateTo: filters.dateTo,
         },
       });
-
-      if (v?.uuid) {
-        const hashPayload = JSON.stringify({
-          type: "faculty-invigilation-docx",
-          filename,
-          meta: preview.meta || {},
-          scheduleDays: (preview.schedule || []).length,
-          assignmentCount: preview.meta?.assignmentCount,
-          verificationId: v.verificationId,
-        });
-        const hash = await sha256Hex(hashPayload);
-        await finalizeReportVerification(v.uuid, hash).catch(() => null);
-      }
 
       toast.success("Faculty invigilation schedule downloaded as DOCX.");
     } catch (err) {
@@ -627,7 +593,6 @@ export default function FacultyInvigilationExport() {
                   </div>
                 )}
 
-              {verification ? <HalloraVerifiedFooter verification={verification} /> : null}
             </div>
           </section>
         )}

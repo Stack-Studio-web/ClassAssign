@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from "react";
-import { flushSync } from "react-dom";
 import api from "../lib/api";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "../context/ToastContext";
@@ -24,14 +23,6 @@ import {
   sendInvigilationNotifications,
   fetchInvigilationBatchStatus,
 } from "../lib/invigilationNotificationApi";
-import {
-  createReportVerification,
-  finalizeReportVerification,
-  halloraFooterHtml,
-  HALLORA_VERIFY_PRINT_CSS,
-  sha256Hex,
-} from "../lib/reportVerification";
-
 const appendClonedContent = (targetDoc, elementId) => {
   const source = document.getElementById(elementId);
   if (!source) return;
@@ -55,7 +46,6 @@ const Report = () => {
   const [markingCompleted, setMarkingCompleted] = useState(false);
   const [notifyBusy, setNotifyBusy] = useState(false);
   const [notifyProgress, setNotifyProgress] = useState(null);
-  const [detailVerification, setDetailVerification] = useState(null);
   const notifyPollRef = useRef(null);
   const componentRef = useRef();
   const navigate = useNavigate();
@@ -136,28 +126,17 @@ const Report = () => {
       return;
     }
 
-    let verification = null;
-    try {
-      verification = await createReportVerification("Seating Plan Report", {
-        planCount: plansToPrint.length,
-        planUuids: plansToPrint.map((p) => p.uuid),
-      });
-    } catch (err) {
-      console.error("Verification create failed:", err);
-    }
-
     const printWindow = window.open("", "", "height=700,width=900");
     printWindow.document.write("<html><head><title>Seating Plans</title>");
     printWindow.document.write(`
       <style>
-        body { font-family: "Times New Roman", serif; margin: 15px; padding-bottom: 16mm; }
+        body { font-family: "Times New Roman", serif; margin: 15px; }
         h2, h3 { text-align: center; }
         table { width: 100%; table-layout: fixed; border-collapse: collapse; margin-top: 15px; }
         th, td { border: 1px solid black; padding: 5px 6px; text-align: center; }
         .plan-section { page-break-after: always; margin-bottom: 30px; }
         .plan-section:last-child { page-break-after: auto; }
         @page { size: A4; margin: 12mm; }
-        ${HALLORA_VERIFY_PRINT_CSS}
       </style>
     `);
     printWindow.document.write("</head><body>");
@@ -166,22 +145,10 @@ const Report = () => {
       printWindow.document.write(`<div class="plan-section"><h2>Seating Plan ${index + 1}</h2><div id="slot-${planId}"></div></div>`);
       appendClonedContent(printWindow.document, `plan-content-${planId}`);
     });
-    if (verification) {
-      printWindow.document.write(halloraFooterHtml(verification));
-    }
     printWindow.document.write("</body></html>");
     printWindow.document.close();
     printWindow.focus();
     printWindow.print();
-
-    if (verification?.uuid) {
-      try {
-        const hash = await sha256Hex(printWindow.document.body.innerHTML || "");
-        await finalizeReportVerification(verification.uuid, hash);
-      } catch {
-        /* audit best-effort */
-      }
-    }
   };
 
   const handleDeletePlan = async (planId) => {
@@ -292,50 +259,20 @@ const Report = () => {
   const handlePrintSingle = async () => {
     if (!componentRef.current) return;
 
-    let verification = detailVerification;
-    try {
-      verification = await createReportVerification("Seating Plan Details", {
-        planUuid: selectedPlan?.uuid || null,
-        examType: selectedPlan?.examType || null,
-        examDate: selectedPlan?.examDate || null,
-      });
-      flushSync(() => {
-        setDetailVerification(verification);
-      });
-    } catch (err) {
-      console.error("Verification create failed:", err);
-    }
-
     const printWindow = window.open("", "", "height=600,width=800");
     printWindow.document.write(
       `<html><head><title>Seating Plan</title><style>
-        body { font-family: Arial; padding-bottom: 16mm; }
+        body { font-family: Arial; }
         table { width: 100%; border-collapse: collapse; }
         th, td { border: 1px solid black; padding: 10px; }
-        ${HALLORA_VERIFY_PRINT_CSS}
       </style></head><body></body></html>`
     );
     printWindow.document.close();
     printWindow.document.body.appendChild(componentRef.current.cloneNode(true));
-    if (verification?.verificationId) {
-      printWindow.document
-        .querySelectorAll(".hallora-verify-footer")
-        .forEach((el) => el.remove());
-      printWindow.document.body.insertAdjacentHTML(
-        "beforeend",
-        halloraFooterHtml(verification)
-      );
-    }
+    printWindow.document
+      .querySelectorAll(".hallora-verify-footer")
+      .forEach((el) => el.remove());
     printWindow.print();
-
-    if (verification?.uuid) {
-      try {
-        const hash = await sha256Hex(printWindow.document.body.innerHTML || "");
-        await finalizeReportVerification(verification.uuid, hash);
-      } catch {
-        /* audit best-effort */
-      }
-    }
   };
 
   if (loading) {
@@ -373,7 +310,7 @@ const Report = () => {
         </div>
         <h2 className="text-xl md:text-2xl font-bold text-gray-800 mb-4">Seating Plan Details</h2>
         <div ref={componentRef} className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-          <PrintLayout selectedPlan={selectedPlan} verification={detailVerification} />
+          <PrintLayout selectedPlan={selectedPlan} />
         </div>
       </div>
     );

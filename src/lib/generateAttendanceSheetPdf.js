@@ -13,7 +13,6 @@ const META_ROW = 6.5;
 const TABLE_HEADER_H = 8;
 const BASE_ROW_H = 8;
 const FOOTER_BLOCK_H = 28;
-const HALLORA_VERIFY_H = 10; // mm reserved at page bottom for e-verify footer
 const LINE = 0.25;
 const FONT = "helvetica";
 
@@ -352,74 +351,15 @@ async function loadImageAsDataUrl(src) {
   }
 }
 
-function resolveVerificationId(verification) {
-  return verification?.verificationId || verification?.verification_id || "";
-}
-
-function drawHalloraVerifyFooter(pdf, verification) {
-  const verificationId = resolveVerificationId(verification);
-  if (!verificationId) return;
-  const w = contentWidth(pdf);
-  const ph = pageHeight(pdf);
-  const y = ph - MARGIN - HALLORA_VERIFY_H + 1;
-  pdf.setDrawColor(120, 120, 120);
-  pdf.setLineWidth(0.2);
-  pdf.line(MARGIN, y, MARGIN + w, y);
-
-  const when = (() => {
-    try {
-      const d = new Date(
-        verification.generatedAt || verification.generated_at || Date.now()
-      );
-      return d.toLocaleString("en-GB", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: true,
-      });
-    } catch {
-      return "";
-    }
-  })();
-
-  pdf.setFont(FONT, "normal");
-  pdf.setFontSize(7);
-  pdf.setTextColor(60, 60, 60);
-  pdf.text(
-    "Generated and E-Verified by HALLORA | Exam Management System",
-    MARGIN + w / 2,
-    y + 3.5,
-    { align: "center" }
-  );
-  pdf.text(
-    `Verification ID: ${verificationId} | Generated: ${when}`,
-    MARGIN + w / 2,
-    y + 7,
-    { align: "center" }
-  );
-  pdf.setTextColor(0, 0, 0);
-}
-
-function stampHalloraFooterOnAllPages(pdf, verification) {
-  if (!resolveVerificationId(verification)) return;
-  const total = pdf.getNumberOfPages();
-  for (let i = 1; i <= total; i++) {
-    pdf.setPage(i);
-    drawHalloraVerifyFooter(pdf, verification);
-  }
-}
-
 /**
  * Build one venue attendance PDF (all courses) as a jsPDF instance.
- * @param {object} [verification] Hallora e-verify footer { verificationId, generatedAt }
+ * Hallora generated/e-verify stamps are not included in exports.
  */
 export async function buildAttendanceSheetPdf(
   attendanceData,
   category,
   logos = null,
-  verification = null
+  _verification = null
 ) {
   const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const resolvedLogos =
@@ -430,8 +370,7 @@ export async function buildAttendanceSheetPdf(
 
   const courses = attendanceData?.courses || [];
   let firstPage = true;
-  const pageBottomReserve = () =>
-    pageHeight(pdf) - MARGIN - FOOTER_BLOCK_H - (verification ? HALLORA_VERIFY_H : 0);
+  const pageBottomReserve = () => pageHeight(pdf) - MARGIN - FOOTER_BLOCK_H;
 
   for (const course of courses) {
     if (!firstPage) pdf.addPage();
@@ -466,7 +405,7 @@ export async function buildAttendanceSheetPdf(
       const rowH = measureWrappedHeight(pdf, student.name, nameColW, 8);
 
       if (y + rowH > bottomLimit()) {
-        if (y + FOOTER_BLOCK_H <= pageHeight(pdf) - MARGIN - (verification ? HALLORA_VERIFY_H : 0)) {
+        if (y + FOOTER_BLOCK_H <= pageHeight(pdf) - MARGIN) {
           drawFooter(pdf, y);
         } else {
           drawFooter(pdf, bottomLimit());
@@ -479,8 +418,7 @@ export async function buildAttendanceSheetPdf(
       y = drawStudentRow(pdf, y, student, rowH);
     }
 
-    const maxY =
-      pageHeight(pdf) - MARGIN - (verification ? HALLORA_VERIFY_H : 0);
+    const maxY = pageHeight(pdf) - MARGIN;
     if (y + FOOTER_BLOCK_H > maxY) {
       pdf.addPage();
       y = drawSheetHeader(pdf, headerCtx);
@@ -495,7 +433,6 @@ export async function buildAttendanceSheetPdf(
     pdf.text("No students found for this venue.", MARGIN, MARGIN + 20);
   }
 
-  stampHalloraFooterOnAllPages(pdf, verification);
   return pdf;
 }
 

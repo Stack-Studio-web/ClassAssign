@@ -1,19 +1,11 @@
 // StudentArrangement.jsx - UPDATED WITH AUTH, RBAC & IMPROVED NOTIFICATION FEEDBACK
 import React, { useEffect, useState, useRef } from "react";
-import { flushSync } from "react-dom";
 import { Link } from "react-router-dom";
 import api from "../lib/api";
 import { useReactToPrint } from "react-to-print";
 import { useAcademicSession } from "../context/AcademicSessionContext";
 import LogoKCT from "../assets/logo.png";
 import LogoKSI from "../assets/logo KSI.png";
-import HalloraVerifiedFooter from "../Components/HalloraVerifiedFooter";
-import {
-  createReportVerification,
-  finalizeReportVerification,
-  HALLORA_VERIFY_PRINT_CSS,
-  sha256Hex,
-} from "../lib/reportVerification";
 import {
   groupHallsByExamTime,
   sortHallsForExport,
@@ -212,7 +204,6 @@ const ExamHallAllotment = () => {
   const currentLogo = logoType === "KSI" ? LogoKSI : LogoKCT;
 
   const printRef = useRef();
-  const [verification, setVerification] = useState(null);
   const [exporting, setExporting] = useState(false);
 
   const handlePrint = useReactToPrint({
@@ -221,23 +212,9 @@ const ExamHallAllotment = () => {
     pageStyle: HALL_ALLOTMENT_PAGE_STYLE,
   });
 
-  const runVerifiedExport = async () => {
+  const runExport = () => {
     setExporting(true);
     try {
-      const v = await createReportVerification("Exam Hall Allotment", {
-        date: filters?.date || null,
-        session: filters?.session || null,
-      });
-      flushSync(() => {
-        setVerification(v);
-      });
-      handlePrint();
-      if (printRef.current && v?.uuid) {
-        const hash = await sha256Hex(printRef.current.innerHTML || "");
-        await finalizeReportVerification(v.uuid, hash).catch(() => null);
-      }
-    } catch (err) {
-      console.error("Hall export verification failed:", err);
       handlePrint();
     } finally {
       setExporting(false);
@@ -463,7 +440,7 @@ const ExamHallAllotment = () => {
         {/* Buttons — left aligned, same container, small gap, margin-top/bottom */}
         <div className="flex flex-wrap gap-2 items-center mt-4 mb-4">
           <button
-            onClick={runVerifiedExport}
+            onClick={runExport}
             disabled={filteredHalls.length === 0 || exporting}
             className="bg-blue-600 text-white px-4 py-2 rounded-md shadow hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2 min-h-[40px]"
           >
@@ -536,7 +513,6 @@ const ExamHallAllotment = () => {
 
         {/* Print document — explicitly packed pages (react-to-print target) */}
         <div ref={printRef} className="hall-print-root hall-print-only">
-          <style>{HALLORA_VERIFY_PRINT_CSS}</style>
           <style>{HALL_ALLOTMENT_PRINT_CSS}</style>
           {printPages.map((page, pageIdx) => (
             <div
@@ -565,7 +541,6 @@ const ExamHallAllotment = () => {
               )}
             </div>
           ))}
-          {verification ? <HalloraVerifiedFooter verification={verification} /> : null}
         </div>
     </div>
   );

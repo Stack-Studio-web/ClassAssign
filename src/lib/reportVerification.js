@@ -1,6 +1,7 @@
 /**
- * Hallora report e-verification helpers (client).
- * No QR. Footer only. SHA-256 of final PDF when bytes are available.
+ * Hallora report helpers (client).
+ * Export stamps / e-verify footers are disabled — helpers remain as no-ops
+ * so older call sites do not inject branding into PDFs/prints/DOCX.
  */
 import api from "./api";
 
@@ -17,7 +18,7 @@ export function formatHalloraGeneratedAt(isoOrDate) {
   });
 }
 
-/** Normalize API / DB shapes so footers always see verificationId. */
+/** Normalize API / DB shapes. */
 export function normalizeVerification(data) {
   if (!data || typeof data !== "object") return null;
   const verificationId = data.verificationId || data.verification_id || "";
@@ -35,64 +36,22 @@ export function normalizeVerification(data) {
   };
 }
 
-export function halloraFooterLines(verification) {
-  const v = normalizeVerification(verification) || verification;
-  const id = v?.verificationId || v?.verification_id || "";
-  const when = formatHalloraGeneratedAt(v?.generatedAt || v?.generated_at);
-  return {
-    line1: "Generated and E-Verified by HALLORA | Exam Management System",
-    line2: `Verification ID: ${id} | Generated: ${when}`,
-  };
+/** Disabled: exports must not include Hallora generated/e-verify stamps. */
+export function halloraFooterLines(_verification) {
+  return { line1: "", line2: "" };
 }
 
-/** Compact HTML footer for print layouts (every page via CSS fixed bottom). */
-export function halloraFooterHtml(verification) {
-  const { line1, line2 } = halloraFooterLines(verification);
-  return `
-<div class="hallora-verify-footer">
-  <div class="hallora-verify-line">${line1}</div>
-  <div class="hallora-verify-line">${line2}</div>
-</div>`;
+/** Disabled: no HTML stamp footer in print layouts. */
+export function halloraFooterHtml(_verification) {
+  return "";
 }
 
-export const HALLORA_VERIFY_PRINT_CSS = `
-@media print {
-  @page {
-    margin-bottom: 16mm;
-  }
-  .hallora-verify-footer {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    padding: 4px 10mm 5px;
-    border-top: 1px solid #888;
-    background: #fff;
-    color: #333;
-    font-family: Arial, Helvetica, sans-serif;
-    font-size: 8pt;
-    line-height: 1.35;
-    text-align: center;
-    z-index: 9999;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-  .hallora-verify-line { margin: 0; }
-  body { padding-bottom: 14mm !important; }
-}
-.hallora-verify-footer {
-  margin-top: 16px;
-  padding-top: 8px;
-  border-top: 1px solid #ccc;
-  color: #444;
-  font-size: 11px;
-  text-align: center;
-  line-height: 1.4;
-}
-`;
+/** Disabled: no print CSS for Hallora verify stamps. */
+export const HALLORA_VERIFY_PRINT_CSS = ``;
 
 /**
  * Allocate a Hallora Verification ID for a report export.
+ * Kept for API compatibility; export UIs no longer stamp documents with it.
  */
 export async function createReportVerification(reportType, metadata = null) {
   const res = await api.post("/report-verifications", {

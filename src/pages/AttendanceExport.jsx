@@ -11,10 +11,6 @@ import {
   previewAttendanceExport,
 } from "../lib/attendanceApi";
 import { downloadConsolidatedAbsenteeDocx } from "../lib/consolidatedAbsenteeDocx";
-import {
-  createReportVerification,
-  finalizePdfVerification,
-} from "../lib/reportVerification";
 import { useToast } from "../context/ToastContext";
 import { getApiError } from "../lib/errors";
 
@@ -218,36 +214,11 @@ export default function AttendanceExport() {
         return;
       }
 
-      let verification = null;
-      try {
-        verification = await createReportVerification("Consolidated Absentees List", {
-          department: queryPayload.department || "All Departments",
-          dateFrom: queryPayload.dateFrom,
-          dateTo: queryPayload.dateTo,
-          courseCode: queryPayload.courseCode || null,
-          batchUuid: queryPayload.batchUuid || null,
-          examType: data.meta?.examType || null,
-          recordCount: data.meta?.recordCount || data.rows.length,
-          totalAbsentees: data.meta?.totalAbsentees || null,
-        });
-      } catch (verErr) {
-        console.warn("Verification create failed, exporting without audit ID:", verErr);
-        verification = {
-          verificationId: `HAL-LOCAL-${Date.now()}`,
-          generatedAt: new Date().toISOString(),
-        };
-      }
-
-      const { blob } = await downloadConsolidatedAbsenteeDocx({
+      await downloadConsolidatedAbsenteeDocx({
         meta: data.meta,
         batches: data.batches,
         rows: data.rows,
-        verification,
       });
-
-      if (verification?.uuid && blob) {
-        await finalizePdfVerification(verification, blob).catch(() => null);
-      }
 
       toast.success("Consolidated absentees DOCX downloaded.");
     } catch (err) {

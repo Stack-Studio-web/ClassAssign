@@ -88,7 +88,7 @@ export function groupHallsByExamTime(halls) {
 export const HALL_PRINT_GEOMETRY = {
   pageHeightPx: Math.round((297 / 25.4) * 96), // A4
   marginTopPx: Math.round((12 / 25.4) * 96),
-  marginBottomPx: Math.round((22 / 25.4) * 96),
+  marginBottomPx: Math.round((12 / 25.4) * 96),
   marginXPx: Math.round((10 / 25.4) * 96),
   /** Extra slack so packed pages do not overflow and get re-split by the browser. */
   safetyPx: 48,
@@ -285,7 +285,7 @@ export const HALL_ALLOTMENT_PRINT_CSS = `
 @media print {
   @page {
     size: A4 portrait;
-    margin: 12mm 10mm 22mm 10mm;
+    margin: 12mm 10mm 12mm 10mm;
   }
 
   body {
@@ -308,8 +308,7 @@ export const HALL_ALLOTMENT_PRINT_CSS = `
     font-size: 10pt;
   }
 
-  /* Only force a break BETWEEN packed pages — never after the last one
-     (footer is a sibling, so :last-child on .hall-print-page is unreliable). */
+  /* Only force a break BETWEEN packed pages — never after the last one. */
   .hall-print-root .hall-print-page.hall-print-page-break {
     break-after: page;
     page-break-after: always;
@@ -367,19 +366,12 @@ export const HALL_ALLOTMENT_PRINT_CSS = `
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
-
-  .hall-print-root .hallora-verify-footer {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-  }
 }
 `;
 
 /** Inline @page styles passed to react-to-print pageStyle. */
 export const HALL_ALLOTMENT_PAGE_STYLE = `
-  @page { size: A4 portrait; margin: 12mm 10mm 22mm 10mm; }
+  @page { size: A4 portrait; margin: 12mm 10mm 12mm 10mm; }
   @media print {
     html, body {
       height: auto !important;

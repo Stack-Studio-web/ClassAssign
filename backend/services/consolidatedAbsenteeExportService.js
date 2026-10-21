@@ -3,8 +3,6 @@
  * Filters: department + date range + course + batch (from student enrollment).
  */
 const db = require("../config/db");
-const crypto = require("crypto");
-const ReportVerification = require("../models/ReportVerification");
 // DOCX builder is lazy-required in exportDocx so options/preview work even if docx is missing.
 
 function normalizeSession(raw) {
@@ -1690,31 +1688,6 @@ const ConsolidatedAbsenteeExportService = {
       throw err;
     }
 
-    let verification = null;
-    try {
-      verification = await ReportVerification.create({
-        reportType: "Consolidated Absentees List",
-        user,
-        metadata: {
-          department: preview.meta.department,
-          dateFrom: preview.meta.dateFrom,
-          dateTo: preview.meta.dateTo,
-          courseCode: preview.meta.courseCode || null,
-          batchUuid: preview.meta.batchUuid || null,
-          examType: preview.meta.examType,
-          recordCount: preview.meta.recordCount,
-          totalAbsentees: preview.meta.totalAbsentees,
-        },
-      });
-    } catch (verErr) {
-      console.error("Consolidated absentees verification create failed:", verErr?.message || verErr);
-      verification = {
-        uuid: null,
-        verificationId: `HAL-LOCAL-${Date.now()}`,
-        generatedAt: new Date().toISOString(),
-      };
-    }
-
     const { buildConsolidatedAbsenteeDocx } = require("../utils/consolidatedAbsenteeDocx");
     let buffer;
     try {
@@ -1722,10 +1695,6 @@ const ConsolidatedAbsenteeExportService = {
         meta: preview.meta,
         batches: preview.batches,
         rows: preview.rows,
-        verification: {
-          verificationId: verification.verificationId,
-          generatedAt: verification.generatedAt,
-        },
       });
     } catch (docxErr) {
       console.error("DOCX build failed:", docxErr?.message || docxErr);
@@ -1734,15 +1703,6 @@ const ConsolidatedAbsenteeExportService = {
       );
       err.statusCode = 500;
       throw err;
-    }
-
-    if (verification?.uuid) {
-      try {
-        const hash = crypto.createHash("sha256").update(buffer).digest("hex");
-        await ReportVerification.finalize(verification.uuid, hash);
-      } catch (finErr) {
-        console.error("Verification finalize failed:", finErr?.message || finErr);
-      }
     }
 
     const deptShort = sanitizeFilenamePart(preview.meta.department).slice(0, 20);
@@ -1762,8 +1722,6 @@ const ConsolidatedAbsenteeExportService = {
     return {
       buffer,
       filename,
-      verificationId: verification.verificationId,
-      documentHash: hash,
       meta: preview.meta,
     };
   },

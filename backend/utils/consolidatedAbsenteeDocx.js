@@ -50,34 +50,6 @@ function loadLogoBytes() {
   return null;
 }
 
-function loadKsiLogoBytes() {
-  const candidates = [
-    path.join(__dirname, "../../src/assets/KSI logo.png"),
-    path.join(__dirname, "../../src/assets/logo KSI.png"),
-  ];
-  for (const p of candidates) {
-    try {
-      if (fs.existsSync(p)) return fs.readFileSync(p);
-    } catch {
-      /* try next */
-    }
-  }
-  return null;
-}
-
-function formatGeneratedAt(isoOrDate) {
-  const d = isoOrDate ? new Date(isoOrDate) : new Date();
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: true,
-  });
-}
-
 function p(text, opts = {}) {
   const {
     bold = false,
@@ -249,56 +221,10 @@ function normalizeBatchSections(payload) {
   return [];
 }
 
-function buildVerificationFooter(verification, ksiLogoBytes) {
-  const line = `Generated and E-Verified by HALLORA Exam Management System | Verification ID: ${
-    verification?.verificationId || "—"
-  } | Generated: ${formatGeneratedAt(verification?.generatedAt)}`;
-
-  const children = [];
-  if (ksiLogoBytes) {
-    children.push(
-      new ImageRun({
-        type: "png",
-        data: ksiLogoBytes,
-        transformation: { width: 28, height: 28 },
-        altText: {
-          title: "KSI",
-          description: "Kumaraguru School of Innovation logo",
-          name: "ksi-logo",
-        },
-      })
-    );
-    children.push(
-      new TextRun({
-        text: "  ",
-        font: "Times New Roman",
-        size: 12,
-      })
-    );
-  }
-  children.push(
-    new TextRun({
-      text: line,
-      bold: true,
-      size: 12,
-      font: "Times New Roman",
-    })
-  );
-
-  return new Paragraph({
-    alignment: AlignmentType.CENTER,
-    spacing: { before: 280, after: 40 },
-    children,
-  });
-}
-
 function buildBatchSectionChildren({
   meta,
   batch,
   logoBytes,
-  ksiLogoBytes,
-  verification,
-  includeVerification,
 }) {
   const children = [];
 
@@ -368,10 +294,6 @@ function buildBatchSectionChildren({
 
   children.push(buildSignatureBlock());
 
-  if (includeVerification) {
-    children.push(buildVerificationFooter(verification, ksiLogoBytes));
-  }
-
   return children;
 }
 
@@ -380,15 +302,14 @@ function buildBatchSectionChildren({
  * @returns {Promise<Buffer>}
  */
 async function buildConsolidatedAbsenteeDocx(payload) {
-  const { meta, verification } = payload;
+  const { meta } = payload;
   const batchSections = normalizeBatchSections(payload);
   if (!batchSections.length) {
     throw new Error("No absentee records found for the selected filters.");
   }
 
   const logoBytes = loadLogoBytes();
-  const ksiLogoBytes = loadKsiLogoBytes();
-  const sections = batchSections.map((batch, idx) => ({
+  const sections = batchSections.map((batch) => ({
     properties: {
       page: {
         margin: PAGE_MARGINS,
@@ -398,9 +319,6 @@ async function buildConsolidatedAbsenteeDocx(payload) {
       meta,
       batch,
       logoBytes,
-      ksiLogoBytes,
-      verification,
-      includeVerification: idx === batchSections.length - 1,
     }),
   }));
 

@@ -45,19 +45,6 @@ async function fetchImageBytes(url) {
   }
 }
 
-function formatGeneratedAt(isoOrDate) {
-  const d = isoOrDate ? new Date(isoOrDate) : new Date();
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: true,
-  });
-}
-
 function p(text, opts = {}) {
   const {
     bold = false,
@@ -221,56 +208,10 @@ function buildLogoParagraph(logoBytes) {
   });
 }
 
-function buildVerificationFooter(verification, ksiLogoBytes) {
-  const line = `Generated and E-Verified by HALLORA Exam Management System | Verification ID: ${
-    verification?.verificationId || "—"
-  } | Generated: ${formatGeneratedAt(verification?.generatedAt)}`;
-
-  const children = [];
-  if (ksiLogoBytes) {
-    children.push(
-      new ImageRun({
-        type: "png",
-        data: ksiLogoBytes,
-        transformation: { width: 28, height: 28 },
-        altText: {
-          title: "KSI",
-          description: "Kumaraguru School of Innovation logo",
-          name: "ksi-logo",
-        },
-      })
-    );
-    children.push(
-      new TextRun({
-        text: "  ",
-        font: "Times New Roman",
-        size: 12,
-      })
-    );
-  }
-  children.push(
-    new TextRun({
-      text: line,
-      bold: true,
-      size: 12,
-      font: "Times New Roman",
-    })
-  );
-
-  return new Paragraph({
-    alignment: AlignmentType.CENTER,
-    spacing: { before: 280, after: 40 },
-    children,
-  });
-}
-
 function buildBatchSectionChildren({
   meta,
   batch,
   logoBytes,
-  ksiLogoBytes,
-  verification,
-  includeVerification,
 }) {
   const children = [];
   const logoPara = buildLogoParagraph(logoBytes);
@@ -325,10 +266,6 @@ function buildBatchSectionChildren({
 
   children.push(buildSignatureBlock());
 
-  if (includeVerification) {
-    children.push(buildVerificationFooter(verification, ksiLogoBytes));
-  }
-
   return children;
 }
 
@@ -371,11 +308,11 @@ function normalizeBatchSections(payload) {
 }
 
 /**
- * @param {{ meta: object, batches?: object[], rows?: object[], verification?: { verificationId, generatedAt }, logoChoice?: "KCT"|"KSI" }} payload
+ * @param {{ meta: object, batches?: object[], rows?: object[], logoChoice?: "KCT"|"KSI" }} payload
  * @returns {Promise<{ blob: Blob, filename: string }>}
  */
 export async function buildConsolidatedAbsenteeDocxBlob(payload) {
-  const { meta, verification, logoChoice = "KCT" } = payload;
+  const { meta, logoChoice = "KCT" } = payload;
   const batchSections = normalizeBatchSections(payload);
   if (!batchSections.length) {
     throw new Error("No absentee records found for the selected filters.");
@@ -384,9 +321,8 @@ export async function buildConsolidatedAbsenteeDocxBlob(payload) {
   const logoBytes = await fetchImageBytes(
     logoChoice === "KSI" ? logoKsiUrl : logoKctUrl
   );
-  const ksiLogoBytes = await fetchImageBytes(logoKsiUrl);
 
-  const sections = batchSections.map((batch, idx) => ({
+  const sections = batchSections.map((batch) => ({
     properties: {
       page: {
         margin: PAGE_MARGINS,
@@ -396,9 +332,6 @@ export async function buildConsolidatedAbsenteeDocxBlob(payload) {
       meta,
       batch,
       logoBytes,
-      ksiLogoBytes,
-      verification,
-      includeVerification: idx === batchSections.length - 1,
     }),
   }));
 
