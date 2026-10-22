@@ -102,13 +102,13 @@ function parseVenueRow(row, rowNum) {
         }
         if (/\s/.test(trimmed)) {
           throw new Error(
-            `Invalid Bench Configuration token "${trimmed}" — contains a space. Use comma-separated values 1–5 only.`
+            `Invalid Bench Configuration token "${trimmed}" — contains a space. Use comma-separated values 1–6 only.`
           );
         }
         const num = Number.parseInt(trimmed, 10);
         if (Number.isNaN(num)) {
           throw new Error(
-            `Invalid Bench Configuration token "${trimmed}". Expected an integer from 1 to 5.`
+            `Invalid Bench Configuration token "${trimmed}". Expected an integer from 1 to 6.`
           );
         }
         return num;
@@ -128,7 +128,7 @@ function parseVenueRow(row, rowNum) {
       const invalidSeats = benchConfig.filter((s) => !isValidSeatsPerBench(s));
       if (invalidSeats.length > 0) {
         errors.push(
-          `Invalid seat counts in Bench Configuration: [${invalidSeats.join(", ")}]. Only 1–5 allowed.`
+          `Invalid seat counts in Bench Configuration: [${invalidSeats.join(", ")}]. Only 1–6 allowed.`
         );
       }
     }

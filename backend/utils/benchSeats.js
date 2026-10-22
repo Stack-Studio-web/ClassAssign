@@ -1,6 +1,6 @@
 /** Allowed seats-per-bench values for venue layout (Uniform and Custom). */
 const MIN_SEATS_PER_BENCH = 1;
-const MAX_SEATS_PER_BENCH = 5;
+const MAX_SEATS_PER_BENCH = 6;
 
 function isValidSeatsPerBench(value) {
   const n = Number(value);

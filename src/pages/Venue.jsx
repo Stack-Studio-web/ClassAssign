@@ -30,7 +30,7 @@ const VENUE_TYPE_LABELS = {
 };
 
 /** Uniform / Custom seats-per-bench options (must match backend benchSeats util). */
-const SEATS_PER_BENCH_OPTIONS = [1, 2, 3, 4, 5];
+const SEATS_PER_BENCH_OPTIONS = [1, 2, 3, 4, 5, 6];
 
 function formatVenueType(type) {
   if (!type) return "—";
@@ -1550,7 +1550,7 @@ export default function AddVenue() {
                   <strong>Valid Types:</strong> Classroom, Lab, Hall
                 </li>
                 <li>
-                  <strong>Bench Configuration:</strong> comma-separated seats per column (1–5); length must equal Columns
+                  <strong>Bench Configuration:</strong> comma-separated seats per column (1–6); length must equal Columns
                 </li>
                 <li>
                   <strong>Available:</strong> TRUE/FALSE or Yes/No

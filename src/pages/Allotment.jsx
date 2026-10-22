@@ -48,6 +48,15 @@ import {
   normalizeExamType,
   examTypesMatch,
 } from "../lib/examTypeNormalize";
+import {
+  SEATS_PER_BENCH_OPTIONS,
+  defaultBenchConfigForVenue,
+  capacityFromLayout,
+  validateTemporaryBenchConfig,
+  withEffectiveBenchConfig,
+  applyVenueOverrides,
+  configsEqual,
+} from "../lib/benchConfigOverride";
 
 // Normalize student/ineligible objects (PostgreSQL may return lowercase keys)
 const normalizeStudent = (s) => ({
@@ -227,6 +236,14 @@ const Allotment = () => {
    * Session-scoped (cleared when date/session/time changes). Empty = general allotment.
    */
   const [courseVenueMappings, setCourseVenueMappings] = useState({});
+  /**
+   * Temporary bench config overrides for this exam slot only (uuid → seats[]).
+   * Never written to the venues table; cleared when date/session/time changes.
+   */
+  const [benchConfigOverrides, setBenchConfigOverrides] = useState({});
+  /** Draft editors keyed by venue uuid (seats[]) before Apply. */
+  const [benchConfigDrafts, setBenchConfigDrafts] = useState({});
+  const [benchConfigError, setBenchConfigError] = useState("");
   /** uuid -> { status, available, conflicts, message } for current exam slot */
   const [venueSlotStatus, setVenueSlotStatus] = useState({});
   const [venueSlotWarning, setVenueSlotWarning] = useState(null);
@@ -545,9 +562,13 @@ const Allotment = () => {
     fetchCoursesFromTimetable();
   }, [examDate, examStartTime, examEndTime, examSession, hasWriteAccess]);
 
-  // Course→venue mappings are session-scoped — never reuse across date/session/time.
+  // Course→venue mappings & temporary bench overrides are session-scoped —
+  // never reuse across date/session/time (or another concurrent allotment slot).
   useEffect(() => {
     setCourseVenueMappings({});
+    setBenchConfigOverrides({});
+    setBenchConfigDrafts({});
+    setBenchConfigError("");
   }, [examDate, examSession, examStartTime, examEndTime]);
 
   // Sync / restore custom course order + pairing for the current exam slot
@@ -850,6 +871,77 @@ const Allotment = () => {
     [venues, venueSlotStatus]
   );
 
+  /** Venues that can receive a temporary bench override for this exam. */
+  const venuesForBenchEdit = useMemo(() => {
+    const list =
+      seatingMode === "auto" ? availableVenuesForSlot : selectedVenues;
+    return applyVenueOverrides(list, benchConfigOverrides);
+  }, [seatingMode, availableVenuesForSlot, selectedVenues, benchConfigOverrides]);
+
+  const ensureBenchDraft = (venue) => {
+    const id = String(venue.uuid);
+    setBenchConfigDrafts((prev) => {
+      if (Array.isArray(prev[id]) && prev[id].length) return prev;
+      const current = benchConfigOverrides[id] || defaultBenchConfigForVenue(venue);
+      return { ...prev, [id]: [...current] };
+    });
+  };
+
+  const handleBenchDraftChange = (venue, colIdx, value) => {
+    const id = String(venue.uuid);
+    const seats = Number(value);
+    setBenchConfigDrafts((prev) => {
+      const base =
+        Array.isArray(prev[id]) && prev[id].length
+          ? [...prev[id]]
+          : [...(benchConfigOverrides[id] || defaultBenchConfigForVenue(venue))];
+      base[colIdx] = seats;
+      return { ...prev, [id]: base };
+    });
+    setBenchConfigError("");
+  };
+
+  const handleApplyBenchConfig = (venue) => {
+    const id = String(venue.uuid);
+    const draft =
+      benchConfigDrafts[id] ||
+      benchConfigOverrides[id] ||
+      defaultBenchConfigForVenue(venue);
+    const result = validateTemporaryBenchConfig(venue, draft);
+    if (!result.ok) {
+      setBenchConfigError(`${venue.name}: ${result.message}`);
+      toast.error(result.message, "Invalid bench configuration");
+      return;
+    }
+    setBenchConfigOverrides((prev) => ({ ...prev, [id]: result.seats }));
+    setBenchConfigDrafts((prev) => ({ ...prev, [id]: [...result.seats] }));
+    setBenchConfigError("");
+    // Stale seating grids must not keep the previous layout.
+    setGeneratedSeating(null);
+    setAllottedStudents([]);
+    setAutoPlanValidation(null);
+    toast.success(
+      `${venue.name}: temporary config ${result.seats.join(", ")} ` +
+        `(capacity ${result.capacity}) applied for this exam only.`
+    );
+  };
+
+  const handleResetBenchConfig = (venue) => {
+    const id = String(venue.uuid);
+    const defaults = defaultBenchConfigForVenue(venue);
+    setBenchConfigOverrides((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setBenchConfigDrafts((prev) => ({ ...prev, [id]: [...defaults] }));
+    setBenchConfigError("");
+    setGeneratedSeating(null);
+    setAllottedStudents([]);
+    setAutoPlanValidation(null);
+    toast.success(`${venue.name}: reset to venue defaults (${defaults.join(", ")}).`);
+  };
+
   const occupiedVenueWarning = useMemo(() => {
     if (seatingMode !== "manual") return null;
     for (const v of selectedVenues) {
@@ -925,20 +1017,31 @@ const Allotment = () => {
       return !st || st.available;
     };
 
-    const generalPool =
-      seatingMode === "auto"
-        ? [...availableVenuesForSlot].sort((a, b) => b.capacity - a.capacity)
-        : [...selectedVenues].filter(isAvailableVenue);
-
     const activeMappings =
       seatingMode === "manual"
         ? normalizeCourseVenueMappings(courseVenueMappings)
         : {};
 
+    // Apply temporary bench overrides (this exam only) before capacity / generate.
     const venuesById = {};
     for (const v of venues) {
-      venuesById[v.uuid] = v;
+      venuesById[String(v.uuid)] = withEffectiveBenchConfig(v, benchConfigOverrides);
     }
+    for (const v of selectedVenues) {
+      const id = String(v.uuid);
+      if (!venuesById[id]) {
+        venuesById[id] = withEffectiveBenchConfig(v, benchConfigOverrides);
+      }
+    }
+
+    const generalPool =
+      seatingMode === "auto"
+        ? Object.values(venuesById)
+            .filter((v) => availableVenuesForSlot.some((a) => String(a.uuid) === String(v.uuid)))
+            .sort((a, b) => b.capacity - a.capacity)
+        : selectedVenues
+            .filter(isAvailableVenue)
+            .map((v) => venuesById[String(v.uuid)] || withEffectiveBenchConfig(v, benchConfigOverrides));
 
     // Include general-pool venues plus any manually mapped venues (must still be available).
     const venueIdSet = new Set(generalPool.map((v) => String(v.uuid)));
@@ -947,8 +1050,19 @@ const Allotment = () => {
     }
 
     const venuesToUse = [...venueIdSet]
-      .map((id) => venuesById[id])
+      .map((id) => venuesById[String(id)])
       .filter((v) => v && isAvailableVenue(v));
+
+    // Reject any pending invalid override still in the map (defense in depth).
+    for (const v of venuesToUse) {
+      const override = benchConfigOverrides[String(v.uuid)];
+      if (!override) continue;
+      const check = validateTemporaryBenchConfig(v, override);
+      if (!check.ok) {
+        setIsGenerating(false);
+        return setError(`${v.name}: ${check.message}`);
+      }
+    }
 
     if (venuesToUse.length === 0) {
       setIsGenerating(false);
@@ -1396,8 +1510,14 @@ const Allotment = () => {
         previewFacultyName = "Assign in preview";
       }
 
+      // Snapshot effective benchConfig onto the venue object so save-plan / exports
+      // persist this allotment's layout (not a later permanent venue change).
       venuesResult.push({
-        venue,
+        venue: {
+          ...venue,
+          benchConfig,
+          capacity: capacityFromLayout(venue.benchesRow, benchConfig),
+        },
         seats: formattedGrid,
         facultyId: assignedFacultyId,
         previewFacultyName,
@@ -1618,6 +1738,9 @@ const Allotment = () => {
       setError("");
       setSelectedVenues([]);
       setCourseVenueMappings({});
+      setBenchConfigOverrides({});
+      setBenchConfigDrafts({});
+      setBenchConfigError("");
 
       // Refresh global allotment pool / time-slot status after save
       try {
@@ -2393,6 +2516,7 @@ const Allotment = () => {
                         const st = venueSlotStatus[v.uuid];
                         const occupied = st && !st.available;
                         const conflict = st?.conflicts?.[0];
+                        const effective = withEffectiveBenchConfig(v, benchConfigOverrides);
                         const canSelect =
                           hasWriteAccess &&
                           Boolean(examDate && examStartTime && examEndTime) &&
@@ -2418,7 +2542,13 @@ const Allotment = () => {
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-semibold text-gray-900">{v.name}</p>
                               <p className="text-xs font-medium text-gray-600">
-                                Capacity: {v.capacity}
+                                Capacity: {effective.capacity}
+                                {effective.hasBenchOverride ? (
+                                  <span className="text-amber-700">
+                                    {" "}
+                                    (temp · default {effective.defaultCapacity})
+                                  </span>
+                                ) : null}
                               </p>
                               {examDate && examStartTime && examEndTime ? (
                                 occupied ? (
@@ -2442,6 +2572,104 @@ const Allotment = () => {
                               )}
                             </div>
                           </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* Temporary bench configuration — this exam / allotment only */}
+                {hasWriteAccess && venuesForBenchEdit.length > 0 ? (
+                  <div className="space-y-3 rounded-2xl border border-amber-200 bg-amber-50/40 p-4">
+                    <div>
+                      <p className="text-sm font-semibold text-gray-900">
+                        Temporary Bench Configuration
+                      </p>
+                      <p className="text-xs text-gray-600 mt-0.5">
+                        Override seats per column for this exam only. Venue Management defaults are
+                        never changed. Apply before Generate Seating.
+                      </p>
+                    </div>
+                    {benchConfigError ? (
+                      <p className="text-xs font-medium text-red-700">{benchConfigError}</p>
+                    ) : null}
+                    <div className="space-y-3 max-h-72 overflow-y-auto">
+                      {venuesForBenchEdit.map((v) => {
+                        const id = String(v.uuid);
+                        const defaults = v.defaultBenchConfig || defaultBenchConfigForVenue(v);
+                        const draft =
+                          benchConfigDrafts[id] ||
+                          benchConfigOverrides[id] ||
+                          defaults;
+                        const effectiveCap = capacityFromLayout(v.benchesRow, draft);
+                        const isOverridden = Boolean(benchConfigOverrides[id]);
+                        return (
+                          <div
+                            key={id}
+                            className="rounded-xl border border-gray-200 bg-white p-3 space-y-2"
+                            onFocus={() => ensureBenchDraft(v)}
+                          >
+                            <div className="flex flex-wrap items-baseline justify-between gap-2">
+                              <p className="text-sm font-semibold text-gray-900">{v.name}</p>
+                              <p className="text-[11px] text-gray-600">
+                                Default: {defaults.join(", ")} · Cap {v.defaultCapacity ?? capacityFromLayout(v.benchesRow, defaults)}
+                                {isOverridden ? (
+                                  <span className="ml-1 font-semibold text-amber-800">
+                                    · Override active
+                                  </span>
+                                ) : null}
+                              </p>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              {draft.map((seats, colIdx) => (
+                                <label key={colIdx} className="flex flex-col gap-0.5">
+                                  <span className="text-[10px] font-medium text-gray-500">
+                                    Col {String.fromCharCode(65 + colIdx)}
+                                  </span>
+                                  <select
+                                    value={seats}
+                                    onChange={(e) =>
+                                      handleBenchDraftChange(v, colIdx, e.target.value)
+                                    }
+                                    onFocus={() => ensureBenchDraft(v)}
+                                    className="h-8 min-w-[3rem] rounded border border-gray-200 bg-white px-1.5 text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                                  >
+                                    {SEATS_PER_BENCH_OPTIONS.map((n) => (
+                                      <option key={n} value={n}>
+                                        {n}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                              ))}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2 justify-between">
+                              <p className="text-xs font-medium text-gray-700">
+                                Effective capacity:{" "}
+                                <span className="font-semibold text-gray-900">{effectiveCap}</span>
+                                {!configsEqual(draft, defaults) ? (
+                                  <span className="text-amber-800"> (unsaved draft)</span>
+                                ) : null}
+                              </p>
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleApplyBenchConfig(v)}
+                                  className="h-8 px-3 rounded-lg bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700"
+                                >
+                                  Apply Configuration
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleResetBenchConfig(v)}
+                                  disabled={!isOverridden && configsEqual(draft, defaults)}
+                                  className="h-8 px-3 rounded-lg border border-gray-300 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                  Reset to Venue Defaults
+                                </button>
+                              </div>
+                            </div>
+                          </div>
                         );
                       })}
                     </div>
