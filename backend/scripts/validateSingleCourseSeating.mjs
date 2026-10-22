@@ -19,6 +19,8 @@ const {
   SINGLE_COURSE_BLOCKED,
   validateSingleCourseModeActivation,
   allocateSingleCourse,
+  allocateSingleCourseAcrossVenues,
+  orderVenueGridsForCourse,
   buildSingleCourseUsableSeats,
   singleCourseUsableCapacity,
   singleCoursePhysicalCapacity,
@@ -239,7 +241,84 @@ function testIndependentVenueState() {
   assert.match(page, /singleCourseModeByVenue\[id\]/);
   assert.match(page, /setSingleCourseModeByVenue/);
   assert.match(page, /setSingleCourseModeByVenue\(\{\}\)/);
+  assert.match(page, /allocateSingleCourseAcrossVenues/);
+  assert.match(page, /orderVenueGridsForCourse/);
   console.log("✓ per-venue independent toggle state wired");
+}
+
+function testMultiVenueConsecutiveSlices() {
+  const students = makeStudents(90, "COURSE-A");
+  const venueSpecs = [
+    { id: "sc311", name: "SC311", rows: 7 },
+    { id: "sc314", name: "SC314", rows: 7 },
+  ];
+  const across = allocateSingleCourseAcrossVenues(students, venueSpecs);
+  assert.strictEqual(across.ok, true);
+  assert.strictEqual(across.venues.length, 2);
+  assert.strictEqual(across.venues[0].seatedCount, 42);
+  assert.strictEqual(across.venues[1].seatedCount, 42);
+  assert.strictEqual(across.overflowCount, 6);
+  assert.strictEqual(across.seatedCount, 84);
+
+  // Second venue begins with the first student not seated in the first venue.
+  assert.strictEqual(across.venues[0].startIndex, 0);
+  assert.strictEqual(across.venues[0].endIndex, 42);
+  assert.strictEqual(across.venues[1].startIndex, 42);
+  assert.strictEqual(across.venues[1].endIndex, 84);
+  assert.strictEqual(
+    across.venues[1].seated[0].student.regnNo,
+    students[42].regnNo
+  );
+  assert.strictEqual(
+    across.venues[0].seated[41].student.regnNo,
+    students[41].regnNo
+  );
+
+  // No duplicates / skips across venues
+  const allRegs = across.venues.flatMap((v) =>
+    v.seated.map((s) => s.student.regnNo)
+  );
+  assert.strictEqual(new Set(allRegs).size, 84);
+  assert.deepStrictEqual(
+    allRegs,
+    students.slice(0, 84).map((s) => s.regnNo)
+  );
+  assert.deepStrictEqual(
+    across.overflow.map((s) => s.regnNo),
+    students.slice(84).map((s) => s.regnNo)
+  );
+
+  // Different courses must not be concatenated — allocate each list separately.
+  const bad = makeStudents(26, "BAD-COURSE");
+  const bit = makeStudents(42, "BIT-COURSE");
+  const onlyBad = allocateSingleCourseAcrossVenues(bad, [
+    { id: "sc311", rows: 7 },
+    { id: "sc314", rows: 7 },
+  ]);
+  assert.strictEqual(onlyBad.venues[0].seatedCount, 26);
+  assert.strictEqual(onlyBad.venues[1].seatedCount, 0);
+  assert.strictEqual(onlyBad.overflowCount, 0);
+  assert.ok(onlyBad.venues[0].seated.every((s) => s.student.courseDescription === "BAD-COURSE"));
+  void bit;
+  console.log("✓ multi-venue consecutive slices; no skip/dup; overflow exact; courses not merged");
+}
+
+function testVenueOrderPreserved() {
+  const grids = [
+    { venue: { uuid: "b", name: "SC314" } },
+    { venue: { uuid: "a", name: "SC311" } },
+  ];
+  const ordered = orderVenueGridsForCourse(["a", "b"], grids);
+  assert.strictEqual(ordered[0].venue.name, "SC311");
+  assert.strictEqual(ordered[1].venue.name, "SC314");
+  console.log("✓ mapping/allotment venue order preserved");
+}
+
+function testModeOffWiringUnchanged() {
+  const page = read("src/pages/Allotment.jsx");
+  assert.match(page, /VERTICAL FILLING: Column-by-column/);
+  assert.match(page, /if \(venueData\.singleCourseMode\)/);
+  console.log("✓ standard fill path retained when Single-Course Mode is OFF");
 }
 
 function main() {
@@ -251,6 +330,9 @@ function main() {
   testRowCountChangesCapacity();
   testInvalidBlockedAndEncode();
   testIndependentVenueState();
+  testMultiVenueConsecutiveSlices();
+  testVenueOrderPreserved();
+  testModeOffWiringUnchanged();
   console.log("\nAll single-course seating checks passed.");
 }
 

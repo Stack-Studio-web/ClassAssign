@@ -289,6 +289,148 @@ export function allocateSingleCourse(
 }
 
 /**
+ * Order venue grids by the course's defined allotment/mapping order (not pool sort order).
+ * @param {string[]} orderedVenueIds
+ * @param {Array<{ venue: { uuid: string } }>} venueGrids
+ */
+export function orderVenueGridsForCourse(orderedVenueIds, venueGrids) {
+  const byId = new Map(
+    (venueGrids || []).map((vg) => [String(vg.venue?.uuid ?? vg.venue?.venueId ?? ""), vg])
+  );
+  const ordered = [];
+  const seen = new Set();
+  for (const rawId of orderedVenueIds || []) {
+    const id = String(rawId ?? "");
+    if (!id || seen.has(id)) continue;
+    const vg = byId.get(id);
+    if (vg) {
+      ordered.push(vg);
+      seen.add(id);
+    }
+  }
+  // Preserve any remaining grids (should be rare) in original order.
+  for (const vg of venueGrids || []) {
+    const id = String(vg.venue?.uuid ?? "");
+    if (id && !seen.has(id)) {
+      ordered.push(vg);
+      seen.add(id);
+    }
+  }
+  return ordered;
+}
+
+/**
+ * Consume one authoritative ordered student list across multiple Single-Course venues.
+ * Each venue receives the next contiguous slice; the cursor never resets.
+ *
+ * @param {object[]} students - ordered eligible students for ONE course
+ * @param {Array<{ id?: string, name?: string, layout?: number[], rows: number, blocked?: number[][] }>} venueSpecs
+ */
+export function allocateSingleCourseAcrossVenues(
+  students,
+  venueSpecs,
+  { layout = SINGLE_COURSE_LAYOUT, blocked = SINGLE_COURSE_BLOCKED } = {}
+) {
+  const list = Array.isArray(students) ? students : [];
+  const specs = Array.isArray(venueSpecs) ? venueSpecs : [];
+  let cursor = 0;
+  const venues = [];
+  const seatedRegs = new Set();
+
+  for (let vIdx = 0; vIdx < specs.length; vIdx++) {
+    const spec = specs[vIdx] || {};
+    const venueLayout = Array.isArray(spec.layout) ? spec.layout : layout;
+    const venueBlocked = Array.isArray(spec.blocked) ? spec.blocked : blocked;
+    const rows = Number(spec.rows) || 0;
+    const remaining = list.slice(cursor);
+
+    if (remaining.length === 0) {
+      venues.push({
+        ok: true,
+        venueId: spec.id ?? spec.venueId ?? null,
+        venueName: spec.name ?? spec.venueName ?? null,
+        startIndex: cursor,
+        endIndex: cursor,
+        seated: [],
+        overflow: [],
+        seatedCount: 0,
+        overflowCount: 0,
+        capacity: singleCourseUsableCapacity(venueLayout, rows, venueBlocked),
+        emptyUsableSeats: singleCourseUsableCapacity(venueLayout, rows, venueBlocked),
+        blockedCount: singleCourseBlockedCount(venueLayout, rows, venueBlocked),
+        physicalCapacity: singleCoursePhysicalCapacity(venueLayout, rows),
+        layout: [...venueLayout],
+        rows,
+        blocked: venueBlocked,
+        skippedEmpty: true,
+      });
+      continue;
+    }
+
+    const allocation = allocateSingleCourse(
+      remaining,
+      venueLayout,
+      rows,
+      venueBlocked
+    );
+    if (!allocation.ok) {
+      return {
+        ok: false,
+        message: allocation.message,
+        venues,
+        nextIndex: cursor,
+        overflow: list.slice(cursor),
+        seatedAll: list.slice(0, cursor),
+        seatedCount: cursor,
+        overflowCount: list.length - cursor,
+      };
+    }
+
+    for (const { student } of allocation.seated) {
+      const reg = String(student?.regnNo ?? student?.regn_no ?? "").trim();
+      if (reg) {
+        if (seatedRegs.has(reg)) {
+          return {
+            ok: false,
+            message: `Duplicate seating for ${reg}.`,
+            venues,
+            nextIndex: cursor,
+            overflow: list.slice(cursor),
+            seatedAll: list.slice(0, cursor),
+            seatedCount: cursor,
+            overflowCount: list.length - cursor,
+          };
+        }
+        seatedRegs.add(reg);
+      }
+    }
+
+    const startIndex = cursor;
+    cursor += allocation.seatedCount;
+    venues.push({
+      ...allocation,
+      venueId: spec.id ?? spec.venueId ?? null,
+      venueName: spec.name ?? spec.venueName ?? null,
+      startIndex,
+      endIndex: cursor,
+      // Overflow here is only relative to this venue's capacity; final overflow is list.slice(cursor).
+      continuesToNextVenue: allocation.overflowCount > 0 && vIdx < specs.length - 1,
+    });
+  }
+
+  const overflow = list.slice(cursor);
+  return {
+    ok: true,
+    venues,
+    nextIndex: cursor,
+    overflow,
+    seatedAll: list.slice(0, cursor),
+    seatedCount: cursor,
+    overflowCount: overflow.length,
+  };
+}
+
+/**
  * Build a venue grid (row → col → seat[]) with blocked markers and seated students.
  * Matches existing Allotment grid shape for save/export.
  */
