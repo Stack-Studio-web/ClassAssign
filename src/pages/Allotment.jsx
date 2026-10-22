@@ -41,9 +41,15 @@ import {
 import {
   normalizeCourseVenueMappings,
   validateMappedCourseCapacity,
+  validateAllCourseUsableCapacity,
   resolveVenuesForCourse,
   toggleVenueInMapping,
 } from "../lib/courseVenueMapping";
+import {
+  buildCourseSeatingDiagnostics,
+  formatCourseCapacityError,
+  physicalCapacityOf,
+} from "../lib/usableVenueCapacity";
 import {
   normalizeExamType,
   examTypesMatch,
@@ -1196,29 +1202,12 @@ const Allotment = () => {
       }, 8000);
     }
 
-    // Mapped courses: capacity must fit mapped venues only (no silent fallback).
-    if (seatingMode === "manual" && Object.keys(activeMappings).length > 0) {
-      const courseStudentCounts = {};
-      for (const { key, students } of sortedCourses) {
-        courseStudentCounts[key] = students.length;
-      }
-      const mappedCap = validateMappedCourseCapacity({
-        courseVenueMappings: activeMappings,
-        courseStudentCounts,
-        venuesById,
-      });
-      if (!mappedCap.ok) {
-        setIsGenerating(false);
-        return setError(`❌ ${mappedCap.errors[0]?.message || "Mapped venue capacity error."}`);
-      }
-    }
-
     const generalPoolIds = new Set(generalPool.map((v) => String(v.uuid)));
     const unmappedStudents = sortedCourses
       .filter(({ key }) => !activeMappings[key]?.length)
       .reduce((sum, { students }) => sum + students.length, 0);
-    const generalCapacity = generalPool.reduce(
-      (sum, v) => sum + (Number(v.capacity) || 0),
+    const generalPhysical = generalPool.reduce(
+      (sum, v) => sum + (Number(v.capacity) || physicalCapacityOf(v) || 0),
       0
     );
 
@@ -1229,22 +1218,71 @@ const Allotment = () => {
       );
     }
 
-    if (seatingMode === "manual" && unmappedStudents > generalCapacity) {
+    // Per-course usable-capacity check (mapped → mapped venues only; unmapped → general pool).
+    // Physical capacity alone is misleading under adjacency (2-seat benches ≈ half usable).
+    {
+      const courseStudentCounts = {};
+      for (const { key, students } of sortedCourses) {
+        courseStudentCounts[key] = students.length;
+      }
+
+      if (seatingMode === "manual" && Object.keys(activeMappings).length > 0) {
+        const mappedCap = validateMappedCourseCapacity({
+          courseVenueMappings: activeMappings,
+          courseStudentCounts,
+          venuesById,
+          allowAdjacent: allowAdjacentSeating,
+        });
+        if (!mappedCap.ok) {
+          setIsGenerating(false);
+          logger.log("❌ Mapped usable-capacity failure:", mappedCap.diagnostics);
+          return setError(
+            `❌ ${mappedCap.errors[0]?.message || "Mapped venue capacity error."}`
+          );
+        }
+      }
+
+      const allCap = validateAllCourseUsableCapacity({
+        sortedCourses,
+        courseVenueMappings: seatingMode === "manual" ? activeMappings : {},
+        generalPool,
+        venuesById,
+        allowAdjacent: allowAdjacentSeating,
+      });
+      logger.log("\n📊 ===== PER-COURSE CAPACITY DIAGNOSTICS =====");
+      for (const d of allCap.diagnostics || []) {
+        logger.log(
+          `${d.courseKey} [${d.mode}]: students=${d.students} ` +
+            `physical=${d.physicalCapacity} usable=${d.usableCapacity} ` +
+            `venues=${(d.venueNames || []).join("|") || "none"} ` +
+            `shortfall=${d.shortfall}`
+        );
+      }
+      if (!allCap.ok) {
+        setIsGenerating(false);
+        return setError(`❌ ${allCap.errors[0]?.message || "Insufficient usable seating capacity."}`);
+      }
+    }
+
+    if (seatingMode === "manual" && unmappedStudents > generalPhysical) {
       setIsGenerating(false);
       return setError(
         `❌ CAPACITY ERROR: ${unmappedStudents} unmapped student(s) need general-allotment seats, ` +
-          `but only ${generalCapacity} are available in the selected Venue Selection pool.\n` +
+          `but only ${generalPhysical} physical seats are available in the selected Venue Selection pool.\n` +
           `Add venues to Venue Selection or map more courses to specific venues.`
       );
     }
- 
-    const totalCapacity = venuesToUse.reduce((sum, v) => sum + v.capacity, 0);
-    
-    // ✅ CRITICAL: Check if we have enough capacity BEFORE generating
+
+    const totalCapacity = venuesToUse.reduce(
+      (sum, v) => sum + (Number(v.capacity) || physicalCapacityOf(v) || 0),
+      0
+    );
+
+    // Overall physical floor (still required; usable checks above are stricter per course).
     if (totalStudents > totalCapacity) {
       setIsGenerating(false);
       return setError(
-        `❌ CAPACITY ERROR: Need ${totalStudents} seats but only ${totalCapacity} available!\n` +
+        `❌ CAPACITY ERROR: Need ${totalStudents} seats but only ${totalCapacity} physical seats available!\n` +
         `Please select more venues or reduce students.`
       );
     }
@@ -1285,10 +1323,29 @@ const Allotment = () => {
         );
       }
  
-      logger.log(
-        `\n🎯 PASS ${courseIdx + 1}: Filling ${key} (${students.length} students) ` +
-          `[${venueTarget.mode}: ${courseVenueGrids.map((g) => g.venue.name).join(", ") || "none"}]`
-      );
+      {
+        const passDiag = buildCourseSeatingDiagnostics({
+          courseKey: key,
+          students: students.length,
+          mode: venueTarget.mode,
+          venues: courseVenueGrids.map((g) => g.venue),
+          allowAdjacent: allowAdjacentSeating,
+        });
+        logger.log(
+          `\n🎯 PASS ${courseIdx + 1}: Filling ${key} (${students.length} students) ` +
+            `[${venueTarget.mode}: ${courseVenueGrids.map((g) => g.venue.name).join(", ") || "none"}]`
+        );
+        logger.log(
+          `   physical=${passDiag.physicalCapacity} usable=${passDiag.usableCapacity} ` +
+            `(adjacency ${allowAdjacentSeating ? "OFF/allowed" : "ON"})`
+        );
+        for (const v of passDiag.venues) {
+          logger.log(
+            `   · ${v.name}: [${(v.benchConfig || []).join(", ")}] ` +
+              `physical=${v.physicalCapacity} usable=${v.usableCapacity}`
+          );
+        }
+      }
  
       // ✅ CRITICAL: Fill target venues completely for this course before next course
       venueLoop: for (const venueData of courseVenueGrids) {
@@ -1378,16 +1435,30 @@ const Allotment = () => {
         let unplaced = students.length - studentIndex;
         logger.log(`   ⚠️  WARNING: ${unplaced} students from ${key} could not be seated`);
 
+        const failDiag = buildCourseSeatingDiagnostics({
+          courseKey: key,
+          students: students.length,
+          mode: venueTarget.mode,
+          venues: courseVenueGrids.map((g) => g.venue),
+          allowAdjacent: allowAdjacentSeating,
+        });
+        failDiag.shortfall = unplaced;
+        failDiag.seated = studentIndex;
+
         if (!allowAdjacentSeating) {
           setIsGenerating(false);
+          const detail = formatCourseCapacityError({
+            ...failDiag,
+            shortfall: unplaced,
+          });
           return setError(
-            venueTarget.mode === "mapped"
-              ? `❌ SEATING INCOMPLETE: ${unplaced} students from ${key} could not be seated in the mapped venue(s).\n` +
-                `Add more mapped venues, enable adjacent seating, or clear the mapping to use general allotment.\n` +
-                `Mapped venues are never silently replaced.`
-              : `❌ SEATING INCOMPLETE: ${unplaced} students from ${key} could not be seated.\n` +
-                `This is due to anti-cheating adjacency rules.\n` +
-                `Enable "Allow adjacent seating when required" to continue with a warning.`
+            `❌ SEATING INCOMPLETE: ${unplaced} of ${students.length} students from ${key} could not be seated` +
+              (venueTarget.mode === "mapped" ? " in the mapped venue(s)" : "") +
+              `.\n` +
+              `Seated: ${studentIndex}. ${detail}\n` +
+              (venueTarget.mode === "mapped"
+                ? "Add more mapped venues, raise temporary bench seats, enable adjacent seating, or clear the mapping for general allotment.\nMapped venues are never silently replaced."
+                : "Enable \"Allow adjacent seating when required\" or add more venues.")
           );
         }
 
