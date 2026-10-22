@@ -86,7 +86,11 @@ import {
   isBlockedCellSlot,
   formatSingleCourseCell,
 } from "../lib/singleCourseSeating";
-import { fillVenueContinuousMixed } from "../lib/mixedCourseSeating";
+import {
+  fillVenueContinuousMixed,
+  FILL_STRATEGY_BALANCED,
+  FILL_STRATEGY_DEPT_PRIORITY,
+} from "../lib/mixedCourseSeating";
 
 // Normalize student/ineligible objects (PostgreSQL may return lowercase keys)
 const normalizeStudent = (s) => ({
@@ -310,6 +314,7 @@ const Allotment = () => {
   const [allFaculty, setAllFaculty] = useState([]);
   const [manualFacultyAssignments, setManualFacultyAssignments] = useState({});
   const [allowAdjacentSeating, setAllowAdjacentSeating] = useState(false);
+  const [fillStrategy, setFillStrategy] = useState(FILL_STRATEGY_BALANCED);
   const [adjacencyOverrideUsed, setAdjacencyOverrideUsed] = useState(false);
   const [autoPlanValidation, setAutoPlanValidation] = useState(null);
  
@@ -1836,7 +1841,7 @@ const Allotment = () => {
     // assigned to that venue, instead of exhausting one course first.
     logger.log("\n🔀 ===== STAGE 3: CONTINUOUS MIXED-COURSE FILL (Normal venues) =====");
     logger.log(
-      `   adjacency=${allowAdjacentSeating ? "OVERRIDE ON" : "enforced"}; ` +
+      `   strategy=${fillStrategy}; adjacency=${allowAdjacentSeating ? "OVERRIDE ON" : "enforced"}; ` +
         `queues=${[...remainingByCourse.entries()]
           .map(([k, list]) => `${k}:${list.length}`)
           .join(", ")}`
@@ -1861,7 +1866,7 @@ const Allotment = () => {
 
       const { venue, grid, rowConfigs } = venueData;
       logger.log(
-        `  📍 Venue: ${venue.name} (${rowConfigs.length} rows) [continuous mixed] ` +
+        `  📍 Venue: ${venue.name} (${rowConfigs.length} rows) [${fillStrategy}] ` +
           `courses=[${queues.map((q) => `${q.key}:${q.students.length}`).join(", ")}]`
       );
 
@@ -1870,6 +1875,7 @@ const Allotment = () => {
         rowConfigs,
         queues,
         allowAdjacent: allowAdjacentSeating,
+        fillStrategy,
         venueName: venue.name,
         isBlockedSlot: isBlockedCellSlot,
         log: (msg, data) => {
@@ -3525,8 +3531,33 @@ const Allotment = () => {
                 )}
               </div>
 
-              {/* Adjacency Override */}
-              <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3">
+              {/* Fill strategy + adjacency */}
+              <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3">
+                <div className="space-y-1">
+                  <label
+                    htmlFor="fill-strategy"
+                    className="block text-sm font-medium text-amber-900"
+                  >
+                    Fill strategy
+                  </label>
+                  <select
+                    id="fill-strategy"
+                    value={fillStrategy}
+                    onChange={(e) => setFillStrategy(e.target.value)}
+                    disabled={!hasWriteAccess}
+                    className="w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-amber-500 focus:outline-none focus:ring-1 focus:ring-amber-500 disabled:opacity-60"
+                  >
+                    <option value={FILL_STRATEGY_BALANCED}>Balanced</option>
+                    <option value={FILL_STRATEGY_DEPT_PRIORITY}>
+                      Department priority
+                    </option>
+                  </select>
+                  <p className="text-xs text-amber-800">
+                    {fillStrategy === FILL_STRATEGY_DEPT_PRIORITY
+                      ? "Seat departments in Scheduled Courses order: fill checkerboard parity-0 first, then parity-1, without same-department neighbours."
+                      : "Alternate departments across seats (default). Same department is never left/right adjacent unless override is on."}
+                  </p>
+                </div>
                 <label className="flex items-start gap-3 text-sm">
                   <input
                     type="checkbox"
@@ -3812,13 +3843,36 @@ const Allotment = () => {
                           ) : null}
                         </>
                       ) : null}
-                      {item.mixedStats?.emptyExplanation ? (
-                        <p className="text-xs text-amber-700">
-                          {item.mixedStats.emptyExplanation}
-                          {item.mixedStats.seatedCount != null
-                            ? ` · Seated ${item.mixedStats.seatedCount}`
-                            : ""}
-                        </p>
+                      {item.mixedStats ? (
+                        <>
+                          {item.mixedStats.departmentOrder?.length ? (
+                            <p className="text-xs text-gray-600">
+                              Depts:{" "}
+                              {item.mixedStats.departmentOrder
+                                .map(
+                                  (d) =>
+                                    `${d} ${item.mixedStats.seatedByDepartment?.[d] || 0}`
+                                )
+                                .join(" · ")}
+                              {item.mixedStats.fillStrategy
+                                ? ` · ${
+                                    item.mixedStats.fillStrategy ===
+                                    FILL_STRATEGY_DEPT_PRIORITY
+                                      ? "priority"
+                                      : "balanced"
+                                  }`
+                                : ""}
+                            </p>
+                          ) : null}
+                          {item.mixedStats.emptyExplanation ? (
+                            <p className="text-xs text-amber-700">
+                              {item.mixedStats.emptyExplanation}
+                              {item.mixedStats.seatedCount != null
+                                ? ` · Seated ${item.mixedStats.seatedCount}`
+                                : ""}
+                            </p>
+                          ) : null}
+                        </>
                       ) : null}
                       {Array.isArray(item.venue.rowConfigs) &&
                       item.venue.rowConfigs.length ? (
