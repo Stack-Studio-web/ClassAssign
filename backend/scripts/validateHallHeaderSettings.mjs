@@ -139,11 +139,14 @@ function testFrontendWiring() {
   assert.doesNotMatch(page, /localStorage\.getItem\("kctLogoType"\)/);
   assert.doesNotMatch(page, /localStorage\.setItem\("kctLogoType"/);
 
-  // Hall generation / export helpers still imported
-  assert.match(page, /paginateHallAllotmentForPrint/);
+  // Chronological grouping kept; classic old PDF layout (page-break-inside-avoid)
   assert.match(page, /groupHallsByExamTime/);
+  assert.match(page, /sortHallsForExport/);
+  assert.match(page, /page-break-inside-avoid/);
+  assert.match(page, /width=\{240\}/);
   assert.match(page, /Export as PDF/);
-  console.log("✓ /hall loads+saves per-user config; no shared localStorage key");
+  assert.doesNotMatch(page, /paginateHallAllotmentForPrint/);
+  console.log("✓ /hall loads+saves per-user config; classic export layout; no shared localStorage");
 }
 
 function main() {

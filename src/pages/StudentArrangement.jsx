@@ -8,13 +8,7 @@ import { useToast } from "../context/ToastContext";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
 import LogoKCT from "../assets/logo.png";
 import LogoKSI from "../assets/logo KSI.png";
-import {
-  groupHallsByExamTime,
-  sortHallsForExport,
-  paginateHallAllotmentForPrint,
-  HALL_ALLOTMENT_PRINT_CSS,
-  HALL_ALLOTMENT_PAGE_STYLE,
-} from "../lib/hallExportOrder";
+import { groupHallsByExamTime, sortHallsForExport } from "../lib/hallExportOrder";
 
 const DEFAULT_HALL_HEADER = Object.freeze({
   logo: "KCT",
@@ -23,88 +17,56 @@ const DEFAULT_HALL_HEADER = Object.freeze({
   program2: "M.Tech DS - M.E CSE (Cyber Security)",
 });
 
-/** Group flat print rows into contiguous hall segments for safe per-page rowspan. */
-const groupPrintRowsByHall = (rows) => {
-  const segments = [];
-  for (const row of rows || []) {
-    const prev = segments[segments.length - 1];
-    const contiguous =
-      prev &&
-      prev.hallNo === row.hallNo &&
-      prev.overallCount === row.overallCount &&
-      prev.rows[prev.rows.length - 1].hallRowIndex + 1 === row.hallRowIndex;
-    if (contiguous) {
-      prev.rows.push(row);
-    } else {
-      segments.push({
-        hallNo: row.hallNo,
-        overallCount: row.overallCount,
-        rows: [row],
-      });
-    }
-  }
-  return segments;
-};
-
-const HallAllocTable = ({ hallsOrSegments, rowMode = "hall" }) => {
-  const segments =
-    rowMode === "flat"
-      ? groupPrintRowsByHall(hallsOrSegments)
-      : (hallsOrSegments || []).map((hall) => ({
-          hallNo: hall.hallNo,
-          overallCount: hall.overallCount,
-          rows: hall.rows,
-        }));
-
-  return (
-    <div className="overflow-x-auto -mx-4 sm:mx-0 hall-print-overflow">
-      <table className="w-full border-collapse border border-gray-400 text-xs min-w-[500px] hall-alloc-table">
-        <colgroup>
-          <col style={{ width: "12%" }} />
-          <col style={{ width: "14%" }} />
-          <col style={{ width: "18%" }} />
-          <col style={{ width: "36%" }} />
-          <col style={{ width: "10%" }} />
-          <col style={{ width: "10%" }} />
-        </colgroup>
-        <thead>
-          <tr className="bg-gray-800 text-white">
-            <th className="border border-gray-400 p-2">Hall No</th>
-            <th className="border border-gray-400 p-2">Year / Branch</th>
-            <th className="border border-gray-400 p-2">Course Code</th>
-            <th className="border border-gray-400 p-2">Roll No&apos;s</th>
-            <th className="border border-gray-400 p-2">Count</th>
-            <th className="border border-gray-400 p-2">Total</th>
-          </tr>
-        </thead>
-        {segments.map((seg, hIndex) => (
-          <tbody key={`${seg.hallNo}-${hIndex}-${seg.rows[0]?.hallRowIndex ?? 0}`} className="hall-group">
-            {seg.rows.map((row, rIndex) => (
-              <tr key={`${hIndex}-${rIndex}`} className="text-center border-b">
-                {rIndex === 0 ? (
-                  <td rowSpan={seg.rows.length} className="border border-gray-400 font-bold bg-white">
-                    {seg.hallNo}
-                  </td>
-                ) : null}
-                <td className="border border-gray-400 p-2">{row.yearBranch}</td>
-                <td className="border border-gray-400 p-2 font-mono">
-                  {(row.courseCodes || []).join(", ") || "N/A"}
+/**
+ * Classic /hall PDF table markup (old export format):
+ * single tbody, hall rowspan for Hall No + Total, no forced column widths.
+ */
+const HallAllocTable = ({ halls }) => (
+  <div className="overflow-x-auto -mx-4 sm:mx-0">
+    <table className="w-full border-collapse border border-gray-400 text-xs min-w-[500px]">
+      <thead>
+        <tr className="bg-gray-800 text-white">
+          <th className="border border-gray-400 p-2">Hall No</th>
+          <th className="border border-gray-400 p-2">Year / Branch</th>
+          <th className="border border-gray-400 p-2">Course Code</th>
+          <th className="border border-gray-400 p-2">Roll No&apos;s</th>
+          <th className="border border-gray-400 p-2">Count</th>
+          <th className="border border-gray-400 p-2">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {(halls || []).map((hall, hIndex) =>
+          (hall.rows || []).map((row, rIndex) => (
+            <tr key={`${hIndex}-${rIndex}`} className="text-center border-b">
+              {rIndex === 0 && (
+                <td
+                  rowSpan={hall.rows.length}
+                  className="border border-gray-400 font-bold bg-white"
+                >
+                  {hall.hallNo}
                 </td>
-                <td className="border border-gray-400 p-2 font-mono">{row.rollNos}</td>
-                <td className="border border-gray-400 p-2">{row.count}</td>
-                {rIndex === 0 ? (
-                  <td rowSpan={seg.rows.length} className="border border-gray-400 font-bold bg-white">
-                    {seg.overallCount}
-                  </td>
-                ) : null}
-              </tr>
-            ))}
-          </tbody>
-        ))}
-      </table>
-    </div>
-  );
-};
+              )}
+              <td className="border border-gray-400 p-2">{row.yearBranch}</td>
+              <td className="border border-gray-400 p-2 font-mono">
+                {(row.courseCodes || []).join(", ") || "N/A"}
+              </td>
+              <td className="border border-gray-400 p-2 font-mono">{row.rollNos}</td>
+              <td className="border border-gray-400 p-2">{row.count}</td>
+              {rIndex === 0 && (
+                <td
+                  rowSpan={hall.rows.length}
+                  className="border border-gray-400 font-bold bg-white"
+                >
+                  {hall.overallCount}
+                </td>
+              )}
+            </tr>
+          ))
+        )}
+      </tbody>
+    </table>
+  </div>
+);
 
 const getNumericPart = (rollNo) => {
   if (!rollNo) return NaN;
@@ -238,10 +200,11 @@ const ExamHallAllotment = () => {
   const printRef = useRef();
   const [exporting, setExporting] = useState(false);
 
+  // Old export format: browser print of the classic header + session tables
+  // (page-break-inside-avoid), without explicit page-packing CSS.
   const handlePrint = useReactToPrint({
     contentRef: printRef,
     documentTitle: "Exam_Hall_Allotment",
-    pageStyle: HALL_ALLOTMENT_PAGE_STYLE,
   });
 
   const runExport = () => {
@@ -380,31 +343,6 @@ const ExamHallAllotment = () => {
     if (!halls?.length) return "";
     return `Exam Time: ${formatTime(halls[0].examStartTime, halls[0].examEndTime)} | ${new Date(halls[0].examDate).toLocaleDateString()}`;
   };
-
-  // Explicit page packing for print — do not rely on browser CSS to split rowspan tables.
-  const { pages: printPages } = paginateHallAllotmentForPrint(
-    hallsByTimeEntries,
-    formatSessionTitle
-  );
-
-  const reportHeader = (
-    <div className="text-center mb-4 hall-print-header">
-      <img
-        src={currentLogo}
-        alt="Logo"
-        width={240}
-        className="mx-auto hall-print-logo"
-        style={{ maxHeight: 70, width: "auto" }}
-      />
-      <h2 className="font-bold text-lg">Kumaraguru College of Technology</h2>
-      <p>{departmentLine}</p>
-      <strong className="block font-bold">{programmeLine1}</strong>
-      <strong className="block font-bold">{programmeLine2}</strong>
-      <p>
-        AY {ay} - {semester} SEM ({category})
-      </p>
-    </div>
-  );
 
   if (loading || !headerHydrated) {
     return <div className="text-center p-6 text-gray-700">Loading...</div>;
@@ -561,56 +499,34 @@ const ExamHallAllotment = () => {
         </div>
       </div>
 
-        {/* On-screen preview (not printed) — continuous session tables */}
-        <div className="hall-screen-preview">
-          {reportHeader}
-          {hallsByTimeEntries.length === 0 ? (
-            <p className="text-center text-gray-500 italic py-10">
-              No records found for the selected date/session.
-            </p>
-          ) : (
-            hallsByTimeEntries.map(([time, halls]) => (
-              <div key={time} className="mb-8 hall-session">
-                <h3 className="font-bold text-sm sm:text-md mb-1 text-center bg-gray-100 py-1 hall-session-title">
-                  {formatSessionTitle(halls)}
-                </h3>
-                <HallAllocTable hallsOrSegments={halls} rowMode="hall" />
-              </div>
-            ))
-          )}
+      {/* Preview + PDF target — classic old export layout (logo full width-240, browser page breaks) */}
+      <div ref={printRef}>
+        <div className="text-center mb-4">
+          <img src={currentLogo} alt="Logo" width={240} className="mx-auto" />
+          <h2 className="font-bold text-lg">Kumaraguru College of Technology</h2>
+          <p>{departmentLine}</p>
+          <strong className="block font-bold">{programmeLine1}</strong>
+          <strong className="block font-bold">{programmeLine2}</strong>
+          <p>
+            AY {ay} - {semester} SEM ({category})
+          </p>
         </div>
 
-        {/* Print document — explicitly packed pages (react-to-print target) */}
-        <div ref={printRef} className="hall-print-root hall-print-only">
-          <style>{HALL_ALLOTMENT_PRINT_CSS}</style>
-          {printPages.map((page, pageIdx) => (
-            <div
-              key={`print-page-${page.pageIndex}`}
-              className={
-                pageIdx < printPages.length - 1
-                  ? "hall-print-page hall-print-page-break"
-                  : "hall-print-page"
-              }
-            >
-              {page.showReportHeader ? reportHeader : null}
-              {page.blocks.length === 0 ? (
-                <p className="text-center text-gray-500 italic py-10">
-                  No records found for the selected date/session.
-                </p>
-              ) : (
-                page.blocks.map((block, bIndex) => (
-                  <div key={`${block.sessionKey}-${page.pageIndex}-${bIndex}`} className="mb-4 hall-session">
-                    <h3 className="font-bold text-sm sm:text-md mb-1 text-center bg-gray-100 py-1 hall-session-title">
-                      {block.title}
-                      {block.continued ? " (continued)" : ""}
-                    </h3>
-                    <HallAllocTable hallsOrSegments={block.rows} rowMode="flat" />
-                  </div>
-                ))
-              )}
+        {hallsByTimeEntries.length === 0 ? (
+          <p className="text-center text-gray-500 italic py-10">
+            No records found for the selected date/session.
+          </p>
+        ) : (
+          hallsByTimeEntries.map(([time, halls]) => (
+            <div key={time} className="mb-8 page-break-inside-avoid">
+              <h3 className="font-bold text-sm sm:text-md mb-1 text-center bg-gray-100 py-1">
+                {formatSessionTitle(halls)}
+              </h3>
+              <HallAllocTable halls={halls} />
             </div>
-          ))}
-        </div>
+          ))
+        )}
+      </div>
     </div>
   );
 };
