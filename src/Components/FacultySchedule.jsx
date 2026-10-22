@@ -153,7 +153,7 @@ const FacultySchedule = ({ plans, onClose }) => {
   const printRef = useRef();
 
   const [semester, setSemester] = useState("EVEN");
-  const [category, setCategory] = useState("CAT 1");
+  const [category, setCategory] = useState("SA1");
   const [ayStartYear, setAyStartYear] = useState(currentYear);
   const [departmentLine, setDepartmentLine] = useState(
     "DEPARTMENT OF CSE, IT, AIDS, MCA"
@@ -345,8 +345,8 @@ const FacultySchedule = ({ plans, onClose }) => {
                 minWidth: "100px",
               }}
             >
-              <option value="CAT 1">CAT 1</option>
-              <option value="CAT 2">CAT 2</option>
+              <option value="SA1">SA1</option>
+              <option value="SA2">SA2</option>
             </select>
           </label>
           <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>

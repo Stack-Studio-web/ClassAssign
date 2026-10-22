@@ -6,7 +6,7 @@ import { useReactToPrint } from "react-to-print";
 import { useAcademicSession } from "../context/AcademicSessionContext";
 import { useToast } from "../context/ToastContext";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
-import LogoKCT from "../assets/logo.png";
+import HallLogoKCT from "../assets/hall_kct.png";
 import LogoKSI from "../assets/logo KSI.png";
 import { groupHallsByExamTime, sortHallsForExport } from "../lib/hallExportOrder";
 
@@ -195,7 +195,9 @@ const ExamHallAllotment = () => {
     }
   };
 
-  const currentLogo = logoType === "KSI" ? LogoKSI : LogoKCT;
+  // KCT: combined hall_kct.png lockup (no separate title). KSI: existing full logo asset.
+  const currentLogo = logoType === "KSI" ? LogoKSI : HallLogoKCT;
+  const isKctHallLogo = logoType !== "KSI";
 
   const printRef = useRef();
   const [exporting, setExporting] = useState(false);
@@ -382,8 +384,8 @@ const ExamHallAllotment = () => {
             onChange={(e) => setCategory(e.target.value)}
             className="h-9 px-3 rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white min-w-[90px]"
           >
-            <option value="CAT I">CAT I</option>
-            <option value="CAT II">CAT II</option>
+            <option value="SA1">SA1</option>
+            <option value="SA2">SA2</option>
           </select>
         </label>
         <p className="text-xs text-gray-500 ml-0 sm:ml-2 w-full sm:w-auto">
@@ -499,23 +501,33 @@ const ExamHallAllotment = () => {
         </div>
       </div>
 
-      {/* Preview + PDF target — small logo beside college name, then dept/programme lines */}
+      {/* Preview + PDF target — KCT uses hall_kct.png lockup only; KSI keeps its logo */}
       <div ref={printRef}>
         <div className="text-center mb-4">
-          <div
-            className="flex items-center justify-center gap-3 mb-1"
-            style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "12px" }}
-          >
-            <img
-              src={currentLogo}
-              alt="Logo"
-              className="hall-export-logo"
-              style={{ height: "42px", width: "auto", maxWidth: "120px", objectFit: "contain" }}
-            />
-            <h2 className="font-bold text-lg m-0" style={{ margin: 0 }}>
-              Kumaraguru College of Technology
-            </h2>
-          </div>
+          <img
+            src={currentLogo}
+            alt={isKctHallLogo ? "Kumaraguru College of Technology" : "KSI Logo"}
+            className="hall-export-logo mx-auto"
+            style={
+              isKctHallLogo
+                ? {
+                    height: "56px",
+                    width: "auto",
+                    maxWidth: "360px",
+                    objectFit: "contain",
+                    display: "block",
+                    margin: "0 auto 6px",
+                  }
+                : {
+                    height: "56px",
+                    width: "auto",
+                    maxWidth: "240px",
+                    objectFit: "contain",
+                    display: "block",
+                    margin: "0 auto 6px",
+                  }
+            }
+          />
           <p>{departmentLine}</p>
           <strong className="block font-bold">{programmeLine1}</strong>
           <strong className="block font-bold">{programmeLine2}</strong>

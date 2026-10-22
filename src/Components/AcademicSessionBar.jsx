@@ -35,8 +35,8 @@ export default function AcademicSessionBar() {
             onChange={(e) => setCategory(e.target.value)}
             className="h-9 px-3 rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white min-w-[100px]"
           >
-            <option value="CAT I">CAT I</option>
-            <option value="CAT II">CAT II</option>
+            <option value="SA1">SA1</option>
+            <option value="SA2">SA2</option>
           </select>
         </label>
       </div>

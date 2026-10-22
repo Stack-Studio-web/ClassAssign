@@ -13,7 +13,7 @@ const defaultAY = `${currentYear}-${currentYear + 1}`;
 export const AcademicSessionProvider = ({ children }) => {
   const [ay, setAy] = useState(defaultAY);
   const [semester, setSemester] = useState("EVEN");
-  const [category, setCategory] = useState("CAT I");
+  const [category, setCategory] = useState("SA1");
   return (
     <AcademicSessionContext.Provider
       value={{
