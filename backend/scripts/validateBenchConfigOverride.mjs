@@ -138,6 +138,8 @@ function testWiring() {
   assert.match(page, /Temporary Bench Configuration/);
   assert.match(page, /withEffectiveBenchConfig/);
   assert.match(page, /setBenchConfigOverrides\(\{\}\)/);
+  assert.match(page, /handleAddRow/);
+  assert.match(page, /rowConfigs/);
   // Must not PUT/PATCH venues when applying temporary config
   assert.doesNotMatch(
     page,

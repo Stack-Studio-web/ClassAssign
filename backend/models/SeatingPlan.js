@@ -20,10 +20,26 @@ function resolveSeatingOwnerScope(opts = {}, lead = "WHERE") {
     : andClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
 }
 const {
-  normalizeBenchConfig,
   flattenArrangementForStorage,
   hydrateArrangementFromRows,
 } = require("../utils/seatingLayout");
+
+/** Expand v2 {rowConfigs} bench_config into client-friendly fields. */
+function expandBenchConfigForClient(v) {
+  const raw = v.benchConfig;
+  if (raw && typeof raw === "object" && !Array.isArray(raw) && Array.isArray(raw.rowConfigs)) {
+    v.benchConfigStorage = raw;
+    v.rowConfigs = raw.rowConfigs.map((row) =>
+      Array.isArray(row) ? row.map((n) => Number(n) || 2) : []
+    );
+    v.benchesRow = v.rowConfigs.length;
+    v.benchesCol = v.rowConfigs[0]?.length || 0;
+    v.benchConfig = v.rowConfigs[0] ? [...v.rowConfigs[0]] : [];
+  } else if (Array.isArray(raw)) {
+    v.benchConfig = raw.map((n) => Number(n) || 2);
+    v.benchesCol = v.benchConfig.length;
+  }
+}
 
 // Keep seat array shape but avoid null objects that crash older frontend bundles.
 function toClientSafeLayout(layout) {
@@ -214,13 +230,10 @@ const SeatingPlan = {
 
         // Insert seating grid (2D arrangement)
         if (Array.isArray(venue.seatingArrangement)) {
-          const benchConfig = normalizeBenchConfig(
-            venue.benchConfig,
-            venue.seatingArrangement?.[0]?.length || 0
-          );
+          // Pass raw benchConfig (array or v2 {rowConfigs}) so per-row layouts flatten correctly.
           const arrangementEntries = flattenArrangementForStorage(
             venue.seatingArrangement,
-            benchConfig
+            venue.benchConfig
           ).map(([r, c, seatIndex, regNo]) => [
             seatingPlanVenueId,
             r,
@@ -380,6 +393,7 @@ const SeatingPlan = {
             v.benchConfig = null;
           }
         }
+        expandBenchConfigForClient(v);
         v.venueName = v.venueName ?? v.venuename ?? v.venue_name;
         if (v.venueUuid ?? v.venueuuid) {
           v.uuid = v.venueUuid ?? v.venueuuid;
@@ -409,9 +423,13 @@ const SeatingPlan = {
           ORDER BY seat_row, seat_col, seat_index, id
         `, [internalId]);
 
-        const benchConfig = normalizeBenchConfig(v.benchConfig, 0);
+        // Pass raw storage shape (array or v2 {rowConfigs}) for per-row layouts.
         v.seatingArrangement = toClientSafeLayout(
-          hydrateArrangementFromRows(seats || [], benchConfig, studentCourseMap)
+          hydrateArrangementFromRows(
+            seats || [],
+            v.benchConfigStorage || v.benchConfig,
+            studentCourseMap
+          )
         );
       }
 
@@ -510,6 +528,7 @@ const SeatingPlan = {
           v.benchConfig = null;
         }
       }
+      expandBenchConfigForClient(v);
       v.venueName = v.venueName ?? v.venuename ?? v.venue_name;
       if (v.venueUuid ?? v.venueuuid) {
         v.uuid = v.venueUuid ?? v.venueuuid;
@@ -538,9 +557,12 @@ const SeatingPlan = {
         ORDER BY seat_row, seat_col, seat_index, id
       `, [internalId]);
 
-      const benchConfig = normalizeBenchConfig(v.benchConfig, 0);
       v.seatingArrangement = toClientSafeLayout(
-        hydrateArrangementFromRows(seats || [], benchConfig, studentCourseMap)
+        hydrateArrangementFromRows(
+          seats || [],
+          v.benchConfigStorage || v.benchConfig,
+          studentCourseMap
+        )
       );
     }
 

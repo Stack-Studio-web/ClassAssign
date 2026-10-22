@@ -56,12 +56,16 @@ import {
 } from "../lib/examTypeNormalize";
 import {
   SEATS_PER_BENCH_OPTIONS,
-  defaultBenchConfigForVenue,
-  capacityFromLayout,
-  validateTemporaryBenchConfig,
+  MAX_TEMPORARY_ROWS,
+  defaultRowConfigsForVenue,
+  capacityFromRowConfigs,
+  validateTemporaryLayout,
   withEffectiveBenchConfig,
   applyVenueOverrides,
-  configsEqual,
+  layoutsEqual,
+  addRowToLayout,
+  removeRowFromLayout,
+  encodeBenchConfigForStorage,
 } from "../lib/benchConfigOverride";
 
 // Normalize student/ineligible objects (PostgreSQL may return lowercase keys)
@@ -243,11 +247,12 @@ const Allotment = () => {
    */
   const [courseVenueMappings, setCourseVenueMappings] = useState({});
   /**
-   * Temporary bench config overrides for this exam slot only (uuid → seats[]).
+   * Temporary layout overrides for this exam slot only
+   * (uuid → { benchesRow, rowConfigs: number[][] }).
    * Never written to the venues table; cleared when date/session/time changes.
    */
   const [benchConfigOverrides, setBenchConfigOverrides] = useState({});
-  /** Draft editors keyed by venue uuid (seats[]) before Apply. */
+  /** Draft editors keyed by venue uuid ({ benchesRow, rowConfigs }) before Apply. */
   const [benchConfigDrafts, setBenchConfigDrafts] = useState({});
   const [benchConfigError, setBenchConfigError] = useState("");
   /** uuid -> { status, available, conflicts, message } for current exam slot */
@@ -884,68 +889,141 @@ const Allotment = () => {
     return applyVenueOverrides(list, benchConfigOverrides);
   }, [seatingMode, availableVenuesForSlot, selectedVenues, benchConfigOverrides]);
 
+  const layoutFromVenueState = (venue, drafts, overrides) => {
+    const id = String(venue.uuid);
+    const draft = drafts?.[id];
+    if (draft?.rowConfigs?.length) {
+      return {
+        benchesRow: draft.rowConfigs.length,
+        rowConfigs: draft.rowConfigs.map((r) => [...r]),
+      };
+    }
+    const override = overrides?.[id];
+    if (override?.rowConfigs?.length) {
+      return {
+        benchesRow: override.rowConfigs.length,
+        rowConfigs: override.rowConfigs.map((r) => [...r]),
+      };
+    }
+    if (Array.isArray(override) && override.length) {
+      const rows = Math.max(1, Number(venue.benchesRow) || 1);
+      const seats = override.map((n) => Number(n) || 2);
+      return {
+        benchesRow: rows,
+        rowConfigs: Array.from({ length: rows }, () => [...seats]),
+      };
+    }
+    const rowConfigs = defaultRowConfigsForVenue(venue);
+    return { benchesRow: rowConfigs.length, rowConfigs };
+  };
+
   const ensureBenchDraft = (venue) => {
     const id = String(venue.uuid);
     setBenchConfigDrafts((prev) => {
-      if (Array.isArray(prev[id]) && prev[id].length) return prev;
-      const current = benchConfigOverrides[id] || defaultBenchConfigForVenue(venue);
-      return { ...prev, [id]: [...current] };
+      if (prev[id]?.rowConfigs?.length) return prev;
+      return {
+        ...prev,
+        [id]: layoutFromVenueState(venue, prev, benchConfigOverrides),
+      };
     });
   };
 
-  const handleBenchDraftChange = (venue, colIdx, value) => {
+  const handleBenchDraftChange = (venue, rowIdx, colIdx, value) => {
     const id = String(venue.uuid);
     const seats = Number(value);
     setBenchConfigDrafts((prev) => {
-      const base =
-        Array.isArray(prev[id]) && prev[id].length
-          ? [...prev[id]]
-          : [...(benchConfigOverrides[id] || defaultBenchConfigForVenue(venue))];
-      base[colIdx] = seats;
-      return { ...prev, [id]: base };
+      const base = layoutFromVenueState(venue, prev, benchConfigOverrides);
+      const rowConfigs = base.rowConfigs.map((r) => [...r]);
+      if (!rowConfigs[rowIdx]) return prev;
+      rowConfigs[rowIdx] = [...rowConfigs[rowIdx]];
+      rowConfigs[rowIdx][colIdx] = seats;
+      return {
+        ...prev,
+        [id]: { benchesRow: rowConfigs.length, rowConfigs },
+      };
     });
     setBenchConfigError("");
   };
 
+  const handleAddRow = (venue) => {
+    const id = String(venue.uuid);
+    setBenchConfigDrafts((prev) => {
+      const base = layoutFromVenueState(venue, prev, benchConfigOverrides);
+      const result = addRowToLayout(base);
+      if (!result.ok) {
+        setBenchConfigError(`${venue.name}: ${result.message}`);
+        toast.error(result.message, "Cannot add row");
+        return prev;
+      }
+      setBenchConfigError("");
+      return { ...prev, [id]: result.layout };
+    });
+    setGeneratedSeating(null);
+    setAllottedStudents([]);
+    setAutoPlanValidation(null);
+  };
+
+  const handleRemoveRow = (venue) => {
+    const id = String(venue.uuid);
+    setBenchConfigDrafts((prev) => {
+      const base = layoutFromVenueState(venue, prev, benchConfigOverrides);
+      const result = removeRowFromLayout(base, { minRows: 1 });
+      if (!result.ok) {
+        setBenchConfigError(`${venue.name}: ${result.message}`);
+        toast.error(result.message, "Cannot remove row");
+        return prev;
+      }
+      setBenchConfigError("");
+      return { ...prev, [id]: result.layout };
+    });
+    setGeneratedSeating(null);
+    setAllottedStudents([]);
+    setAutoPlanValidation(null);
+  };
+
   const handleApplyBenchConfig = (venue) => {
     const id = String(venue.uuid);
-    const draft =
-      benchConfigDrafts[id] ||
-      benchConfigOverrides[id] ||
-      defaultBenchConfigForVenue(venue);
-    const result = validateTemporaryBenchConfig(venue, draft);
+    const draft = layoutFromVenueState(venue, benchConfigDrafts, benchConfigOverrides);
+    const result = validateTemporaryLayout(venue, draft);
     if (!result.ok) {
       setBenchConfigError(`${venue.name}: ${result.message}`);
-      toast.error(result.message, "Invalid bench configuration");
+      toast.error(result.message, "Invalid layout configuration");
       return;
     }
-    setBenchConfigOverrides((prev) => ({ ...prev, [id]: result.seats }));
-    setBenchConfigDrafts((prev) => ({ ...prev, [id]: [...result.seats] }));
+    const layout = {
+      benchesRow: result.benchesRow,
+      rowConfigs: result.rowConfigs.map((r) => [...r]),
+    };
+    setBenchConfigOverrides((prev) => ({ ...prev, [id]: layout }));
+    setBenchConfigDrafts((prev) => ({ ...prev, [id]: layout }));
     setBenchConfigError("");
     // Stale seating grids must not keep the previous layout.
     setGeneratedSeating(null);
     setAllottedStudents([]);
     setAutoPlanValidation(null);
     toast.success(
-      `${venue.name}: temporary config ${result.seats.join(", ")} ` +
-        `(capacity ${result.capacity}) applied for this exam only.`
+      `${venue.name}: temporary layout ${result.benchesRow} rows · ` +
+        `capacity ${result.capacity} applied for this exam only.`
     );
   };
 
   const handleResetBenchConfig = (venue) => {
     const id = String(venue.uuid);
-    const defaults = defaultBenchConfigForVenue(venue);
+    const defaults = defaultRowConfigsForVenue(venue);
+    const layout = { benchesRow: defaults.length, rowConfigs: defaults };
     setBenchConfigOverrides((prev) => {
       const next = { ...prev };
       delete next[id];
       return next;
     });
-    setBenchConfigDrafts((prev) => ({ ...prev, [id]: [...defaults] }));
+    setBenchConfigDrafts((prev) => ({ ...prev, [id]: layout }));
     setBenchConfigError("");
     setGeneratedSeating(null);
     setAllottedStudents([]);
     setAutoPlanValidation(null);
-    toast.success(`${venue.name}: reset to venue defaults (${defaults.join(", ")}).`);
+    toast.success(
+      `${venue.name}: reset to venue defaults (${defaults.length} rows · ${defaults[0]?.join(", ") || "—"}).`
+    );
   };
 
   const occupiedVenueWarning = useMemo(() => {
@@ -1063,7 +1141,7 @@ const Allotment = () => {
     for (const v of venuesToUse) {
       const override = benchConfigOverrides[String(v.uuid)];
       if (!override) continue;
-      const check = validateTemporaryBenchConfig(v, override);
+      const check = validateTemporaryLayout(v, override);
       if (!check.ok) {
         setIsGenerating(false);
         return setError(`${v.name}: ${check.message}`);
@@ -1287,14 +1365,25 @@ const Allotment = () => {
       );
     }
  
-    // Initialize venue grids
-    const venueGrids = venuesToUse.map(venue => ({
-      venue,
-      grid: Array.from({ length: venue.benchesRow }, () =>
-        Array(venue.benchesCol).fill(null)
-      ),
-      benchConfig: venue.benchConfig || Array(venue.benchesCol).fill(2)
-    }));
+    // Initialize venue grids (per-row column configs when present)
+    const venueGrids = venuesToUse.map((venue) => {
+      const rowConfigs =
+        Array.isArray(venue.rowConfigs) && venue.rowConfigs.length
+          ? venue.rowConfigs.map((r) => [...r])
+          : defaultRowConfigsForVenue(venue);
+      const cols = Math.max(
+        Number(venue.benchesCol) || 0,
+        ...rowConfigs.map((r) => (Array.isArray(r) ? r.length : 0))
+      );
+      return {
+        venue,
+        grid: Array.from({ length: rowConfigs.length }, (_, r) =>
+          Array(rowConfigs[r]?.length || cols).fill(null)
+        ),
+        benchConfig: rowConfigs[0] ? [...rowConfigs[0]] : Array(cols).fill(2),
+        rowConfigs,
+      };
+    });
  
     const allSeatedStudents = [];
  
@@ -1349,19 +1438,30 @@ const Allotment = () => {
  
       // ✅ CRITICAL: Fill target venues completely for this course before next course
       venueLoop: for (const venueData of courseVenueGrids) {
-        const { venue, grid, benchConfig } = venueData;
+        const { venue, grid, rowConfigs } = venueData;
+        const rows = rowConfigs.length;
+        const cols = Math.max(
+          0,
+          ...rowConfigs.map((r) => (Array.isArray(r) ? r.length : 0))
+        );
        
-        logger.log(`  📍 Venue: ${venue.name}`);
+        logger.log(`  📍 Venue: ${venue.name} (${rows} rows)`);
         
         // ✅ VERTICAL FILLING: Column-by-column, then row-by-row, then seat-by-seat
-        for (let c = 0; c < venue.benchesCol; c++) {
-          const seatsInCol = benchConfig[c] || 2;
+        for (let c = 0; c < cols; c++) {
+          const maxSeatsInCol = Math.max(
+            0,
+            ...rowConfigs.map((row) => Number(row?.[c]) || 0)
+          );
           
           // For each seat position in this column (A1, A2, A3...)
-          for (let s = 0; s < seatsInCol; s++) {
+          for (let s = 0; s < maxSeatsInCol; s++) {
             
             // Go down the rows for this specific seat position
-            for (let r = 0; r < venue.benchesRow; r++) {
+            for (let r = 0; r < rows; r++) {
+              const seatsInCol = Number(rowConfigs[r]?.[c]) || 0;
+              if (s >= seatsInCol) continue;
+
               if (studentIndex >= students.length) {
                 logger.log(`   ✅ All ${studentIndex} students placed for ${key}`);
                 break venueLoop;
@@ -1381,48 +1481,55 @@ const Allotment = () => {
  
               const student = students[studentIndex];
  
-              // ✅ ANTI-CHEATING RULE 1: Check adjacent seat within same bench
-              const hasAdjacentInSameBench = s > 0 && 
-                cellStudents[s - 1] && 
-                cellStudents[s - 1].courseDescription === student.courseDescription;
+              // When adjacent seating is allowed, skip adjacency checks entirely.
+              let canPlace = true;
+              if (!allowAdjacentSeating) {
+                // ✅ ANTI-CHEATING RULE 1: Check adjacent seat within same bench
+                const hasAdjacentInSameBench = s > 0 && 
+                  cellStudents[s - 1] && 
+                  cellStudents[s - 1].courseDescription === student.courseDescription;
  
-              // ✅ ANTI-CHEATING RULE 2: Check adjacent seat in PREVIOUS column (cross-bench)
-              let hasAdjacentInPreviousColumn = false;
-              if (c > 0 && s === 0) { // First seat of current bench
-                const prevCol = grid[r][c - 1];
-                if (prevCol && Array.isArray(prevCol)) {
-                  const prevBenchSeats = benchConfig[c - 1] || 2;
-                  const lastSeatInPrevBench = prevCol[prevBenchSeats - 1]; // Last seat of previous bench
-                  if (lastSeatInPrevBench && lastSeatInPrevBench.courseDescription === student.courseDescription) {
-                    hasAdjacentInPreviousColumn = true;
+                // ✅ ANTI-CHEATING RULE 2: Check adjacent seat in PREVIOUS column (cross-bench)
+                let hasAdjacentInPreviousColumn = false;
+                if (c > 0 && s === 0) { // First seat of current bench
+                  const prevCol = grid[r][c - 1];
+                  if (prevCol && Array.isArray(prevCol)) {
+                    const prevBenchSeats = Number(rowConfigs[r]?.[c - 1]) || 0;
+                    const lastSeatInPrevBench = prevBenchSeats > 0
+                      ? prevCol[prevBenchSeats - 1]
+                      : null;
+                    if (lastSeatInPrevBench && lastSeatInPrevBench.courseDescription === student.courseDescription) {
+                      hasAdjacentInPreviousColumn = true;
+                    }
                   }
                 }
-              }
  
-              // ✅ ANTI-CHEATING RULE 3: Check adjacent seat in NEXT column (cross-bench)
-              let hasAdjacentInNextColumn = false;
-              if (c < venue.benchesCol - 1 && s === seatsInCol - 1) { // Last seat of current bench
-                const nextCol = grid[r][c + 1];
-                if (nextCol && Array.isArray(nextCol) && nextCol[0]) {
-                  if (nextCol[0].courseDescription === student.courseDescription) {
-                    hasAdjacentInNextColumn = true;
+                // ✅ ANTI-CHEATING RULE 3: Check adjacent seat in NEXT column (cross-bench)
+                let hasAdjacentInNextColumn = false;
+                if (c < cols - 1 && s === seatsInCol - 1) { // Last seat of current bench
+                  const nextCol = grid[r][c + 1];
+                  if (nextCol && Array.isArray(nextCol) && nextCol[0]) {
+                    if (nextCol[0].courseDescription === student.courseDescription) {
+                      hasAdjacentInNextColumn = true;
+                    }
                   }
                 }
+ 
+                canPlace = !hasAdjacentInSameBench && 
+                                 !hasAdjacentInPreviousColumn && 
+                                 !hasAdjacentInNextColumn;
+
+                if (!canPlace) {
+                  const reason = hasAdjacentInSameBench ? 'same bench' : 
+                                hasAdjacentInPreviousColumn ? 'previous column' : 'next column';
+                  logger.log(`     ⏭️  Skipping Row ${r + 1}, Col ${String.fromCharCode(65 + c)}${s + 1} - Adjacent conflict (${reason})`);
+                }
               }
- 
-              const canPlace = !hasAdjacentInSameBench && 
-                               !hasAdjacentInPreviousColumn && 
-                               !hasAdjacentInNextColumn;
- 
+
               if (canPlace) {
                 cellStudents[s] = student;
                 allSeatedStudents.push(student);
                 studentIndex++;
-              } else {
-                // ❌ Cannot place due to adjacent conflict
-                const reason = hasAdjacentInSameBench ? 'same bench' : 
-                              hasAdjacentInPreviousColumn ? 'previous column' : 'next column';
-                logger.log(`     ⏭️  Skipping Row ${r + 1}, Col ${String.fromCharCode(65 + c)}${s + 1} - Adjacent conflict (${reason})`);
               }
             }
           }
@@ -1464,11 +1571,21 @@ const Allotment = () => {
 
         // Fallback pass: place remaining students in any empty slots of THIS course's venues only.
         for (const venueData of courseVenueGrids) {
-          const { venue, grid, benchConfig } = venueData;
-          for (let c = 0; c < venue.benchesCol; c++) {
-            const seatsInCol = benchConfig[c] || 2;
-            for (let s = 0; s < seatsInCol; s++) {
-              for (let r = 0; r < venue.benchesRow; r++) {
+          const { grid, rowConfigs } = venueData;
+          const rows = rowConfigs.length;
+          const cols = Math.max(
+            0,
+            ...rowConfigs.map((r) => (Array.isArray(r) ? r.length : 0))
+          );
+          for (let c = 0; c < cols; c++) {
+            const maxSeatsInCol = Math.max(
+              0,
+              ...rowConfigs.map((row) => Number(row?.[c]) || 0)
+            );
+            for (let s = 0; s < maxSeatsInCol; s++) {
+              for (let r = 0; r < rows; r++) {
+                const seatsInCol = Number(rowConfigs[r]?.[c]) || 0;
+                if (s >= seatsInCol) continue;
                 if (studentIndex >= students.length) break;
                 if (!grid[r][c]) grid[r][c] = [];
                 const cellStudents = grid[r][c];
@@ -1538,7 +1655,7 @@ const Allotment = () => {
     const venuesResult = [];
 
     venueGrids.forEach((venueData) => {
-      const { venue, grid, benchConfig } = venueData;
+      const { venue, grid, benchConfig, rowConfigs } = venueData;
 
       const hasStudents = grid.some((row) =>
         row.some(
@@ -1552,11 +1669,11 @@ const Allotment = () => {
         return;
       }
 
-      const formattedGrid = grid.map((row) =>
+      const formattedGrid = grid.map((row, rowIdx) =>
         row.map((cell, colIdx) => {
           if (!cell || cell.length === 0) return "Empty";
 
-          const seatsNeeded = benchConfig[colIdx] || 2;
+          const seatsNeeded = Number(rowConfigs[rowIdx]?.[colIdx]) || benchConfig[colIdx] || 2;
           const normalizedCell = Array.from({ length: seatsNeeded }, (_, slotIdx) =>
             cell[slotIdx] ?? null
           );
@@ -1581,13 +1698,17 @@ const Allotment = () => {
         previewFacultyName = "Assign in preview";
       }
 
-      // Snapshot effective benchConfig onto the venue object so save-plan / exports
+      // Snapshot effective layout onto the venue object so save-plan / exports
       // persist this allotment's layout (not a later permanent venue change).
       venuesResult.push({
         venue: {
           ...venue,
-          benchConfig,
-          capacity: capacityFromLayout(venue.benchesRow, benchConfig),
+          benchesRow: rowConfigs.length,
+          benchesCol: rowConfigs[0]?.length || venue.benchesCol,
+          // Keep a flat array for UI; encodeBenchConfigForStorage runs at save-time.
+          benchConfig: rowConfigs[0] ? [...rowConfigs[0]] : benchConfig,
+          rowConfigs,
+          capacity: capacityFromRowConfigs(rowConfigs),
         },
         seats: formattedGrid,
         facultyId: assignedFacultyId,
@@ -1769,11 +1890,21 @@ const Allotment = () => {
           : {},
       venuesUsed: generatedSeating.map(v => {
         const manualIds = getVenueFacultyIds(manualFacultyAssignments, v.venue.uuid);
+        const rowConfigs =
+          Array.isArray(v.venue.rowConfigs) && v.venue.rowConfigs.length
+            ? v.venue.rowConfigs
+            : null;
+        const benchConfig =
+          (rowConfigs && encodeBenchConfigForStorage(rowConfigs)) ||
+          v.venue.benchConfig ||
+          Array(v.venue.benchesCol).fill(2);
         return {
           venueId: v.venue.uuid,
           venueName: v.venue.name,
           seatingArrangement: v.seats,
-          benchConfig: v.venue.benchConfig || Array(v.venue.benchesCol).fill(2),
+          benchesRow: rowConfigs?.length || v.venue.benchesRow,
+          benchConfig,
+          rowConfigs: rowConfigs || undefined,
           facultyId: facultyMode === "MANUAL" ? manualIds[0] || null : v.facultyId,
           facultyIds: facultyMode === "MANUAL" ? manualIds : v.facultyId ? [v.facultyId] : [],
         };
@@ -2649,7 +2780,7 @@ const Allotment = () => {
                   </div>
                 ) : null}
 
-                {/* Temporary bench configuration — this exam / allotment only */}
+                {/* Temporary layout — this exam / allotment only (rows + per-row columns) */}
                 {hasWriteAccess && venuesForBenchEdit.length > 0 ? (
                   <div className="space-y-3 rounded-2xl border border-amber-200 bg-amber-50/40 p-4">
                     <div>
@@ -2657,23 +2788,36 @@ const Allotment = () => {
                         Temporary Bench Configuration
                       </p>
                       <p className="text-xs text-gray-600 mt-0.5">
-                        Override seats per column for this exam only. Venue Management defaults are
-                        never changed. Apply before Generate Seating.
+                        Override rows and seats per column for this exam only. Venue Management
+                        defaults are never changed. Apply before Generate Seating.
                       </p>
                     </div>
                     {benchConfigError ? (
                       <p className="text-xs font-medium text-red-700">{benchConfigError}</p>
                     ) : null}
-                    <div className="space-y-3 max-h-72 overflow-y-auto">
+                    <div className="space-y-3 max-h-96 overflow-y-auto">
                       {venuesForBenchEdit.map((v) => {
                         const id = String(v.uuid);
-                        const defaults = v.defaultBenchConfig || defaultBenchConfigForVenue(v);
-                        const draft =
-                          benchConfigDrafts[id] ||
-                          benchConfigOverrides[id] ||
-                          defaults;
-                        const effectiveCap = capacityFromLayout(v.benchesRow, draft);
+                        const defaultRows =
+                          v.defaultRowConfigs || defaultRowConfigsForVenue(v);
+                        const defaultLayout = {
+                          benchesRow: defaultRows.length,
+                          rowConfigs: defaultRows,
+                        };
+                        const draft = layoutFromVenueState(
+                          v,
+                          benchConfigDrafts,
+                          benchConfigOverrides
+                        );
+                        const draftRows = draft.rowConfigs || defaultRows;
+                        const effectiveCap = capacityFromRowConfigs(draftRows);
                         const isOverridden = Boolean(benchConfigOverrides[id]);
+                        const applied = isOverridden
+                          ? benchConfigOverrides[id]
+                          : defaultLayout;
+                        const isDirty = !layoutsEqual(draft, applied);
+                        const canAddRow = draftRows.length < MAX_TEMPORARY_ROWS;
+                        const canRemoveRow = draftRows.length > 1;
                         return (
                           <div
                             key={id}
@@ -2683,7 +2827,10 @@ const Allotment = () => {
                             <div className="flex flex-wrap items-baseline justify-between gap-2">
                               <p className="text-sm font-semibold text-gray-900">{v.name}</p>
                               <p className="text-[11px] text-gray-600">
-                                Default: {defaults.join(", ")} · Cap {v.defaultCapacity ?? capacityFromLayout(v.benchesRow, defaults)}
+                                Default: {defaultRows.length} rows ·{" "}
+                                {(defaultRows[0] || []).join(", ")} · Cap{" "}
+                                {v.defaultCapacity ??
+                                  capacityFromRowConfigs(defaultRows)}
                                 {isOverridden ? (
                                   <span className="ml-1 font-semibold text-amber-800">
                                     · Override active
@@ -2691,34 +2838,83 @@ const Allotment = () => {
                                 ) : null}
                               </p>
                             </div>
-                            <div className="flex flex-wrap gap-2">
-                              {draft.map((seats, colIdx) => (
-                                <label key={colIdx} className="flex flex-col gap-0.5">
-                                  <span className="text-[10px] font-medium text-gray-500">
-                                    Col {String.fromCharCode(65 + colIdx)}
+
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="text-xs font-medium text-gray-800">
+                                Rows:{" "}
+                                <span className="font-semibold text-gray-900">
+                                  {draftRows.length}
+                                </span>
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => handleAddRow(v)}
+                                disabled={!canAddRow}
+                                className="h-8 px-3 rounded-lg border border-blue-300 bg-blue-50 text-xs font-semibold text-blue-800 hover:bg-blue-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                + Add Row
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveRow(v)}
+                                disabled={!canRemoveRow}
+                                className="h-8 px-3 rounded-lg border border-gray-300 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                − Remove Row
+                              </button>
+                            </div>
+
+                            <div className="space-y-2">
+                              {draftRows.map((rowSeats, rowIdx) => (
+                                <div
+                                  key={`row-${rowIdx}`}
+                                  className="flex flex-wrap items-center gap-2"
+                                >
+                                  <span className="text-[11px] font-semibold text-gray-600 w-12 shrink-0">
+                                    Row {rowIdx + 1}:
                                   </span>
-                                  <select
-                                    value={seats}
-                                    onChange={(e) =>
-                                      handleBenchDraftChange(v, colIdx, e.target.value)
-                                    }
-                                    onFocus={() => ensureBenchDraft(v)}
-                                    className="h-8 min-w-[3rem] rounded border border-gray-200 bg-white px-1.5 text-xs focus:ring-2 focus:ring-blue-500 outline-none"
-                                  >
-                                    {SEATS_PER_BENCH_OPTIONS.map((n) => (
-                                      <option key={n} value={n}>
-                                        {n}
-                                      </option>
+                                  <div className="flex flex-wrap gap-2">
+                                    {(rowSeats || []).map((seats, colIdx) => (
+                                      <label
+                                        key={`r${rowIdx}-c${colIdx}`}
+                                        className="flex flex-col gap-0.5"
+                                      >
+                                        <span className="text-[10px] font-medium text-gray-500">
+                                          Col {String.fromCharCode(65 + colIdx)}
+                                        </span>
+                                        <select
+                                          value={seats}
+                                          onChange={(e) =>
+                                            handleBenchDraftChange(
+                                              v,
+                                              rowIdx,
+                                              colIdx,
+                                              e.target.value
+                                            )
+                                          }
+                                          onFocus={() => ensureBenchDraft(v)}
+                                          className="h-8 min-w-[3rem] rounded border border-gray-200 bg-white px-1.5 text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                                        >
+                                          {SEATS_PER_BENCH_OPTIONS.map((n) => (
+                                            <option key={n} value={n}>
+                                              {n}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      </label>
                                     ))}
-                                  </select>
-                                </label>
+                                  </div>
+                                </div>
                               ))}
                             </div>
+
                             <div className="flex flex-wrap items-center gap-2 justify-between">
                               <p className="text-xs font-medium text-gray-700">
-                                Effective capacity:{" "}
-                                <span className="font-semibold text-gray-900">{effectiveCap}</span>
-                                {!configsEqual(draft, defaults) ? (
+                                Physical capacity:{" "}
+                                <span className="font-semibold text-gray-900">
+                                  {effectiveCap}
+                                </span>
+                                {isDirty ? (
                                   <span className="text-amber-800"> (unsaved draft)</span>
                                 ) : null}
                               </p>
@@ -2733,7 +2929,10 @@ const Allotment = () => {
                                 <button
                                   type="button"
                                   onClick={() => handleResetBenchConfig(v)}
-                                  disabled={!isOverridden && configsEqual(draft, defaults)}
+                                  disabled={
+                                    !isOverridden &&
+                                    layoutsEqual(draft, defaultLayout)
+                                  }
                                   className="h-8 px-3 rounded-lg border border-gray-300 bg-white text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
                                 >
                                   Reset to Venue Defaults
@@ -3025,11 +3224,19 @@ const Allotment = () => {
                       <p className="text-xs text-gray-500">
                         Capacity: {item.venue.capacity}
                       </p>
-                      {item.venue.benchConfig && (
+                      {Array.isArray(item.venue.rowConfigs) &&
+                      item.venue.rowConfigs.length ? (
+                        <p className="text-xs text-gray-500">
+                          Layout: {item.venue.rowConfigs.length} rows ·{" "}
+                          {item.venue.rowConfigs
+                            .map((row, i) => `R${i + 1}:[${(row || []).join(",")}]`)
+                            .join(" ")}
+                        </p>
+                      ) : Array.isArray(item.venue.benchConfig) ? (
                         <p className="text-xs text-gray-500">
                           Bench Config: {item.venue.benchConfig.join(", ")} seats/column
                         </p>
-                      )}
+                      ) : null}
                     </div>
                     <div className="text-right">
                       <p className="text-[10px] uppercase font-semibold text-gray-400">
@@ -3079,9 +3286,21 @@ const Allotment = () => {
                           <th className="border border-gray-200 bg-gray-50 px-2 py-2 text-[10px] font-semibold text-gray-600 w-12">
                             Row
                           </th>
-                          {Array.from({ length: item.venue.benchesCol }).map((_, c) => {
+                          {Array.from({
+                            length:
+                              item.venue.benchesCol ||
+                              item.venue.rowConfigs?.[0]?.length ||
+                              (item.venue.benchConfig || []).length ||
+                              0,
+                          }).map((_, c) => {
+                            const rowConfigs = item.venue.rowConfigs;
                             const benchConfig = item.venue.benchConfig || [];
-                            const seatsInCol = benchConfig[c] || 2;
+                            const seatsInCol = Array.isArray(rowConfigs)
+                              ? Math.max(
+                                  1,
+                                  ...rowConfigs.map((r) => Number(r?.[c]) || 0)
+                                )
+                              : benchConfig[c] || 2;
                             return (
                               <th
                                 key={`col-header-${c}`}
@@ -3114,8 +3333,11 @@ const Allotment = () => {
                               {rIdx + 1}
                             </td>
                             {row.map((cell, cIdx) => {
+                              const rowConfigs = item.venue.rowConfigs;
                               const benchConfig = item.venue.benchConfig || [];
-                              const seatsInCol = benchConfig[cIdx] || 2;
+                              const seatsInCol = Array.isArray(rowConfigs?.[rIdx])
+                                ? Number(rowConfigs[rIdx][cIdx]) || 2
+                                : benchConfig[cIdx] || 2;
  
                               let students = [];
                               if (cell === "Empty" || !cell) {

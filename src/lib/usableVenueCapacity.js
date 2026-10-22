@@ -1,7 +1,7 @@
 /**
  * Effective usable seats under Hallora anti-cheating adjacency rules.
  *
- * Physical capacity = rows × sum(seats per column).
+ * Physical capacity = sum of seats across all rows (per-row column configs).
  * When adjacent seating is disallowed, a single course cannot occupy neighboring
  * seats on the same bench (or across adjacent benches). For the common 2-seat
  * layout this halves usable seats (~20 of 40).
@@ -9,7 +9,12 @@
  * The simulator mirrors Allotment.jsx vertical fill so pre-checks match generate.
  */
 
-import { capacityFromLayout, defaultBenchConfigForVenue } from "./benchConfigOverride.js";
+import {
+  capacityFromLayout,
+  capacityFromRowConfigs,
+  defaultBenchConfigForVenue,
+  defaultRowConfigsForVenue,
+} from "./benchConfigOverride.js";
 
 export function benchConfigOf(venue) {
   if (Array.isArray(venue?.benchConfig) && venue.benchConfig.length) {
@@ -18,9 +23,23 @@ export function benchConfigOf(venue) {
   return defaultBenchConfigForVenue(venue);
 }
 
+export function rowConfigsOf(venue) {
+  if (Array.isArray(venue?.rowConfigs) && venue.rowConfigs.length) {
+    return venue.rowConfigs.map((row) =>
+      Array.isArray(row) ? row.map((n) => Number(n) || 2) : []
+    );
+  }
+  return defaultRowConfigsForVenue(venue);
+}
+
 export function physicalCapacityOf(venue) {
-  const rows = Number(venue?.benchesRow) || 0;
-  const fromLayout = capacityFromLayout(rows, benchConfigOf(venue));
+  const rows = rowConfigsOf(venue);
+  const fromRows = capacityFromRowConfigs(rows);
+  if (fromRows > 0) return fromRows;
+  const fromLayout = capacityFromLayout(
+    Number(venue?.benchesRow) || 0,
+    benchConfigOf(venue)
+  );
   if (fromLayout > 0) return fromLayout;
   return Number(venue?.capacity) || 0;
 }
@@ -30,10 +49,10 @@ export function physicalCapacityOf(venue) {
  * Mirrors the generate loop in Allotment.jsx (column → seat → row).
  */
 export function usableCapacityForSingleCourse(venue, { allowAdjacent = false } = {}) {
-  const rows = Number(venue?.benchesRow) || 0;
-  const cols = Number(venue?.benchesCol) || 0;
-  const benchConfig = benchConfigOf(venue);
-  // Without layout metadata, fall back to stored capacity (physical ≈ usable).
+  const rowConfigs = rowConfigsOf(venue);
+  const rows = rowConfigs.length;
+  const cols = Math.max(0, ...rowConfigs.map((r) => (Array.isArray(r) ? r.length : 0)));
+
   if (rows <= 0 || cols <= 0) {
     return Number(venue?.capacity) || 0;
   }
@@ -47,22 +66,29 @@ export function usableCapacityForSingleCourse(venue, { allowAdjacent = false } =
   let placed = 0;
 
   for (let c = 0; c < cols; c++) {
-    const seatsInCol = Number(benchConfig[c]) || 2;
-    for (let s = 0; s < seatsInCol; s++) {
+    const maxSeatsInCol = Math.max(
+      0,
+      ...rowConfigs.map((row) => Number(row?.[c]) || 0)
+    );
+    for (let s = 0; s < maxSeatsInCol; s++) {
       for (let r = 0; r < rows; r++) {
+        const seatsInCol = Number(rowConfigs[r]?.[c]) || 0;
+        if (s >= seatsInCol) continue;
+
         if (!grid[r][c]) grid[r][c] = [];
         const cellStudents = grid[r][c];
         if (cellStudents[s]) continue;
 
-        const hasAdjacentInSameBench =
-          s > 0 && cellStudents[s - 1];
+        const hasAdjacentInSameBench = s > 0 && cellStudents[s - 1];
 
         let hasAdjacentInPreviousColumn = false;
         if (c > 0 && s === 0) {
           const prevCol = grid[r][c - 1];
           if (prevCol && Array.isArray(prevCol)) {
-            const prevBenchSeats = Number(benchConfig[c - 1]) || 2;
-            if (prevCol[prevBenchSeats - 1]) hasAdjacentInPreviousColumn = true;
+            const prevBenchSeats = Number(rowConfigs[r]?.[c - 1]) || 0;
+            if (prevBenchSeats > 0 && prevCol[prevBenchSeats - 1]) {
+              hasAdjacentInPreviousColumn = true;
+            }
           }
         }
 
@@ -74,7 +100,11 @@ export function usableCapacityForSingleCourse(venue, { allowAdjacent = false } =
           }
         }
 
-        if (!hasAdjacentInSameBench && !hasAdjacentInPreviousColumn && !hasAdjacentInNextColumn) {
+        if (
+          !hasAdjacentInSameBench &&
+          !hasAdjacentInPreviousColumn &&
+          !hasAdjacentInNextColumn
+        ) {
           cellStudents[s] = true;
           placed += 1;
         }
@@ -107,10 +137,13 @@ export function buildCourseSeatingDiagnostics({
     const physical = physicalCapacityOf(v);
     const usable = usableCapacityForSingleCourse(v, { allowAdjacent });
     const config = benchConfigOf(v);
+    const rowConfigs = rowConfigsOf(v);
     return {
       uuid: v.uuid,
       name: v.name || v.uuid,
       benchConfig: config,
+      rowConfigs,
+      benchesRow: rowConfigs.length,
       physicalCapacity: physical,
       usableCapacity: usable,
     };
@@ -135,11 +168,16 @@ export function buildCourseSeatingDiagnostics({
 
 export function formatCourseCapacityError(diag) {
   const venueLines = (diag.venues || [])
-    .map(
-      (v) =>
-        `  • ${v.name}: config [${(v.benchConfig || []).join(", ")}] · ` +
+    .map((v) => {
+      const layout =
+        Array.isArray(v.rowConfigs) && v.rowConfigs.length
+          ? v.rowConfigs.map((row, i) => `R${i + 1}:[${(row || []).join(",")}]`).join(" ")
+          : `config [${(v.benchConfig || []).join(", ")}]`;
+      return (
+        `  • ${v.name}: ${layout} · ` +
         `physical ${v.physicalCapacity} · usable ${v.usableCapacity}`
-    )
+      );
+    })
     .join("\n");
 
   const mappingNote =
