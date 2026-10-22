@@ -431,6 +431,82 @@ export function allocateSingleCourseAcrossVenues(
 }
 
 /**
+ * A Single-Course venue is locked to one scheduled-course group only after it
+ * actually receives students. Empty/skipped venues must stay free for later groups
+ * (e.g. 24MAI118 BIT/BAD after BCS).
+ */
+export function shouldLockSingleCourseVenue(venueResult) {
+  if (!venueResult) return false;
+  if (venueResult.skippedEmpty) return false;
+  return Number(venueResult.seatedCount) > 0;
+}
+
+/**
+ * Simulate multi-group Single-Course allotment across a shared venue pool.
+ * Each group is an independent ordered list (same courseCode may appear in many groups).
+ * @returns {{ ok: true, byGroup: object[], lockedVenueIds: string[], totalSeated: number, totalOverflow: number }}
+ */
+export function allocateIndependentCourseGroupsInSingleCourseMode(
+  groups,
+  venueSpecs,
+  options = {}
+) {
+  const locked = new Set();
+  const byGroup = [];
+  let totalSeated = 0;
+  let totalOverflow = 0;
+
+  for (const group of groups || []) {
+    const freeSpecs = (venueSpecs || []).filter(
+      (spec) => !locked.has(String(spec.id ?? spec.venueId ?? ""))
+    );
+    const across = allocateSingleCourseAcrossVenues(
+      group.students || [],
+      freeSpecs,
+      options
+    );
+    if (!across.ok) {
+      return {
+        ok: false,
+        message: across.message,
+        byGroup,
+        lockedVenueIds: [...locked],
+        totalSeated,
+        totalOverflow,
+      };
+    }
+
+    const usedVenueIds = [];
+    for (const venueResult of across.venues) {
+      if (!shouldLockSingleCourseVenue(venueResult)) continue;
+      const id = String(venueResult.venueId ?? "");
+      if (id) {
+        locked.add(id);
+        usedVenueIds.push(id);
+      }
+    }
+
+    totalSeated += across.seatedCount;
+    totalOverflow += across.overflowCount;
+    byGroup.push({
+      key: group.key,
+      seated: across.seatedCount,
+      overflow: across.overflowCount,
+      usedVenueIds,
+      venueResults: across.venues,
+    });
+  }
+
+  return {
+    ok: true,
+    byGroup,
+    lockedVenueIds: [...locked],
+    totalSeated,
+    totalOverflow,
+  };
+}
+
+/**
  * Build a venue grid (row → col → seat[]) with blocked markers and seated students.
  * Matches existing Allotment grid shape for save/export.
  */

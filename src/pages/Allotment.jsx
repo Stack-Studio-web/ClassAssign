@@ -73,6 +73,7 @@ import {
   validateSingleCourseModeActivation,
   allocateSingleCourseAcrossVenues,
   applySingleCourseAllocationToGrid,
+  shouldLockSingleCourseVenue,
   orderVenueGridsForCourse,
   effectiveLayoutFromRowConfigs,
   isSingleCourseLayout,
@@ -1272,8 +1273,24 @@ const Allotment = () => {
       });
  
       if (courseEligibleStudents.length > 0) {
-        studentsByCourseKey[uniqueKey] = courseEligibleStudents;
+        // Composite key keeps same courseCode / different dept-batch as independent groups.
+        if (studentsByCourseKey[uniqueKey]) {
+          logger.warn("Duplicate scheduled-course key while grouping — appending would merge; keeping first list", {
+            key: uniqueKey,
+            existing: studentsByCourseKey[uniqueKey].length,
+            incoming: courseEligibleStudents.length,
+          });
+        } else {
+          studentsByCourseKey[uniqueKey] = courseEligibleStudents;
+        }
         logger.log(`  ✅ Eligible students: ${courseEligibleStudents.length}`);
+        logger.debug("SC group retained", {
+          key: uniqueKey,
+          courseCode,
+          department,
+          batchName,
+          studentCount: courseEligibleStudents.length,
+        });
       } else {
         logger.log(`  ⚠️ No eligible students`);
       }
@@ -1282,6 +1299,13 @@ const Allotment = () => {
     const eligibleEntries = Object.entries(studentsByCourseKey).map(
       ([key, students]) => ({ key, students })
     );
+    logger.debug("Scheduled-course groups for seating", {
+      groupCount: eligibleEntries.length,
+      groups: eligibleEntries.map(({ key, students }) => ({
+        key,
+        studentCount: students.length,
+      })),
+    });
 
     if (courseSeatingConfig.useCustomOrder) {
       const validation = validateCourseSeatingConfig(
@@ -1512,15 +1536,20 @@ const Allotment = () => {
        
         logger.log(`  📍 Venue: ${venue.name} (${rows} rows)`);
 
-        // —— Optional Single-Course Mode (explicit + [3,2,2,3] + one course) ——
-        // Shares the same studentIndex cursor as standard fill — never resets per venue.
+        // —— Optional Single-Course Mode (explicit + [3,2,2,3] + one course group) ——
+        // One venue → one scheduled-course group. Unused SC venues must stay
+        // available for later groups (BIT/BAD after BCS). Never mark empty venues filled.
         if (venueData.singleCourseMode) {
           const venueId = String(venue.uuid);
           if (singleCourseVenuesFilled.has(venueId)) {
+            logger.debug("SC skip venue already occupied by another group", {
+              venue: venue.name,
+              courseKey: key,
+            });
             continue;
           }
 
-          // No remaining students for this course — leave venue empty and stop.
+          // This course group is done — leave remaining SC venues free for later groups.
           if (studentIndex >= students.length) {
             break venueLoop;
           }
@@ -1539,7 +1568,7 @@ const Allotment = () => {
             );
           }
 
-          // Prefer multi-venue contiguous slices when several SC venues remain in a row.
+          // Contiguous run of still-free Single-Course venues (stop at standard / occupied).
           const run = [];
           for (let i = courseVenueGrids.indexOf(venueData); i < courseVenueGrids.length; i++) {
             const vg = courseVenueGrids[i];
@@ -1547,6 +1576,15 @@ const Allotment = () => {
             if (singleCourseVenuesFilled.has(String(vg.venue.uuid))) break;
             run.push(vg);
           }
+
+          logger.debug("SC allocate run", {
+            courseKey: key,
+            studentsRemaining: remaining.length,
+            venues: run.map((g) => g.venue.name),
+            layout: scCheck.layout,
+            rows: scCheck.rows,
+            usable: scCheck.usableCapacity,
+          });
 
           const across = allocateSingleCourseAcrossVenues(remaining, run.map((vg) => ({
             id: String(vg.venue.uuid),
@@ -1571,10 +1609,18 @@ const Allotment = () => {
               (g) => String(g.venue.uuid) === String(venueResult.venueId)
             );
             if (!vg) continue;
-            if (venueResult.skippedEmpty || venueResult.seatedCount === 0) {
-              singleCourseVenuesFilled.add(String(vg.venue.uuid));
+
+            // CRITICAL: do NOT lock skipped/empty venues — later groups
+            // (e.g. 24MAI118 BIT/BAD after BCS) must still use them.
+            if (!shouldLockSingleCourseVenue(venueResult)) {
+              logger.debug("SC venue left free for later groups", {
+                venue: vg.venue.name,
+                courseKey: key,
+                reason: venueResult.skippedEmpty ? "no_remaining_students" : "zero_seated",
+              });
               continue;
             }
+
             const filledGrid = applySingleCourseAllocationToGrid(
               venueResult,
               vg.rowConfigs
@@ -1595,6 +1641,7 @@ const Allotment = () => {
               capacity: venueResult.capacity,
               physicalCapacity: venueResult.physicalCapacity,
               totalStudents: remaining.length,
+              courseKey: key,
               startIndex: studentIndex + venueResult.startIndex,
               endIndex: studentIndex + venueResult.endIndex,
               firstRegn:
@@ -1623,15 +1670,16 @@ const Allotment = () => {
 
           if (across.overflowCount > 0) {
             logger.log(
-              `   → ${across.overflowCount} student(s) from ${key} remain after ` +
-                `${run.map((g) => g.venue.name).join(", ")} (cursor=${studentIndex})`
+              `   → ${across.overflowCount} student(s) from ${key} remain after SC venues ` +
+                `${run.map((g) => g.venue.name).join(", ")} (cursor=${studentIndex}); ` +
+                `will try later venues if any`
             );
           }
 
           if (studentIndex >= students.length) {
             break venueLoop;
           }
-          // Cursor advanced — continue venueLoop for any remaining venues (never reset).
+          // Cursor advanced — continue for remaining venues (never reset).
           continue;
         }
         
@@ -1944,19 +1992,36 @@ const Allotment = () => {
         (s, x) => s + (Number(x.overflow) || 0),
         0
       );
-      const totalSeated = singleCourseOverflowByVenue.reduce(
-        (s, x) => s + (Number(x.seated) || 0),
-        0
-      );
+      // Count everyone actually seated this generate — not only overflow-record "seated"
+      // (groups that fit entirely never appear in overflow rows, which falsely showed "0 seated").
+      const totalSeated = allSeatedStudents.length;
+      const scVenueCap = 42; // usable seats per 7-row [3,2,2,3] room; hint only
+      const roomsHint =
+        totalOverflow > 0
+          ? Math.ceil(totalOverflow / scVenueCap)
+          : 0;
       setSingleCourseOverflowSummary({
         seated: totalSeated,
         overflow: totalOverflow,
+        roomsHint,
         details: singleCourseOverflowByVenue,
       });
       setError(
-        `⚠️ Single-Course Mode overflow: ${totalSeated} seated, ${totalOverflow} unallotted. ` +
-          `Add another venue or more rows, then regenerate.`
+        `⚠️ Single-Course Mode: ${totalSeated} seated, ${totalOverflow} unallotted` +
+          (roomsHint > 0
+            ? ` (~${roomsHint} more room(s) at 42 usable seats). Add venues or rows, then regenerate.`
+            : ".")
       );
+      logger.debug("SC overflow summary", {
+        totalSeated,
+        totalOverflow,
+        roomsHint,
+        byGroup: singleCourseOverflowByVenue.map((d) => ({
+          courseKey: d.courseKey,
+          seated: d.seated,
+          overflow: d.overflow,
+        })),
+      });
     }
 
     let finalVenues = venuesResult;
@@ -3375,9 +3440,12 @@ const Allotment = () => {
             )}
             {singleCourseOverflowSummary?.overflow > 0 ? (
               <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900">
-                ⚠️ Single-Course overflow: {singleCourseOverflowSummary.seated} seated,{" "}
-                {singleCourseOverflowSummary.overflow} unallotted. Add another venue or
-                more rows, then regenerate.
+                ⚠️ Single-Course Mode: {singleCourseOverflowSummary.seated} seated,{" "}
+                {singleCourseOverflowSummary.overflow} unallotted
+                {singleCourseOverflowSummary.roomsHint > 0
+                  ? ` (~${singleCourseOverflowSummary.roomsHint} more room(s) at 42 usable).`
+                  : "."}{" "}
+                Add venues or rows, then regenerate.
               </div>
             ) : null}
 

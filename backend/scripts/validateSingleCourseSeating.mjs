@@ -20,6 +20,8 @@ const {
   validateSingleCourseModeActivation,
   allocateSingleCourse,
   allocateSingleCourseAcrossVenues,
+  allocateIndependentCourseGroupsInSingleCourseMode,
+  shouldLockSingleCourseVenue,
   orderVenueGridsForCourse,
   buildSingleCourseUsableSeats,
   singleCourseUsableCapacity,
@@ -318,7 +320,139 @@ function testModeOffWiringUnchanged() {
   const page = read("src/pages/Allotment.jsx");
   assert.match(page, /VERTICAL FILLING: Column-by-column/);
   assert.match(page, /if \(venueData\.singleCourseMode\)/);
+  assert.match(page, /shouldLockSingleCourseVenue/);
+  assert.match(page, /allSeatedStudents\.length/);
   console.log("✓ standard fill path retained when Single-Course Mode is OFF");
+}
+
+/** Test A: same course code, separate BCS/BIT/BAD groups must not merge or share rooms. */
+function testSameCourseCodeSeparateGroups() {
+  const bcs = makeStudents(27, "24MAI118-BCS");
+  const bit = makeStudents(105, "24MAI118-BIT");
+  const bad = makeStudents(125, "24MAI118-BAD");
+  // Enough 42-seat rooms: ceil(27/42)+ceil(105/42)+ceil(125/42) = 1+3+3 = 7
+  const venues = Array.from({ length: 7 }, (_, i) => ({
+    id: `sc${300 + i}`,
+    name: `SC${300 + i}`,
+    rows: 7,
+  }));
+
+  const keys = [
+    "24MAI118-BCS-2026-2030",
+    "24MAI118-BIT-2026-2030",
+    "24MAI118-BAD-2026-2030",
+  ];
+  assert.strictEqual(new Set(keys).size, 3, "composite keys stay distinct");
+
+  const result = allocateIndependentCourseGroupsInSingleCourseMode(
+    [
+      { key: keys[0], students: bcs },
+      { key: keys[1], students: bit },
+      { key: keys[2], students: bad },
+    ],
+    venues
+  );
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.totalSeated, 27 + 105 + 125);
+  assert.strictEqual(result.totalOverflow, 0);
+  assert.strictEqual(result.byGroup[0].seated, 27);
+  assert.strictEqual(result.byGroup[1].seated, 105);
+  assert.strictEqual(result.byGroup[2].seated, 125);
+
+  // No room mixes groups
+  const venueToGroup = new Map();
+  for (const g of result.byGroup) {
+    for (const id of g.usedVenueIds) {
+      assert.ok(!venueToGroup.has(id), `venue ${id} mixed groups`);
+      venueToGroup.set(id, g.key);
+    }
+  }
+  console.log("✓ Test A: BCS/BIT/BAD stay independent; all 257 seated; no room mixing");
+}
+
+/** Reproduce the reported bug: small BCS group must not lock empty sibling SC rooms. */
+function testBugEmptyVenuesNotLockedForLaterGroups() {
+  const bcs = makeStudents(27, "24MAI118-BCS");
+  const bit = makeStudents(105, "24MAI118-BIT");
+  const bad = makeStudents(125, "24MAI118-BAD");
+  const venues = Array.from({ length: 7 }, (_, i) => ({
+    id: `v${i}`,
+    name: `SC${307 + i}`,
+    rows: 7,
+  }));
+
+  // Old buggy behavior: mark skippedEmpty venues locked → BIT/BAD get nothing.
+  const acrossBcs = allocateSingleCourseAcrossVenues(bcs, venues);
+  const buggyLocked = new Set();
+  for (const vr of acrossBcs.venues) {
+    if (vr.skippedEmpty || vr.seatedCount === 0) buggyLocked.add(String(vr.venueId));
+    else if (vr.seatedCount > 0) buggyLocked.add(String(vr.venueId));
+  }
+  assert.strictEqual(buggyLocked.size, 7, "buggy path locks all rooms in the run");
+
+  // Fixed behavior
+  assert.strictEqual(shouldLockSingleCourseVenue(acrossBcs.venues[0]), true);
+  assert.strictEqual(shouldLockSingleCourseVenue(acrossBcs.venues[1]), false);
+
+  const fixed = allocateIndependentCourseGroupsInSingleCourseMode(
+    [
+      { key: "24MAI118-BCS", students: bcs },
+      { key: "24MAI118-BIT", students: bit },
+      { key: "24MAI118-BAD", students: bad },
+    ],
+    venues
+  );
+  assert.strictEqual(fixed.totalSeated, 257);
+  assert.strictEqual(fixed.totalOverflow, 0);
+  assert.ok(fixed.byGroup[1].seated > 0, "BIT must be seated after BCS");
+  assert.ok(fixed.byGroup[2].seated > 0, "BAD must be seated after BCS");
+  // Overflow summary must not report 0 seated when students were allocated
+  assert.ok(fixed.totalSeated > 0);
+  console.log("✓ bugfix: empty SC rooms stay free; BIT+BAD seated; no false 0-seated");
+}
+
+/** Test B: insufficient venues → exact overflow + rooms hint. */
+function testInsufficientVenuesExactOverflow() {
+  const bit = makeStudents(105, "BIT");
+  const bad = makeStudents(125, "BAD");
+  const venues = [
+    { id: "sc307", rows: 7 },
+    { id: "sc308", rows: 7 },
+  ]; // 84 usable
+  const result = allocateIndependentCourseGroupsInSingleCourseMode(
+    [
+      { key: "BIT", students: bit },
+      { key: "BAD", students: bad },
+    ],
+    venues
+  );
+  assert.strictEqual(result.totalSeated, 84);
+  assert.strictEqual(result.totalOverflow, 105 + 125 - 84);
+  assert.strictEqual(result.byGroup[0].seated, 84); // BIT takes both rooms
+  assert.strictEqual(result.byGroup[1].seated, 0);
+  assert.strictEqual(result.byGroup[1].overflow, 125);
+  const roomsHint = Math.ceil(result.totalOverflow / 42);
+  assert.ok(roomsHint >= 1);
+  console.log("✓ Test B: exact overflow + rooms hint; seated count not falsely zero");
+}
+
+function testGroupingKeysNotCourseCodeOnly() {
+  // Simulate Allotment uniqueKey construction
+  const rows = [
+    { courseCode: "24MAI118", department: "BCS", batchName: "2026-2030", n: 415 },
+    { courseCode: "24MAI118", department: "BIT", batchName: "2026-2030", n: 105 },
+    { courseCode: "24MAI118", department: "BAD", batchName: "2026-2030", n: 125 },
+  ];
+  const map = {};
+  for (const r of rows) {
+    const uniqueKey = `${r.courseCode}-${r.department}-${String(r.batchName).trim().toUpperCase()}`;
+    map[uniqueKey] = makeStudents(r.n, r.department);
+  }
+  assert.strictEqual(Object.keys(map).length, 3);
+  assert.strictEqual(map["24MAI118-BCS-2026-2030"].length, 415);
+  assert.strictEqual(map["24MAI118-BIT-2026-2030"].length, 105);
+  assert.strictEqual(map["24MAI118-BAD-2026-2030"].length, 125);
+  console.log("✓ grouping keys are courseCode+department+batch (not courseCode alone)");
 }
 
 function main() {
@@ -333,6 +467,10 @@ function main() {
   testMultiVenueConsecutiveSlices();
   testVenueOrderPreserved();
   testModeOffWiringUnchanged();
+  testGroupingKeysNotCourseCodeOnly();
+  testSameCourseCodeSeparateGroups();
+  testBugEmptyVenuesNotLockedForLaterGroups();
+  testInsufficientVenuesExactOverflow();
   console.log("\nAll single-course seating checks passed.");
 }
 
