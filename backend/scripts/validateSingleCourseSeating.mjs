@@ -59,10 +59,11 @@ function testModeOffPreservedInWiring() {
   const page = read("src/pages/Allotment.jsx");
   assert.match(page, /singleCourseModeByVenue/);
   assert.match(page, /Single-Course Mode/);
-  assert.match(page, /allocateSingleCourse/);
+  assert.match(page, /allocateSingleCourseFullRoomsOnly/);
   assert.match(page, /validateSingleCourseModeActivation/);
-  // Mode OFF must still use existing vertical fill
-  assert.match(page, /VERTICAL FILLING/);
+  // Mode OFF / Normal venues still use continuous mixed fill
+  assert.match(page, /fillVenueContinuousMixed/);
+  assert.match(page, /CONTINUOUS MIXED-COURSE FILL/);
   console.log("✓ Allotment wires Single-Course Mode without removing standard fill");
 }
 
@@ -250,7 +251,8 @@ function testIndependentVenueState() {
   assert.match(page, /singleCourseModeByVenue\[id\]/);
   assert.match(page, /setSingleCourseModeByVenue/);
   assert.match(page, /setSingleCourseModeByVenue\(\{\}\)/);
-  assert.match(page, /allocateSingleCourseAcrossVenues/);
+  assert.match(page, /allocateSingleCourseFullRoomsOnly/);
+  assert.match(page, /mergeSingleCourseLeftovers/);
   assert.match(page, /orderVenueGridsForCourse/);
   console.log("✓ per-venue independent toggle state wired");
 }
@@ -325,8 +327,9 @@ function testVenueOrderPreserved() {
 
 function testModeOffWiringUnchanged() {
   const page = read("src/pages/Allotment.jsx");
-  assert.match(page, /VERTICAL FILLING: Column-by-column/);
-  assert.match(page, /if \(venueData\.singleCourseMode\)/);
+  assert.match(page, /fillVenueContinuousMixed/);
+  assert.match(page, /CONTINUOUS MIXED-COURSE FILL/);
+  assert.match(page, /if \(venueData\.singleCourseMode\) continue/);
   assert.match(page, /shouldLockSingleCourseVenue/);
   assert.match(page, /allSeatedStudents\.length/);
   assert.match(page, /freeSingleCourseVenues/);
@@ -334,13 +337,12 @@ function testModeOffWiringUnchanged() {
   console.log("✓ standard fill path retained when Single-Course Mode is OFF");
 }
 
-/** Test A: same course code, separate BCS/BIT/BAD groups must not merge or share rooms. */
+/** Test A: same course code, separate BCS/BIT/BAD — full Stage-1 rooms exclusive; leftovers may share. */
 function testSameCourseCodeSeparateGroups() {
   // Full reported sizes: 415 + 105 + 125 = 645
   const bcs = makeStudents(415, "24MAI118-BCS");
   const bit = makeStudents(105, "24MAI118-BIT");
   const bad = makeStudents(125, "24MAI118-BAD");
-  // ceil(415/42)+ceil(105/42)+ceil(125/42) = 10+3+3 = 16 rooms
   const venues = Array.from({ length: 16 }, (_, i) => ({
     id: `sc${300 + i}`,
     name: `SC${300 + i}`,
@@ -365,27 +367,28 @@ function testSameCourseCodeSeparateGroups() {
   assert.strictEqual(result.ok, true);
   assert.strictEqual(result.totalSeated, 415 + 105 + 125);
   assert.strictEqual(result.totalOverflow, 0);
-  assert.strictEqual(result.byGroup[0].seated, 415);
-  assert.strictEqual(result.byGroup[1].seated, 105);
-  assert.strictEqual(result.byGroup[2].seated, 125);
 
-  // No room mixes groups; no duplicate students
+  // Stage-1 full rooms stay exclusive to one group
   const venueToGroup = new Map();
-  const allRegs = [];
+  const stage1Regs = [];
   for (const g of result.byGroup) {
     for (const id of g.usedVenueIds) {
-      assert.ok(!venueToGroup.has(id), `venue ${id} mixed groups`);
+      assert.ok(!venueToGroup.has(id), `Stage-1 venue ${id} mixed groups`);
       venueToGroup.set(id, g.key);
     }
     for (const vr of g.venueResults) {
       for (const { student } of vr.seated || []) {
-        allRegs.push(student.regnNo);
+        stage1Regs.push(student.regnNo);
       }
     }
   }
+  const mergeRegs = (result.merge?.venues || []).flatMap((v) =>
+    (v.seated || []).map((s) => s.student.regnNo)
+  );
+  const allRegs = [...stage1Regs, ...mergeRegs];
   assert.strictEqual(new Set(allRegs).size, 645);
   assert.strictEqual(allRegs.length, 645);
-  console.log("✓ Test A: BCS415/BIT105/BAD125 independent; all 645 seated; no mix/dup/skip");
+  console.log("✓ Test A: BCS415/BIT105/BAD125 all 645 seated; Stage-1 rooms exclusive");
 }
 
 /** Reproduce the reported bug: small BCS group must not lock empty sibling SC rooms. */
@@ -408,7 +411,7 @@ function testBugEmptyVenuesNotLockedForLaterGroups() {
   }
   assert.strictEqual(buggyLocked.size, 7, "buggy path locks all rooms in the run");
 
-  // Fixed behavior
+  // Legacy underfill path locks first room; Stage-1 full-only does not.
   assert.strictEqual(shouldLockSingleCourseVenue(acrossBcs.venues[0]), true);
   assert.strictEqual(shouldLockSingleCourseVenue(acrossBcs.venues[1]), false);
 
@@ -422,9 +425,9 @@ function testBugEmptyVenuesNotLockedForLaterGroups() {
   );
   assert.strictEqual(fixed.totalSeated, 257);
   assert.strictEqual(fixed.totalOverflow, 0);
+  // BIT/BAD get Stage-1 full rooms; BCS 27 merges as leftover — all seated
   assert.ok(fixed.byGroup[1].seated > 0, "BIT must be seated after BCS");
   assert.ok(fixed.byGroup[2].seated > 0, "BAD must be seated after BCS");
-  // Overflow summary must not report 0 seated when students were allocated
   assert.ok(fixed.totalSeated > 0);
   console.log("✓ bugfix: empty SC rooms stay free; BIT+BAD seated; no false 0-seated");
 }
@@ -482,8 +485,8 @@ function makeRegnStudents(n, prefix, courseKey) {
 }
 
 /**
- * Screenshot regression: SC310 (26BAU×25) vs SC311 (26BME×42) are DIFFERENT groups.
- * Spare capacity in SC310 must NOT be filled from BME — continuous fill is per group only.
+ * BAU 25 (leftover) + BME 42 (full Stage-1 room):
+ * Stage 1 gives BME a full room; Stage 2 places BAU into the other room (17 empty usable).
  */
 function testBauBmeDifferentGroupsLeaveSpareCapacity() {
   const bauKey = "24MAI118-AUTOMOBILE-2026-2030";
@@ -506,47 +509,27 @@ function testBauBmeDifferentGroupsLeaveSpareCapacity() {
   assert.strictEqual(result.ok, true);
   assert.strictEqual(result.totalSeated, 67);
   assert.strictEqual(result.totalOverflow, 0);
-  assert.strictEqual(result.byGroup[0].seated, 25);
+  // Stage 1: BAU underfills → 0 full rooms; BME takes one full room
+  assert.strictEqual(result.byGroup[0].seated, 0);
   assert.strictEqual(result.byGroup[1].seated, 42);
+  assert.deepStrictEqual(result.byGroup[1].usedVenueIds, ["sc310"]);
 
-  const sc310 = result.byGroup[0].venueResults.find((v) => v.venueId === "sc310");
-  assert.ok(sc310);
-  assert.strictEqual(sc310.seatedCount, 25);
-  assert.strictEqual(sc310.emptyUsableSeats, 17);
-  assert.strictEqual(sc310.capacity, 42);
-  assert.ok(sc310.seated.every((s) => String(s.student.regnNo).startsWith("26BAU")));
-  // Blocked positions never receive students
-  for (const { seat } of sc310.seated) {
+  const merged = result.merge.venues.find((v) => v.seatedCount > 0);
+  assert.ok(merged);
+  assert.strictEqual(merged.venueId, "sc311");
+  assert.strictEqual(merged.seatedCount, 25);
+  assert.strictEqual(merged.emptyUsableSeats, 17);
+  assert.ok(merged.seated.every((s) => String(s.student.regnNo).startsWith("26BAU")));
+  for (const { seat } of merged.seated) {
     assert.strictEqual(isBlockedSeat(SINGLE_COURSE_BLOCKED, seat.group, seat.position), false);
   }
 
-  const sc311 = result.byGroup[1].venueResults.find((v) => v.venueId === "sc311");
-  assert.ok(sc311);
-  assert.strictEqual(sc311.seatedCount, 42);
-  assert.strictEqual(sc311.emptyUsableSeats, 0);
-  assert.ok(sc311.seated.every((s) => String(s.student.regnNo).startsWith("26BME")));
-
-  // No cross-group mix
-  assert.deepStrictEqual(result.byGroup[0].usedVenueIds, ["sc310"]);
-  assert.deepStrictEqual(result.byGroup[1].usedVenueIds, ["sc311"]);
-
-  const summary = summarizeSingleCourseGroupAllocation({
-    groupKey: bauKey,
-    studentCount: 25,
-    venueSpecs: [venues[0]],
-    across: {
-      venues: [sc310],
-      seatedCount: 25,
-      overflowCount: 0,
-    },
-  });
-  assert.strictEqual(summary.department, "AUTOMOBILE");
-  assert.strictEqual(summary.batch, "2026-2030");
-  assert.strictEqual(summary.groupExhaustedWithSpareCapacity, true);
-  assert.strictEqual(summary.overflow, 0);
+  const parsed = parseScheduledCourseGroupKey(bauKey);
+  assert.strictEqual(parsed.department, "AUTOMOBILE");
+  assert.strictEqual(parsed.batch, "2026-2030");
 
   console.log(
-    "✓ SC310 BAU25 leaves 17 empty; SC311 BME42 full; groups stay separate (screenshot case)"
+    "✓ BME42 full Stage-1 room; BAU25 Stage-2 leftover room with 17 empty usable"
   );
 }
 
@@ -595,8 +578,8 @@ function testDiagnosticSummaryWiring() {
   const page = read("src/pages/Allotment.jsx");
   assert.match(page, /summarizeSingleCourseGroupAllocation/);
   assert.match(page, /parseScheduledCourseGroupKey/);
-  assert.match(page, /groupExhausted/);
-  assert.match(page, /SC group /);
+  assert.match(page, /Stage 1 SC group/);
+  assert.match(page, /STAGE 2: SC LEFTOVER COLUMN MERGE/);
   const parsed = parseScheduledCourseGroupKey("24MAI118-AUTOMOBILE-2026-2030");
   assert.strictEqual(parsed.courseCode, "24MAI118");
   assert.strictEqual(parsed.department, "AUTOMOBILE");
