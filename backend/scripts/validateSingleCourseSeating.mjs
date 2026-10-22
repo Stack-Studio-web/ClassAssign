@@ -37,8 +37,13 @@ const { encodeBenchConfigForStorage } = await import(
 );
 
 function makeStudents(n, course = "26BCS-A") {
+  // Keep dept token so 24MAI118-BCS / -BIT / -BAD never share regn prefixes.
+  const raw = String(course).toUpperCase();
+  const dept = (raw.match(/BCS|BIT|BAD|BBT|BFT|BTT|[A-Z]{2,4}(?=-\d|$)/) || [
+    raw.replace(/[^A-Z0-9]/g, "").slice(-3) || "STU",
+  ])[0];
   return Array.from({ length: n }, (_, i) => ({
-    regnNo: `26BCS${String(50 + i).padStart(3, "0")}`,
+    regnNo: `26${dept}${String(i + 1).padStart(4, "0")}`,
     courseDescription: course,
     courseEntryKey: course,
   }));
@@ -322,16 +327,19 @@ function testModeOffWiringUnchanged() {
   assert.match(page, /if \(venueData\.singleCourseMode\)/);
   assert.match(page, /shouldLockSingleCourseVenue/);
   assert.match(page, /allSeatedStudents\.length/);
+  assert.match(page, /freeSingleCourseVenues/);
+  assert.match(page, /SC free venues before group allocation/);
   console.log("✓ standard fill path retained when Single-Course Mode is OFF");
 }
 
 /** Test A: same course code, separate BCS/BIT/BAD groups must not merge or share rooms. */
 function testSameCourseCodeSeparateGroups() {
-  const bcs = makeStudents(27, "24MAI118-BCS");
+  // Full reported sizes: 415 + 105 + 125 = 645
+  const bcs = makeStudents(415, "24MAI118-BCS");
   const bit = makeStudents(105, "24MAI118-BIT");
   const bad = makeStudents(125, "24MAI118-BAD");
-  // Enough 42-seat rooms: ceil(27/42)+ceil(105/42)+ceil(125/42) = 1+3+3 = 7
-  const venues = Array.from({ length: 7 }, (_, i) => ({
+  // ceil(415/42)+ceil(105/42)+ceil(125/42) = 10+3+3 = 16 rooms
+  const venues = Array.from({ length: 16 }, (_, i) => ({
     id: `sc${300 + i}`,
     name: `SC${300 + i}`,
     rows: 7,
@@ -353,21 +361,29 @@ function testSameCourseCodeSeparateGroups() {
     venues
   );
   assert.strictEqual(result.ok, true);
-  assert.strictEqual(result.totalSeated, 27 + 105 + 125);
+  assert.strictEqual(result.totalSeated, 415 + 105 + 125);
   assert.strictEqual(result.totalOverflow, 0);
-  assert.strictEqual(result.byGroup[0].seated, 27);
+  assert.strictEqual(result.byGroup[0].seated, 415);
   assert.strictEqual(result.byGroup[1].seated, 105);
   assert.strictEqual(result.byGroup[2].seated, 125);
 
-  // No room mixes groups
+  // No room mixes groups; no duplicate students
   const venueToGroup = new Map();
+  const allRegs = [];
   for (const g of result.byGroup) {
     for (const id of g.usedVenueIds) {
       assert.ok(!venueToGroup.has(id), `venue ${id} mixed groups`);
       venueToGroup.set(id, g.key);
     }
+    for (const vr of g.venueResults) {
+      for (const { student } of vr.seated || []) {
+        allRegs.push(student.regnNo);
+      }
+    }
   }
-  console.log("✓ Test A: BCS/BIT/BAD stay independent; all 257 seated; no room mixing");
+  assert.strictEqual(new Set(allRegs).size, 645);
+  assert.strictEqual(allRegs.length, 645);
+  console.log("✓ Test A: BCS415/BIT105/BAD125 independent; all 645 seated; no mix/dup/skip");
 }
 
 /** Reproduce the reported bug: small BCS group must not lock empty sibling SC rooms. */

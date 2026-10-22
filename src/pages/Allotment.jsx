@@ -1524,164 +1524,155 @@ const Allotment = () => {
           );
         }
       }
- 
-      // ✅ CRITICAL: Fill target venues completely for this course before next course
+
+      // —— Phase 1: ALL currently-free Single-Course venues for THIS group ——
+      // Do not require contiguity. Do not lock empty rooms for later groups (BIT/BAD).
+      const freeSingleCourseVenues = courseVenueGrids.filter(
+        (vg) =>
+          vg.singleCourseMode &&
+          !singleCourseVenuesFilled.has(String(vg.venue.uuid))
+      );
+      logger.debug("SC free venues before group allocation", {
+        courseKey: key,
+        students: students.length,
+        freeVenues: freeSingleCourseVenues.map((g) => g.venue.name),
+        lockedVenues: [...singleCourseVenuesFilled],
+      });
+
+      if (freeSingleCourseVenues.length > 0 && studentIndex < students.length) {
+        const remaining = students.slice(studentIndex);
+        const templateRows =
+          freeSingleCourseVenues[0].rowConfigs ||
+          defaultRowConfigsForVenue(freeSingleCourseVenues[0].venue);
+        const scCheck = validateSingleCourseModeActivation({
+          enabled: true,
+          rowConfigs: templateRows,
+          students: remaining,
+          blocked: SINGLE_COURSE_BLOCKED,
+        });
+        if (!scCheck.ok) {
+          setIsGenerating(false);
+          return setError(
+            `❌ ${freeSingleCourseVenues[0].venue.name} (Single-Course Mode): ${scCheck.message}`
+          );
+        }
+
+        // Per-venue layout may differ in row count; validate each free venue's layout.
+        for (const vg of freeSingleCourseVenues) {
+          const layout = effectiveLayoutFromRowConfigs(vg.rowConfigs);
+          if (!isSingleCourseLayout(layout)) {
+            setIsGenerating(false);
+            return setError(
+              `❌ ${vg.venue.name} (Single-Course Mode): requires effective layout [3, 2, 2, 3]. ` +
+                `Current applied layout is [${(layout || []).join(", ") || "unset"}].`
+            );
+          }
+        }
+
+        logger.log(
+          `   🚪 Single-Course free rooms for ${key}: ` +
+            `${freeSingleCourseVenues.map((g) => g.venue.name).join(", ") || "none"} ` +
+            `(${remaining.length} students waiting)`
+        );
+
+        const across = allocateSingleCourseAcrossVenues(
+          remaining,
+          freeSingleCourseVenues.map((vg) => ({
+            id: String(vg.venue.uuid),
+            name: vg.venue.name,
+            layout: effectiveLayoutFromRowConfigs(vg.rowConfigs) || scCheck.layout,
+            rows: (vg.rowConfigs || []).length,
+            blocked: scCheck.blocked,
+          })),
+          { layout: scCheck.layout, blocked: scCheck.blocked }
+        );
+
+        if (!across.ok) {
+          setIsGenerating(false);
+          return setError(`❌ ${key} (Single-Course Mode): ${across.message}`);
+        }
+
+        for (const venueResult of across.venues) {
+          const vg = freeSingleCourseVenues.find(
+            (g) => String(g.venue.uuid) === String(venueResult.venueId)
+          );
+          if (!vg) continue;
+          if (!shouldLockSingleCourseVenue(venueResult)) {
+            logger.debug("SC venue left free for later groups", {
+              venue: vg.venue.name,
+              courseKey: key,
+              reason: venueResult.skippedEmpty ? "no_remaining_students" : "zero_seated",
+            });
+            continue;
+          }
+
+          const filledGrid = applySingleCourseAllocationToGrid(
+            venueResult,
+            vg.rowConfigs
+          );
+          for (let r = 0; r < filledGrid.length; r++) {
+            vg.grid[r] = filledGrid[r];
+          }
+          for (const { student } of venueResult.seated) {
+            allSeatedStudents.push(student);
+          }
+          vg.singleCourseStats = {
+            seatedCount: venueResult.seatedCount,
+            overflowCount: venueResult.continuesToNextVenue
+              ? 0
+              : venueResult.overflowCount,
+            emptyUsableSeats: venueResult.emptyUsableSeats,
+            blockedCount: venueResult.blockedCount,
+            capacity: venueResult.capacity,
+            physicalCapacity: venueResult.physicalCapacity,
+            totalStudents: remaining.length,
+            courseKey: key,
+            startIndex: studentIndex + venueResult.startIndex,
+            endIndex: studentIndex + venueResult.endIndex,
+            firstRegn:
+              venueResult.seated[0]?.student?.regnNo ||
+              venueResult.seated[0]?.student?.regn_no ||
+              null,
+            lastRegn:
+              venueResult.seated[venueResult.seated.length - 1]?.student?.regnNo ||
+              venueResult.seated[venueResult.seated.length - 1]?.student?.regn_no ||
+              null,
+          };
+          singleCourseVenuesFilled.add(String(vg.venue.uuid));
+          logger.log(
+            `   ✅ Single-Course Mode ${vg.venue.name} [${key}]: ` +
+              `students[${studentIndex + venueResult.startIndex}..${
+                studentIndex + venueResult.endIndex - 1
+              }] ` +
+              `${vg.singleCourseStats.firstRegn}→${vg.singleCourseStats.lastRegn} ` +
+              `(${venueResult.seatedCount}/${venueResult.capacity})`
+          );
+        }
+
+        studentIndex += across.seatedCount;
+        if (across.overflowCount > 0) {
+          logger.log(
+            `   → ${across.overflowCount} of ${key} remain after free SC rooms; ` +
+              `will try standard venues next (cursor=${studentIndex})`
+          );
+        }
+      }
+
+      // —— Phase 2: standard (non-SC) venues for any remaining students ——
       venueLoop: for (const venueData of courseVenueGrids) {
+        // SC venues are handled in phase 1 (locked or left free for later groups).
+        if (venueData.singleCourseMode) continue;
+
         const { venue, grid, rowConfigs } = venueData;
         const rows = rowConfigs.length;
         const cols = Math.max(
           0,
           ...rowConfigs.map((r) => (Array.isArray(r) ? r.length : 0))
         );
-       
-        logger.log(`  📍 Venue: ${venue.name} (${rows} rows)`);
 
-        // —— Optional Single-Course Mode (explicit + [3,2,2,3] + one course group) ——
-        // One venue → one scheduled-course group. Unused SC venues must stay
-        // available for later groups (BIT/BAD after BCS). Never mark empty venues filled.
-        if (venueData.singleCourseMode) {
-          const venueId = String(venue.uuid);
-          if (singleCourseVenuesFilled.has(venueId)) {
-            logger.debug("SC skip venue already occupied by another group", {
-              venue: venue.name,
-              courseKey: key,
-            });
-            continue;
-          }
+        if (studentIndex >= students.length) break venueLoop;
 
-          // This course group is done — leave remaining SC venues free for later groups.
-          if (studentIndex >= students.length) {
-            break venueLoop;
-          }
-
-          const remaining = students.slice(studentIndex);
-          const scCheck = validateSingleCourseModeActivation({
-            enabled: true,
-            rowConfigs,
-            students: remaining,
-            blocked: SINGLE_COURSE_BLOCKED,
-          });
-          if (!scCheck.ok) {
-            setIsGenerating(false);
-            return setError(
-              `❌ ${venue.name} (Single-Course Mode): ${scCheck.message}`
-            );
-          }
-
-          // Contiguous run of still-free Single-Course venues (stop at standard / occupied).
-          const run = [];
-          for (let i = courseVenueGrids.indexOf(venueData); i < courseVenueGrids.length; i++) {
-            const vg = courseVenueGrids[i];
-            if (!vg?.singleCourseMode) break;
-            if (singleCourseVenuesFilled.has(String(vg.venue.uuid))) break;
-            run.push(vg);
-          }
-
-          logger.debug("SC allocate run", {
-            courseKey: key,
-            studentsRemaining: remaining.length,
-            venues: run.map((g) => g.venue.name),
-            layout: scCheck.layout,
-            rows: scCheck.rows,
-            usable: scCheck.usableCapacity,
-          });
-
-          const across = allocateSingleCourseAcrossVenues(remaining, run.map((vg) => ({
-            id: String(vg.venue.uuid),
-            name: vg.venue.name,
-            layout: scCheck.layout,
-            rows: (vg.rowConfigs || rowConfigs).length,
-            blocked: scCheck.blocked,
-          })), {
-            layout: scCheck.layout,
-            blocked: scCheck.blocked,
-          });
-
-          if (!across.ok) {
-            setIsGenerating(false);
-            return setError(
-              `❌ ${venue.name} (Single-Course Mode): ${across.message}`
-            );
-          }
-
-          for (const venueResult of across.venues) {
-            const vg = run.find(
-              (g) => String(g.venue.uuid) === String(venueResult.venueId)
-            );
-            if (!vg) continue;
-
-            // CRITICAL: do NOT lock skipped/empty venues — later groups
-            // (e.g. 24MAI118 BIT/BAD after BCS) must still use them.
-            if (!shouldLockSingleCourseVenue(venueResult)) {
-              logger.debug("SC venue left free for later groups", {
-                venue: vg.venue.name,
-                courseKey: key,
-                reason: venueResult.skippedEmpty ? "no_remaining_students" : "zero_seated",
-              });
-              continue;
-            }
-
-            const filledGrid = applySingleCourseAllocationToGrid(
-              venueResult,
-              vg.rowConfigs
-            );
-            for (let r = 0; r < filledGrid.length; r++) {
-              vg.grid[r] = filledGrid[r];
-            }
-            for (const { student } of venueResult.seated) {
-              allSeatedStudents.push(student);
-            }
-            vg.singleCourseStats = {
-              seatedCount: venueResult.seatedCount,
-              overflowCount: venueResult.continuesToNextVenue
-                ? 0
-                : venueResult.overflowCount,
-              emptyUsableSeats: venueResult.emptyUsableSeats,
-              blockedCount: venueResult.blockedCount,
-              capacity: venueResult.capacity,
-              physicalCapacity: venueResult.physicalCapacity,
-              totalStudents: remaining.length,
-              courseKey: key,
-              startIndex: studentIndex + venueResult.startIndex,
-              endIndex: studentIndex + venueResult.endIndex,
-              firstRegn:
-                venueResult.seated[0]?.student?.regnNo ||
-                venueResult.seated[0]?.student?.regn_no ||
-                null,
-              lastRegn:
-                venueResult.seated[venueResult.seated.length - 1]?.student
-                  ?.regnNo ||
-                venueResult.seated[venueResult.seated.length - 1]?.student
-                  ?.regn_no ||
-                null,
-            };
-            singleCourseVenuesFilled.add(String(vg.venue.uuid));
-            logger.log(
-              `   ✅ Single-Course Mode ${vg.venue.name} [${key}]: ` +
-                `students[${studentIndex + venueResult.startIndex}..${
-                  studentIndex + venueResult.endIndex - 1
-                }] ` +
-                `${vg.singleCourseStats.firstRegn}→${vg.singleCourseStats.lastRegn} ` +
-                `(${venueResult.seatedCount}/${venueResult.capacity})`
-            );
-          }
-
-          studentIndex += across.seatedCount;
-
-          if (across.overflowCount > 0) {
-            logger.log(
-              `   → ${across.overflowCount} student(s) from ${key} remain after SC venues ` +
-                `${run.map((g) => g.venue.name).join(", ")} (cursor=${studentIndex}); ` +
-                `will try later venues if any`
-            );
-          }
-
-          if (studentIndex >= students.length) {
-            break venueLoop;
-          }
-          // Cursor advanced — continue for remaining venues (never reset).
-          continue;
-        }
+        logger.log(`  📍 Venue: ${venue.name} (${rows} rows) [standard]`);
         
         // ✅ VERTICAL FILLING: Column-by-column, then row-by-row, then seat-by-seat
         for (let c = 0; c < cols; c++) {
@@ -1788,18 +1779,27 @@ const Allotment = () => {
         failDiag.shortfall = unplaced;
         failDiag.seated = studentIndex;
 
-        // Single-Course Mode: seat as many as capacity allows; report overflow (do not hard-fail).
+        // Single-Course Mode path present: report true shortfall (do not hard-fail).
         const usedSingleCourse = courseVenueGrids.some((vg) => vg.singleCourseMode);
         if (usedSingleCourse && !allowAdjacentSeating) {
+          const stillFreeSc = courseVenueGrids.filter(
+            (vg) =>
+              vg.singleCourseMode &&
+              !singleCourseVenuesFilled.has(String(vg.venue.uuid))
+          );
           singleCourseOverflowByVenue.push({
             venueName: courseVenueGrids.map((g) => g.venue.name).join(", "),
             courseKey: key,
             seated: studentIndex,
             overflow: unplaced,
             capacity: failDiag.usableCapacity,
+            freeScRemaining: stillFreeSc.map((g) => g.venue.name),
           });
           logger.log(
-            `   ⚠️ Single-Course overflow for ${key}: seated ${studentIndex}, unallotted ${unplaced}`
+            `   ⚠️ Single-Course overflow for ${key}: seated ${studentIndex}, unallotted ${unplaced}` +
+              (stillFreeSc.length
+                ? ` (unexpected free SC rooms still open: ${stillFreeSc.map((g) => g.venue.name).join(", ")})`
+                : " (no free Single-Course rooms left)")
           );
           continue;
         }
