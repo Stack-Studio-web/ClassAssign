@@ -378,8 +378,10 @@ const HallNotificationService = {
       params.push(filters.session);
     }
     if (filters.examType) {
-      clauses.push("exam_type ILIKE ?");
-      params.push(`%${filters.examType}%`);
+      const { sqlExamTypeIn } = require("../utils/examTypeNormalize");
+      const typeFilter = sqlExamTypeIn("exam_type", filters.examType);
+      clauses.push(`(${typeFilter.clause})`);
+      params.push(...typeFilter.params);
     }
     if (filters.hall) {
       clauses.push("hall_name ILIKE ?");

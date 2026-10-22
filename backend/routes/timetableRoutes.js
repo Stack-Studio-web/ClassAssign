@@ -31,6 +31,10 @@ const {
   studentDepartmentMatchSql,
 } = require("../utils/timetableFormOptions");
 const { normalizeBatchName } = require("../utils/timetableBulkImport");
+const {
+  normalizeExamType,
+  toTimetableExamType,
+} = require("../utils/examTypeNormalize");
 
 /* =====================================================
     GET: ALL TIMETABLE SCHEDULES
@@ -286,6 +290,16 @@ router.post("/",
         });
       }
 
+      const storedExamType =
+        toTimetableExamType(examType) || normalizeExamType(examType) || String(examType).trim();
+      if (!toTimetableExamType(examType)) {
+        return res.status(400).json({
+          error: "Invalid exam type",
+          details:
+            "Exam Type must be SA1, SA2, or SEM (CAT 1 / CAT1 / CAT-1 and CAT 2 variants are accepted as SA1 / SA2).",
+        });
+      }
+
       if (req.user?.role === "hod" && req.user?.department && department?.toUpperCase() !== req.user.department?.toUpperCase()) {
         return res.status(403).json({ error: "You can only create timetable for your own department." });
       }
@@ -307,7 +321,7 @@ router.post("/",
         session,
         courseCode,
         department,
-        examType,
+        examType: storedExamType,
         batch: batchCode,
         batchId: resolvedBatchId
       }, await resolveOwnerOpts(req));
@@ -327,7 +341,7 @@ router.post("/",
         courseCode,
         courseName,
         department: department.toUpperCase(),
-        examType,
+        examType: storedExamType,
         batch: batchCode || null,
         batchId: resolvedBatchId
       }, await resolveOwnerOpts(req));

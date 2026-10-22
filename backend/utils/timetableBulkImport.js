@@ -8,11 +8,14 @@
  * Legacy YY+Dept codes (e.g. 24BCS) are still accepted when they resolve in context.
  */
 
+const { toTimetableExamType } = require("./examTypeNormalize");
+
 const LEGACY_BATCH_PATTERN = /^[0-9]{2}[A-Z]{2,10}$/;
 const TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const ALLOWED_SESSIONS = new Set(["FN", "AN"]);
-const ALLOWED_EXAM_TYPES = new Set(["CAT1", "CAT2", "SEM"]);
+const ALLOWED_EXAM_TYPES = new Set(["SA1", "SA2", "SEM"]);
+
 
 function excelSerialToYmd(serial) {
   const EXCEL_EPOCH = Date.UTC(1899, 11, 30);
@@ -171,15 +174,14 @@ function parseTimetableRow(row, rowNum) {
     );
   }
 
-  const examType = examTypeRaw.replace(/\s+/g, "");
+  // CAT 1 / CAT1 / CAT-1 → SA1; CAT 2 variants → SA2; SA*/SEM variants accepted.
+  const examType = toTimetableExamType(examTypeRaw);
   if (!examTypeRaw) {
     errors.push("Exam Type is required.");
-  } else if (examTypeRaw !== examType || !ALLOWED_EXAM_TYPES.has(examType)) {
-    if (ALLOWED_EXAM_TYPES.has(examType) && examTypeRaw !== examType) {
-      errors.push("Exam Type must be CAT1, CAT2, or SEM (no spaces, uppercase).");
-    } else if (!ALLOWED_EXAM_TYPES.has(examTypeRaw)) {
-      errors.push("Exam Type must be CAT1, CAT2, or SEM (case-sensitive).");
-    }
+  } else if (!examType || !ALLOWED_EXAM_TYPES.has(examType)) {
+    errors.push(
+      "Exam Type must be SA1, SA2, or SEM (CAT 1 / CAT1 / CAT-1 and CAT 2 variants are accepted and stored as SA1 / SA2)."
+    );
   }
 
   if (session && startResult.value && !errors.some((e) => e.includes("Session"))) {
@@ -202,7 +204,7 @@ function parseTimetableRow(row, rowNum) {
     courseName,
     department: department || departmentRaw,
     batch,
-    examType: ALLOWED_EXAM_TYPES.has(examTypeRaw) ? examTypeRaw : examType,
+    examType: examType || examTypeRaw,
     errors,
     batchId: null,
   };

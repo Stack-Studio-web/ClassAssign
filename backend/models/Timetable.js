@@ -258,17 +258,28 @@ const Timetable = {
   checkDuplicate: async ({ date, session, courseCode, department, examType, batch, batchId }, opts = {}) => {
     const { sql: ownerSql, params: ownerParams } = ownerAndFromOpts(opts);
     const batchCode = String(batch || "").toUpperCase().trim() || null;
+    const { sqlExamTypeIn } = require("../utils/examTypeNormalize");
+    const typeFilter = sqlExamTypeIn("exam_type", examType);
     const [rows] = await db.query(
       `SELECT id FROM timetable 
        WHERE date = ? 
        AND session = ? 
        AND course_code = ?
-       AND exam_type = ?
+       AND (${typeFilter.clause})
        AND department = ?${ownerSql}
        AND UPPER(COALESCE(batch, '')) = UPPER(COALESCE(?, ''))
        AND (batch_id IS NOT DISTINCT FROM ?)
        LIMIT 1`,
-      [date, session, courseCode, examType, department, ...ownerParams, batchCode, batchId ?? null]
+      [
+        date,
+        session,
+        courseCode,
+        ...typeFilter.params,
+        department,
+        ...ownerParams,
+        batchCode,
+        batchId ?? null,
+      ]
     );
 
     return rows.length > 0;
@@ -380,8 +391,10 @@ const Timetable = {
     }
 
     if (filters.examType) {
-      query += ` AND exam_type = ?`;
-      params.push(filters.examType);
+      const { sqlExamTypeIn } = require("../utils/examTypeNormalize");
+      const typeFilter = sqlExamTypeIn("exam_type", filters.examType);
+      query += ` AND (${typeFilter.clause})`;
+      params.push(...typeFilter.params);
     }
 
     query += ` ORDER BY date DESC, start_time ASC`;
@@ -443,8 +456,12 @@ const Timetable = {
     }
 
     if (Array.isArray(examTypes) && examTypes.length > 0) {
-      sql += ` AND UPPER(TRIM(t.exam_type)) IN (${examTypes.map(() => "?").join(",")})`;
-      params.push(...examTypes.map((t) => String(t).toUpperCase().trim()));
+      const { expandExamTypesForSql } = require("../utils/examTypeNormalize");
+      const expanded = expandExamTypesForSql(examTypes);
+      if (expanded.length > 0) {
+        sql += ` AND UPPER(TRIM(t.exam_type)) IN (${expanded.map(() => "?").join(",")})`;
+        params.push(...expanded);
+      }
     }
 
     if (year && month) {

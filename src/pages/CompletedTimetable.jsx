@@ -12,6 +12,7 @@ import {
 import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
+import { examTypesMatch } from "../lib/examTypeNormalize";
 
 /**
  * Completed Timetable — past-dated entries auto-moved from active Timetable.
@@ -88,7 +89,9 @@ export default function CompletedTimetable() {
       );
     }
     if (filters.examType) {
-      filtered = filtered.filter((s) => s.examType === filters.examType);
+      filtered = filtered.filter((s) =>
+        examTypesMatch(s.examType, filters.examType)
+      );
     }
     setFilteredSchedules(filtered);
     setSelectedSchedules((prev) =>
@@ -327,8 +330,8 @@ export default function CompletedTimetable() {
                   className="w-full h-11 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm bg-white"
                 >
                   <option value="">All</option>
-                  <option value="CAT1">CAT 1</option>
-                  <option value="CAT2">CAT 2</option>
+                  <option value="SA1">SA1 (includes CAT 1)</option>
+                  <option value="SA2">SA2 (includes CAT 2)</option>
                   <option value="SEM">Semester</option>
                 </select>
               </div>

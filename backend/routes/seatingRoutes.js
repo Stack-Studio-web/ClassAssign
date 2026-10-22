@@ -185,6 +185,10 @@ router.post(
         });
       }
 
+      const { normalizeExamType } = require("../utils/examTypeNormalize");
+      const storedExamType =
+        normalizeExamType(examType) || String(examType).trim();
+
       if (!venuesUsed || venuesUsed.length === 0) {
         await connection.rollback();
         return res.status(400).json({
@@ -358,7 +362,7 @@ router.post(
       const seatingPlanId = await SeatingPlan.createPlan({
         examDate: dateOnly,
         examSession,
-        examType,
+        examType: storedExamType,
         examStartTime,
         examEndTime,
         selectedCourses,
@@ -390,7 +394,7 @@ router.post(
         message: "Seating plan created successfully",
         uuid,
         examDate: dateOnly,
-        examType,
+        examType: storedExamType,
         venuesCount: resolvedVenues.length,
         studentsCount: students?.length || 0,
         attendanceAssignmentsSynced: attendanceSync.synced,

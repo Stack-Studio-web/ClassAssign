@@ -6,6 +6,10 @@ import { PrinterIcon } from "@heroicons/react/24/outline";
 import AttendanceSheetPrintView, {
   ATTENDANCE_SHEET_PRINT_STYLES,
 } from "./AttendanceSheetPrintView";
+import {
+  examTypesMatch,
+  collapseExamTypeOptions,
+} from "../lib/examTypeNormalize";
 
 const normalizeDateToYYYYMMDD = (dateInput) => {
   if (!dateInput) return null;
@@ -114,18 +118,16 @@ export const StudentAttendance = () => {
   }, [seatingPlans, filters.category]);
 
   const availableExamTypes = useMemo(() => {
-    return [
-      ...new Set(
-        categoryFilteredPlans.map((p) => p.examType ?? p.examtype).filter(Boolean)
-      ),
-    ].sort();
+    return collapseExamTypeOptions(
+      categoryFilteredPlans.map((p) => p.examType ?? p.examtype).filter(Boolean)
+    ).sort();
   }, [categoryFilteredPlans]);
 
   const availableDates = useMemo(() => {
     let plans = categoryFilteredPlans;
     if (filters.examType) {
-      plans = plans.filter(
-        (p) => String(p.examType ?? p.examtype ?? "") === filters.examType
+      plans = plans.filter((p) =>
+        examTypesMatch(p.examType ?? p.examtype, filters.examType)
       );
     }
     return [
@@ -141,8 +143,8 @@ export const StudentAttendance = () => {
       (p) => normalizeDateToYYYYMMDD(p.examDate ?? p.examdate) === filters.date
     );
     if (filters.examType) {
-      plans = plans.filter(
-        (p) => String(p.examType ?? p.examtype ?? "") === filters.examType
+      plans = plans.filter((p) =>
+        examTypesMatch(p.examType ?? p.examtype, filters.examType)
       );
     }
     return [
@@ -158,8 +160,8 @@ export const StudentAttendance = () => {
         (p.examSession ?? p.examsession) === filters.session
     );
     if (filters.examType) {
-      plans = plans.filter(
-        (p) => String(p.examType ?? p.examtype ?? "") === filters.examType
+      plans = plans.filter((p) =>
+        examTypesMatch(p.examType ?? p.examtype, filters.examType)
       );
     }
     return [
@@ -188,8 +190,8 @@ export const StudentAttendance = () => {
         normalizeTime(p.examEndTime ?? p.examendtime) === normalizeTime(end)
     );
     if (filters.examType) {
-      plans = plans.filter(
-        (p) => String(p.examType ?? p.examtype ?? "") === filters.examType
+      plans = plans.filter((p) =>
+        examTypesMatch(p.examType ?? p.examtype, filters.examType)
       );
     }
     const venues = [];

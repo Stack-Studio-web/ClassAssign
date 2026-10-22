@@ -3,13 +3,44 @@ const XLSX = require("xlsx");
 const AttendanceWindow = require("../utils/attendanceWindow");
 const AttendanceService = require("./attendanceService");
 
-const EXAM_TYPE_VALUES = ["CAT 1", "CAT 2", "Model", "Semester", "Retest"];
+const {
+  normalizeExamType,
+  sqlExamTypeIn,
+  collapseExamTypeOptions,
+} = require("../utils/examTypeNormalize");
+
+const EXAM_TYPE_VALUES = collapseExamTypeOptions([
+  "SA1",
+  "SA2",
+  "CAT 1",
+  "CAT 2",
+  "Model",
+  "Semester",
+  "Retest",
+]);
 
 function deriveExamType(examName = "", examCode = "", seatingExamType = "") {
-  if (seatingExamType) return seatingExamType;
+  if (seatingExamType) {
+    const stored = String(seatingExamType).trim();
+    return normalizeExamType(stored) || stored;
+  }
   const hay = `${examName} ${examCode}`.toUpperCase();
-  if (hay.includes("CAT 1") || hay.includes("CAT1")) return "CAT 1";
-  if (hay.includes("CAT 2") || hay.includes("CAT2")) return "CAT 2";
+  if (
+    hay.includes("CAT 1") ||
+    hay.includes("CAT1") ||
+    hay.includes("SA1") ||
+    /\bSA\s*1\b/.test(hay)
+  ) {
+    return "SA1";
+  }
+  if (
+    hay.includes("CAT 2") ||
+    hay.includes("CAT2") ||
+    hay.includes("SA2") ||
+    /\bSA\s*2\b/.test(hay)
+  ) {
+    return "SA2";
+  }
   if (hay.includes("MODEL")) return "Model";
   if (hay.includes("SEMESTER")) return "Semester";
   if (hay.includes("RETEST")) return "Retest";
@@ -118,13 +149,14 @@ function buildFilterClauses(filters = {}) {
     }
   }
   if (filters.examType) {
+    const typeFilter = sqlExamTypeIn("sp_meta.exam_type", filters.examType);
     clauses.push(`(
-      COALESCE(sp_meta.exam_type, '') ILIKE ?
+      (${typeFilter.clause})
       OR e.exam_name ILIKE ?
       OR e.exam_code ILIKE ?
     )`);
     const pattern = `%${filters.examType}%`;
-    params.push(pattern, pattern, pattern);
+    params.push(...typeFilter.params, pattern, pattern);
   }
   if (filters.hall) {
     clauses.push("v.name ILIKE ?");

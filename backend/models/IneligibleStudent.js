@@ -1,6 +1,10 @@
 // Class/backend/models/IneligibleStudent.js
 const db = require("../config/db");
 const { andClause, whereClause, insertField } = require("../utils/ownerFilter");
+const {
+  normalizeExamType,
+  sqlExamTypeIn,
+} = require("../utils/examTypeNormalize");
 
 // PostgreSQL returns unquoted column names in lowercase; map to camelCase for API
 function toStudentRow(row) {
@@ -85,6 +89,7 @@ const IneligibleStudent = {
   =============================== */
   getIneligibleStudents: async (examType, courseCode, examDate, opts = {}) => {
     const { sql: ownerSql, params: ownerParams } = andClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
+    const typeFilter = sqlExamTypeIn("exam_type", examType);
     const [rows] = await db.query(`
       SELECT
         id,
@@ -98,9 +103,9 @@ const IneligibleStudent = {
         reason,
         created_at AS createdAt
       FROM ineligible_students
-      WHERE exam_type = ? AND course_code = ? AND exam_date = ?${ownerSql}
+      WHERE (${typeFilter.clause}) AND course_code = ? AND exam_date = ?${ownerSql}
       ORDER BY regn_no
-    `, [examType, courseCode, examDate, ...ownerParams]);
+    `, [...typeFilter.params, courseCode, examDate, ...ownerParams]);
     
     console.log(`📋 Ineligible check for ${courseCode} on ${examDate}: ${rows.length} students`);
     
@@ -144,11 +149,14 @@ const IneligibleStudent = {
       const ownerId = opts.ownerUserId ?? markedBy;
       const { sql: ownerDelSql, params: ownerDelParams } = andClause(opts.role, opts.ownerUserId, "", opts.ownerIds);
 
-      // Remove existing entries for this exam/course/date (scoped by owner)
+      const storedExamType = normalizeExamType(examType) || String(examType || "").trim();
+      const typeFilter = sqlExamTypeIn("exam_type", examType);
+
+      // Remove existing entries for this exam/course/date (scoped by owner; CAT↔SA aliases)
       await conn.query(
         `DELETE FROM ineligible_students
-         WHERE exam_type = ? AND course_code = ? AND exam_date = ?${ownerDelSql}`,
-        [examType, courseCode, examDate, ...ownerDelParams]
+         WHERE (${typeFilter.clause}) AND course_code = ? AND exam_date = ?${ownerDelSql}`,
+        [...typeFilter.params, courseCode, examDate, ...ownerDelParams]
       );
 
       // Insert new ineligible students (with owner_user_id)
@@ -159,7 +167,7 @@ const IneligibleStudent = {
           s.studentName,
           s.email || null,
           courseCode,
-          examType,
+          storedExamType,
           examDate,
           s.reason || 'Lack of attendance',
           markedBy,
@@ -191,10 +199,11 @@ const IneligibleStudent = {
       CHECK IF STUDENT IS INELIGIBLE
   =============================== */
   isIneligible: async (regnNo, courseCode, examType, examDate) => {
+    const typeFilter = sqlExamTypeIn("exam_type", examType);
     const [rows] = await db.query(
       `SELECT id FROM ineligible_students
-       WHERE regn_no = ? AND course_code = ? AND exam_type = ? AND exam_date = ?`,
-      [regnNo, courseCode, examType, examDate]
+       WHERE regn_no = ? AND course_code = ? AND (${typeFilter.clause}) AND exam_date = ?`,
+      [regnNo, courseCode, ...typeFilter.params, examDate]
     );
     return rows.length > 0;
   },

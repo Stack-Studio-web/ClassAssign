@@ -40,8 +40,10 @@ async function findAttendancePlan({
   let examTypeSql = "";
   const params = [dateOnly, session, ...ownerParams];
   if (examType) {
-    examTypeSql = " AND UPPER(TRIM(exam_type)) = UPPER(TRIM(?))";
-    params.splice(2, 0, examType);
+    const { sqlExamTypeIn } = require("./examTypeNormalize");
+    const typeFilter = sqlExamTypeIn("exam_type", examType);
+    examTypeSql = ` AND (${typeFilter.clause})`;
+    params.splice(2, 0, ...typeFilter.params);
   }
 
   const [plans] = await db.query(
@@ -85,14 +87,12 @@ async function findAttendancePlan({
     };
   }
 
-  // Prefer exact examType match when multiple plans share the same slot
+  // Prefer examType match (CAT↔SA aliases) when multiple plans share the same slot
   let plan = matched[0];
   if (examType) {
-    const typed = matched.find(
-      (p) =>
-        String(p.exam_type ?? p.examtype ?? "")
-          .trim()
-          .toUpperCase() === String(examType).trim().toUpperCase()
+    const { examTypesMatch } = require("./examTypeNormalize");
+    const typed = matched.find((p) =>
+      examTypesMatch(p.exam_type ?? p.examtype, examType)
     );
     if (typed) plan = typed;
   }

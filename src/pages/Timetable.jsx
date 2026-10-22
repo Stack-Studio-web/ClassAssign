@@ -11,6 +11,7 @@ import {
   COE_TRACKS,
   downloadCoeScheduleDocx,
 } from "../lib/coeScheduleDocx";
+import { examTypesMatch } from "../lib/examTypeNormalize";
 
 const Timetable = () => {
   const toast = useToast();
@@ -42,7 +43,7 @@ const Timetable = () => {
     batch: "",
     batchUuid: "",
     batchId: "",
-    examType: "CAT1",
+    examType: "SA1",
   });
 
   const isRealBatchUuid = (value) =>
@@ -281,7 +282,9 @@ const Timetable = () => {
       );
     }
     if (filters.examType) {
-      filtered = filtered.filter((s) => s.examType === filters.examType);
+      filtered = filtered.filter((s) =>
+        examTypesMatch(s.examType, filters.examType)
+      );
     }
 
     setFilteredSchedules(filtered);
@@ -454,7 +457,7 @@ const Timetable = () => {
         batch: "",
         batchUuid: "",
         batchId: "",
-        examType: "CAT1",
+        examType: "SA1",
       });
       setAvailableCourses([]);
       setBatchOptions([]);
@@ -875,8 +878,8 @@ const Timetable = () => {
                     disabled={!hasWriteAccess}
                     className="w-full h-11 md:h-12 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed bg-white"
                   >
-                    <option value="CAT1">CAT 1</option>
-                    <option value="CAT2">CAT 2</option>
+                    <option value="SA1">SA1</option>
+                    <option value="SA2">SA2</option>
                     <option value="SEM">Semester</option>
                   </select>
                 </div>
@@ -910,7 +913,7 @@ const Timetable = () => {
                 <li>Date, Start Time, End Time, Session (FN/AN)</li>
                 <li>Department, Course Code, Course Name, Batch, Exam Type</li>
                 <li>Batch = Batch Management name (e.g. 2024-2028) — same as Add Schedule</li>
-                <li>Exam Type: CAT1, CAT2, or SEM</li>
+                <li>Exam Type: SA1, SA2, or SEM (CAT 1 / CAT1 / CAT-1 → SA1; CAT 2 variants → SA2)</li>
               </ul>
               <button
                 type="button"
@@ -1119,8 +1122,8 @@ const Timetable = () => {
                     className="w-full h-11 px-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm bg-white"
                   >
                     <option value="">All</option>
-                    <option value="CAT1">CAT 1</option>
-                    <option value="CAT2">CAT 2</option>
+                    <option value="SA1">SA1 (includes CAT 1)</option>
+                    <option value="SA2">SA2 (includes CAT 2)</option>
                     <option value="SEM">Semester</option>
                   </select>
                 </div>

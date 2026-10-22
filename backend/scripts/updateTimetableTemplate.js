@@ -42,7 +42,7 @@ const samples = [
     "Course Code": "24BCS102",
     "Course Name": "Database Management Systems",
     Batch: "2024-2028",
-    "Exam Type": "CAT1",
+    "Exam Type": "SA1",
   },
   {
     Date: futureYmd(14),
@@ -53,7 +53,7 @@ const samples = [
     "Course Code": "24BCS101",
     "Course Name": "Data Structures",
     Batch: "2024-2028",
-    "Exam Type": "CAT1",
+    "Exam Type": "SA1",
   },
   {
     Date: futureYmd(15),
@@ -64,7 +64,7 @@ const samples = [
     "Course Code": "24BAD201",
     "Course Name": "Database Management",
     Batch: "2023-2027",
-    "Exam Type": "CAT2",
+    "Exam Type": "SA2",
   },
 ];
 
@@ -107,8 +107,10 @@ const instructions = [
   ["  • Do NOT invent register-number prefixes as batches (e.g. do not use 24BCS unless that is a real Batch name)"],
   [""],
   ["Exam Type:"],
-  ["  • CAT1, CAT2, or SEM (uppercase, no spaces)"],
-  ["  • Same as Add Schedule: CAT 1 → CAT1, CAT 2 → CAT2, Semester → SEM"],
+  ["  • SA1, SA2, or SEM (preferred storage values)"],
+  ["  • CAT 1 / CAT1 / CAT-1 are accepted and stored as SA1"],
+  ["  • CAT 2 / CAT2 / CAT-2 are accepted and stored as SA2"],
+  ["  • SA 1 / SA-1 → SA1; SA 2 / SA-2 → SA2; Semester → SEM"],
   [""],
   ["Students:"],
   ["  • Not entered in Excel. Loaded automatically from Course + Batch enrollments (same as Add Schedule)."],

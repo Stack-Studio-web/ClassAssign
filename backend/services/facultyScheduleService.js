@@ -1,5 +1,9 @@
 const db = require("../config/db");
 const AcademicYear = require("../models/AcademicYear");
+const {
+  collapseExamTypeOptions,
+  sqlExamTypeIn,
+} = require("../utils/examTypeNormalize");
 
 function normalizeTime(value) {
   if (value == null || value === "") return null;
@@ -195,7 +199,7 @@ async function getInvigilationFilterOptions() {
     { value: "EVEN", label: "Even Sem" },
   ];
 
-  const DEFAULT_EXAM_TYPES = ["CAT 1", "CAT 2", "Model", "Semester", "Retest"];
+  const DEFAULT_EXAM_TYPES = ["SA1", "SA2", "CAT 1", "CAT 2", "Model", "Semester", "Retest"];
   let examTypes = [...DEFAULT_EXAM_TYPES];
   try {
     const [typeRows] = await db.query(
@@ -207,7 +211,7 @@ async function getInvigilationFilterOptions() {
     const fromDb = (typeRows || [])
       .map((r) => r.exam_type ?? r.examtype)
       .filter(Boolean);
-    examTypes = [...new Set([...DEFAULT_EXAM_TYPES, ...fromDb])];
+    examTypes = collapseExamTypeOptions([...DEFAULT_EXAM_TYPES, ...fromDb]);
   } catch (err) {
     console.warn("exam types for invigilation options:", err?.message || err);
   }
@@ -282,8 +286,9 @@ async function getInvigilationSchedulePreview(filters = {}) {
   const where = ["sp.exam_date BETWEEN ? AND ?"];
 
   if (examType) {
-    where.push("sp.exam_type ILIKE ?");
-    params.push(examType);
+    const typeFilter = sqlExamTypeIn("sp.exam_type", examType);
+    where.push(`(${typeFilter.clause})`);
+    params.push(...typeFilter.params);
   }
 
   // Odd Sem ≈ Jul–Dec, Even Sem ≈ Jan–Jun (soft academic filter)

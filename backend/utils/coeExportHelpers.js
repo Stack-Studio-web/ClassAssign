@@ -105,16 +105,38 @@ function deriveDegree(department, batchName = "") {
   return "B.Tech";
 }
 
-/** Map COE assessment label → exam_type values stored in timetable */
+const { examTypeAliases } = require("./examTypeNormalize");
+
+/** Map COE assessment label → exam_type values stored in timetable (CAT↔SA aliases). */
 function examTypesForAssessment(assessment) {
   const a = String(assessment || "").trim().toUpperCase();
-  if (a === "CAT 1" || a === "CAT1") return ["CAT1", "CAT 1"];
-  if (a === "CAT 2" || a === "CAT2") return ["CAT2", "CAT 2"];
+  // CAT 1 / SA1 (and spaced/hyphen variants) — include legacy CAT* and normalized SA1
+  if (
+    a === "CAT 1" ||
+    a === "CAT1" ||
+    a === "CAT-1" ||
+    a === "SA1" ||
+    a === "SA 1" ||
+    a === "SA-1"
+  ) {
+    return examTypeAliases("SA1");
+  }
+  if (
+    a === "CAT 2" ||
+    a === "CAT2" ||
+    a === "CAT-2" ||
+    a === "SA2" ||
+    a === "SA 2" ||
+    a === "SA-2"
+  ) {
+    return examTypeAliases("SA2");
+  }
+  // End-of-term summative — do not reuse SA1/SA2 (those are CAT aliases now)
   if (a.includes("SUMMATIVE") && a.includes("II")) {
-    return ["SEM2", "SA2", "SUMMATIVE ASSESSMENT - II", "SUMMATIVE-II"];
+    return ["SEM2", "SUMMATIVE ASSESSMENT - II", "SUMMATIVE-II"];
   }
   if (a.includes("SUMMATIVE") && a.includes("I")) {
-    return ["SEM", "SEM1", "SA1", "SUMMATIVE ASSESSMENT - I", "SUMMATIVE-I"];
+    return ["SEM", "SEM1", "SUMMATIVE ASSESSMENT - I", "SUMMATIVE-I"];
   }
   return [String(assessment || "").trim()].filter(Boolean);
 }

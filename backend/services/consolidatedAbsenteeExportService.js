@@ -30,13 +30,35 @@ function normalizeSession(raw) {
   return String(raw).trim() || "—";
 }
 
+const {
+  normalizeExamType,
+  normalizeExamTypeKey: sharedNormalizeExamTypeKey,
+} = require("../utils/examTypeNormalize");
+
 function deriveExamType(examName = "", examCode = "", seatingExamType = "") {
   if (seatingExamType && String(seatingExamType).trim()) {
-    return String(seatingExamType).trim();
+    const stored = String(seatingExamType).trim();
+    return normalizeExamType(stored) || stored;
   }
   const hay = `${examName} ${examCode}`.toUpperCase();
-  if (hay.includes("CAT 1") || hay.includes("CAT1") || hay.includes("CAT I")) return "CAT 1";
-  if (hay.includes("CAT 2") || hay.includes("CAT2") || hay.includes("CAT II")) return "CAT 2";
+  if (
+    hay.includes("CAT 1") ||
+    hay.includes("CAT1") ||
+    hay.includes("CAT I") ||
+    /\bSA\s*1\b/.test(hay) ||
+    hay.includes("SA1")
+  ) {
+    return "SA1";
+  }
+  if (
+    hay.includes("CAT 2") ||
+    hay.includes("CAT2") ||
+    hay.includes("CAT II") ||
+    /\bSA\s*2\b/.test(hay) ||
+    hay.includes("SA2")
+  ) {
+    return "SA2";
+  }
   if (hay.includes("MODEL")) return "Model";
   if (hay.includes("SEMESTER") || hay.includes("SUMMATIVE")) return "Semester";
   if (hay.includes("RETEST")) return "Retest";
@@ -467,16 +489,7 @@ async function buildVenueCourseMap(examId, venueId) {
 }
 
 function normalizeExamTypeKey(raw) {
-  const s = String(raw || "")
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, "");
-  if (!s) return "";
-  if (s.includes("CAT1") || s === "CATI") return "CAT1";
-  if (s.includes("CAT2") || s === "CATII") return "CAT2";
-  if (s.includes("MODEL")) return "MODEL";
-  if (s.includes("SEMESTER") || s.includes("SUMMATIVE") || s === "SEM") return "SEM";
-  if (s.includes("RETEST")) return "RETEST";
-  return s;
+  return sharedNormalizeExamTypeKey(raw);
 }
 
 function trimTimePart(t) {

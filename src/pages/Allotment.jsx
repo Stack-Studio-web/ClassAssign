@@ -44,6 +44,10 @@ import {
   resolveVenuesForCourse,
   toggleVenueInMapping,
 } from "../lib/courseVenueMapping";
+import {
+  normalizeExamType,
+  examTypesMatch,
+} from "../lib/examTypeNormalize";
 
 // Normalize student/ineligible objects (PostgreSQL may return lowercase keys)
 const normalizeStudent = (s) => ({
@@ -55,15 +59,18 @@ const normalizeStudent = (s) => ({
 });
 
 // Normalize timetable course (PostgreSQL may return lowercase keys)
-const normalizeCourse = (c) => ({
-  ...c,
-  courseCode: c.courseCode ?? c.coursecode ?? "",
-  department: c.department ?? "",
-  examType: c.examType ?? c.examtype ?? "",
-  batchName: c.batchName ?? c.batchname ?? c.batch ?? "",
-  batchId: c.batchId ?? c.batchid ?? c.batch_id ?? null,
-  batchUuid: c.batchUuid ?? c.batchuuid ?? null,
-});
+const normalizeCourse = (c) => {
+  const rawType = c.examType ?? c.examtype ?? "";
+  return {
+    ...c,
+    courseCode: c.courseCode ?? c.coursecode ?? "",
+    department: c.department ?? "",
+    examType: normalizeExamType(rawType) || rawType,
+    batchName: c.batchName ?? c.batchname ?? c.batch ?? "",
+    batchId: c.batchId ?? c.batchid ?? c.batch_id ?? null,
+    batchUuid: c.batchUuid ?? c.batchuuid ?? null,
+  };
+};
 
 const isRegnBatchCode = (value) => /^[0-9]{2}[A-Z]+$/.test(String(value || "").trim().toUpperCase());
 
@@ -441,9 +448,9 @@ const Allotment = () => {
         }
 
         // System assumption: Allotment can only auto-handle one exam type for a given date/time/session.
-        // If multiple timetable entries exist, keep only the first exam type to avoid ineligibility mismatch.
+        // CAT↔SA aliases (CAT 1 / SA1, CAT 2 / SA2) are treated as the same type.
         const effectiveCourses = effectiveExamType
-          ? courses.filter((c) => c.examType === effectiveExamType)
+          ? courses.filter((c) => examTypesMatch(c.examType, effectiveExamType))
           : courses;
  
         logger.log('\n🔍 ===== FETCHING STUDENTS FOR TIMETABLE COURSES =====');
