@@ -243,7 +243,9 @@ function testIndependentVenueState() {
   assert.match(page, /singleCourseModeByVenue\[id\]/);
   assert.match(page, /setSingleCourseModeByVenue/);
   assert.match(page, /setSingleCourseModeByVenue\(\{\}\)/);
-  assert.match(page, /allocateSingleCourseAcrossVenues/);
+  assert.match(page, /continueSingleCourseIntoVenue/);
+  assert.match(page, /allocateSingleCourse/);
+  assert.match(page, /shouldApplySingleCourseVenue/);
   assert.match(page, /orderVenueGridsForCourse/);
   console.log("✓ per-venue independent toggle state wired");
 }
@@ -359,15 +361,22 @@ function testSameCourseCodeSeparateGroups() {
   assert.strictEqual(result.byGroup[1].seated, 105);
   assert.strictEqual(result.byGroup[2].seated, 125);
 
-  // No room mixes groups
-  const venueToGroup = new Map();
+  // Underfilled rooms may accept the next group into leftover usable seats.
+  // Empty rooms must still be used (no false lock-all). Every student seated.
+  assert.ok(result.byGroup.every((g) => g.seated > 0));
+  const shared = new Set();
+  const seen = new Map();
   for (const g of result.byGroup) {
     for (const id of g.usedVenueIds) {
-      assert.ok(!venueToGroup.has(id), `venue ${id} mixed groups`);
-      venueToGroup.set(id, g.key);
+      if (seen.has(id) && seen.get(id) !== g.key) shared.add(id);
+      else seen.set(id, g.key);
     }
   }
-  console.log("✓ Test A: BCS/BIT/BAD stay independent; all 257 seated; no room mixing");
+  // BCS 27 underfills one room → BIT continues into that leftover (shared expected).
+  assert.ok(shared.size >= 1, "expected leftover continue-fill into underfilled BCS room");
+  console.log(
+    "✓ Test A: BCS/BIT/BAD all 257 seated; underfilled rooms share leftover seats in course order"
+  );
 }
 
 /** Reproduce the reported bug: small BCS group must not lock empty sibling SC rooms. */
@@ -390,8 +399,13 @@ function testBugEmptyVenuesNotLockedForLaterGroups() {
   }
   assert.strictEqual(buggyLocked.size, 7, "buggy path locks all rooms in the run");
 
-  // Fixed behavior
-  assert.strictEqual(shouldLockSingleCourseVenue(acrossBcs.venues[0]), true);
+  // Fixed behavior: underfilled room is NOT locked (next course may continue into leftovers).
+  // Empty/skipped rooms also stay unlocked.
+  assert.strictEqual(
+    shouldLockSingleCourseVenue(acrossBcs.venues[0]),
+    false,
+    "underfilled BCS room must stay open for leftover continue-fill"
+  );
   assert.strictEqual(shouldLockSingleCourseVenue(acrossBcs.venues[1]), false);
 
   const fixed = allocateIndependentCourseGroupsInSingleCourseMode(

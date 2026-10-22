@@ -430,20 +430,163 @@ export function allocateSingleCourseAcrossVenues(
   };
 }
 
+export function seatCoordKey(seat) {
+  if (!seat) return "";
+  return `${Number(seat.row)}:${Number(seat.group)}:${Number(seat.position)}`;
+}
+
 /**
- * A Single-Course venue is locked to one scheduled-course group only after it
- * actually receives students. Empty/skipped venues must stay free for later groups
- * (e.g. 24MAI118 BIT/BAD after BCS).
+ * Usable seats (allocation order) that are still empty given already-occupied coords.
+ * @param {Array<{ row: number, group: number, position: number }|string>} occupiedSeats
  */
-export function shouldLockSingleCourseVenue(venueResult) {
+export function listRemainingUsableSeats(
+  occupiedSeats,
+  layout = SINGLE_COURSE_LAYOUT,
+  rows,
+  blocked = SINGLE_COURSE_BLOCKED
+) {
+  const built = buildSingleCourseUsableSeats(layout, rows, blocked);
+  if (!built.ok) {
+    return { ok: false, message: built.message, seats: [], capacity: 0 };
+  }
+  const occupied = new Set(
+    (occupiedSeats || []).map((s) => (typeof s === "string" ? s : seatCoordKey(s)))
+  );
+  const seats = built.seats.filter((s) => !occupied.has(seatCoordKey(s)));
+  return {
+    ok: true,
+    seats,
+    blocked: built.blocked,
+    capacity: built.seats.length,
+    occupiedCount: occupied.size,
+  };
+}
+
+/**
+ * Collect occupied usable seat coords from an Allotment-style SC grid.
+ */
+export function occupiedSeatsFromSingleCourseGrid(
+  grid,
+  layout = SINGLE_COURSE_LAYOUT,
+  rows,
+  blocked = SINGLE_COURSE_BLOCKED
+) {
+  const built = buildSingleCourseUsableSeats(layout, rows, blocked);
+  if (!built.ok) return [];
+  const occupied = [];
+  for (const seat of built.seats) {
+    const slot = grid?.[seat.row]?.[seat.group]?.[seat.position];
+    if (!slot) continue;
+    if (isBlockedCellSlot(slot) || slot.blocked || slot.regn_no === "0") continue;
+    const reg = String(slot.regnNo ?? slot.regn_no ?? "").trim();
+    if (!reg) continue;
+    occupied.push({ ...seat });
+  }
+  return occupied;
+}
+
+/**
+ * Place the next contiguous student slice into remaining empty usable seats.
+ * Does not wipe existing occupants — caller merges into the grid.
+ */
+export function continueSingleCourseIntoVenue(
+  students,
+  occupiedSeats,
+  layout = SINGLE_COURSE_LAYOUT,
+  rows,
+  blocked = SINGLE_COURSE_BLOCKED,
+  { courseKey = null } = {}
+) {
+  const remainingInfo = listRemainingUsableSeats(
+    occupiedSeats,
+    layout,
+    rows,
+    blocked
+  );
+  if (!remainingInfo.ok) {
+    return {
+      ok: false,
+      message: remainingInfo.message,
+      seated: [],
+      overflow: [...(students || [])],
+      capacity: 0,
+      seatedCount: 0,
+      overflowCount: (students || []).length,
+      emptyUsableSeats: 0,
+      blockedCount: 0,
+      physicalCapacity: 0,
+      totalSeatedCount: 0,
+    };
+  }
+
+  const list = Array.isArray(students) ? students : [];
+  const seated = [];
+  const overflow = [];
+  for (let i = 0; i < list.length; i++) {
+    if (i < remainingInfo.seats.length) {
+      seated.push({
+        student: list[i],
+        seat: remainingInfo.seats[i],
+        courseKey: courseKey || null,
+      });
+    } else {
+      overflow.push(list[i]);
+    }
+  }
+
+  const physicalCapacity = singleCoursePhysicalCapacity(layout, rows);
+  const blockedCount = singleCourseBlockedCount(layout, rows, remainingInfo.blocked);
+  const totalSeatedCount = remainingInfo.occupiedCount + seated.length;
+  const emptyUsableSeats = remainingInfo.capacity - totalSeatedCount;
+
+  return {
+    ok: true,
+    seated,
+    overflow,
+    capacity: remainingInfo.capacity,
+    seatedCount: seated.length,
+    overflowCount: overflow.length,
+    emptyUsableSeats,
+    blockedCount,
+    physicalCapacity,
+    totalSeatedCount,
+    occupiedBefore: remainingInfo.occupiedCount,
+    layout: [...layout],
+    rows: Number(rows) || 0,
+    blocked: remainingInfo.blocked,
+    courseKey: courseKey || null,
+    continuedIntoLeftover: remainingInfo.occupiedCount > 0,
+  };
+}
+
+/**
+ * True when this venue result should be written onto the grid (placed ≥1 student).
+ * Distinct from locking — underfilled rooms must still be applied.
+ */
+export function shouldApplySingleCourseVenue(venueResult) {
   if (!venueResult) return false;
   if (venueResult.skippedEmpty) return false;
   return Number(venueResult.seatedCount) > 0;
 }
 
 /**
+ * Lock (exclude from later groups) only when usable capacity is exhausted.
+ * Empty/skipped and underfilled venues stay available so the next course can
+ * continue into leftover empty usable seats.
+ */
+export function shouldLockSingleCourseVenue(venueResult) {
+  if (!venueResult) return false;
+  if (venueResult.skippedEmpty) return false;
+  const seated =
+    Number(venueResult.totalSeatedCount ?? venueResult.seatedCount) || 0;
+  if (seated <= 0) return false;
+  return Number(venueResult.emptyUsableSeats) === 0;
+}
+
+/**
  * Simulate multi-group Single-Course allotment across a shared venue pool.
- * Each group is an independent ordered list (same courseCode may appear in many groups).
+ * Groups run in order; underfilled rooms accept the next group's students into
+ * remaining empty usable seats (same seat order). Full rooms stay locked.
  * @returns {{ ok: true, byGroup: object[], lockedVenueIds: string[], totalSeated: number, totalOverflow: number }}
  */
 export function allocateIndependentCourseGroupsInSingleCourseMode(
@@ -451,49 +594,184 @@ export function allocateIndependentCourseGroupsInSingleCourseMode(
   venueSpecs,
   options = {}
 ) {
+  const defaultLayout = options.layout || SINGLE_COURSE_LAYOUT;
+  const defaultBlocked = options.blocked || SINGLE_COURSE_BLOCKED;
+  /** @type {Map<string, { seated: object[], layout: number[], rows: number, blocked: number[][] }>} */
+  const venueState = new Map();
   const locked = new Set();
   const byGroup = [];
   let totalSeated = 0;
   let totalOverflow = 0;
 
   for (const group of groups || []) {
-    const freeSpecs = (venueSpecs || []).filter(
-      (spec) => !locked.has(String(spec.id ?? spec.venueId ?? ""))
-    );
-    const across = allocateSingleCourseAcrossVenues(
-      group.students || [],
-      freeSpecs,
-      options
-    );
-    if (!across.ok) {
-      return {
-        ok: false,
-        message: across.message,
-        byGroup,
-        lockedVenueIds: [...locked],
-        totalSeated,
-        totalOverflow,
-      };
-    }
-
+    const students = group.students || [];
+    let cursor = 0;
     const usedVenueIds = [];
-    for (const venueResult of across.venues) {
-      if (!shouldLockSingleCourseVenue(venueResult)) continue;
-      const id = String(venueResult.venueId ?? "");
-      if (id) {
-        locked.add(id);
-        usedVenueIds.push(id);
+    const venueResults = [];
+    const seatedRegs = new Set();
+
+    for (const spec of venueSpecs || []) {
+      const id = String(spec.id ?? spec.venueId ?? "");
+      if (id && locked.has(id)) continue;
+
+      const venueLayout = Array.isArray(spec.layout) ? spec.layout : defaultLayout;
+      const venueBlocked = Array.isArray(spec.blocked)
+        ? spec.blocked
+        : defaultBlocked;
+      const rows = Number(spec.rows) || 0;
+      const remaining = students.slice(cursor);
+
+      if (remaining.length === 0) {
+        venueResults.push({
+          ok: true,
+          venueId: id || null,
+          venueName: spec.name ?? spec.venueName ?? null,
+          startIndex: cursor,
+          endIndex: cursor,
+          seated: [],
+          overflow: [],
+          seatedCount: 0,
+          overflowCount: 0,
+          capacity: singleCourseUsableCapacity(venueLayout, rows, venueBlocked),
+          emptyUsableSeats: singleCourseUsableCapacity(
+            venueLayout,
+            rows,
+            venueBlocked
+          ),
+          blockedCount: singleCourseBlockedCount(venueLayout, rows, venueBlocked),
+          physicalCapacity: singleCoursePhysicalCapacity(venueLayout, rows),
+          layout: [...venueLayout],
+          rows,
+          blocked: venueBlocked,
+          skippedEmpty: true,
+        });
+        continue;
       }
+
+      const state = id ? venueState.get(id) : null;
+      const occupied = state ? state.seated.map((s) => s.seat) : [];
+      let allocation;
+
+      if (occupied.length === 0) {
+        allocation = allocateSingleCourse(
+          remaining,
+          venueLayout,
+          rows,
+          venueBlocked
+        );
+        if (allocation.ok) {
+          allocation = {
+            ...allocation,
+            seated: (allocation.seated || []).map((entry) => ({
+              ...entry,
+              courseKey: group.key,
+            })),
+            totalSeatedCount: allocation.seatedCount,
+            occupiedBefore: 0,
+            continuedIntoLeftover: false,
+            courseKey: group.key,
+          };
+        }
+      } else {
+        allocation = continueSingleCourseIntoVenue(
+          remaining,
+          occupied,
+          venueLayout,
+          rows,
+          venueBlocked,
+          { courseKey: group.key }
+        );
+      }
+
+      if (!allocation.ok) {
+        return {
+          ok: false,
+          message: allocation.message,
+          byGroup,
+          lockedVenueIds: [...locked],
+          totalSeated,
+          totalOverflow,
+        };
+      }
+
+      for (const { student } of allocation.seated || []) {
+        const reg = String(student?.regnNo ?? student?.regn_no ?? "").trim();
+        if (!reg) continue;
+        if (seatedRegs.has(reg)) {
+          return {
+            ok: false,
+            message: `Duplicate seating for ${reg}.`,
+            byGroup,
+            lockedVenueIds: [...locked],
+            totalSeated,
+            totalOverflow,
+          };
+        }
+        seatedRegs.add(reg);
+      }
+
+      if (!shouldApplySingleCourseVenue(allocation)) {
+        venueResults.push({
+          ...allocation,
+          venueId: id || null,
+          venueName: spec.name ?? spec.venueName ?? null,
+          startIndex: cursor,
+          endIndex: cursor,
+          skippedEmpty: occupied.length === 0,
+        });
+        continue;
+      }
+
+      const prevSeated = state?.seated || [];
+      const allSeated = [...prevSeated, ...(allocation.seated || [])];
+      if (id) {
+        venueState.set(id, {
+          seated: allSeated,
+          layout: venueLayout,
+          rows,
+          blocked: venueBlocked,
+        });
+      }
+
+      const capacity = allocation.capacity;
+      const emptyUsableSeats = capacity - allSeated.length;
+      const startIndex = cursor;
+      cursor += allocation.seatedCount;
+      totalSeated += allocation.seatedCount;
+
+      const courseKeys = [
+        ...new Set(allSeated.map((s) => s.courseKey).filter(Boolean)),
+      ];
+      const venueResult = {
+        ...allocation,
+        venueId: id || null,
+        venueName: spec.name ?? spec.venueName ?? null,
+        startIndex,
+        endIndex: cursor,
+        seatedCount: allocation.seatedCount,
+        totalSeatedCount: allSeated.length,
+        emptyUsableSeats,
+        courseKeys,
+        continuedIntoLeftover: occupied.length > 0,
+      };
+      venueResults.push(venueResult);
+      if (id) usedVenueIds.push(id);
+
+      if (shouldLockSingleCourseVenue(venueResult)) {
+        if (id) locked.add(id);
+      }
+
+      if (cursor >= students.length) break;
     }
 
-    totalSeated += across.seatedCount;
-    totalOverflow += across.overflowCount;
+    const overflow = students.slice(cursor);
+    totalOverflow += overflow.length;
     byGroup.push({
       key: group.key,
-      seated: across.seatedCount,
-      overflow: across.overflowCount,
+      seated: cursor,
+      overflow: overflow.length,
       usedVenueIds,
-      venueResults: across.venues,
+      venueResults,
     });
   }
 
@@ -503,6 +781,7 @@ export function allocateIndependentCourseGroupsInSingleCourseMode(
     lockedVenueIds: [...locked],
     totalSeated,
     totalOverflow,
+    venueState,
   };
 }
 
@@ -545,6 +824,21 @@ export function applySingleCourseAllocationToGrid(allocation, rowConfigs) {
     grid[row][group][position] = student;
   }
 
+  return grid;
+}
+
+/**
+ * Merge newly seated students into an existing SC grid without wiping prior courses.
+ */
+export function mergeSingleCourseSeatedIntoGrid(grid, seated) {
+  if (!Array.isArray(grid)) return grid;
+  for (const { student, seat } of seated || []) {
+    if (!seat) continue;
+    const { row, group, position } = seat;
+    if (!grid[row]) continue;
+    if (!grid[row][group]) grid[row][group] = [];
+    grid[row][group][position] = student;
+  }
   return grid;
 }
 
