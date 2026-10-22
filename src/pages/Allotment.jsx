@@ -74,6 +74,8 @@ import {
   allocateSingleCourseAcrossVenues,
   applySingleCourseAllocationToGrid,
   shouldLockSingleCourseVenue,
+  summarizeSingleCourseGroupAllocation,
+  parseScheduledCourseGroupKey,
   orderVenueGridsForCourse,
   effectiveLayoutFromRowConfigs,
   isSingleCourseLayout,
@@ -1575,15 +1577,17 @@ const Allotment = () => {
             `(${remaining.length} students waiting)`
         );
 
+        const scVenueSpecs = freeSingleCourseVenues.map((vg) => ({
+          id: String(vg.venue.uuid),
+          name: vg.venue.name,
+          layout: effectiveLayoutFromRowConfigs(vg.rowConfigs) || scCheck.layout,
+          rows: (vg.rowConfigs || []).length,
+          blocked: scCheck.blocked,
+        }));
+
         const across = allocateSingleCourseAcrossVenues(
           remaining,
-          freeSingleCourseVenues.map((vg) => ({
-            id: String(vg.venue.uuid),
-            name: vg.venue.name,
-            layout: effectiveLayoutFromRowConfigs(vg.rowConfigs) || scCheck.layout,
-            rows: (vg.rowConfigs || []).length,
-            blocked: scCheck.blocked,
-          })),
+          scVenueSpecs,
           { layout: scCheck.layout, blocked: scCheck.blocked }
         );
 
@@ -1591,6 +1595,33 @@ const Allotment = () => {
           setIsGenerating(false);
           return setError(`❌ ${key} (Single-Course Mode): ${across.message}`);
         }
+
+        const groupMeta = parseScheduledCourseGroupKey(key);
+        const scSummary = summarizeSingleCourseGroupAllocation({
+          groupKey: key,
+          studentCount: remaining.length,
+          venueSpecs: scVenueSpecs,
+          across,
+        });
+        logger.log(
+          `   📌 SC group ${scSummary.groupId} ` +
+            `(dept=${groupMeta.department || "—"} batch=${groupMeta.batch || "—"}) ` +
+            `students=${scSummary.studentCount} venues=[${scSummary.assignedVenues.join(", ")}] ` +
+            `usableCap=${scSummary.availableUsableCapacity} seated=${scSummary.seated} ` +
+            `remaining=${scSummary.remaining} overflow=${scSummary.overflow}`
+        );
+        for (const v of scSummary.allocatedPerVenue) {
+          logger.log(
+            `      · ${v.venueName || v.venueId}: seated=${v.seated}/${v.capacity} ` +
+              `emptyUsable=${v.emptyUsable}` +
+              (v.groupExhausted
+                ? " (group exhausted — spare capacity is expected; do not mix groups)"
+                : v.skippedEmpty
+                  ? " (left free for later groups)"
+                  : "")
+          );
+        }
+        logger.debug("SC group allocation summary", scSummary);
 
         for (const venueResult of across.venues) {
           const vg = freeSingleCourseVenues.find(
@@ -1616,6 +1647,10 @@ const Allotment = () => {
           for (const { student } of venueResult.seated) {
             allSeatedStudents.push(student);
           }
+          const groupExhausted =
+            venueResult.emptyUsableSeats > 0 &&
+            across.overflowCount === 0 &&
+            !venueResult.continuesToNextVenue;
           vg.singleCourseStats = {
             seatedCount: venueResult.seatedCount,
             overflowCount: venueResult.continuesToNextVenue
@@ -1627,6 +1662,9 @@ const Allotment = () => {
             physicalCapacity: venueResult.physicalCapacity,
             totalStudents: remaining.length,
             courseKey: key,
+            department: groupMeta.department,
+            batch: groupMeta.batch,
+            groupExhausted,
             startIndex: studentIndex + venueResult.startIndex,
             endIndex: studentIndex + venueResult.endIndex,
             firstRegn:
@@ -1645,7 +1683,10 @@ const Allotment = () => {
                 studentIndex + venueResult.endIndex - 1
               }] ` +
               `${vg.singleCourseStats.firstRegn}→${vg.singleCourseStats.lastRegn} ` +
-              `(${venueResult.seatedCount}/${venueResult.capacity})`
+              `(${venueResult.seatedCount}/${venueResult.capacity})` +
+              (groupExhausted
+                ? ` · group size ${remaining.length} < capacity (empty usable expected)`
+                : "")
           );
         }
 
@@ -3615,12 +3656,30 @@ const Allotment = () => {
                         Capacity: {item.venue.capacity}
                       </p>
                       {item.singleCourseStats ? (
-                        <p className="text-xs text-gray-600">
-                          Seated {item.singleCourseStats.seatedCount}
-                          {" · "}Empty usable {item.singleCourseStats.emptyUsableSeats}
-                          {" · "}Blocked {item.singleCourseStats.blockedCount}
-                          {" · "}Overflow {item.singleCourseStats.overflowCount}
-                        </p>
+                        <>
+                          <p className="text-xs text-gray-600">
+                            Seated {item.singleCourseStats.seatedCount}
+                            {" · "}Empty usable {item.singleCourseStats.emptyUsableSeats}
+                            {" · "}Blocked {item.singleCourseStats.blockedCount}
+                            {" · "}Overflow {item.singleCourseStats.overflowCount}
+                          </p>
+                          {item.singleCourseStats.courseKey ? (
+                            <p className="text-xs text-gray-500">
+                              Group: {item.singleCourseStats.courseKey}
+                              {item.singleCourseStats.totalStudents != null
+                                ? ` · ${item.singleCourseStats.totalStudents} eligible`
+                                : ""}
+                            </p>
+                          ) : null}
+                          {item.singleCourseStats.groupExhausted &&
+                          item.singleCourseStats.emptyUsableSeats > 0 ? (
+                            <p className="text-xs text-amber-700">
+                              Spare usable seats: this scheduled-course group has fewer
+                              students than room capacity (groups are not mixed in
+                              Single-Course Mode).
+                            </p>
+                          ) : null}
+                        </>
                       ) : null}
                       {Array.isArray(item.venue.rowConfigs) &&
                       item.venue.rowConfigs.length ? (

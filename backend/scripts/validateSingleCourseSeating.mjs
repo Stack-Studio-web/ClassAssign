@@ -22,6 +22,8 @@ const {
   allocateSingleCourseAcrossVenues,
   allocateIndependentCourseGroupsInSingleCourseMode,
   shouldLockSingleCourseVenue,
+  summarizeSingleCourseGroupAllocation,
+  parseScheduledCourseGroupKey,
   orderVenueGridsForCourse,
   buildSingleCourseUsableSeats,
   singleCourseUsableCapacity,
@@ -471,6 +473,137 @@ function testGroupingKeysNotCourseCodeOnly() {
   console.log("✓ grouping keys are courseCode+department+batch (not courseCode alone)");
 }
 
+function makeRegnStudents(n, prefix, courseKey) {
+  return Array.from({ length: n }, (_, i) => ({
+    regnNo: `${prefix}${String(i + 1).padStart(3, "0")}`,
+    courseDescription: courseKey,
+    courseEntryKey: courseKey,
+  }));
+}
+
+/**
+ * Screenshot regression: SC310 (26BAU×25) vs SC311 (26BME×42) are DIFFERENT groups.
+ * Spare capacity in SC310 must NOT be filled from BME — continuous fill is per group only.
+ */
+function testBauBmeDifferentGroupsLeaveSpareCapacity() {
+  const bauKey = "24MAI118-AUTOMOBILE-2026-2030";
+  const bmeKey = "24MAI118-MECHANICAL-2026-2030";
+  const bau = makeRegnStudents(25, "26BAU", bauKey);
+  const bme = makeRegnStudents(42, "26BME", bmeKey);
+  const venues = [
+    { id: "sc310", name: "SC310", rows: 7 },
+    { id: "sc311", name: "SC311", rows: 7 },
+  ];
+
+  const result = allocateIndependentCourseGroupsInSingleCourseMode(
+    [
+      { key: bauKey, students: bau },
+      { key: bmeKey, students: bme },
+    ],
+    venues
+  );
+
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.totalSeated, 67);
+  assert.strictEqual(result.totalOverflow, 0);
+  assert.strictEqual(result.byGroup[0].seated, 25);
+  assert.strictEqual(result.byGroup[1].seated, 42);
+
+  const sc310 = result.byGroup[0].venueResults.find((v) => v.venueId === "sc310");
+  assert.ok(sc310);
+  assert.strictEqual(sc310.seatedCount, 25);
+  assert.strictEqual(sc310.emptyUsableSeats, 17);
+  assert.strictEqual(sc310.capacity, 42);
+  assert.ok(sc310.seated.every((s) => String(s.student.regnNo).startsWith("26BAU")));
+  // Blocked positions never receive students
+  for (const { seat } of sc310.seated) {
+    assert.strictEqual(isBlockedSeat(SINGLE_COURSE_BLOCKED, seat.group, seat.position), false);
+  }
+
+  const sc311 = result.byGroup[1].venueResults.find((v) => v.venueId === "sc311");
+  assert.ok(sc311);
+  assert.strictEqual(sc311.seatedCount, 42);
+  assert.strictEqual(sc311.emptyUsableSeats, 0);
+  assert.ok(sc311.seated.every((s) => String(s.student.regnNo).startsWith("26BME")));
+
+  // No cross-group mix
+  assert.deepStrictEqual(result.byGroup[0].usedVenueIds, ["sc310"]);
+  assert.deepStrictEqual(result.byGroup[1].usedVenueIds, ["sc311"]);
+
+  const summary = summarizeSingleCourseGroupAllocation({
+    groupKey: bauKey,
+    studentCount: 25,
+    venueSpecs: [venues[0]],
+    across: {
+      venues: [sc310],
+      seatedCount: 25,
+      overflowCount: 0,
+    },
+  });
+  assert.strictEqual(summary.department, "AUTOMOBILE");
+  assert.strictEqual(summary.batch, "2026-2030");
+  assert.strictEqual(summary.groupExhaustedWithSpareCapacity, true);
+  assert.strictEqual(summary.overflow, 0);
+
+  console.log(
+    "✓ SC310 BAU25 leaves 17 empty; SC311 BME42 full; groups stay separate (screenshot case)"
+  );
+}
+
+/** Same group with enough students fills venue N completely before venue N+1. */
+function testSameGroupFillsVenueBeforeNext() {
+  const students = makeRegnStudents(60, "26BCS", "24MAI118-BCS-2026-2030");
+  const venues = [
+    { id: "sc310", name: "SC310", rows: 7 },
+    { id: "sc311", name: "SC311", rows: 7 },
+  ];
+  const across = allocateSingleCourseAcrossVenues(students, venues);
+  assert.strictEqual(across.ok, true);
+  assert.strictEqual(across.venues[0].seatedCount, 42);
+  assert.strictEqual(across.venues[0].emptyUsableSeats, 0);
+  assert.strictEqual(across.venues[1].seatedCount, 18);
+  assert.strictEqual(across.venues[1].emptyUsableSeats, 24);
+  assert.strictEqual(across.overflowCount, 0);
+  // Cursor continues — no restart / skip / dup
+  assert.strictEqual(across.venues[1].seated[0].student.regnNo, students[42].regnNo);
+  const regs = across.venues.flatMap((v) => v.seated.map((s) => s.student.regnNo));
+  assert.strictEqual(new Set(regs).size, 60);
+  assert.deepStrictEqual(
+    regs,
+    students.slice(0, 60).map((s) => s.regnNo)
+  );
+  // Overflow only after all assigned venues processed (none here)
+  assert.strictEqual(across.overflow.length, 0);
+  console.log("✓ same group fills SC310 to 42 before continuing into SC311");
+}
+
+function testOverflowOnlyAfterAllVenues() {
+  const students = makeRegnStudents(90, "26BIT", "24MAI118-BIT-2026-2030");
+  const venues = [
+    { id: "a", name: "SC310", rows: 7 },
+    { id: "b", name: "SC311", rows: 7 },
+  ];
+  const across = allocateSingleCourseAcrossVenues(students, venues);
+  assert.strictEqual(across.venues[0].seatedCount, 42);
+  assert.strictEqual(across.venues[1].seatedCount, 42);
+  assert.strictEqual(across.overflowCount, 6);
+  assert.strictEqual(across.nextIndex, 84);
+  console.log("✓ overflow reported only after all eligible SC venues processed");
+}
+
+function testDiagnosticSummaryWiring() {
+  const page = read("src/pages/Allotment.jsx");
+  assert.match(page, /summarizeSingleCourseGroupAllocation/);
+  assert.match(page, /parseScheduledCourseGroupKey/);
+  assert.match(page, /groupExhausted/);
+  assert.match(page, /SC group /);
+  const parsed = parseScheduledCourseGroupKey("24MAI118-AUTOMOBILE-2026-2030");
+  assert.strictEqual(parsed.courseCode, "24MAI118");
+  assert.strictEqual(parsed.department, "AUTOMOBILE");
+  assert.strictEqual(parsed.batch, "2026-2030");
+  console.log("✓ diagnostic summary helpers wired + key parsing");
+}
+
 function main() {
   testModeOffPreservedInWiring();
   testActivationRules();
@@ -487,6 +620,10 @@ function main() {
   testSameCourseCodeSeparateGroups();
   testBugEmptyVenuesNotLockedForLaterGroups();
   testInsufficientVenuesExactOverflow();
+  testBauBmeDifferentGroupsLeaveSpareCapacity();
+  testSameGroupFillsVenueBeforeNext();
+  testOverflowOnlyAfterAllVenues();
+  testDiagnosticSummaryWiring();
   console.log("\nAll single-course seating checks passed.");
 }
 

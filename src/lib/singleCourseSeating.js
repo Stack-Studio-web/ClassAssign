@@ -442,6 +442,83 @@ export function shouldLockSingleCourseVenue(venueResult) {
 }
 
 /**
+ * Parse scheduled-course composite key `courseCode-department-batch` for diagnostics.
+ * Batch may contain hyphens (e.g. 2026-2030); course/dept are first two segments.
+ */
+export function parseScheduledCourseGroupKey(key) {
+  const raw = String(key || "").trim();
+  if (!raw) {
+    return { key: "", courseCode: "", department: "", batch: "" };
+  }
+  const parts = raw.split("-");
+  if (parts.length < 2) {
+    return { key: raw, courseCode: raw, department: "", batch: "" };
+  }
+  const courseCode = parts[0];
+  const department = parts[1];
+  const batch = parts.slice(2).join("-");
+  return { key: raw, courseCode, department, batch };
+}
+
+/**
+ * Structured Single-Course allocation summary (no student PII).
+ * Distinguishes "group exhausted → empty usable seats OK" from true overflow.
+ */
+export function summarizeSingleCourseGroupAllocation({
+  groupKey,
+  studentCount,
+  venueSpecs,
+  across,
+} = {}) {
+  const parsed = parseScheduledCourseGroupKey(groupKey);
+  const specs = Array.isArray(venueSpecs) ? venueSpecs : [];
+  const venues = across?.venues || [];
+  const availableUsableCapacity = specs.reduce((sum, spec) => {
+    const layout = Array.isArray(spec.layout) ? spec.layout : SINGLE_COURSE_LAYOUT;
+    const blocked = Array.isArray(spec.blocked) ? spec.blocked : SINGLE_COURSE_BLOCKED;
+    const rows = Number(spec.rows) || 0;
+    return sum + singleCourseUsableCapacity(layout, rows, blocked);
+  }, 0);
+
+  const perVenue = venues.map((vr) => ({
+    venueId: vr.venueId ?? null,
+    venueName: vr.venueName ?? null,
+    capacity: Number(vr.capacity) || 0,
+    seated: Number(vr.seatedCount) || 0,
+    emptyUsable: Number(vr.emptyUsableSeats) || 0,
+    blocked: Number(vr.blockedCount) || 0,
+    skippedEmpty: Boolean(vr.skippedEmpty),
+    groupExhausted:
+      !vr.skippedEmpty &&
+      Number(vr.seatedCount) > 0 &&
+      Number(vr.emptyUsableSeats) > 0 &&
+      Number(across?.overflowCount) === 0,
+  }));
+
+  const eligible = Number(studentCount) || 0;
+  const seated = Number(across?.seatedCount) || 0;
+  const overflow = Number(across?.overflowCount) || 0;
+  const remaining = Math.max(0, eligible - seated);
+
+  return {
+    groupId: parsed.key,
+    courseCode: parsed.courseCode,
+    department: parsed.department,
+    batch: parsed.batch,
+    studentCount: eligible,
+    assignedVenues: specs.map((s) => s.name || s.venueName || s.id || s.venueId),
+    availableUsableCapacity,
+    allocatedPerVenue: perVenue,
+    seated,
+    remaining,
+    overflow,
+    // Empty usable seats with overflow 0 means this group simply had fewer students than capacity.
+    groupExhaustedWithSpareCapacity:
+      overflow === 0 && perVenue.some((v) => v.groupExhausted),
+  };
+}
+
+/**
  * Simulate multi-group Single-Course allotment across a shared venue pool.
  * Each group is an independent ordered list (same courseCode may appear in many groups).
  * @returns {{ ok: true, byGroup: object[], lockedVenueIds: string[], totalSeated: number, totalOverflow: number }}
