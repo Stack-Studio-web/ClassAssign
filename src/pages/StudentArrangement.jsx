@@ -4,6 +4,8 @@ import { Link } from "react-router-dom";
 import api from "../lib/api";
 import { useReactToPrint } from "react-to-print";
 import { useAcademicSession } from "../context/AcademicSessionContext";
+import { useToast } from "../context/ToastContext";
+import { getApiError, getApiErrorTitle } from "../lib/errors";
 import LogoKCT from "../assets/logo.png";
 import LogoKSI from "../assets/logo KSI.png";
 import {
@@ -13,6 +15,13 @@ import {
   HALL_ALLOTMENT_PRINT_CSS,
   HALL_ALLOTMENT_PAGE_STYLE,
 } from "../lib/hallExportOrder";
+
+const DEFAULT_HALL_HEADER = Object.freeze({
+  logo: "KCT",
+  department: "DEPARTMENT OF CSE, IT, AIDS, MCA",
+  program1: "BE CSE - B.Tech IT - B.Tech AI&DS",
+  program2: "M.Tech DS - M.E CSE (Cyber Security)",
+});
 
 /** Group flat print rows into contiguous hall segments for safe per-page rowspan. */
 const groupPrintRowsByHall = (rows) => {
@@ -176,28 +185,51 @@ const getStudentsFromCell = (cell) => {
 };
 
 const ExamHallAllotment = () => {
+  const toast = useToast();
   const { ay, setAy, semester, setSemester, category, setCategory } = useAcademicSession();
   const [seatingPlans, setSeatingPlans] = useState([]);
   const [filteredHalls, setFilteredHalls] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [headerHydrated, setHeaderHydrated] = useState(false);
+  const [headerSaving, setHeaderSaving] = useState(false);
   const [error, setError] = useState(null);
   const [filters, setFilters] = useState({ date: "", session: "" });
   const [isAdminOrFi, setIsAdminOrFi] = useState(false);
 
-  const [departmentLine, setDepartmentLine] = useState("DEPARTMENT OF CSE, IT, AIDS, MCA");
-  const [programmeLine1, setProgrammeLine1] = useState("BE CSE - B.Tech IT - B.Tech AI&DS");
-  const [programmeLine2, setProgrammeLine2] = useState("M.Tech DS - M.E CSE (Cyber Security)");
-
-  const getInitialLogoType = () => {
-    if (typeof window === "undefined") return "KCT";
-    return window.localStorage.getItem("kctLogoType") || "KCT";
-  };
-  const [logoType, setLogoType] = useState(getInitialLogoType);
+  // Defaults only until the authenticated user's saved config loads (no shared localStorage).
+  const [departmentLine, setDepartmentLine] = useState(DEFAULT_HALL_HEADER.department);
+  const [programmeLine1, setProgrammeLine1] = useState(DEFAULT_HALL_HEADER.program1);
+  const [programmeLine2, setProgrammeLine2] = useState(DEFAULT_HALL_HEADER.program2);
+  const [logoType, setLogoType] = useState(DEFAULT_HALL_HEADER.logo);
 
   const handleLogoChange = (value) => {
     setLogoType(value);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem("kctLogoType", value);
+  };
+
+  const applyHeaderConfig = (cfg) => {
+    if (!cfg || typeof cfg !== "object") return;
+    setLogoType(String(cfg.logo || "KCT").toUpperCase() === "KSI" ? "KSI" : "KCT");
+    if (cfg.department != null) setDepartmentLine(String(cfg.department));
+    if (cfg.program1 != null) setProgrammeLine1(String(cfg.program1));
+    if (cfg.program2 != null) setProgrammeLine2(String(cfg.program2));
+  };
+
+  const handleSaveHeader = async () => {
+    setHeaderSaving(true);
+    try {
+      const res = await api.put("/hall-header", {
+        logo: logoType,
+        department: departmentLine,
+        program1: programmeLine1,
+        program2: programmeLine2,
+      });
+      const saved = res.data?.data || res.data;
+      applyHeaderConfig(saved);
+      toast.success(res.data?.message || "Header settings saved for your account.");
+    } catch (err) {
+      toast.error(getApiError(err), getApiErrorTitle(err) || "Save failed");
+    } finally {
+      setHeaderSaving(false);
     }
   };
 
@@ -233,13 +265,29 @@ const ExamHallAllotment = () => {
       }
     }
 
+    let cancelled = false;
+
+    const fetchHeaderConfig = async () => {
+      try {
+        const res = await api.get("/hall-header");
+        if (cancelled) return;
+        applyHeaderConfig(res.data?.data || res.data);
+      } catch (err) {
+        // Keep built-in defaults when no saved config / transient failure.
+        console.warn("Hall header settings load:", err?.message || err);
+      } finally {
+        if (!cancelled) setHeaderHydrated(true);
+      }
+    };
+
     const fetchHalls = async () => {
       try {
         // ✅ 4. Use 'api' instance instead of 'axios'
         const res = await api.get("/seating");
-        setSeatingPlans(res.data || []);
+        if (!cancelled) setSeatingPlans(res.data || []);
       } catch (err) {
         console.error(err);
+        if (cancelled) return;
         if (err.response?.status === 401) {
           setError("Session expired. Please log in again.");
         } else if (err.isForbidden) {
@@ -248,10 +296,15 @@ const ExamHallAllotment = () => {
           setError("Failed to load hall data.");
         }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
+
+    fetchHeaderConfig();
     fetchHalls();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -353,7 +406,9 @@ const ExamHallAllotment = () => {
     </div>
   );
 
-  if (loading) return <div className="text-center p-6 text-gray-700">Loading...</div>;
+  if (loading || !headerHydrated) {
+    return <div className="text-center p-6 text-gray-700">Loading...</div>;
+  }
   if (error) return <div className="text-center p-6 text-red-500">{error}</div>;
 
   return (
@@ -455,7 +510,7 @@ const ExamHallAllotment = () => {
         </div>
 
 
-        {/* Logo / Department / Program — same left padding */}
+        {/* Logo / Department / Program — per authenticated user (saved via /api/hall-header) */}
         <div className="flex flex-wrap gap-2 sm:gap-3 items-center text-xs">
           <label className="flex items-center gap-1 flex-shrink-0">
             <span className="font-medium whitespace-nowrap">Logo:</span>
@@ -495,6 +550,14 @@ const ExamHallAllotment = () => {
               className="border border-gray-300 px-2 py-1.5 rounded flex-1 min-w-0"
             />
           </label>
+          <button
+            type="button"
+            onClick={handleSaveHeader}
+            disabled={headerSaving}
+            className="bg-green-600 text-white px-3 py-1.5 rounded shadow hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex-shrink-0"
+          >
+            {headerSaving ? "Saving…" : "Save"}
+          </button>
         </div>
       </div>
 

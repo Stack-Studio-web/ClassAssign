@@ -66,6 +66,7 @@ const mentorPortalRoutes = require("./routes/mentorPortalRoutes");
 const ensureAcademicSchema = require("./utils/ensureAcademicSchema");
 const ensureTransferSchema = require("./utils/ensureTransferSchema");
 const ensureFacultyChangeNotifySchema = require("./utils/ensureFacultyChangeNotifySchema");
+const ensureHallHeaderSettingsSchema = require("./utils/ensureHallHeaderSettingsSchema");
 const ensureAcademicContextSchema = require("./utils/ensureAcademicContextSchema");
 const ensureStrictFiIsolation = require("./utils/ensureStrictFiIsolation");
 const ensureQpakSchema = require("./utils/ensureQpakSchema");
@@ -116,6 +117,7 @@ app.get("/health", (_req, res) => {
 
 app.use("/api/venues", venueRoutes);
 app.use("/api/seating", seatingRoutes);
+app.use("/api/hall-header", require("./routes/hallHeaderRoutes"));
 app.use("/api/lab-exams", require("./routes/labExamRoutes"));
 app.use("/api/exams", examRoutes);
 app.use("/api/students", studentRoutes);
@@ -171,6 +173,7 @@ async function start() {
       await ensureHallNotificationSchema();
       await ensureTransferSchema();
       await ensureFacultyChangeNotifySchema();
+      await ensureHallHeaderSettingsSchema();
       await ensureAcademicContextSchema();
       await ensureStrictFiIsolation();
       await ensureQpakSchema();
