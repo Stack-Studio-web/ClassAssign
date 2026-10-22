@@ -32,8 +32,10 @@ function flattenLayoutStudents(layoutJson) {
           : [];
       for (const seat of seats) {
         if (!seat || typeof seat !== "object") continue;
+        // Single-Course Mode blocked markers are not students.
+        if (seat.blocked === true) continue;
         const regNo = String(seat.regn_no ?? seat.regnNo ?? seat.regNo ?? "").trim();
-        if (!regNo || regNo === "-") continue;
+        if (!regNo || regNo === "-" || regNo === "0") continue;
         const courseCode = String(
           seat.course ?? seat.courseCode ?? seat.course_description ?? seat.courseDescription ?? ""
         ).trim();

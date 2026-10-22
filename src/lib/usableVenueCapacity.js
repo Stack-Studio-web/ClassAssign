@@ -15,6 +15,12 @@ import {
   defaultBenchConfigForVenue,
   defaultRowConfigsForVenue,
 } from "./benchConfigOverride.js";
+import {
+  effectiveLayoutFromRowConfigs,
+  isSingleCourseLayout,
+  singleCourseUsableCapacity,
+  SINGLE_COURSE_BLOCKED,
+} from "./singleCourseSeating.js";
 
 export function benchConfigOf(venue) {
   if (Array.isArray(venue?.benchConfig) && venue.benchConfig.length) {
@@ -55,6 +61,18 @@ export function usableCapacityForSingleCourse(venue, { allowAdjacent = false } =
 
   if (rows <= 0 || cols <= 0) {
     return Number(venue?.capacity) || 0;
+  }
+
+  // Optional Single-Course Mode: blocked seats define usable capacity (no adjacency).
+  if (venue?.singleCourseMode) {
+    const layout = effectiveLayoutFromRowConfigs(rowConfigs);
+    if (isSingleCourseLayout(layout)) {
+      return singleCourseUsableCapacity(
+        layout,
+        rows,
+        venue.singleCourseBlocked || SINGLE_COURSE_BLOCKED
+      );
+    }
   }
 
   if (allowAdjacent) {

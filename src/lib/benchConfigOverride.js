@@ -312,10 +312,18 @@ export function layoutsEqual(a, b) {
  * Encode layout for seating_plan_venues.bench_config (backward compatible).
  * Always stores v2 with rowConfigs so temporary extra rows are preserved even
  * when every row shares the same seats-per-column pattern.
+ * Optional single-course mode snapshot is additive and ignored by older readers.
  */
-export function encodeBenchConfigForStorage(rowConfigs) {
+export function encodeBenchConfigForStorage(rowConfigs, extras = {}) {
   if (!Array.isArray(rowConfigs) || rowConfigs.length === 0) return null;
-  return { v: 2, rowConfigs: rowConfigs.map((r) => [...r]) };
+  const payload = { v: 2, rowConfigs: rowConfigs.map((r) => [...r]) };
+  if (extras.singleCourseMode) {
+    payload.singleCourseMode = true;
+    if (Array.isArray(extras.blocked)) {
+      payload.blocked = extras.blocked.map((pair) => [Number(pair[0]), Number(pair[1])]);
+    }
+  }
+  return payload;
 }
 
 /**

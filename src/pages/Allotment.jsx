@@ -67,6 +67,20 @@ import {
   removeRowFromLayout,
   encodeBenchConfigForStorage,
 } from "../lib/benchConfigOverride";
+import {
+  SINGLE_COURSE_LAYOUT,
+  SINGLE_COURSE_BLOCKED,
+  validateSingleCourseModeActivation,
+  allocateSingleCourse,
+  applySingleCourseAllocationToGrid,
+  effectiveLayoutFromRowConfigs,
+  isSingleCourseLayout,
+  singleCourseUsableCapacity,
+  singleCoursePhysicalCapacity,
+  singleCourseBlockedCount,
+  isBlockedCellSlot,
+  formatSingleCourseCell,
+} from "../lib/singleCourseSeating";
 
 // Normalize student/ineligible objects (PostgreSQL may return lowercase keys)
 const normalizeStudent = (s) => ({
@@ -255,6 +269,12 @@ const Allotment = () => {
   /** Draft editors keyed by venue uuid ({ benchesRow, rowConfigs }) before Apply. */
   const [benchConfigDrafts, setBenchConfigDrafts] = useState({});
   const [benchConfigError, setBenchConfigError] = useState("");
+  /**
+   * Per-venue Single-Course Mode (uuid → boolean). Session-scoped; default OFF.
+   * Never written to permanent venue settings.
+   */
+  const [singleCourseModeByVenue, setSingleCourseModeByVenue] = useState({});
+  const [singleCourseOverflowSummary, setSingleCourseOverflowSummary] = useState(null);
   /** uuid -> { status, available, conflicts, message } for current exam slot */
   const [venueSlotStatus, setVenueSlotStatus] = useState({});
   const [venueSlotWarning, setVenueSlotWarning] = useState(null);
@@ -580,6 +600,8 @@ const Allotment = () => {
     setBenchConfigOverrides({});
     setBenchConfigDrafts({});
     setBenchConfigError("");
+    setSingleCourseModeByVenue({});
+    setSingleCourseOverflowSummary(null);
   }, [examDate, examSession, examStartTime, examEndTime]);
 
   // Sync / restore custom course order + pairing for the current exam slot
@@ -1026,6 +1048,19 @@ const Allotment = () => {
     );
   };
 
+  const toggleSingleCourseMode = (venue) => {
+    const id = String(venue.uuid);
+    setSingleCourseModeByVenue((prev) => ({
+      ...prev,
+      [id]: !prev[id],
+    }));
+    setGeneratedSeating(null);
+    setAllottedStudents([]);
+    setAutoPlanValidation(null);
+    setSingleCourseOverflowSummary(null);
+    setBenchConfigError("");
+  };
+
   const occupiedVenueWarning = useMemo(() => {
     if (seatingMode !== "manual") return null;
     for (const v of selectedVenues) {
@@ -1079,6 +1114,7 @@ const Allotment = () => {
     setError("");
     setAdjacencyOverrideUsed(false);
     setAutoPlanValidation(null);
+    setSingleCourseOverflowSummary(null);
  
     if (!hasWriteAccess) {
       return setError("Access denied: Only Admin and Faculty Incharge can generate seating plans.");
@@ -1108,13 +1144,22 @@ const Allotment = () => {
 
     // Apply temporary bench overrides (this exam only) before capacity / generate.
     const venuesById = {};
+    const attachSingleCourseFlag = (venue) => {
+      const id = String(venue.uuid);
+      const effective = withEffectiveBenchConfig(venue, benchConfigOverrides);
+      return {
+        ...effective,
+        singleCourseMode: Boolean(singleCourseModeByVenue[id]),
+        singleCourseBlocked: SINGLE_COURSE_BLOCKED,
+      };
+    };
     for (const v of venues) {
-      venuesById[String(v.uuid)] = withEffectiveBenchConfig(v, benchConfigOverrides);
+      venuesById[String(v.uuid)] = attachSingleCourseFlag(v);
     }
     for (const v of selectedVenues) {
       const id = String(v.uuid);
       if (!venuesById[id]) {
-        venuesById[id] = withEffectiveBenchConfig(v, benchConfigOverrides);
+        venuesById[id] = attachSingleCourseFlag(v);
       }
     }
 
@@ -1365,6 +1410,20 @@ const Allotment = () => {
       );
     }
  
+    // Pre-validate Single-Course Mode layout per venue (course uniqueness checked at fill).
+    for (const venue of venuesToUse) {
+      if (!venue.singleCourseMode) continue;
+      const rowConfigs = venue.rowConfigs || defaultRowConfigsForVenue(venue);
+      const layout = effectiveLayoutFromRowConfigs(rowConfigs);
+      if (!layout || !isSingleCourseLayout(layout)) {
+        setIsGenerating(false);
+        return setError(
+          `❌ ${venue.name} (Single-Course Mode): requires effective layout [3, 2, 2, 3]. ` +
+            `Current applied layout is [${(layout || []).join(", ") || "unset"}].`
+        );
+      }
+    }
+
     // Initialize venue grids (per-row column configs when present)
     const venueGrids = venuesToUse.map((venue) => {
       const rowConfigs =
@@ -1382,10 +1441,14 @@ const Allotment = () => {
         ),
         benchConfig: rowConfigs[0] ? [...rowConfigs[0]] : Array(cols).fill(2),
         rowConfigs,
+        singleCourseMode: Boolean(venue.singleCourseMode),
+        singleCourseStats: null,
       };
     });
  
     const allSeatedStudents = [];
+    const singleCourseOverflowByVenue = [];
+    const singleCourseVenuesFilled = new Set();
  
     // ✅ IMPROVED MULTI-PASS FILLING: Fill VERTICALLY (column-by-column) with cross-bench adjacency check
     for (let courseIdx = 0; courseIdx < sortedCourses.length; courseIdx++) {
@@ -1446,6 +1509,84 @@ const Allotment = () => {
         );
        
         logger.log(`  📍 Venue: ${venue.name} (${rows} rows)`);
+
+        // —— Optional Single-Course Mode (explicit + [3,2,2,3] + one course) ——
+        if (venueData.singleCourseMode) {
+          const venueId = String(venue.uuid);
+          if (singleCourseVenuesFilled.has(venueId)) {
+            continue;
+          }
+
+          const remaining = students.slice(studentIndex);
+          const scCheck = validateSingleCourseModeActivation({
+            enabled: true,
+            rowConfigs,
+            students: remaining,
+            blocked: SINGLE_COURSE_BLOCKED,
+          });
+          if (!scCheck.ok) {
+            setIsGenerating(false);
+            return setError(
+              `❌ ${venue.name} (Single-Course Mode): ${scCheck.message}`
+            );
+          }
+
+          const allocation = allocateSingleCourse(
+            remaining,
+            scCheck.layout,
+            scCheck.rows,
+            scCheck.blocked
+          );
+          if (!allocation.ok) {
+            setIsGenerating(false);
+            return setError(
+              `❌ ${venue.name} (Single-Course Mode): ${allocation.message}`
+            );
+          }
+
+          const filledGrid = applySingleCourseAllocationToGrid(allocation, rowConfigs);
+          for (let r = 0; r < filledGrid.length; r++) {
+            grid[r] = filledGrid[r];
+          }
+
+          for (const { student } of allocation.seated) {
+            allSeatedStudents.push(student);
+          }
+          studentIndex += allocation.seatedCount;
+          venueData.singleCourseStats = {
+            seatedCount: allocation.seatedCount,
+            overflowCount: allocation.overflowCount,
+            emptyUsableSeats: allocation.emptyUsableSeats,
+            blockedCount: allocation.blockedCount,
+            capacity: allocation.capacity,
+            physicalCapacity: allocation.physicalCapacity,
+            totalStudents: remaining.length,
+          };
+          singleCourseVenuesFilled.add(venueId);
+
+          if (allocation.overflowCount > 0) {
+            singleCourseOverflowByVenue.push({
+              venueName: venue.name,
+              seated: allocation.seatedCount,
+              overflow: allocation.overflowCount,
+              capacity: allocation.capacity,
+            });
+            logger.log(
+              `   ⚠️ Single-Course overflow at ${venue.name}: ` +
+                `${allocation.seatedCount} seated, ${allocation.overflowCount} remaining`
+            );
+          } else {
+            logger.log(
+              `   ✅ Single-Course Mode: ${allocation.seatedCount}/${allocation.capacity} usable seats filled`
+            );
+          }
+
+          if (studentIndex >= students.length) {
+            break venueLoop;
+          }
+          // Remaining students continue to the next venue for this course.
+          continue;
+        }
         
         // ✅ VERTICAL FILLING: Column-by-column, then row-by-row, then seat-by-seat
         for (let c = 0; c < cols; c++) {
@@ -1552,6 +1693,22 @@ const Allotment = () => {
         failDiag.shortfall = unplaced;
         failDiag.seated = studentIndex;
 
+        // Single-Course Mode: seat as many as capacity allows; report overflow (do not hard-fail).
+        const usedSingleCourse = courseVenueGrids.some((vg) => vg.singleCourseMode);
+        if (usedSingleCourse && !allowAdjacentSeating) {
+          singleCourseOverflowByVenue.push({
+            venueName: courseVenueGrids.map((g) => g.venue.name).join(", "),
+            courseKey: key,
+            seated: studentIndex,
+            overflow: unplaced,
+            capacity: failDiag.usableCapacity,
+          });
+          logger.log(
+            `   ⚠️ Single-Course overflow for ${key}: seated ${studentIndex}, unallotted ${unplaced}`
+          );
+          continue;
+        }
+
         if (!allowAdjacentSeating) {
           setIsGenerating(false);
           const detail = formatCourseCapacityError({
@@ -1570,7 +1727,9 @@ const Allotment = () => {
         }
 
         // Fallback pass: place remaining students in any empty slots of THIS course's venues only.
+        // Never place into Single-Course blocked markers.
         for (const venueData of courseVenueGrids) {
+          if (venueData.singleCourseMode) continue;
           const { grid, rowConfigs } = venueData;
           const rows = rowConfigs.length;
           const cols = Math.max(
@@ -1590,6 +1749,7 @@ const Allotment = () => {
                 if (!grid[r][c]) grid[r][c] = [];
                 const cellStudents = grid[r][c];
                 if (cellStudents[s]) continue;
+                if (isBlockedCellSlot(cellStudents[s])) continue;
                 cellStudents[s] = students[studentIndex];
                 allSeatedStudents.push(students[studentIndex]);
                 studentIndex++;
@@ -1655,12 +1815,16 @@ const Allotment = () => {
     const venuesResult = [];
 
     venueGrids.forEach((venueData) => {
-      const { venue, grid, benchConfig, rowConfigs } = venueData;
+      const { venue, grid, benchConfig, rowConfigs, singleCourseMode, singleCourseStats } =
+        venueData;
 
       const hasStudents = grid.some((row) =>
         row.some(
           (cell) =>
-            cell && Array.isArray(cell) && cell.length > 0 && cell.some((s) => s !== null)
+            cell &&
+            Array.isArray(cell) &&
+            cell.length > 0 &&
+            cell.some((s) => s !== null && !isBlockedCellSlot(s))
         )
       );
 
@@ -1678,14 +1842,16 @@ const Allotment = () => {
             cell[slotIdx] ?? null
           );
 
-          return normalizedCell.map((student) =>
-            student
-              ? {
-                  regn_no: student.regnNo,
-                  course: student.courseDescription,
-                }
-              : null
-          );
+          return normalizedCell.map((student) => {
+            if (!student) return null;
+            if (isBlockedCellSlot(student)) {
+              return formatSingleCourseCell(student);
+            }
+            return {
+              regn_no: student.regnNo ?? student.regn_no,
+              course: student.courseDescription ?? student.course,
+            };
+          });
         })
       );
 
@@ -1698,6 +1864,12 @@ const Allotment = () => {
         previewFacultyName = "Assign in preview";
       }
 
+      const layout = effectiveLayoutFromRowConfigs(rowConfigs);
+      const scUsable =
+        singleCourseMode && isSingleCourseLayout(layout)
+          ? singleCourseUsableCapacity(layout, rowConfigs.length, SINGLE_COURSE_BLOCKED)
+          : null;
+
       // Snapshot effective layout onto the venue object so save-plan / exports
       // persist this allotment's layout (not a later permanent venue change).
       venuesResult.push({
@@ -1708,13 +1880,37 @@ const Allotment = () => {
           // Keep a flat array for UI; encodeBenchConfigForStorage runs at save-time.
           benchConfig: rowConfigs[0] ? [...rowConfigs[0]] : benchConfig,
           rowConfigs,
-          capacity: capacityFromRowConfigs(rowConfigs),
+          capacity:
+            scUsable != null ? scUsable : capacityFromRowConfigs(rowConfigs),
+          singleCourseMode: Boolean(singleCourseMode),
+          singleCourseBlocked: singleCourseMode ? [...SINGLE_COURSE_BLOCKED] : undefined,
         },
         seats: formattedGrid,
         facultyId: assignedFacultyId,
         previewFacultyName,
+        singleCourseStats: singleCourseStats || null,
       });
     });
+
+    if (singleCourseOverflowByVenue.length > 0) {
+      const totalOverflow = singleCourseOverflowByVenue.reduce(
+        (s, x) => s + (Number(x.overflow) || 0),
+        0
+      );
+      const totalSeated = singleCourseOverflowByVenue.reduce(
+        (s, x) => s + (Number(x.seated) || 0),
+        0
+      );
+      setSingleCourseOverflowSummary({
+        seated: totalSeated,
+        overflow: totalOverflow,
+        details: singleCourseOverflowByVenue,
+      });
+      setError(
+        `⚠️ Single-Course Mode overflow: ${totalSeated} seated, ${totalOverflow} unallotted. ` +
+          `Add another venue or more rows, then regenerate.`
+      );
+    }
 
     let finalVenues = venuesResult;
 
@@ -1894,8 +2090,15 @@ const Allotment = () => {
           Array.isArray(v.venue.rowConfigs) && v.venue.rowConfigs.length
             ? v.venue.rowConfigs
             : null;
+        const singleCourseMode = Boolean(v.venue.singleCourseMode);
         const benchConfig =
-          (rowConfigs && encodeBenchConfigForStorage(rowConfigs)) ||
+          (rowConfigs &&
+            encodeBenchConfigForStorage(rowConfigs, {
+              singleCourseMode,
+              blocked: singleCourseMode
+                ? v.venue.singleCourseBlocked || SINGLE_COURSE_BLOCKED
+                : undefined,
+            })) ||
           v.venue.benchConfig ||
           Array(v.venue.benchesCol).fill(2);
         return {
@@ -1905,6 +2108,7 @@ const Allotment = () => {
           benchesRow: rowConfigs?.length || v.venue.benchesRow,
           benchConfig,
           rowConfigs: rowConfigs || undefined,
+          singleCourseMode: singleCourseMode || undefined,
           facultyId: facultyMode === "MANUAL" ? manualIds[0] || null : v.facultyId,
           facultyIds: facultyMode === "MANUAL" ? manualIds : v.facultyId ? [v.facultyId] : [],
         };
@@ -1943,6 +2147,8 @@ const Allotment = () => {
       setBenchConfigOverrides({});
       setBenchConfigDrafts({});
       setBenchConfigError("");
+      setSingleCourseModeByVenue({});
+      setSingleCourseOverflowSummary(null);
 
       // Refresh global allotment pool / time-slot status after save
       try {
@@ -2825,7 +3031,22 @@ const Allotment = () => {
                             onFocus={() => ensureBenchDraft(v)}
                           >
                             <div className="flex flex-wrap items-baseline justify-between gap-2">
-                              <p className="text-sm font-semibold text-gray-900">{v.name}</p>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="text-sm font-semibold text-gray-900">{v.name}</p>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleSingleCourseMode(v)}
+                                  className={`h-7 px-2.5 rounded-lg text-[11px] font-semibold border transition-colors ${
+                                    singleCourseModeByVenue[id]
+                                      ? "border-emerald-400 bg-emerald-50 text-emerald-900"
+                                      : "border-gray-300 bg-white text-gray-600 hover:bg-gray-50"
+                                  }`}
+                                  title="Special seating for layout 3,2,2,3 with a single course only"
+                                >
+                                  Single-Course Mode:{" "}
+                                  {singleCourseModeByVenue[id] ? "ON" : "OFF"}
+                                </button>
+                              </div>
                               <p className="text-[11px] text-gray-600">
                                 Default: {defaultRows.length} rows ·{" "}
                                 {(defaultRows[0] || []).join(", ")} · Cap{" "}
@@ -2838,6 +3059,48 @@ const Allotment = () => {
                                 ) : null}
                               </p>
                             </div>
+                            {singleCourseModeByVenue[id] ? (
+                              <p className="text-[11px] font-medium text-emerald-800">
+                                Special seating: {SINGLE_COURSE_LAYOUT.join(",")} · Single
+                                course only
+                                {(() => {
+                                  const appliedLayout =
+                                    effectiveLayoutFromRowConfigs(
+                                      applied?.rowConfigs || draftRows
+                                    );
+                                  if (!isSingleCourseLayout(appliedLayout)) {
+                                    return (
+                                      <span className="text-amber-800">
+                                        {" "}
+                                        · Apply layout [3, 2, 2, 3] before generate
+                                      </span>
+                                    );
+                                  }
+                                  const rows = (applied?.rowConfigs || draftRows).length;
+                                  const usable = singleCourseUsableCapacity(
+                                    appliedLayout,
+                                    rows,
+                                    SINGLE_COURSE_BLOCKED
+                                  );
+                                  const physical = singleCoursePhysicalCapacity(
+                                    appliedLayout,
+                                    rows
+                                  );
+                                  const blocked = singleCourseBlockedCount(
+                                    appliedLayout,
+                                    rows,
+                                    SINGLE_COURSE_BLOCKED
+                                  );
+                                  return (
+                                    <span>
+                                      {" "}
+                                      · Usable {usable} / physical {physical} (blocked{" "}
+                                      {blocked})
+                                    </span>
+                                  );
+                                })()}
+                              </p>
+                            ) : null}
 
                             <div className="flex flex-wrap items-center gap-2">
                               <p className="text-xs font-medium text-gray-800">
@@ -3063,6 +3326,13 @@ const Allotment = () => {
                 ⚠️ Adjacency override was used while generating this layout.
               </div>
             )}
+            {singleCourseOverflowSummary?.overflow > 0 ? (
+              <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900">
+                ⚠️ Single-Course overflow: {singleCourseOverflowSummary.seated} seated,{" "}
+                {singleCourseOverflowSummary.overflow} unallotted. Add another venue or
+                more rows, then regenerate.
+              </div>
+            ) : null}
 
             {facultyMode === "AUTO" && autoPlanValidation && (
               <div
@@ -3220,10 +3490,23 @@ const Allotment = () => {
                     <div>
                       <h3 className="text-lg font-semibold text-indigo-900">
                         {item.venue.name}
+                        {item.venue.singleCourseMode ? (
+                          <span className="ml-2 text-[11px] font-semibold text-emerald-700">
+                            · Single-Course Mode
+                          </span>
+                        ) : null}
                       </h3>
                       <p className="text-xs text-gray-500">
                         Capacity: {item.venue.capacity}
                       </p>
+                      {item.singleCourseStats ? (
+                        <p className="text-xs text-gray-600">
+                          Seated {item.singleCourseStats.seatedCount}
+                          {" · "}Empty usable {item.singleCourseStats.emptyUsableSeats}
+                          {" · "}Blocked {item.singleCourseStats.blockedCount}
+                          {" · "}Overflow {item.singleCourseStats.overflowCount}
+                        </p>
+                      ) : null}
                       {Array.isArray(item.venue.rowConfigs) &&
                       item.venue.rowConfigs.length ? (
                         <p className="text-xs text-gray-500">
@@ -3339,14 +3622,24 @@ const Allotment = () => {
                                 ? Number(rowConfigs[rIdx][cIdx]) || 2
                                 : benchConfig[cIdx] || 2;
  
-                              let students = [];
+                              let slots = [];
                               if (cell === "Empty" || !cell) {
-                                students = Array(seatsInCol).fill("");
+                                slots = Array.from({ length: seatsInCol }, () => ({
+                                  label: "",
+                                  blocked: false,
+                                }));
                               } else if (Array.isArray(cell)) {
-                                students = Array.from(
-                                  { length: seatsInCol },
-                                  (_, slotIdx) => cell[slotIdx]?.regn_no ?? cell[slotIdx]?.regnNo ?? ""
-                                );
+                                slots = Array.from({ length: seatsInCol }, (_, slotIdx) => {
+                                  const seat = cell[slotIdx];
+                                  if (isBlockedCellSlot(seat)) {
+                                    return { label: "0", blocked: true };
+                                  }
+                                  return {
+                                    label:
+                                      seat?.regn_no ?? seat?.regnNo ?? "",
+                                    blocked: false,
+                                  };
+                                });
                               }
  
                               return (
@@ -3356,16 +3649,20 @@ const Allotment = () => {
                                   colSpan={seatsInCol}
                                 >
                                   <div className="flex h-full">
-                                    {students.map((student, sIdx) => (
+                                    {slots.map((slot, sIdx) => (
                                       <div
                                         key={`seat-${sIdx}`}
                                         className={`flex-1 px-2 py-2 text-[10px] text-center border-r last:border-r-0 border-gray-200 ${
-                                          student
-                                            ? "font-semibold text-gray-900"
-                                            : "text-gray-300 italic"
+                                          slot.blocked
+                                            ? "bg-gray-200 text-gray-500 font-semibold"
+                                            : slot.label
+                                              ? "font-semibold text-gray-900"
+                                              : "text-gray-300 italic"
                                         }`}
                                       >
-                                        {student || "Empty"}
+                                        {slot.blocked
+                                          ? "0"
+                                          : slot.label || "Empty"}
                                       </div>
                                     ))}
                                   </div>

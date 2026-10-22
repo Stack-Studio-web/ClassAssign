@@ -35,6 +35,10 @@ function expandBenchConfigForClient(v) {
     v.benchesRow = v.rowConfigs.length;
     v.benchesCol = v.rowConfigs[0]?.length || 0;
     v.benchConfig = v.rowConfigs[0] ? [...v.rowConfigs[0]] : [];
+    if (raw.singleCourseMode) {
+      v.singleCourseMode = true;
+      v.singleCourseBlocked = Array.isArray(raw.blocked) ? raw.blocked : null;
+    }
   } else if (Array.isArray(raw)) {
     v.benchConfig = raw.map((n) => Number(n) || 2);
     v.benchesCol = v.benchConfig.length;

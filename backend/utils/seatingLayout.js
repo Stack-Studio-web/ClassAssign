@@ -73,8 +73,10 @@ function flattenArrangementForStorage(seatingArrangement, benchConfig) {
       if (Array.isArray(cell)) {
         for (let s = 0; s < seatsInCol; s++) {
           const item = cell[s];
+          if (item?.blocked === true) continue;
           const regNo = (item?.regn_no ?? item?.regnNo ?? "").toString().trim();
-          if (!regNo) continue;
+          // "0" is the Single-Course Mode blocked-seat marker, not a student.
+          if (!regNo || regNo === "0") continue;
           entries.push([r, c, s, regNo]);
         }
       } else if (typeof cell === "string" && cell && cell !== "Empty") {
