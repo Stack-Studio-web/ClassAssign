@@ -12,20 +12,37 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
     return new Date(dateString).toLocaleDateString(undefined, options);
   };
 
-  // ✅ Extracts an array of roll numbers from a cell, regardless of format
+  // True for Single-Course blocked spacers (regn "0") — not real students.
+  const isBlockedRollSlot = (item) => {
+    if (!item || typeof item !== "object") return false;
+    if (item.blocked === true) return true;
+    const reg = String(item.regn_no ?? item.regnNo ?? "").trim();
+    return reg === "0";
+  };
+
+  // ✅ Extracts assigned roll numbers from a cell (excludes Empty / blocked "0").
   const getRollsFromCell = (cell) => {
     if (!cell || cell === "Empty") return [];
 
     // NEW format: array of objects
     if (Array.isArray(cell)) {
       return cell
-        .filter(item => item && (item.regn_no ?? item.regnNo))
-        .map(item => (item.regn_no ?? item.regnNo ?? "").toString().trim());
+        .filter(
+          (item) =>
+            item &&
+            !isBlockedRollSlot(item) &&
+            String(item.regn_no ?? item.regnNo ?? "").trim()
+        )
+        .map((item) => (item.regn_no ?? item.regnNo ?? "").toString().trim())
+        .filter((roll) => roll && roll !== "0" && roll !== "Empty");
     }
 
     // OLD format: plain string with \n separators
     if (typeof cell === "string") {
-      return cell.split("\n").map(r => r.trim()).filter(r => r && r !== "Empty");
+      return cell
+        .split("\n")
+        .map((r) => r.trim())
+        .filter((r) => r && r !== "Empty" && r !== "0");
     }
 
     return [];
