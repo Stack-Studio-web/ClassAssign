@@ -499,11 +499,23 @@ const ExamHallAllotment = () => {
         </div>
       </div>
 
-      {/* Preview + PDF target — classic old export layout (logo full width-240, browser page breaks) */}
+      {/* Preview + PDF target — small logo beside college name, then dept/programme lines */}
       <div ref={printRef}>
         <div className="text-center mb-4">
-          <img src={currentLogo} alt="Logo" width={240} className="mx-auto" />
-          <h2 className="font-bold text-lg">Kumaraguru College of Technology</h2>
+          <div
+            className="flex items-center justify-center gap-3 mb-1"
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "12px" }}
+          >
+            <img
+              src={currentLogo}
+              alt="Logo"
+              className="hall-export-logo"
+              style={{ height: "42px", width: "auto", maxWidth: "120px", objectFit: "contain" }}
+            />
+            <h2 className="font-bold text-lg m-0" style={{ margin: 0 }}>
+              Kumaraguru College of Technology
+            </h2>
+          </div>
           <p>{departmentLine}</p>
           <strong className="block font-bold">{programmeLine1}</strong>
           <strong className="block font-bold">{programmeLine2}</strong>
