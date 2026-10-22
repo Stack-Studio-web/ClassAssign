@@ -2,6 +2,8 @@
 import React from 'react';
 import LogoKSI from "../assets/logo KSI.png";
 import LogoKCT from "../assets/logo.png";
+import { countAssignedStudentsInHall } from "../lib/seatingStudentCount";
+
 const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
   if (!selectedPlan) {
     return <div ref={ref}>No seating plan selected for printing.</div>;
@@ -12,44 +14,9 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
     return new Date(dateString).toLocaleDateString(undefined, options);
   };
 
-  // ✅ Extracts an array of roll numbers from a cell, regardless of format
-  const getRollsFromCell = (cell) => {
-    if (!cell || cell === "Empty") return [];
-
-    // NEW format: array of objects
-    if (Array.isArray(cell)) {
-      return cell
-        .filter(item => item && (item.regn_no ?? item.regnNo))
-        .map(item => (item.regn_no ?? item.regnNo ?? "").toString().trim());
-    }
-
-    // OLD format: plain string with \n separators
-    if (typeof cell === "string") {
-      return cell.split("\n").map(r => r.trim()).filter(r => r && r !== "Empty");
-    }
-
-    return [];
-  };
-
-  // Count students per hall & batch
+  // Count assigned students only (exclude blocked "0", empty, physical capacity).
   const getBatchCounts = (venue) => {
-    const counts = {};
-    let total = 0;
-
-    (venue.seatingArrangement || []).forEach(row => {
-      row.forEach(cell => {
-        const rolls = getRollsFromCell(cell);
-        rolls.forEach(roll => {
-          total += 1;
-          const match = roll.match(/^\d{2}[A-Z]+/);
-          if (match) {
-            const prefix = match[0];
-            counts[prefix] = (counts[prefix] || 0) + 1;
-          }
-        });
-      });
-    });
-
+    const { total, batchCounts: counts } = countAssignedStudentsInHall(venue);
     return { counts, total };
   };
 

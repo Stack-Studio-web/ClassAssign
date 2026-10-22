@@ -128,8 +128,11 @@ const getStudentsFromCell = (cell) => {
   if (Array.isArray(cell)) {
     return cell
       .filter((item) => {
+        if (!item || typeof item !== "object") return false;
+        if (item.blocked === true) return false;
         const regn = (item?.regn_no ?? item?.regnNo ?? "").toString().trim();
-        return !!regn;
+        // Exclude Single-Course blocked markers and empty placeholders.
+        return !!regn && regn !== "0" && regn !== "-" && regn !== "—";
       })
       .map((item) => ({
         regn_no: (item?.regn_no ?? item?.regnNo ?? "").toString().trim(),
@@ -140,7 +143,7 @@ const getStudentsFromCell = (cell) => {
     return cell
       .split("\n")
       .map((r) => r.trim())
-      .filter((r) => r && r !== "Empty")
+      .filter((r) => r && r !== "Empty" && r !== "0" && r !== "-" && r !== "—")
       .map((regn_no) => ({ regn_no, course: null }));
   }
   return [];
