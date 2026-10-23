@@ -233,20 +233,29 @@ async function getInvigilationFilterOptions() {
     console.warn("departments for invigilation options:", err?.message || err);
   }
 
-  let programs = [];
+  let sessions = [];
   try {
-    const [progRows] = await db.query(
-      `SELECT DISTINCT TRIM(selected_courses) AS program_label
+    const [sessionRows] = await db.query(
+      `SELECT DISTINCT exam_start_time, exam_end_time
        FROM seating_plans
-       WHERE selected_courses IS NOT NULL AND TRIM(selected_courses) <> ''
-       ORDER BY 1 ASC
-       LIMIT 100`
+       WHERE exam_start_time IS NOT NULL AND exam_end_time IS NOT NULL
+       ORDER BY exam_start_time ASC, exam_end_time ASC`
     );
-    programs = (progRows || [])
-      .map((r) => r.program_label ?? r.programlabel)
+    sessions = (sessionRows || [])
+      .map((r) => {
+        const startTime = normalizeTime(r.exam_start_time ?? r.examstarttime);
+        const endTime = normalizeTime(r.exam_end_time ?? r.examendtime);
+        if (!startTime || !endTime) return null;
+        return {
+          value: `${startTime}|${endTime}`,
+          startTime,
+          endTime,
+          label: `${startTime} - ${endTime}`,
+        };
+      })
       .filter(Boolean);
   } catch (err) {
-    console.warn("programs for invigilation options:", err?.message || err);
+    console.warn("sessions for invigilation options:", err?.message || err);
   }
 
   return {
@@ -254,7 +263,7 @@ async function getInvigilationFilterOptions() {
     semesters,
     examTypes,
     departments,
-    programs,
+    sessions,
   };
 }
 
@@ -268,8 +277,17 @@ async function getInvigilationSchedulePreview(filters = {}) {
   const department = String(filters.department || "").trim();
   const semester = String(filters.semester || "").trim().toUpperCase();
   const academicYearLabel = String(filters.academicYear || filters.academic_year || "").trim();
-  const program1 = String(filters.program1 || filters.program_1 || "").trim();
-  const program2 = String(filters.program2 || filters.program_2 || "").trim();
+  const startTime = normalizeTime(filters.startTime || filters.start_time || filters.examStartTime);
+  const endTime = normalizeTime(filters.endTime || filters.end_time || filters.examEndTime);
+  // session value may arrive as "HH:MM|HH:MM"
+  let sessionStart = startTime;
+  let sessionEnd = endTime;
+  const sessionKey = String(filters.session || filters.sessionKey || "").trim();
+  if ((!sessionStart || !sessionEnd) && sessionKey.includes("|")) {
+    const [s, e] = sessionKey.split("|");
+    sessionStart = normalizeTime(s) || sessionStart;
+    sessionEnd = normalizeTime(e) || sessionEnd;
+  }
 
   if (!dateFrom || !dateTo) {
     const err = new Error("Date From and Date To are required");
@@ -296,6 +314,12 @@ async function getInvigilationSchedulePreview(filters = {}) {
     where.push("EXTRACT(MONTH FROM sp.exam_date) BETWEEN 7 AND 12");
   } else if (semester === "EVEN") {
     where.push("EXTRACT(MONTH FROM sp.exam_date) BETWEEN 1 AND 6");
+  }
+
+  if (sessionStart && sessionEnd) {
+    where.push("sp.exam_start_time = ?::time");
+    where.push("sp.exam_end_time = ?::time");
+    params.push(sessionStart, sessionEnd);
   }
 
   if (department) {
@@ -365,6 +389,11 @@ async function getInvigilationSchedulePreview(filters = {}) {
   } else if (semester === "EVEN") {
     unassignedWhere.push("EXTRACT(MONTH FROM sp.exam_date) BETWEEN 1 AND 6");
   }
+  if (sessionStart && sessionEnd) {
+    unassignedWhere.push("sp.exam_start_time = ?::time");
+    unassignedWhere.push("sp.exam_end_time = ?::time");
+    unassignedParams.push(sessionStart, sessionEnd);
+  }
 
   const [unassignedRows] = await db.query(
     `
@@ -420,8 +449,8 @@ async function getInvigilationSchedulePreview(filters = {}) {
       academicYear: academicYearLabel || null,
       examType: examType || null,
       department: department || null,
-      program1: program1 || null,
-      program2: program2 || null,
+      startTime: sessionStart || null,
+      endTime: sessionEnd || null,
       dateFrom,
       dateTo,
       assignmentCount: assignments.length,

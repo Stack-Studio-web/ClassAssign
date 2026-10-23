@@ -53,14 +53,21 @@ function formatDateSlash(dateValue) {
   return `${d}/${m}/${y}`;
 }
 
+function formatSessionOptionLabel(startTime, endTime) {
+  const start = formatTime12h(startTime);
+  const end = formatTime12h(endTime);
+  if (!start && !end) return "";
+  return `${start} - ${end}`;
+}
+
 const emptyFilters = {
   semester: "EVEN",
   academicYearUuid: "",
   academicYearLabel: "",
   examType: "",
   department: "",
-  program1: "",
-  program2: "",
+  session: "",
+  isSfs: false,
   dateFrom: "",
   dateTo: "",
 };
@@ -73,7 +80,7 @@ export default function FacultyInvigilationExport() {
     semesters: [],
     examTypes: [],
     departments: [],
-    programs: [],
+    sessions: [],
   });
   const [loadingOptions, setLoadingOptions] = useState(true);
   const [previewing, setPreviewing] = useState(false);
@@ -94,12 +101,26 @@ export default function FacultyInvigilationExport() {
         const res = await api.get("/faculty/invigilation-schedule/options");
         const body = res.data || {};
         if (cancelled) return;
+        const sessions = (Array.isArray(body.sessions) ? body.sessions : [])
+          .map((s) => {
+            const startTime = normalizeTime(s.startTime || s.start_time || "");
+            const endTime = normalizeTime(s.endTime || s.end_time || "");
+            const value = s.value || (startTime && endTime ? `${startTime}|${endTime}` : "");
+            if (!value) return null;
+            return {
+              value,
+              startTime,
+              endTime,
+              label: formatSessionOptionLabel(startTime, endTime) || s.label || value,
+            };
+          })
+          .filter(Boolean);
         setOptions({
           academicYears: Array.isArray(body.academicYears) ? body.academicYears : [],
           semesters: Array.isArray(body.semesters) ? body.semesters : [],
           examTypes: Array.isArray(body.examTypes) ? body.examTypes : [],
           departments: Array.isArray(body.departments) ? body.departments : [],
-          programs: Array.isArray(body.programs) ? body.programs : [],
+          sessions,
         });
         const years = Array.isArray(body.academicYears) ? body.academicYears : [];
         const active = years.find((y) => !y.isArchived) || years[0];
@@ -130,7 +151,6 @@ export default function FacultyInvigilationExport() {
   const setFilter = (key, value) => {
     setFilters((prev) => ({ ...prev, [key]: value }));
     setPreview(null);
-    setVerification(null);
     setError("");
   };
 
@@ -143,14 +163,18 @@ export default function FacultyInvigilationExport() {
     return "";
   }, [filters]);
 
+  const selectedSession = useMemo(
+    () => options.sessions.find((s) => s.value === filters.session) || null,
+    [options.sessions, filters.session]
+  );
+
   const queryParams = useMemo(
     () => ({
       semester: filters.semester || undefined,
       academicYear: filters.academicYearLabel || undefined,
       examType: filters.examType || undefined,
       department: filters.department || undefined,
-      program1: filters.program1 || undefined,
-      program2: filters.program2 || undefined,
+      session: filters.session || undefined,
       dateFrom: filters.dateFrom,
       dateTo: filters.dateTo,
     }),
@@ -220,8 +244,8 @@ export default function FacultyInvigilationExport() {
           deptHeader,
           ayLabel,
           semesterLabel,
-          program1: filters.program1,
-          program2: filters.program2,
+          sessionLabel: selectedSession?.label || "",
+          isSfs: Boolean(filters.isSfs),
           dateFrom: filters.dateFrom,
           dateTo: filters.dateTo,
         },
@@ -372,32 +396,19 @@ export default function FacultyInvigilationExport() {
               </label>
 
               <label className="text-sm space-y-1.5">
-                <span className="font-medium text-gray-700">Program 1</span>
+                <span className="font-medium text-gray-700">Session</span>
                 <select
-                  value={filters.program1}
-                  onChange={(e) => setFilter("program1", e.target.value)}
-                  className="w-full h-11 px-3 rounded-xl border border-gray-200 bg-white text-sm focus:ring-2 focus:ring-red-500 outline-none"
+                  value={filters.session}
+                  onChange={(e) => setFilter("session", e.target.value)}
+                  disabled={loadingOptions}
+                  className="w-full h-11 px-3 rounded-xl border border-gray-200 bg-white text-sm focus:ring-2 focus:ring-red-500 outline-none disabled:bg-gray-50"
                 >
-                  <option value="">All Programs</option>
-                  {options.programs.map((p) => (
-                    <option key={`p1-${p}`} value={p}>
-                      {p}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="text-sm space-y-1.5">
-                <span className="font-medium text-gray-700">Program 2</span>
-                <select
-                  value={filters.program2}
-                  onChange={(e) => setFilter("program2", e.target.value)}
-                  className="w-full h-11 px-3 rounded-xl border border-gray-200 bg-white text-sm focus:ring-2 focus:ring-red-500 outline-none"
-                >
-                  <option value="">All Programs</option>
-                  {options.programs.map((p) => (
-                    <option key={`p2-${p}`} value={p}>
-                      {p}
+                  <option value="">
+                    {loadingOptions ? "Loading…" : "All Sessions"}
+                  </option>
+                  {options.sessions.map((s) => (
+                    <option key={s.value} value={s.value}>
+                      {s.label}
                     </option>
                   ))}
                 </select>
@@ -439,6 +450,23 @@ export default function FacultyInvigilationExport() {
                   <option value="KCT">KCT</option>
                 </select>
               </label>
+
+              <label className="flex items-center gap-3 sm:col-span-2 mt-1 px-1 py-2 rounded-xl border border-gray-200 bg-gray-50 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(filters.isSfs)}
+                  onChange={(e) =>
+                    setFilters((prev) => ({ ...prev, isSfs: e.target.checked }))
+                  }
+                  className="h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500"
+                />
+                <span className="text-sm font-medium text-gray-800">
+                  SFS (School of Foundation Sciences)
+                </span>
+                <span className="text-xs text-gray-500">
+                  Last page signatures: AEC · HoD · CoE
+                </span>
+              </label>
             </div>
 
             <div className="flex flex-wrap gap-3 pt-2">
@@ -465,12 +493,11 @@ export default function FacultyInvigilationExport() {
               </div>
             )}
 
-            <div className="flex flex-wrap gap-3 print:hidden">
+            <div className="flex flex-wrap items-center gap-3 print:hidden">
               <button
                 type="button"
                 onClick={() => {
                   setPreview(null);
-                  setVerification(null);
                   setError("");
                 }}
                 className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 text-sm font-semibold"
@@ -487,6 +514,17 @@ export default function FacultyInvigilationExport() {
                 <ArrowDownTrayIcon className="h-4 w-4" />
                 {exporting ? "Preparing DOCX…" : "Export DOCX"}
               </button>
+              <label className="inline-flex items-center gap-2 ml-auto px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(filters.isSfs)}
+                  onChange={(e) =>
+                    setFilters((prev) => ({ ...prev, isSfs: e.target.checked }))
+                  }
+                  className="h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500"
+                />
+                <span className="font-medium text-gray-800">SFS</span>
+              </label>
             </div>
 
             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 md:p-8">
@@ -502,17 +540,21 @@ export default function FacultyInvigilationExport() {
                   OFFICE OF THE CONTROLLER OF EXAMINATION
                 </h3>
                 <h2 className="text-base font-bold mt-2">{deptHeader}</h2>
-                {filters.program1 ? (
-                  <p className="text-sm mt-2 font-medium">{filters.program1}</p>
-                ) : null}
-                {filters.program2 ? (
-                  <p className="text-sm font-medium">{filters.program2}</p>
+                {filters.isSfs ? (
+                  <p className="text-sm mt-2 font-medium">
+                    School of Foundation Sciences (SFS)
+                  </p>
                 ) : null}
                 <p className="text-sm mt-2">
                   Academic Year: <strong>{ayLabel}</strong>
                   {" · "}
                   Semester: <strong>{semesterLabel}</strong>
                 </p>
+                {selectedSession?.label ? (
+                  <p className="text-sm mt-1">
+                    Session: <strong>{selectedSession.label}</strong>
+                  </p>
+                ) : null}
                 <h2 className="text-lg font-bold mt-4 underline">
                   Faculty Invigilation Schedule
                 </h2>
@@ -593,6 +635,22 @@ export default function FacultyInvigilationExport() {
                   </div>
                 )}
 
+              <div className="mt-10 pt-6 border-t border-gray-200">
+                <h3 className="text-center font-bold text-base underline mb-6">
+                  APPROVAL / SIGNATURES
+                </h3>
+                <div className="grid grid-cols-3 gap-4 text-center text-sm font-semibold">
+                  {(filters.isSfs
+                    ? ["AEC", "HoD", "CoE"]
+                    : ["CoE", "HoD", "Exam Coordinators"]
+                  ).map((title) => (
+                    <div key={title} className="space-y-10">
+                      <p>{title}</p>
+                      <p className="font-normal text-gray-400">________________________</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           </section>
         )}

@@ -130,8 +130,9 @@ router.get(
         academicYear: req.query.academicYear || req.query.academic_year,
         examType: req.query.examType || req.query.category,
         department: req.query.department,
-        program1: req.query.program1 || req.query.program_1,
-        program2: req.query.program2 || req.query.program_2,
+        session: req.query.session,
+        startTime: req.query.startTime || req.query.start_time,
+        endTime: req.query.endTime || req.query.end_time,
         dateFrom: req.query.dateFrom || req.query.date_from,
         dateTo: req.query.dateTo || req.query.date_to,
       });

@@ -28,6 +28,9 @@ const normalizeTime = (t) => {
   return `${m[1].padStart(2, "0")}:${m[2]}`;
 };
 
+const DEFAULT_SFS_LINE1 = "SCHOOL OF FOUNDATIONAL SCIENCES";
+const DEFAULT_SFS_LINE2 = "AY 2026-2027 ODD SEM ( SA1 OR SA2)";
+
 export const StudentAttendance = () => {
   const [seatingPlans, setSeatingPlans] = useState([]);
   const [sheets, setSheets] = useState([]);
@@ -37,6 +40,11 @@ export const StudentAttendance = () => {
   const [printing, setPrinting] = useState(false);
   const [error, setError] = useState(null);
   const [showPreview, setShowPreview] = useState(false);
+  const [isSfs, setIsSfs] = useState(false);
+  const [sfsLine1, setSfsLine1] = useState(DEFAULT_SFS_LINE1);
+  const [sfsLine2, setSfsLine2] = useState(DEFAULT_SFS_LINE2);
+  const [headerSaving, setHeaderSaving] = useState(false);
+  const [headerSaveMsg, setHeaderSaveMsg] = useState("");
 
   const [filters, setFilters] = useState({
     category: "all", // all | hall | lab
@@ -98,6 +106,48 @@ export const StudentAttendance = () => {
     };
     fetchPlans();
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get("/hall-header");
+        const cfg = res.data?.data || res.data || {};
+        if (cancelled) return;
+        if (cfg.sfsLine1) setSfsLine1(String(cfg.sfsLine1));
+        if (cfg.sfsLine2) setSfsLine2(String(cfg.sfsLine2));
+      } catch (err) {
+        console.warn("Attendance SFS header load:", err?.message || err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleSaveSfsHeader = async () => {
+    setHeaderSaving(true);
+    setHeaderSaveMsg("");
+    try {
+      const res = await api.put("/hall-header", {
+        sfsLine1,
+        sfsLine2,
+      });
+      const cfg = res.data?.data || res.data || {};
+      if (cfg.sfsLine1 != null) setSfsLine1(String(cfg.sfsLine1));
+      if (cfg.sfsLine2 != null) setSfsLine2(String(cfg.sfsLine2));
+      setHeaderSaveMsg("Saved");
+      setTimeout(() => setHeaderSaveMsg(""), 2000);
+    } catch (err) {
+      setError(
+        err?.response?.data?.error ||
+          err?.message ||
+          "Failed to save SFS header"
+      );
+    } finally {
+      setHeaderSaving(false);
+    }
+  };
 
   const categoryFilteredPlans = useMemo(() => {
     if (filters.category === "lab") {
@@ -399,6 +449,17 @@ export const StudentAttendance = () => {
                 <option value="KCT">KCT</option>
               </select>
             </div>
+            <div className="flex items-end">
+              <label className="flex items-center gap-2 w-full h-[38px] px-3 rounded-lg border border-gray-300 bg-white cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={isSfs}
+                  onChange={(e) => setIsSfs(e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-sm font-medium text-gray-800">SFS</span>
+              </label>
+            </div>
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">
                 Category
@@ -537,6 +598,54 @@ export const StudentAttendance = () => {
             </div>
           </div>
 
+          {isSfs && (
+            <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 px-4 py-3 space-y-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-indigo-700">
+                SFS header (saved per user)
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <label className="text-sm space-y-1">
+                  <span className="font-medium text-gray-700">Title line</span>
+                  <input
+                    type="text"
+                    value={sfsLine1}
+                    onChange={(e) => setSfsLine1(e.target.value)}
+                    placeholder={DEFAULT_SFS_LINE1}
+                    className="w-full border border-gray-300 px-3 py-2 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                  />
+                </label>
+                <label className="text-sm space-y-1">
+                  <span className="font-medium text-gray-700">Subtitle line</span>
+                  <input
+                    type="text"
+                    value={sfsLine2}
+                    onChange={(e) => setSfsLine2(e.target.value)}
+                    placeholder={DEFAULT_SFS_LINE2}
+                    className="w-full border border-gray-300 px-3 py-2 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                  />
+                </label>
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleSaveSfsHeader}
+                  disabled={headerSaving}
+                  className="inline-flex items-center px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white text-sm font-semibold"
+                >
+                  {headerSaving ? "Saving…" : "Save"}
+                </button>
+                {headerSaveMsg ? (
+                  <span className="text-sm text-green-700 font-medium">
+                    {headerSaveMsg}
+                  </span>
+                ) : null}
+                <span className="text-xs text-gray-500">
+                  Replaces “ATTENDANCE SHEET” / exam type on the printed sheet
+                </span>
+              </div>
+            </div>
+          )}
+
           {slotReady && (
             <div className="rounded-xl border border-gray-100 bg-gray-50/80 px-4 py-3">
               <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
@@ -655,6 +764,9 @@ export const StudentAttendance = () => {
               attendanceData={sheet}
               category={categoryLabel}
               logoType={logoType}
+              isSfs={isSfs}
+              sfsLine1={sfsLine1}
+              sfsLine2={sfsLine2}
             />
           ))}
         {!showPreview && (

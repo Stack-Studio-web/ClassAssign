@@ -343,7 +343,16 @@ const ExamHallAllotment = () => {
 
   const formatSessionTitle = (halls) => {
     if (!halls?.length) return "";
-    return `Exam Time: ${formatTime(halls[0].examStartTime, halls[0].examEndTime)} | ${new Date(halls[0].examDate).toLocaleDateString()}`;
+    const raw = halls[0].examDate;
+    const d = raw ? new Date(`${String(raw).slice(0, 10)}T12:00:00`) : null;
+    const dateStr =
+      d && !Number.isNaN(d.getTime())
+        ? `${d.getDate()} - ${d.toLocaleString("en-GB", { month: "short" })} - ${d.getFullYear()}`
+        : "";
+    const timeStr = formatTime(halls[0].examStartTime, halls[0].examEndTime);
+    if (dateStr && timeStr) return `${dateStr} | Exam Time: ${timeStr}`;
+    if (dateStr) return dateStr;
+    return timeStr ? `Exam Time: ${timeStr}` : "";
   };
 
   if (loading || !headerHydrated) {

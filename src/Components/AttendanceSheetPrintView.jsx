@@ -11,12 +11,21 @@ export default function AttendanceSheetPrintView({
   attendanceData,
   category,
   logoType = "KSI",
+  isSfs = false,
+  sfsLine1 = "SCHOOL OF FOUNDATIONAL SCIENCES",
+  sfsLine2 = "AY 2026-2027 ODD SEM ( SA1 OR SA2)",
 }) {
   if (!attendanceData?.courses?.length) return null;
 
   // KSI: left KCT crest + right KSI logo (existing). KCT: drop right logo, expand title to end.
   const showKsiLogo = logoType !== "KCT";
   const titleColSpan = showKsiLogo ? 3 : 4;
+  const titleLine = isSfs
+    ? String(sfsLine1 || "SCHOOL OF FOUNDATIONAL SCIENCES").trim()
+    : "ATTENDANCE SHEET";
+  const categoryLine = isSfs
+    ? String(sfsLine2 || "").trim()
+    : category;
 
   return (
     <>
@@ -50,12 +59,12 @@ export default function AttendanceSheetPrintView({
                 </tr>
                 <tr>
                   <td colSpan={titleColSpan} className="att-center att-bold att-sm">
-                    ATTENDANCE SHEET
+                    {titleLine}
                   </td>
                 </tr>
                 <tr>
                   <td colSpan="5" className="att-center att-bold att-py1 att-bg-muted">
-                    {category}
+                    {categoryLine}
                   </td>
                 </tr>
                 <tr>

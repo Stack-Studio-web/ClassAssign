@@ -10,10 +10,18 @@ async function ensureHallHeaderSettingsSchema() {
         department TEXT NOT NULL DEFAULT '',
         program1 TEXT NOT NULL DEFAULT '',
         program2 TEXT NOT NULL DEFAULT '',
+        sfs_line1 TEXT NOT NULL DEFAULT '',
+        sfs_line2 TEXT NOT NULL DEFAULT '',
         created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
         CONSTRAINT hall_header_settings_user_unique UNIQUE (user_id)
       )
+    `);
+    // Existing installs created before SFS columns existed.
+    await db.query(`
+      ALTER TABLE hall_header_settings
+        ADD COLUMN IF NOT EXISTS sfs_line1 TEXT NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS sfs_line2 TEXT NOT NULL DEFAULT ''
     `);
     await db.query(`
       CREATE INDEX IF NOT EXISTS idx_hall_header_settings_user

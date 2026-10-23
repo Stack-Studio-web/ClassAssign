@@ -208,7 +208,16 @@ function signatureColumn(title, { extraBlankLines = 0 } = {}) {
   });
 }
 
-function buildSignatureSection() {
+function buildSignatureSection({ isSfs = false } = {}) {
+  // Default: CoE · HoD · Exam Coordinators
+  // SFS: AEC · HoD · CoE
+  const titles = isSfs
+    ? ["AEC", "HoD", "CoE"]
+    : ["CoE", "HoD", "Exam Coordinators"];
+  const footnote = isSfs
+    ? "AEC · Head of the Department · Controller of Examinations"
+    : "Controller of Examinations · Head of the Department · Exam Coordinators";
+
   return [
     p("APPROVAL / SIGNATURES", {
       bold: true,
@@ -224,24 +233,23 @@ function buildSignatureSection() {
       rows: [
         new TableRow({
           children: [
-            signatureColumn("CoE"),
-            signatureColumn("HOD"),
-            signatureColumn("Exam Coordinators", { extraBlankLines: 3 }),
+            signatureColumn(titles[0]),
+            signatureColumn(titles[1]),
+            signatureColumn(titles[2], {
+              extraBlankLines: isSfs ? 0 : 3,
+            }),
           ],
         }),
       ],
     }),
-    p(
-      "Controller of Examinations · Head of the Department · Exam Coordinators",
-      { size: 14, before: 200, after: 40, center: true }
-    ),
+    p(footnote, { size: 14, before: 200, after: 40, center: true }),
   ];
 }
 
 /**
  * @param {object} args
  * @param {object} args.preview - API preview payload ({ schedule, unassignedVenues, ... })
- * @param {object} args.meta - display meta (deptHeader, ayLabel, semesterLabel, program1, program2, …)
+ * @param {object} args.meta - display meta (deptHeader, ayLabel, semesterLabel, sessionLabel, isSfs, …)
  * @param {"KCT"|"KSI"} [args.logoChoice]
  */
 export async function downloadFacultyInvigilationDocx({
@@ -279,18 +287,20 @@ export async function downloadFacultyInvigilationDocx({
     p("OFFICE OF THE CONTROLLER OF EXAMINATION", { bold: true, size: 20, after: 80 })
   );
   children.push(p(meta.deptHeader || "—", { bold: true, size: 22, after: 60 }));
-  if (meta.program1) {
-    children.push(p(meta.program1, { size: 18, after: 40 }));
-  }
-  if (meta.program2) {
-    children.push(p(meta.program2, { size: 18, after: 40 }));
+  if (meta.isSfs) {
+    children.push(p("School of Foundation Sciences (SFS)", { size: 18, after: 40 }));
   }
   children.push(
     p(
       `Academic Year: ${meta.ayLabel || "—"}  ·  Semester: ${meta.semesterLabel || "—"}`,
-      { size: 18, before: 60, after: 120 }
+      { size: 18, before: 60, after: 60 }
     )
   );
+  if (meta.sessionLabel) {
+    children.push(
+      p(`Session: ${meta.sessionLabel}`, { size: 18, before: 40, after: 120 })
+    );
+  }
   children.push(
     p("Faculty Invigilation Schedule", {
       bold: true,
@@ -368,7 +378,7 @@ export async function downloadFacultyInvigilationDocx({
     );
   }
 
-  children.push(...buildSignatureSection());
+  children.push(...buildSignatureSection({ isSfs: Boolean(meta.isSfs) }));
 
   const doc = new Document({
     sections: [
@@ -390,8 +400,11 @@ export async function downloadFacultyInvigilationDocx({
   });
 
   const blob = await Packer.toBlob(doc);
+  const sessionPart = meta.sessionLabel
+    ? `_${String(meta.sessionLabel).replace(/\s+/g, "")}`
+    : "";
   const fname = sanitizeFilename(
-    `Faculty_Invigilation_Schedule_${meta.ayLabel || "AY"}_${meta.dateFrom || ""}_to_${meta.dateTo || ""}`
+    `Faculty_Invigilation_Schedule_${meta.ayLabel || "AY"}_${meta.dateFrom || ""}_to_${meta.dateTo || ""}${sessionPart}${meta.isSfs ? "_SFS" : ""}`
   );
   saveAs(blob, `${fname}.docx`);
   return `${fname}.docx`;

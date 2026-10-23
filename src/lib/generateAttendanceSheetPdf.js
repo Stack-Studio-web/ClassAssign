@@ -129,13 +129,28 @@ function drawBookletBoxes(pdf, x, y, w, h) {
  * Sheet header block (logos + meta). Returns bottom Y.
  * Logos are small images only (not a page screenshot).
  */
-function drawSheetHeader(pdf, { category, examDate, examSession, hallNo, courseCode, courseName, logos }) {
+function drawSheetHeader(pdf, {
+  category,
+  examDate,
+  examSession,
+  hallNo,
+  courseCode,
+  courseName,
+  logos,
+  isSfs = false,
+  sfsLine1 = "",
+  sfsLine2 = "",
+}) {
   const w = contentWidth(pdf);
   let y = MARGIN;
   const logoColW = w * 0.12;
   const rightColW = w * 0.15;
   const midW = w - logoColW - rightColW;
   const topH = HEADER_ROW * 2;
+  const titleLine = isSfs
+    ? String(sfsLine1 || "SCHOOL OF FOUNDATIONAL SCIENCES").trim()
+    : "ATTENDANCE SHEET";
+  const categoryLine = isSfs ? String(sfsLine2 || "").trim() : category || "";
 
   // Row 1-2: logos + college title
   drawRect(pdf, MARGIN, y, logoColW, topH);
@@ -167,21 +182,21 @@ function drawSheetHeader(pdf, { category, examDate, examSession, hallNo, courseC
     { align: "center", bold: true, size: 9, vCenter: true }
   );
   drawRect(pdf, MARGIN + logoColW, y + HEADER_ROW, midW, HEADER_ROW);
-  drawCellText(pdf, "ATTENDANCE SHEET", MARGIN + logoColW, y + HEADER_ROW, midW, HEADER_ROW, {
+  drawCellText(pdf, titleLine, MARGIN + logoColW, y + HEADER_ROW, midW, HEADER_ROW, {
     align: "center",
     bold: true,
-    size: 10,
+    size: isSfs ? 8 : 10,
     vCenter: true,
   });
 
   y += topH;
 
-  // Category
+  // Category / SFS subtitle
   drawRect(pdf, MARGIN, y, w, META_ROW, [249, 250, 251]);
-  drawCellText(pdf, category || "", MARGIN, y, w, META_ROW, {
+  drawCellText(pdf, categoryLine, MARGIN, y, w, META_ROW, {
     align: "center",
     bold: true,
-    size: 10,
+    size: isSfs ? 9 : 10,
     vCenter: true,
   });
   y += META_ROW;
@@ -359,7 +374,8 @@ export async function buildAttendanceSheetPdf(
   attendanceData,
   category,
   logos = null,
-  _verification = null
+  _verification = null,
+  sfsOptions = null
 ) {
   const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const resolvedLogos =
@@ -367,6 +383,9 @@ export async function buildAttendanceSheetPdf(
       kct: await loadImageAsDataUrl(KCT),
       ksi: await loadImageAsDataUrl(KSI),
     };
+  const isSfs = Boolean(sfsOptions?.isSfs);
+  const sfsLine1 = sfsOptions?.sfsLine1 || "";
+  const sfsLine2 = sfsOptions?.sfsLine2 || "";
 
   const courses = attendanceData?.courses || [];
   let firstPage = true;
@@ -392,6 +411,9 @@ export async function buildAttendanceSheetPdf(
       courseCode,
       courseName,
       logos: resolvedLogos,
+      isSfs,
+      sfsLine1,
+      sfsLine2,
     };
 
     let y = drawSheetHeader(pdf, headerCtx);
@@ -443,13 +465,15 @@ export async function generateAttendanceSheetPdfBlob(
   attendanceData,
   category,
   logos = null,
-  verification = null
+  verification = null,
+  sfsOptions = null
 ) {
   const pdf = await buildAttendanceSheetPdf(
     attendanceData,
     category,
     logos,
-    verification
+    verification,
+    sfsOptions
   );
   return pdf.output("blob");
 }
@@ -462,13 +486,15 @@ export async function generateAttendanceSheetPdfBytes(
   attendanceData,
   category,
   logos = null,
-  verification = null
+  verification = null,
+  sfsOptions = null
 ) {
   const pdf = await buildAttendanceSheetPdf(
     attendanceData,
     category,
     logos,
-    verification
+    verification,
+    sfsOptions
   );
   return pdf.output("arraybuffer");
 }
