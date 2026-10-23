@@ -2,6 +2,7 @@ import React, { useMemo, useRef, useState } from "react";
 import { useReactToPrint } from "react-to-print";
 import LogoKSI from "../assets/logo KSI.png";
 import LogoKCT from "../assets/logo.png";
+import { downloadFacultyInvigilationDocx } from "../lib/facultyInvigilationDocx";
 
 const currentYear = new Date().getFullYear();
 const AY_OPTIONS = Array.from({ length: 6 }, (_, i) => currentYear - 2 + i);
@@ -38,18 +39,16 @@ function formatDateLong(dateValue) {
   });
 }
 
-function formatDateShort(dateValue) {
-  const d = new Date(
-    typeof dateValue === "string" && !dateValue.includes("T")
-      ? `${dateValue}T12:00:00`
-      : dateValue
-  );
-  if (Number.isNaN(d.getTime())) return String(dateValue || "");
-  return d.toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  });
+/** Split trailing "(DEPT)" from a faculty display string when needed. */
+function splitFacultyDepartment(facultyName, department) {
+  const name = String(facultyName || "").trim();
+  const dept = String(department || "").trim();
+  if (dept) return { name, department: dept };
+  const match = name.match(/^(.*?)\s*\(([^)]+)\)\s*$/);
+  if (match) {
+    return { name: match[1].trim(), department: match[2].trim() };
+  }
+  return { name, department: "" };
 }
 
 function dateSortKey(dateValue) {
@@ -164,6 +163,8 @@ const FacultySchedule = ({ plans, onClose }) => {
   const [programmeLine2, setProgrammeLine2] = useState(
     "M.Tech DS - M.E CSE (Cyber Security)"
   );
+  const [isSfs, setIsSfs] = useState(false);
+  const [exportingDocx, setExportingDocx] = useState(false);
 
   const getInitialLogoType = () => {
     if (typeof window === "undefined") return "KSI";
@@ -198,6 +199,52 @@ const FacultySchedule = ({ plans, onClose }) => {
   };
 
   const scheduleByDate = useMemo(() => buildScheduleFromPlans(plans), [plans]);
+
+  const runDocxExport = async () => {
+    setExportingDocx(true);
+    try {
+      const preview = {
+        empty: scheduleByDate.length === 0,
+        schedule: scheduleByDate.map((day) => ({
+          examDate: day.examDate,
+          sessions: (day.sessions || []).map((session) => ({
+            examSession: session.examSession,
+            startTime: session.startTime,
+            endTime: session.endTime,
+            assignments: (session.entries || []).map((entry) => {
+              const split = splitFacultyDepartment(
+                entry.facultyName,
+                entry.department
+              );
+              return {
+                venueName: entry.roomNo,
+                facultyName: split.name,
+                department: split.department,
+              };
+            }),
+          })),
+        })),
+        unassignedVenues: [],
+      };
+      await downloadFacultyInvigilationDocx({
+        preview,
+        logoChoice: logoType,
+        meta: {
+          deptHeader: departmentLine,
+          ayLabel: `${ayStartYear}-${ayStartYear + 1}`,
+          semesterLabel: `${semester} SEM (${category})`,
+          isSfs,
+          dateFrom: scheduleByDate[0]?.examDate || "",
+          dateTo: scheduleByDate[scheduleByDate.length - 1]?.examDate || "",
+        },
+      });
+    } catch (err) {
+      console.error("Faculty schedule DOCX export failed:", err);
+      window.alert(err?.message || "Failed to export DOCX");
+    } finally {
+      setExportingDocx(false);
+    }
+  };
 
   return (
     <div
@@ -368,21 +415,65 @@ const FacultySchedule = ({ plans, onClose }) => {
               ))}
             </select>
           </label>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              padding: "6px 10px",
+              borderRadius: "4px",
+              border: "1px solid #ccc",
+              cursor: "pointer",
+              background: "#f8fafc",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={isSfs}
+              onChange={(e) => setIsSfs(e.target.checked)}
+            />
+            <span style={{ fontWeight: 500 }}>SFS</span>
+            <span style={{ fontSize: "11px", color: "#64748b" }}>
+              AEC · HoD · CoE
+            </span>
+          </label>
           <button
             onClick={runPrint}
-            disabled={verifying}
+            disabled={verifying || exportingDocx}
             style={{
               padding: "10px 20px",
               background: "#007bff",
               color: "white",
               border: "none",
               borderRadius: "5px",
-              cursor: verifying ? "wait" : "pointer",
+              cursor: verifying || exportingDocx ? "wait" : "pointer",
               fontWeight: "bold",
-              opacity: verifying ? 0.7 : 1,
+              opacity: verifying || exportingDocx ? 0.7 : 1,
             }}
           >
             {verifying ? "Preparing…" : "Print Schedule"}
+          </button>
+          <button
+            onClick={runDocxExport}
+            disabled={verifying || exportingDocx || scheduleByDate.length === 0}
+            style={{
+              padding: "10px 20px",
+              background: "#dc2626",
+              color: "white",
+              border: "none",
+              borderRadius: "5px",
+              cursor:
+                verifying || exportingDocx || scheduleByDate.length === 0
+                  ? "not-allowed"
+                  : "pointer",
+              fontWeight: "bold",
+              opacity:
+                verifying || exportingDocx || scheduleByDate.length === 0
+                  ? 0.7
+                  : 1,
+            }}
+          >
+            {exportingDocx ? "Preparing DOCX…" : "Export DOCX"}
           </button>
           <button
             onClick={onClose}
@@ -522,16 +613,15 @@ const FacultySchedule = ({ plans, onClose }) => {
                   <div
                     style={{
                       fontWeight: "bold",
-                      marginBottom: "5px",
+                      marginBottom: "8px",
                       fontSize: "11pt",
-                      display: "flex",
-                      justifyContent: "space-between",
+                      lineHeight: 1.5,
                     }}
                   >
-                    <span>Date: {formatDateLong(day.examDate)}</span>
-                    <span>
+                    <div>Date: {formatDateLong(day.examDate)}</div>
+                    <div>
                       {sessionLabel}: {timeLabel}
-                    </span>
+                    </div>
                   </div>
 
                   <table
@@ -548,31 +638,7 @@ const FacultySchedule = ({ plans, onClose }) => {
                             border: "1px solid black",
                             padding: "6px",
                             textAlign: "center",
-                            width: "60px",
-                            fontSize: "11pt",
-                            fontWeight: "bold",
-                          }}
-                        >
-                          S. No.
-                        </th>
-                        <th
-                          style={{
-                            border: "1px solid black",
-                            padding: "6px",
-                            textAlign: "center",
-                            width: "140px",
-                            fontSize: "11pt",
-                            fontWeight: "bold",
-                          }}
-                        >
-                          Date &amp; Session
-                        </th>
-                        <th
-                          style={{
-                            border: "1px solid black",
-                            padding: "6px",
-                            textAlign: "center",
-                            width: "100px",
+                            width: "18%",
                             fontSize: "11pt",
                             fontWeight: "bold",
                           }}
@@ -584,66 +650,118 @@ const FacultySchedule = ({ plans, onClose }) => {
                             border: "1px solid black",
                             padding: "6px",
                             textAlign: "center",
+                            width: "57%",
                             fontSize: "11pt",
                             fontWeight: "bold",
                           }}
                         >
-                          Name of the Faculty with Designation
+                          Name
+                        </th>
+                        <th
+                          style={{
+                            border: "1px solid black",
+                            padding: "6px",
+                            textAlign: "center",
+                            width: "25%",
+                            fontSize: "11pt",
+                            fontWeight: "bold",
+                          }}
+                        >
+                          Department
                         </th>
                       </tr>
                     </thead>
                     <tbody>
-                      {session.entries.map((entry, idx) => (
-                        <tr key={`${entry.roomNo}-${entry.facultyName}-${idx}`}>
-                          <td
-                            style={{
-                              border: "1px solid black",
-                              padding: "6px",
-                              textAlign: "center",
-                              fontSize: "11pt",
-                            }}
+                      {session.entries.map((entry, idx) => {
+                        const split = splitFacultyDepartment(
+                          entry.facultyName,
+                          entry.department
+                        );
+                        return (
+                          <tr
+                            key={`${entry.roomNo}-${entry.facultyName}-${idx}`}
                           >
-                            {idx + 1}
-                          </td>
-                          <td
-                            style={{
-                              border: "1px solid black",
-                              padding: "6px",
-                              textAlign: "center",
-                              fontSize: "11pt",
-                            }}
-                          >
-                            {formatDateShort(entry.examDate)} - {sessionLabel}
-                          </td>
-                          <td
-                            style={{
-                              border: "1px solid black",
-                              padding: "6px",
-                              textAlign: "center",
-                              fontSize: "11pt",
-                            }}
-                          >
-                            {entry.roomNo}
-                          </td>
-                          <td
-                            style={{
-                              border: "1px solid black",
-                              padding: "6px",
-                              textAlign: "left",
-                              fontSize: "11pt",
-                            }}
-                          >
-                            {entry.facultyName}
-                            {entry.department ? ` (${entry.department})` : ""}
-                          </td>
-                        </tr>
-                      ))}
+                            <td
+                              style={{
+                                border: "1px solid black",
+                                padding: "6px",
+                                textAlign: "center",
+                                fontSize: "11pt",
+                              }}
+                            >
+                              {entry.roomNo}
+                            </td>
+                            <td
+                              style={{
+                                border: "1px solid black",
+                                padding: "6px",
+                                textAlign: "left",
+                                fontSize: "11pt",
+                              }}
+                            >
+                              {split.name}
+                            </td>
+                            <td
+                              style={{
+                                border: "1px solid black",
+                                padding: "6px",
+                                textAlign: "center",
+                                fontSize: "11pt",
+                              }}
+                            >
+                              {split.department || "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
               );
             })
           )}
+
+          <div
+            style={{
+              marginTop: "48px",
+              paddingTop: "24px",
+              pageBreakBefore: "always",
+            }}
+          >
+            <h3
+              style={{
+                textAlign: "center",
+                fontWeight: "bold",
+                fontSize: "12pt",
+                textDecoration: "underline",
+                marginBottom: "28px",
+              }}
+            >
+              APPROVAL / SIGNATURES
+            </h3>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr 1fr",
+                gap: "16px",
+                textAlign: "center",
+                fontSize: "11pt",
+                fontWeight: "bold",
+              }}
+            >
+              {(isSfs
+                ? ["AEC", "HoD", "CoE"]
+                : ["CoE", "HoD", "Exam Coordinators"]
+              ).map((title) => (
+                <div key={title}>
+                  <div style={{ marginBottom: "56px" }}>{title}</div>
+                  <div style={{ fontWeight: "normal" }}>
+                    ________________________
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     </div>

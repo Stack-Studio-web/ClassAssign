@@ -148,25 +148,42 @@ function textCell(text, opts = {}) {
   });
 }
 
+function splitFacultyDepartment(facultyName, department) {
+  const name = String(facultyName || "").trim();
+  const dept = String(department || "").trim();
+  if (dept) return { name, department: dept };
+  const match = name.match(/^(.*?)\s*\(([^)]+)\)\s*$/);
+  if (match) {
+    return { name: match[1].trim(), department: match[2].trim() };
+  }
+  return { name, department: "" };
+}
+
 function buildAssignmentTable(assignments) {
   const header = new TableRow({
     tableHeader: true,
     children: [
-      textCell("Venue", { bold: true, header: true, width: ASSIGN_COLS[0] }),
-      textCell("Faculty", { bold: true, header: true, width: ASSIGN_COLS[1] }),
-      textCell("Department", { bold: true, header: true, width: ASSIGN_COLS[2] }),
+      textCell("Room No.", { bold: true, header: true, width: ASSIGN_COLS[0], center: true }),
+      textCell("Name", { bold: true, header: true, width: ASSIGN_COLS[1], center: true }),
+      textCell("Department", { bold: true, header: true, width: ASSIGN_COLS[2], center: true }),
     ],
   });
-  const body = (assignments || []).map(
-    (a) =>
-      new TableRow({
-        children: [
-          textCell(a.venueName || "—", { width: ASSIGN_COLS[0] }),
-          textCell(a.facultyName || "—", { width: ASSIGN_COLS[1] }),
-          textCell(a.department || "—", { width: ASSIGN_COLS[2] }),
-        ],
-      })
-  );
+  const body = (assignments || []).map((a) => {
+    const split = splitFacultyDepartment(a.facultyName, a.department);
+    return new TableRow({
+      children: [
+        textCell(a.venueName || a.roomNo || "—", {
+          width: ASSIGN_COLS[0],
+          center: true,
+        }),
+        textCell(split.name || "—", { width: ASSIGN_COLS[1] }),
+        textCell(split.department || "—", {
+          width: ASSIGN_COLS[2],
+          center: true,
+        }),
+      ],
+    });
+  });
   return new Table({
     width: { size: PAGE_WIDTH, type: WidthType.DXA },
     columnWidths: ASSIGN_COLS,
@@ -312,21 +329,21 @@ export async function downloadFacultyInvigilationDocx({
   );
 
   for (const day of preview?.schedule || []) {
-    children.push(
-      p(formatDateLong(day.examDate), {
-        bold: true,
-        size: 20,
-        center: false,
-        before: 200,
-        after: 120,
-      })
-    );
     for (const session of day.sessions || []) {
       const sessionLabel = (session.examSession || "").toUpperCase() || "—";
       children.push(
+        p(`Date: ${formatDateLong(day.examDate)}`, {
+          bold: true,
+          size: 20,
+          center: false,
+          before: 200,
+          after: 40,
+        })
+      );
+      children.push(
         p(
-          `${sessionLabel} — ${formatTime12h(session.startTime)} to ${formatTime12h(session.endTime)}`,
-          { bold: true, size: 18, center: false, before: 80, after: 100 }
+          `${sessionLabel}: ${formatTime12h(session.startTime)} - ${formatTime12h(session.endTime)}`,
+          { bold: true, size: 18, center: false, before: 40, after: 100 }
         )
       );
       children.push(buildAssignmentTable(session.assignments || []));

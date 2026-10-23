@@ -59,7 +59,6 @@ const emptyFilters = {
   academicYearLabel: "",
   examType: "",
   department: "",
-  session: "",
   isSfs: false,
   dateFrom: "",
   dateTo: "",
@@ -74,9 +73,7 @@ export default function FacultyInvigilationExport() {
     examTypes: [],
     departments: [],
   });
-  const [sessions, setSessions] = useState([]);
   const [loadingOptions, setLoadingOptions] = useState(true);
-  const [loadingSessions, setLoadingSessions] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [preview, setPreview] = useState(null);
@@ -86,10 +83,6 @@ export default function FacultyInvigilationExport() {
   );
 
   const currentLogo = logoType === "KCT" ? LogoKCT : LogoKSI;
-  const datesReady =
-    Boolean(filters.dateFrom) &&
-    Boolean(filters.dateTo) &&
-    filters.dateTo >= filters.dateFrom;
 
   useEffect(() => {
     let cancelled = false;
@@ -131,80 +124,8 @@ export default function FacultyInvigilationExport() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Load FN / AN sessions only after Date From + Date To are chosen.
-  useEffect(() => {
-    let cancelled = false;
-    if (!datesReady) {
-      setSessions([]);
-      setFilters((prev) => (prev.session ? { ...prev, session: "" } : prev));
-      setLoadingSessions(false);
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    (async () => {
-      setLoadingSessions(true);
-      try {
-        const res = await api.get("/faculty/invigilation-schedule/sessions", {
-          params: {
-            dateFrom: filters.dateFrom,
-            dateTo: filters.dateTo,
-            examType: filters.examType || undefined,
-            semester: filters.semester || undefined,
-          },
-        });
-        const body = res.data || {};
-        const list = (Array.isArray(body.sessions) ? body.sessions : [])
-          .map((s) => {
-            const value = String(s.value || s.examSession || s.exam_session || "")
-              .trim()
-              .toUpperCase();
-            if (!value) return null;
-            return {
-              value,
-              label:
-                s.label ||
-                (value === "FN"
-                  ? "FN (Forenoon)"
-                  : value === "AN"
-                    ? "AN (Afternoon)"
-                    : value),
-            };
-          })
-          .filter(Boolean);
-        if (cancelled) return;
-        setSessions(list);
-        setFilters((prev) => {
-          if (prev.session && !list.some((s) => s.value === prev.session)) {
-            return { ...prev, session: "" };
-          }
-          return prev;
-        });
-      } catch (err) {
-        if (!cancelled) {
-          setSessions([]);
-          setError(getApiError(err, "Failed to load sessions for selected dates"));
-        }
-      } finally {
-        if (!cancelled) setLoadingSessions(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [datesReady, filters.dateFrom, filters.dateTo, filters.examType, filters.semester]);
-
   const setFilter = (key, value) => {
-    setFilters((prev) => {
-      const next = { ...prev, [key]: value };
-      // Changing dates clears session; it reloads from FN/AN for the new range.
-      if (key === "dateFrom" || key === "dateTo") {
-        next.session = "";
-      }
-      return next;
-    });
+    setFilters((prev) => ({ ...prev, [key]: value }));
     setPreview(null);
     setError("");
   };
@@ -218,18 +139,12 @@ export default function FacultyInvigilationExport() {
     return "";
   }, [filters]);
 
-  const selectedSession = useMemo(
-    () => sessions.find((s) => s.value === filters.session) || null,
-    [sessions, filters.session]
-  );
-
   const queryParams = useMemo(
     () => ({
       semester: filters.semester || undefined,
       academicYear: filters.academicYearLabel || undefined,
       examType: filters.examType || undefined,
       department: filters.department || undefined,
-      session: filters.session || undefined,
       dateFrom: filters.dateFrom,
       dateTo: filters.dateTo,
     }),
@@ -299,7 +214,6 @@ export default function FacultyInvigilationExport() {
           deptHeader,
           ayLabel,
           semesterLabel,
-          sessionLabel: selectedSession?.label || "",
           isSfs: Boolean(filters.isSfs),
           dateFrom: filters.dateFrom,
           dateTo: filters.dateTo,
@@ -471,31 +385,6 @@ export default function FacultyInvigilationExport() {
               </label>
 
               <label className="text-sm space-y-1.5">
-                <span className="font-medium text-gray-700">Session</span>
-                <select
-                  value={filters.session}
-                  onChange={(e) => setFilter("session", e.target.value)}
-                  disabled={!datesReady || loadingSessions}
-                  className="w-full h-11 px-3 rounded-xl border border-gray-200 bg-white text-sm focus:ring-2 focus:ring-red-500 outline-none disabled:bg-gray-50"
-                >
-                  <option value="">
-                    {!datesReady
-                      ? "Select dates first"
-                      : loadingSessions
-                        ? "Loading…"
-                        : sessions.length
-                          ? "All Sessions"
-                          : "No FN/AN for dates"}
-                  </option>
-                  {sessions.map((s) => (
-                    <option key={s.value} value={s.value}>
-                      {s.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="text-sm space-y-1.5">
                 <span className="font-medium text-gray-700">Logo</span>
                 <select
                   value={logoType}
@@ -611,55 +500,67 @@ export default function FacultyInvigilationExport() {
                   {" · "}
                   Semester: <strong>{semesterLabel}</strong>
                 </p>
-                {selectedSession?.label ? (
-                  <p className="text-sm mt-1">
-                    Session: <strong>{selectedSession.label}</strong>
-                  </p>
-                ) : null}
                 <h2 className="text-lg font-bold mt-4 underline">
                   Faculty Invigilation Schedule
                 </h2>
               </div>
 
-              {(preview.schedule || []).map((day) => (
-                <div key={day.examDate} className="mb-8 page-break-inside-avoid">
-                  <h3 className="font-bold text-base mb-3 bg-gray-100 px-3 py-2 rounded">
-                    {formatDateLong(day.examDate)}
-                  </h3>
-                  {(day.sessions || []).map((session) => (
-                    <div
-                      key={`${day.examDate}-${session.startTime}-${session.endTime}`}
-                      className="mb-4"
-                    >
-                      <p className="font-semibold text-sm mb-2">
-                        {(session.examSession || "").toUpperCase() || "—"}
-                        {" — "}
-                        {formatTime12h(session.startTime)} to {formatTime12h(session.endTime)}
+              {(preview.schedule || []).map((day) =>
+                (day.sessions || []).map((session) => (
+                  <div
+                    key={`${day.examDate}-${session.startTime}-${session.endTime}`}
+                    className="mb-8 page-break-inside-avoid"
+                  >
+                    <div className="font-semibold text-sm mb-2 space-y-0.5">
+                      <p>Date: {formatDateLong(day.examDate)}</p>
+                      <p>
+                        {(session.examSession || "").toUpperCase() || "—"}:{" "}
+                        {formatTime12h(session.startTime)} -{" "}
+                        {formatTime12h(session.endTime)}
                       </p>
-                      <table className="w-full border-collapse border border-gray-400 text-sm">
-                        <thead>
-                          <tr className="bg-gray-800 text-white">
-                            <th className="border border-gray-400 px-3 py-2 text-left">Venue</th>
-                            <th className="border border-gray-400 px-3 py-2 text-left">Faculty</th>
-                            <th className="border border-gray-400 px-3 py-2 text-left">Department</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(session.assignments || []).map((a, idx) => (
+                    </div>
+                    <table className="w-full border-collapse border border-gray-400 text-sm">
+                      <thead>
+                        <tr className="bg-gray-800 text-white">
+                          <th className="border border-gray-400 px-3 py-2 text-left">
+                            Room No.
+                          </th>
+                          <th className="border border-gray-400 px-3 py-2 text-left">
+                            Name
+                          </th>
+                          <th className="border border-gray-400 px-3 py-2 text-left">
+                            Department
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(session.assignments || []).map((a, idx) => {
+                          const rawName = String(a.facultyName || "").trim();
+                          const rawDept = String(a.department || "").trim();
+                          const match = !rawDept
+                            ? rawName.match(/^(.*?)\s*\(([^)]+)\)\s*$/)
+                            : null;
+                          const name = match ? match[1].trim() : rawName;
+                          const dept = rawDept || (match ? match[2].trim() : "") || "—";
+                          return (
                             <tr key={`${a.venueName}-${a.facultyName}-${idx}`}>
-                              <td className="border border-gray-400 px-3 py-2">{a.venueName}</td>
-                              <td className="border border-gray-400 px-3 py-2">{a.facultyName}</td>
                               <td className="border border-gray-400 px-3 py-2">
-                                {a.department || "—"}
+                                {a.venueName}
+                              </td>
+                              <td className="border border-gray-400 px-3 py-2">
+                                {name}
+                              </td>
+                              <td className="border border-gray-400 px-3 py-2">
+                                {dept}
                               </td>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ))}
-                </div>
-              ))}
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ))
+              )}
 
               {Array.isArray(preview.unassignedVenues) &&
                 preview.unassignedVenues.length > 0 && (
