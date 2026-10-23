@@ -20,6 +20,7 @@ const {
   usableCapacityForVenues,
   buildCourseSeatingDiagnostics,
   formatCourseCapacityError,
+  isAllSingleSeatLayout,
 } = await import("../../src/lib/usableVenueCapacity.js");
 
 const {
@@ -169,12 +170,26 @@ function testDiagnosticsFormat() {
   console.log("✓ diagnostic message includes course, venues, physical, usable, shortfall");
 }
 
+function testAllSingleSeatLayoutFillsEverySeat() {
+  const v = makeVenue("LAB1", "lab1", { rows: 7, cols: 5, config: [1, 1, 1, 1, 1] });
+  assert.strictEqual(physicalCapacityOf(v), 35);
+  assert.ok(isAllSingleSeatLayout(v.rowConfigs || Array.from({ length: 7 }, () => [1, 1, 1, 1, 1])));
+  // Without allowAdjacent flag, 1,1,1,1,1 still uses full physical (no adjacency gaps).
+  assert.strictEqual(usableCapacityForSingleCourse(v, { allowAdjacent: false }), 35);
+  assert.strictEqual(usableCapacityForSingleCourse(v, { allowAdjacent: true }), 35);
+  const twoSeat = makeVenue("SC", "sc", { rows: 5, cols: 4, config: [2, 2, 2, 2] });
+  assert.strictEqual(isAllSingleSeatLayout(Array.from({ length: 5 }, () => [2, 2, 2, 2])), false);
+  assert.strictEqual(usableCapacityForSingleCourse(twoSeat, { allowAdjacent: false }), 20);
+  console.log("✓ 7×5 @ 1,1,1,1,1 → usable = physical 35 (adjacency skipped)");
+}
+
 function testWiring() {
   const page = read("src/pages/Allotment.jsx");
   assert.match(page, /validateAllCourseUsableCapacity/);
   assert.match(page, /formatCourseCapacityError/);
   assert.match(page, /PER-COURSE CAPACITY DIAGNOSTICS/);
   assert.match(page, /allowAdjacent: allowAdjacentSeating/);
+  assert.match(page, /isAllSingleSeatLayout/);
   console.log("✓ Allotment uses usable-capacity pre-check + diagnostics");
 }
 
@@ -184,6 +199,7 @@ function main() {
   testMappedCourseInsufficientUsable();
   testTempBenchOverrideRaisesUsable();
   testDiagnosticsFormat();
+  testAllSingleSeatLayoutFillsEverySeat();
   testWiring();
   console.log("\nAll usable venue capacity checks passed.");
 }

@@ -49,6 +49,7 @@ import {
   buildCourseSeatingDiagnostics,
   formatCourseCapacityError,
   physicalCapacityOf,
+  isAllSingleSeatLayout,
 } from "../lib/usableVenueCapacity";
 import {
   normalizeExamType,
@@ -1744,9 +1745,12 @@ const Allotment = () => {
  
               const student = students[studentIndex];
  
-              // When adjacent seating is allowed, skip adjacency checks entirely.
+              // When adjacent seating is allowed, or the venue is all 1-seat
+              // benches (1,1,1,1,1…), skip adjacency — every desk is isolated.
               let canPlace = true;
-              if (!allowAdjacentSeating) {
+              const skipAdjacency =
+                allowAdjacentSeating || isAllSingleSeatLayout(rowConfigs);
+              if (!skipAdjacency) {
                 // ✅ ANTI-CHEATING RULE 1: Check adjacent seat within same bench
                 const hasAdjacentInSameBench = s > 0 && 
                   cellStudents[s - 1] && 

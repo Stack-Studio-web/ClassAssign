@@ -51,6 +51,25 @@ export function physicalCapacityOf(venue) {
 }
 
 /**
+ * True when every configured bench has exactly 1 seat (e.g. layout [1,1,1,1,1]).
+ * Cross-bench adjacency does not apply — each seat is already an isolated desk.
+ */
+export function isAllSingleSeatLayout(rowConfigs) {
+  if (!Array.isArray(rowConfigs) || rowConfigs.length === 0) return false;
+  let sawSeat = false;
+  for (const row of rowConfigs) {
+    if (!Array.isArray(row) || row.length === 0) return false;
+    for (const n of row) {
+      const seats = Number(n) || 0;
+      if (seats <= 0) continue;
+      sawSeat = true;
+      if (seats !== 1) return false;
+    }
+  }
+  return sawSeat;
+}
+
+/**
  * Max seats one course can fill in an empty venue under adjacency rules.
  * Mirrors the generate loop in Allotment.jsx (column → seat → row).
  */
@@ -75,7 +94,8 @@ export function usableCapacityForSingleCourse(venue, { allowAdjacent = false } =
     }
   }
 
-  if (allowAdjacent) {
+  // All 1-seat columns (1,1,1,1,1…): fill every seat — no adjacency gaps.
+  if (allowAdjacent || isAllSingleSeatLayout(rowConfigs)) {
     return physicalCapacityOf(venue);
   }
 
