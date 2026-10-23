@@ -3,7 +3,7 @@
  * Absentees & Signature blank for handwriting. No attendance data.
  */
 import { jsPDF } from "jspdf";
-import logoKctUrl from "../assets/logo.png";
+import hallKctLogoUrl from "../assets/hall_kct.png";
 
 const MARGIN = 12;
 const FONT = "helvetica";
@@ -24,7 +24,7 @@ const COL_FRACS = [0.09, 0.14, 0.08, 0.28, 0.07, 0.18, 0.16];
 
 async function loadLogoDataUrl() {
   try {
-    const res = await fetch(logoKctUrl);
+    const res = await fetch(hallKctLogoUrl);
     if (!res.ok) return null;
     const blob = await res.blob();
     return await new Promise((resolve, reject) => {
@@ -104,24 +104,28 @@ function drawDocHeader(pdf, meta, logoDataUrl) {
   let y = MARGIN;
   const w = usableWidth(pdf);
 
+  // hall_kct.png is a wide lockup (seal + wordmark) — no separate college title text
   if (logoDataUrl) {
     try {
-      pdf.addImage(logoDataUrl, "PNG", MARGIN + w / 2 - 8, y, 16, 16);
+      const logoW = 72;
+      const logoH = 18;
+      pdf.addImage(
+        logoDataUrl,
+        "PNG",
+        MARGIN + w / 2 - logoW / 2,
+        y,
+        logoW,
+        logoH
+      );
     } catch {
       /* logo optional */
     }
-    y += 18;
+    y += 20;
   }
 
   pdf.setFont(FONT, "bold");
-  pdf.setFontSize(13);
+  pdf.setFontSize(12);
   pdf.setTextColor(0, 0, 0);
-  pdf.text("KUMARAGURU COLLEGE OF TECHNOLOGY", MARGIN + w / 2, y + 4, {
-    align: "center",
-  });
-  y += 8;
-
-  pdf.setFontSize(11);
   pdf.text("DATEWISE SEATING ALLOTMENT REPORT", MARGIN + w / 2, y + 4, {
     align: "center",
   });
@@ -347,8 +351,8 @@ export async function generateDatewiseStatementPdf(statement) {
   const cols = colLayout(pdf);
   const ph = pageHeight(pdf);
 
-  // Approximate header + table-header height (logo + titles + date/time)
-  const headerBlockH = (logoDataUrl ? 18 : 0) + 8 + 8 + 5 + 5 + 8 + HEADER_H;
+  // Approximate header + table-header height (lockup logo + title + date/time)
+  const headerBlockH = (logoDataUrl ? 20 : 0) + 8 + 5 + 5 + 8 + HEADER_H;
   const firstCapacity = Math.max(
     1,
     Math.floor((ph - MARGIN - FOOTER_BLOCK_H - 10 - headerBlockH) / ROW_H)

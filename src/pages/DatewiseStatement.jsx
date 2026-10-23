@@ -13,7 +13,7 @@ import {
 import { downloadDatewiseStatementPdf } from "../lib/generateDatewiseStatementPdf";
 import { useToast } from "../context/ToastContext";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
-import logoKct from "../assets/logo.png";
+import HallLogoKCT from "../assets/hall_kct.png";
 
 function formatDateLong(dateValue) {
   const raw = String(dateValue || "");
@@ -312,15 +312,19 @@ export default function DatewiseStatement() {
             <div className="min-w-[960px]">
               <div className="text-center mb-6">
                 <img
-                  src={logoKct}
-                  alt="KCT Logo"
-                  className="mx-auto mb-3"
-                  style={{ height: 56, width: "auto" }}
+                  src={HallLogoKCT}
+                  alt="Kumaraguru College of Technology"
+                  className="mx-auto"
+                  style={{
+                    height: 56,
+                    width: "auto",
+                    maxWidth: 360,
+                    objectFit: "contain",
+                    display: "block",
+                    margin: "0 auto 8px",
+                  }}
                 />
-                <h2 className="text-lg font-bold tracking-wide">
-                  KUMARAGURU COLLEGE OF TECHNOLOGY
-                </h2>
-                <h3 className="text-base font-bold mt-1">
+                <h3 className="text-base font-bold">
                   DATEWISE SEATING ALLOTMENT REPORT
                 </h3>
                 <p className="text-sm mt-2">
