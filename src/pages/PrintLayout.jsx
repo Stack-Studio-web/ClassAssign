@@ -1,15 +1,23 @@
 //PrintLayout.jsx
-import React from 'react';
+import React from "react";
 import LogoKSI from "../assets/logo KSI.png";
 import LogoKCT from "../assets/logo.png";
-const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
+import { DEFAULT_EXPORT_HEADER } from "../hooks/useExportHeaderSettings";
+
+const PrintLayout = React.forwardRef(({ selectedPlan, headerOptions = null }, ref) => {
   if (!selectedPlan) {
     return <div ref={ref}>No seating plan selected for printing.</div>;
   }
 
   const formatDate = (dateString) => {
-    const options = { day: 'numeric', month: 'long', year: 'numeric' };
-    return new Date(dateString).toLocaleDateString(undefined, options);
+    const options = { day: "numeric", month: "long", year: "numeric" };
+    const raw = String(dateString || "");
+    const d =
+      raw && !raw.includes("T")
+        ? new Date(`${raw.slice(0, 10)}T12:00:00`)
+        : new Date(dateString);
+    if (Number.isNaN(d.getTime())) return String(dateString || "");
+    return d.toLocaleDateString(undefined, options);
   };
 
   // True for Single-Course blocked spacers (regn "0") — not real students.
@@ -53,10 +61,10 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
     const counts = {};
     let total = 0;
 
-    (venue.seatingArrangement || []).forEach(row => {
-      row.forEach(cell => {
+    (venue.seatingArrangement || []).forEach((row) => {
+      row.forEach((cell) => {
         const rolls = getRollsFromCell(cell);
-        rolls.forEach(roll => {
+        rolls.forEach((roll) => {
           total += 1;
           const match = roll.match(/^\d{2}[A-Z]+/);
           if (match) {
@@ -70,13 +78,30 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
     return { counts, total };
   };
 
-  const getLogoType = () => {
+  const getFallbackLogoType = () => {
     if (typeof window === "undefined") return "KSI";
     return window.localStorage.getItem("kctLogoType") || "KSI";
   };
 
-  const logoType = getLogoType();
+  const logoType =
+    headerOptions?.logoType ||
+    headerOptions?.logo ||
+    getFallbackLogoType();
   const currentLogo = logoType === "KCT" ? LogoKCT : LogoKSI;
+  const isSfs = Boolean(headerOptions?.isSfs);
+  const departmentLine =
+    headerOptions?.departmentLine ??
+    headerOptions?.department ??
+    "";
+  const programmeLine1 =
+    headerOptions?.programmeLine1 ?? headerOptions?.program1 ?? "";
+  const programmeLine2 =
+    headerOptions?.programmeLine2 ?? headerOptions?.program2 ?? "";
+  const sfsLine1 =
+    headerOptions?.sfsLine1 || DEFAULT_EXPORT_HEADER.sfsLine1;
+  const sfsLine2 =
+    headerOptions?.sfsLine2 || DEFAULT_EXPORT_HEADER.sfsLine2;
+  const venues = selectedPlan.venuesUsed || [];
 
   return (
     <div
@@ -88,18 +113,21 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
         background: "#fff",
       }}
     >
-      {selectedPlan.venuesUsed?.map((venuePlan, arrIndex) => {
-        const { counts: batchCounts, total: hallTotal } = getBatchCounts(venuePlan);
-        
+      {venues.map((venuePlan, arrIndex) => {
+        const { counts: batchCounts, total: hallTotal } =
+          getBatchCounts(venuePlan);
+
         // Get bench configuration for this venue
-        const benchConfig = venuePlan.benchConfig || 
-          (venuePlan.seatingArrangement?.[0]?.map(() => 2) || [2, 2]);
+        const benchConfig =
+          venuePlan.benchConfig ||
+          venuePlan.seatingArrangement?.[0]?.map(() => 2) ||
+          [2, 2];
         const numCols = benchConfig.length;
 
         // Build display grid with exact saved/generated row count (no forced padding)
         let displayRows = venuePlan.seatingArrangement || [];
         // Ensure each row has correct column count
-        displayRows = displayRows.map(row => {
+        displayRows = displayRows.map((row) => {
           const r = Array.isArray(row) ? [...row] : [];
           while (r.length < numCols) r.push("Empty");
           return r.slice(0, numCols);
@@ -117,7 +145,11 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
                 justifyContent: "center",
               }}
             >
-              <img src={currentLogo} alt="KCT Logo" style={{ height: "70px", margin: "0" }} />
+              <img
+                src={currentLogo}
+                alt="College Logo"
+                style={{ height: "70px", margin: "0" }}
+              />
             </div>
 
             {/* TITLE */}
@@ -133,6 +165,68 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
             >
               KUMARAGURU COLLEGE OF TECHNOLOGY
             </div>
+
+            {isSfs ? (
+              <>
+                <div
+                  style={{
+                    textAlign: "center",
+                    fontSize: "1.05em",
+                    fontWeight: "bold",
+                    margin: "6px 0",
+                  }}
+                >
+                  {sfsLine1}
+                </div>
+                <div
+                  style={{
+                    textAlign: "center",
+                    fontSize: "0.98em",
+                    fontWeight: "bold",
+                    margin: "4px 0 8px 0",
+                  }}
+                >
+                  {sfsLine2}
+                </div>
+              </>
+            ) : (
+              <>
+                {departmentLine ? (
+                  <div
+                    style={{
+                      textAlign: "center",
+                      fontSize: "1.02em",
+                      fontWeight: "bold",
+                      margin: "4px 0",
+                    }}
+                  >
+                    {departmentLine}
+                  </div>
+                ) : null}
+                {programmeLine1 ? (
+                  <div
+                    style={{
+                      textAlign: "center",
+                      fontSize: "0.95em",
+                      margin: "2px 0",
+                    }}
+                  >
+                    {programmeLine1}
+                  </div>
+                ) : null}
+                {programmeLine2 ? (
+                  <div
+                    style={{
+                      textAlign: "center",
+                      fontSize: "0.95em",
+                      margin: "2px 0 8px 0",
+                    }}
+                  >
+                    {programmeLine2}
+                  </div>
+                ) : null}
+              </>
+            )}
 
             <div
               style={{
@@ -151,13 +245,15 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
             {/* EXAM DETAILS */}
             <div style={{ margin: "15px 0 0 2px", fontSize: "1.06em" }}>
               <strong>
-                DATE: {formatDate(selectedPlan.examDate)} ({selectedPlan.examSession ?? ""})
+                DATE: {formatDate(selectedPlan.examDate)} (
+                {selectedPlan.examSession ?? ""})
               </strong>
             </div>
 
             <div style={{ margin: "10px 0 0 2px", fontSize: "1.06em" }}>
               <strong>
-                EXAM TIME: {selectedPlan.examStartTime ?? "N/A"} - {selectedPlan.examEndTime ?? "N/A"}
+                EXAM TIME: {selectedPlan.examStartTime ?? "N/A"} -{" "}
+                {selectedPlan.examEndTime ?? "N/A"}
               </strong>
             </div>
 
@@ -173,8 +269,11 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
               </div>
             </div>
 
-            <div style={{ marginTop: "10px", fontSize: "0.95em", color: "#555" }}>
-              <strong>Bench Config:</strong> {benchConfig.join(", ")} seats/column
+            <div
+              style={{ marginTop: "10px", fontSize: "0.95em", color: "#555" }}
+            >
+              <strong>Bench Config:</strong> {benchConfig.join(", ")}{" "}
+              seats/column
             </div>
 
             {/* TABLE WITH SUB-COLUMNS - fixed layout for print alignment */}
@@ -219,7 +318,8 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
                           textAlign: "center",
                         }}
                       >
-                        COL {String.fromCharCode(65 + colIndex)} ({seatsInCol}-seat)
+                        COL {String.fromCharCode(65 + colIndex)} ({seatsInCol}
+                        -seat)
                       </th>
                     );
                   })}
@@ -228,21 +328,24 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
                 <tr>
                   {benchConfig.map((seatsInCol, colIndex) => {
                     const colLetter = String.fromCharCode(65 + colIndex);
-                    return Array.from({ length: seatsInCol }).map((_, seatIndex) => (
-                      <th
-                        key={`${colIndex}-${seatIndex}`}
-                        style={{
-                          background: "#f5f3ff",
-                          fontWeight: "bold",
-                          fontSize: "0.85em",
-                          border: "1px solid #000",
-                          padding: "5px 4px",
-                          textAlign: "center",
-                        }}
-                      >
-                        {colLetter}{seatIndex + 1}
-                      </th>
-                    ));
+                    return Array.from({ length: seatsInCol }).map(
+                      (_, seatIndex) => (
+                        <th
+                          key={`${colIndex}-${seatIndex}`}
+                          style={{
+                            background: "#f5f3ff",
+                            fontWeight: "bold",
+                            fontSize: "0.85em",
+                            border: "1px solid #000",
+                            padding: "5px 4px",
+                            textAlign: "center",
+                          }}
+                        >
+                          {colLetter}
+                          {seatIndex + 1}
+                        </th>
+                      )
+                    );
                   })}
                 </tr>
               </thead>
@@ -266,17 +369,22 @@ const PrintLayout = React.forwardRef(({ selectedPlan }, ref) => {
                     {Array.from({ length: numCols }).map((_, cIndex) => {
                       const cell = row[cIndex];
                       const seatsInCol = benchConfig[cIndex] || 2;
-                      
+
                       let students = [];
                       if (cell === "Empty" || !cell) {
                         students = Array(seatsInCol).fill("");
                       } else if (Array.isArray(cell)) {
                         students = Array.from(
                           { length: seatsInCol },
-                          (_, slotIdx) => cell[slotIdx]?.regn_no ?? cell[slotIdx]?.regnNo ?? ""
+                          (_, slotIdx) =>
+                            cell[slotIdx]?.regn_no ??
+                            cell[slotIdx]?.regnNo ??
+                            ""
                         );
                       } else if (typeof cell === "string") {
-                        students = cell.split("\n").filter(s => s && s !== "Empty");
+                        students = cell
+                          .split("\n")
+                          .filter((s) => s && s !== "Empty");
                         while (students.length < seatsInCol) students.push("");
                       } else {
                         students = Array(seatsInCol).fill("");

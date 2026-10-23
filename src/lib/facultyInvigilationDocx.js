@@ -303,9 +303,25 @@ export async function downloadFacultyInvigilationDocx({
   children.push(
     p("OFFICE OF THE CONTROLLER OF EXAMINATION", { bold: true, size: 20, after: 80 })
   );
-  children.push(p(meta.deptHeader || "—", { bold: true, size: 22, after: 60 }));
   if (meta.isSfs) {
-    children.push(p("School of Foundation Sciences (SFS)", { size: 18, after: 40 }));
+    children.push(
+      p(meta.deptHeader || meta.sfsLine1 || "SCHOOL OF FOUNDATIONAL SCIENCES", {
+        bold: true,
+        size: 22,
+        after: 40,
+      })
+    );
+    if (meta.program2 || meta.sfsLine2) {
+      children.push(p(meta.program2 || meta.sfsLine2, { size: 18, after: 40 }));
+    }
+  } else {
+    children.push(p(meta.deptHeader || "—", { bold: true, size: 22, after: 60 }));
+    if (meta.program1) {
+      children.push(p(meta.program1, { size: 18, after: 40 }));
+    }
+    if (meta.program2) {
+      children.push(p(meta.program2, { size: 18, after: 40 }));
+    }
   }
   children.push(
     p(

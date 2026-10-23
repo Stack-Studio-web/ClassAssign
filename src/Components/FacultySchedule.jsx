@@ -3,6 +3,8 @@ import { useReactToPrint } from "react-to-print";
 import LogoKSI from "../assets/logo KSI.png";
 import LogoKCT from "../assets/logo.png";
 import { downloadFacultyInvigilationDocx } from "../lib/facultyInvigilationDocx";
+import ExportCustomizeBar from "./ExportCustomizeBar";
+import { useExportHeaderSettings } from "../hooks/useExportHeaderSettings";
 
 const currentYear = new Date().getFullYear();
 const AY_OPTIONS = Array.from({ length: 6 }, (_, i) => currentYear - 2 + i);
@@ -148,37 +150,35 @@ function buildScheduleFromPlans(plans = []) {
     }));
 }
 
-const FacultySchedule = ({ plans, onClose }) => {
+const FacultySchedule = ({ plans, onClose, headerSettings = null }) => {
   const printRef = useRef();
+  const localHeader = useExportHeaderSettings({ autoLoad: !headerSettings });
+  const header = headerSettings || localHeader;
 
   const [semester, setSemester] = useState("EVEN");
   const [category, setCategory] = useState("SA1");
   const [ayStartYear, setAyStartYear] = useState(currentYear);
-  const [departmentLine, setDepartmentLine] = useState(
-    "DEPARTMENT OF CSE, IT, AIDS, MCA"
-  );
-  const [programmeLine1, setProgrammeLine1] = useState(
-    "BE CSE - B.Tech IT - B.Tech AI&DS"
-  );
-  const [programmeLine2, setProgrammeLine2] = useState(
-    "M.Tech DS - M.E CSE (Cyber Security)"
-  );
-  const [isSfs, setIsSfs] = useState(false);
   const [exportingDocx, setExportingDocx] = useState(false);
 
-  const getInitialLogoType = () => {
-    if (typeof window === "undefined") return "KSI";
-    return window.localStorage.getItem("kctLogoType") || "KSI";
-  };
-  const [logoType, setLogoType] = useState(getInitialLogoType);
-
-  const handleLogoChange = (e) => {
-    const value = e.target.value;
-    setLogoType(value);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem("kctLogoType", value);
-    }
-  };
+  const {
+    logoType,
+    setLogoType,
+    departmentLine,
+    setDepartmentLine,
+    programmeLine1,
+    setProgrammeLine1,
+    programmeLine2,
+    setProgrammeLine2,
+    sfsLine1,
+    setSfsLine1,
+    sfsLine2,
+    setSfsLine2,
+    isSfs,
+    setIsSfs,
+    saving,
+    saveMsg,
+    save,
+  } = header;
 
   const currentLogo = logoType === "KCT" ? LogoKCT : LogoKSI;
 
@@ -230,7 +230,11 @@ const FacultySchedule = ({ plans, onClose }) => {
         preview,
         logoChoice: logoType,
         meta: {
-          deptHeader: departmentLine,
+          deptHeader: isSfs
+            ? sfsLine1 || departmentLine
+            : departmentLine,
+          program1: isSfs ? "" : programmeLine1,
+          program2: isSfs ? sfsLine2 : programmeLine2,
           ayLabel: `${ayStartYear}-${ayStartYear + 1}`,
           semesterLabel: `${semester} SEM (${category})`,
           isSfs,
@@ -272,222 +276,138 @@ const FacultySchedule = ({ plans, onClose }) => {
           position: "relative",
         }}
       >
-        <div
-          style={{
-            marginBottom: "20px",
-            display: "flex",
-            flexWrap: "wrap",
-            gap: "10px",
-            alignItems: "center",
-          }}
-          className="print:hidden"
-        >
-          <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <span style={{ fontWeight: 500 }}>Semester:</span>
-            <select
-              value={semester}
-              onChange={(e) => setSemester(e.target.value)}
+        <div className="print:hidden" style={{ marginBottom: "16px" }}>
+          <ExportCustomizeBar
+            logoType={logoType}
+            setLogoType={setLogoType}
+            departmentLine={departmentLine}
+            setDepartmentLine={setDepartmentLine}
+            programmeLine1={programmeLine1}
+            setProgrammeLine1={setProgrammeLine1}
+            programmeLine2={programmeLine2}
+            setProgrammeLine2={setProgrammeLine2}
+            sfsLine1={sfsLine1}
+            setSfsLine1={setSfsLine1}
+            sfsLine2={sfsLine2}
+            setSfsLine2={setSfsLine2}
+            isSfs={isSfs}
+            setIsSfs={setIsSfs}
+            saving={saving}
+            saveMsg={saveMsg}
+            onSave={save}
+          />
+          <div
+            style={{
+              marginTop: "10px",
+              display: "flex",
+              flexWrap: "wrap",
+              gap: "10px",
+              alignItems: "center",
+            }}
+          >
+            <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <span style={{ fontWeight: 500 }}>Semester:</span>
+              <select
+                value={semester}
+                onChange={(e) => setSemester(e.target.value)}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: "4px",
+                  border: "1px solid #ccc",
+                  minWidth: "100px",
+                }}
+              >
+                <option value="ODD">Odd Sem</option>
+                <option value="EVEN">Even Sem</option>
+              </select>
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <span style={{ fontWeight: 500 }}>Category:</span>
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: "4px",
+                  border: "1px solid #ccc",
+                  minWidth: "100px",
+                }}
+              >
+                <option value="SA1">SA1</option>
+                <option value="SA2">SA2</option>
+              </select>
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <span style={{ fontWeight: 500 }}>AY:</span>
+              <select
+                value={ayStartYear}
+                onChange={(e) => setAyStartYear(Number(e.target.value))}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: "4px",
+                  border: "1px solid #ccc",
+                  minWidth: "120px",
+                }}
+              >
+                {AY_OPTIONS.map((y) => (
+                  <option key={y} value={y}>
+                    AY {y}-{y + 1}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              onClick={runPrint}
+              disabled={verifying || exportingDocx}
               style={{
-                padding: "6px 10px",
-                borderRadius: "4px",
-                border: "1px solid #ccc",
-                minWidth: "100px",
+                padding: "10px 20px",
+                background: "#007bff",
+                color: "white",
+                border: "none",
+                borderRadius: "5px",
+                cursor: verifying || exportingDocx ? "wait" : "pointer",
+                fontWeight: "bold",
+                opacity: verifying || exportingDocx ? 0.7 : 1,
               }}
             >
-              <option value="ODD">Odd Sem</option>
-              <option value="EVEN">Even Sem</option>
-            </select>
-          </label>
-          <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <span style={{ fontWeight: 500 }}>Logo:</span>
-            <select
-              value={logoType}
-              onChange={handleLogoChange}
+              {verifying ? "Preparing…" : "Print Schedule"}
+            </button>
+            <button
+              onClick={runDocxExport}
+              disabled={verifying || exportingDocx || scheduleByDate.length === 0}
               style={{
-                padding: "6px 10px",
-                borderRadius: "4px",
-                border: "1px solid #ccc",
-                minWidth: "120px",
+                padding: "10px 20px",
+                background: "#dc2626",
+                color: "white",
+                border: "none",
+                borderRadius: "5px",
+                cursor:
+                  verifying || exportingDocx || scheduleByDate.length === 0
+                    ? "not-allowed"
+                    : "pointer",
+                fontWeight: "bold",
+                opacity:
+                  verifying || exportingDocx || scheduleByDate.length === 0
+                    ? 0.7
+                    : 1,
               }}
             >
-              <option value="KSI">KSI</option>
-              <option value="KCT">KCT</option>
-            </select>
-          </label>
-          <label
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-              flexGrow: 1,
-              minWidth: "220px",
-            }}
-          >
-            <span style={{ fontWeight: 500 }}>Department:</span>
-            <input
-              type="text"
-              value={departmentLine}
-              onChange={(e) => setDepartmentLine(e.target.value)}
+              {exportingDocx ? "Preparing DOCX…" : "Export DOCX"}
+            </button>
+            <button
+              onClick={onClose}
               style={{
-                flex: 1,
-                padding: "6px 10px",
-                borderRadius: "4px",
-                border: "1px solid #ccc",
-              }}
-            />
-          </label>
-          <label
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-              flexGrow: 1,
-              minWidth: "220px",
-            }}
-          >
-            <span style={{ fontWeight: 500 }}>Program 1:</span>
-            <input
-              type="text"
-              value={programmeLine1}
-              onChange={(e) => setProgrammeLine1(e.target.value)}
-              style={{
-                flex: 1,
-                padding: "6px 10px",
-                borderRadius: "4px",
-                border: "1px solid #ccc",
-              }}
-            />
-          </label>
-          <label
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-              flexGrow: 1,
-              minWidth: "220px",
-            }}
-          >
-            <span style={{ fontWeight: 500 }}>Program 2:</span>
-            <input
-              type="text"
-              value={programmeLine2}
-              onChange={(e) => setProgrammeLine2(e.target.value)}
-              style={{
-                flex: 1,
-                padding: "6px 10px",
-                borderRadius: "4px",
-                border: "1px solid #ccc",
-              }}
-            />
-          </label>
-          <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <span style={{ fontWeight: 500 }}>Category:</span>
-            <select
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-              style={{
-                padding: "6px 10px",
-                borderRadius: "4px",
-                border: "1px solid #ccc",
-                minWidth: "100px",
+                padding: "10px 20px",
+                background: "#6c757d",
+                color: "white",
+                border: "none",
+                borderRadius: "5px",
+                cursor: "pointer",
               }}
             >
-              <option value="SA1">SA1</option>
-              <option value="SA2">SA2</option>
-            </select>
-          </label>
-          <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <span style={{ fontWeight: 500 }}>AY:</span>
-            <select
-              value={ayStartYear}
-              onChange={(e) => setAyStartYear(Number(e.target.value))}
-              style={{
-                padding: "6px 10px",
-                borderRadius: "4px",
-                border: "1px solid #ccc",
-                minWidth: "120px",
-              }}
-            >
-              {AY_OPTIONS.map((y) => (
-                <option key={y} value={y}>
-                  AY {y}-{y + 1}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-              padding: "6px 10px",
-              borderRadius: "4px",
-              border: "1px solid #ccc",
-              cursor: "pointer",
-              background: "#f8fafc",
-            }}
-          >
-            <input
-              type="checkbox"
-              checked={isSfs}
-              onChange={(e) => setIsSfs(e.target.checked)}
-            />
-            <span style={{ fontWeight: 500 }}>SFS</span>
-            <span style={{ fontSize: "11px", color: "#64748b" }}>
-              AEC · HoD · CoE
-            </span>
-          </label>
-          <button
-            onClick={runPrint}
-            disabled={verifying || exportingDocx}
-            style={{
-              padding: "10px 20px",
-              background: "#007bff",
-              color: "white",
-              border: "none",
-              borderRadius: "5px",
-              cursor: verifying || exportingDocx ? "wait" : "pointer",
-              fontWeight: "bold",
-              opacity: verifying || exportingDocx ? 0.7 : 1,
-            }}
-          >
-            {verifying ? "Preparing…" : "Print Schedule"}
-          </button>
-          <button
-            onClick={runDocxExport}
-            disabled={verifying || exportingDocx || scheduleByDate.length === 0}
-            style={{
-              padding: "10px 20px",
-              background: "#dc2626",
-              color: "white",
-              border: "none",
-              borderRadius: "5px",
-              cursor:
-                verifying || exportingDocx || scheduleByDate.length === 0
-                  ? "not-allowed"
-                  : "pointer",
-              fontWeight: "bold",
-              opacity:
-                verifying || exportingDocx || scheduleByDate.length === 0
-                  ? 0.7
-                  : 1,
-            }}
-          >
-            {exportingDocx ? "Preparing DOCX…" : "Export DOCX"}
-          </button>
-          <button
-            onClick={onClose}
-            style={{
-              padding: "10px 20px",
-              background: "#6c757d",
-              color: "white",
-              border: "none",
-              borderRadius: "5px",
-              cursor: "pointer",
-            }}
-          >
-            Close
-          </button>
+              Close
+            </button>
+          </div>
         </div>
 
         <div ref={printRef}>
@@ -546,34 +466,58 @@ const FacultySchedule = ({ plans, onClose }) => {
               >
                 OFFICE OF THE CONTROLLER OF EXAMINATION
               </h3>
-              <h2
-                style={{
-                  margin: "10px 0",
-                  fontSize: "14pt",
-                  fontWeight: "bold",
-                }}
-              >
-                {departmentLine}
-              </h2>
-
-              <h4
-                style={{
-                  margin: "10px 0",
-                  fontSize: "12pt",
-                  fontWeight: "normal",
-                }}
-              >
-                {programmeLine1}
-              </h4>
-              <h4
-                style={{
-                  margin: "6px 0",
-                  fontSize: "12pt",
-                  fontWeight: "normal",
-                }}
-              >
-                {programmeLine2}
-              </h4>
+              {isSfs ? (
+                <>
+                  <h2
+                    style={{
+                      margin: "10px 0",
+                      fontSize: "14pt",
+                      fontWeight: "bold",
+                    }}
+                  >
+                    {sfsLine1}
+                  </h2>
+                  <h4
+                    style={{
+                      margin: "6px 0",
+                      fontSize: "12pt",
+                      fontWeight: "normal",
+                    }}
+                  >
+                    {sfsLine2}
+                  </h4>
+                </>
+              ) : (
+                <>
+                  <h2
+                    style={{
+                      margin: "10px 0",
+                      fontSize: "14pt",
+                      fontWeight: "bold",
+                    }}
+                  >
+                    {departmentLine}
+                  </h2>
+                  <h4
+                    style={{
+                      margin: "10px 0",
+                      fontSize: "12pt",
+                      fontWeight: "normal",
+                    }}
+                  >
+                    {programmeLine1}
+                  </h4>
+                  <h4
+                    style={{
+                      margin: "6px 0",
+                      fontSize: "12pt",
+                      fontWeight: "normal",
+                    }}
+                  >
+                    {programmeLine2}
+                  </h4>
+                </>
+              )}
               <h4
                 style={{
                   margin: "10px 0",

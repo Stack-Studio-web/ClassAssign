@@ -19,6 +19,8 @@ import {
 import { Link } from "react-router-dom";
 import PrintLayout from "./PrintLayout";
 import FacultySchedule from '../Components/FacultySchedule.jsx';
+import ExportCustomizeBar from "../Components/ExportCustomizeBar";
+import { useExportHeaderSettings } from "../hooks/useExportHeaderSettings";
 import {
   sendInvigilationNotifications,
   fetchInvigilationBatchStatus,
@@ -34,6 +36,7 @@ const appendClonedContent = (targetDoc, elementId) => {
 const Report = () => {
   const toast = useToast();
   const showConfirm = useConfirm();
+  const header = useExportHeaderSettings();
   const [plans, setPlans] = useState([]);
   const [selectedPlan, setSelectedPlan] = useState(null);
   const [selectedPlans, setSelectedPlans] = useState([]);
@@ -50,6 +53,12 @@ const Report = () => {
   const deleteInFlightRef = useRef(false);
   const componentRef = useRef();
   const navigate = useNavigate();
+
+  const handleSaveHeader = async () => {
+    const ok = await header.save();
+    if (ok) toast.success("Export header settings saved for your account.");
+    else if (header.error) toast.error(header.error, "Save failed");
+  };
 
   useEffect(() => {
     return () => {
@@ -323,7 +332,7 @@ const Report = () => {
   if (selectedPlan) {
     return (
       <div className="min-h-screen bg-gray-50 px-4 md:px-8 py-6">
-        <div className="flex flex-wrap gap-3 mb-6">
+        <div className="flex flex-wrap gap-3 mb-4">
           <button
             onClick={handleGoBack}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-800 font-medium transition-colors"
@@ -338,9 +347,33 @@ const Report = () => {
             Print This Plan
           </button>
         </div>
-        <h2 className="text-xl md:text-2xl font-bold text-gray-800 mb-4">Seating Plan Details</h2>
+        <h2 className="text-xl md:text-2xl font-bold text-gray-800 mb-3">Seating Plan Details</h2>
+        <ExportCustomizeBar
+          className="mb-4"
+          logoType={header.logoType}
+          setLogoType={header.setLogoType}
+          departmentLine={header.departmentLine}
+          setDepartmentLine={header.setDepartmentLine}
+          programmeLine1={header.programmeLine1}
+          setProgrammeLine1={header.setProgrammeLine1}
+          programmeLine2={header.programmeLine2}
+          setProgrammeLine2={header.setProgrammeLine2}
+          sfsLine1={header.sfsLine1}
+          setSfsLine1={header.setSfsLine1}
+          sfsLine2={header.sfsLine2}
+          setSfsLine2={header.setSfsLine2}
+          isSfs={header.isSfs}
+          setIsSfs={header.setIsSfs}
+          saving={header.saving}
+          saveMsg={header.saveMsg}
+          onSave={handleSaveHeader}
+          showSignatureHint={false}
+        />
         <div ref={componentRef} className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-          <PrintLayout selectedPlan={selectedPlan} />
+          <PrintLayout
+            selectedPlan={selectedPlan}
+            headerOptions={header.headerOptions}
+          />
         </div>
       </div>
     );
@@ -546,7 +579,10 @@ const Report = () => {
               </div>
 
               <div id={`plan-content-${planId}`} className="hidden">
-                <PrintLayout selectedPlan={plan} />
+                <PrintLayout
+                  selectedPlan={plan}
+                  headerOptions={header.headerOptions}
+                />
               </div>
 
               {(userRole === 'admin' || userRole === 'faculty_incharge') && (
@@ -568,6 +604,7 @@ const Report = () => {
         <FacultySchedule
           plans={plans.filter((p) => selectedPlans.includes(p.uuid))}
           onClose={() => setShowFacultySchedule(false)}
+          headerSettings={header}
         />
       )}
     </div>

@@ -10,9 +10,12 @@ import {
   ArrowLeftIcon,
 } from "@heroicons/react/24/outline";
 import PrintLayout from "./PrintLayout";
+import ExportCustomizeBar from "../Components/ExportCustomizeBar";
+import { useExportHeaderSettings } from "../hooks/useExportHeaderSettings";
 
 export default function CompletedReports() {
   const navigate = useNavigate();
+  const header = useExportHeaderSettings();
   const [plans, setPlans] = useState([]);
   const [selectedPlan, setSelectedPlan] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -83,7 +86,7 @@ export default function CompletedReports() {
   if (selectedPlan) {
     return (
       <div className="min-h-screen bg-gray-50 px-4 md:px-8 py-6">
-        <div className="flex flex-wrap gap-3 mb-6">
+        <div className="flex flex-wrap gap-3 mb-4">
           <button
             type="button"
             onClick={() => setSelectedPlan(null)}
@@ -104,8 +107,32 @@ export default function CompletedReports() {
           <CheckCircleIcon className="h-4 w-4" />
           Completed report
         </div>
+        <ExportCustomizeBar
+          className="mb-4"
+          logoType={header.logoType}
+          setLogoType={header.setLogoType}
+          departmentLine={header.departmentLine}
+          setDepartmentLine={header.setDepartmentLine}
+          programmeLine1={header.programmeLine1}
+          setProgrammeLine1={header.setProgrammeLine1}
+          programmeLine2={header.programmeLine2}
+          setProgrammeLine2={header.setProgrammeLine2}
+          sfsLine1={header.sfsLine1}
+          setSfsLine1={header.setSfsLine1}
+          sfsLine2={header.sfsLine2}
+          setSfsLine2={header.setSfsLine2}
+          isSfs={header.isSfs}
+          setIsSfs={header.setIsSfs}
+          saving={header.saving}
+          saveMsg={header.saveMsg}
+          onSave={header.save}
+          showSignatureHint={false}
+        />
         <div ref={componentRef} className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-          <PrintLayout selectedPlan={selectedPlan} />
+          <PrintLayout
+            selectedPlan={selectedPlan}
+            headerOptions={header.headerOptions}
+          />
         </div>
       </div>
     );
