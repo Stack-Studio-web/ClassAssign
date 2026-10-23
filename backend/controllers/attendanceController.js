@@ -23,21 +23,45 @@ function sendWindowError(res, err) {
   return res.status(err.statusCode || 403).json(body);
 }
 
+/**
+ * Resolve write payload student UUIDs → internal ids.
+ * Skips null/empty UUIDs (unresolved roster rows) instead of failing the whole save.
+ * Returns { rows, skippedUnresolved, failures }.
+ */
 async function buildAttendanceRows(attendance) {
-  const studentUuids = (attendance || [])
-    .map((r) => r.studentUuid ?? r.uuid ?? r.studentId)
-    .filter(Boolean);
-  const uuidMap = await AttendanceService.resolveStudentUuids(studentUuids);
-  return (attendance || []).map((row) => {
-    const key = row.studentUuid ?? row.uuid ?? row.studentId;
+  const list = Array.isArray(attendance) ? attendance : [];
+  const skippedUnresolved = [];
+  const candidateKeys = [];
+  for (const row of list) {
+    const key = row.studentUuid ?? row.uuid ?? row.studentId ?? null;
+    if (!key) {
+      skippedUnresolved.push({
+        regnNo: row.regnNo || row.regNo || null,
+        reason: "missing_student_uuid",
+      });
+      continue;
+    }
+    candidateKeys.push({ row, key: String(key) });
+  }
+
+  const uuidMap = await AttendanceService.resolveStudentUuids(
+    candidateKeys.map((c) => c.key)
+  );
+  const rows = [];
+  const failures = [];
+  for (const { row, key } of candidateKeys) {
     const studentId = uuidMap.get(key);
     if (!studentId) {
-      const err = new Error(`Unknown student: ${key}`);
-      err.statusCode = 400;
-      throw err;
+      failures.push({
+        studentUuid: key,
+        regnNo: row.regnNo || row.regNo || null,
+        reason: "unknown_student_uuid",
+      });
+      continue;
     }
-    return { studentId, status: row.status };
-  });
+    rows.push({ studentId, status: row.status, studentUuid: key });
+  }
+  return { rows, skippedUnresolved, failures };
 }
 
 function formatWindowPayload(state) {
@@ -214,13 +238,21 @@ const AttendanceController = {
       }
 
       const { examId, venueId, facultyId, uuid: assignmentUuid } = assignment;
-      const attendanceRows = await buildAttendanceRows(req.body.attendance || []);
+      const built = await buildAttendanceRows(req.body.attendance || []);
+      if (!built.rows.length) {
+        return Api.validationError(
+          res,
+          built.failures.length
+            ? "No valid linked students to save."
+            : "No linked students to save. Resolve unlinked roster rows first."
+        );
+      }
 
       const result = await AttendanceService.saveAttendance({
         examId,
         venueId,
         facultyId,
-        attendanceRows,
+        attendanceRows: built.rows,
         userId: req.user?.id,
         adminBypass: req.user?.role === "admin",
         ...getClientMeta(req),
@@ -233,6 +265,9 @@ const AttendanceController = {
         isSaved: true,
         isLocked: false,
         status: window.status,
+        skippedUnresolved: built.skippedUnresolved,
+        failures: built.failures,
+        savedCount: built.rows.length,
       });
     } catch (err) {
       if (err.statusCode === 403) {
@@ -253,13 +288,21 @@ const AttendanceController = {
       }
 
       const { examId, venueId, facultyId, uuid: assignmentUuid } = assignment;
-      const attendanceRows = await buildAttendanceRows(req.body.attendance || []);
+      const built = await buildAttendanceRows(req.body.attendance || []);
+      if (!built.rows.length) {
+        return Api.validationError(
+          res,
+          built.failures.length
+            ? "No valid linked students to submit."
+            : "No linked students to submit. Resolve unlinked roster rows first."
+        );
+      }
 
       const result = await AttendanceService.submitAttendance({
         examId,
         venueId,
         facultyId,
-        attendanceRows,
+        attendanceRows: built.rows,
         userId: req.user?.id,
         adminBypass: req.user?.role === "admin",
         ...getClientMeta(req),
@@ -277,6 +320,9 @@ const AttendanceController = {
         isLocked: true,
         status: window.status,
         facultySummaries,
+        skippedUnresolved: built.skippedUnresolved,
+        failures: built.failures,
+        savedCount: built.rows.length,
       });
     } catch (err) {
       if (err.statusCode === 403) {

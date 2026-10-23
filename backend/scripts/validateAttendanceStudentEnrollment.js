@@ -125,14 +125,26 @@ function testSingleEnrollmentFallbackWithoutCourse() {
   assert.strictEqual(matched[0].studentId, 99001);
 }
 
-function testMissingEnrollmentReturnsNullId() {
+/** Only one enrollment exists (different course) → cross-course unique link. */
+function testMissingExactCourseUsesUniqueEnrollment() {
   const matched = matchSeatedStudentsToEnrollments(
     [{ regNo: "24BIT003", courseCode: "24ITI004" }],
     [
       { id: 11359, public_uuid: "only-005", regn_no: "24BIT003", course_description: "24ITI005" },
     ]
   );
+  assert.strictEqual(matched[0].studentId, 11359);
+  assert.strictEqual(matched[0].matchMode, "unique_enrollment_cross_course");
+}
+
+/** No students row at all → still unresolved. */
+function testMissingEnrollmentReturnsNullId() {
+  const matched = matchSeatedStudentsToEnrollments(
+    [{ regNo: "24BIT003", courseCode: "24ITI004" }],
+    []
+  );
   assert.strictEqual(matched[0].studentId, null);
+  assert.strictEqual(matched[0].unmatchedReason, "no_enrollment_for_regn");
 }
 
 function testRowOrderDoesNotAffectResolution() {
@@ -278,12 +290,42 @@ function testSixStudentsCaseInsensitiveLinking() {
   assert.strictEqual(newLinked, 6, "case-insensitive regn+course merge must link all 6");
 }
 
+/** LAB/cross-dept: seating exam course ≠ home course, but only one enrollment → link. */
+function testUniqueEnrollmentCrossCourseLinks() {
+  const matched = matchSeatedStudentsToEnrollments(
+    [
+      { regNo: "26MAD010", courseCode: "24CSI013" },
+      { regNo: "26MAD011", courseCode: "24CSI013" },
+      { regNo: "26BEE012", courseCode: "24CSI013" },
+      { regNo: "26BEE013", courseCode: "24CSI013" },
+      { regNo: "26BIT014", courseCode: "24CSI013" },
+      { regNo: "26BIT015", courseCode: "24CSI013" },
+    ],
+    [
+      { id: 601, public_uuid: "u-mad-10", regn_no: "26MAD010", course_description: "24MAD101", student_name: "M10" },
+      { id: 602, public_uuid: "u-mad-11", regn_no: "26MAD011", course_description: "24MAD101", student_name: "M11" },
+      { id: 603, public_uuid: "u-bee-12", regn_no: "26BEE012", course_description: "24BEE201", student_name: "B12" },
+      { id: 604, public_uuid: "u-bee-13", regn_no: "26BEE013", course_description: "24BEE201", student_name: "B13" },
+      { id: 605, public_uuid: "u-bit-14", regn_no: "26BIT014", course_description: "24ITI005", student_name: "I14" },
+      { id: 606, public_uuid: "u-bit-15", regn_no: "26BIT015", course_description: "24ITI005", student_name: "I15" },
+    ]
+  );
+  assert.strictEqual(matched.length, 6);
+  assert.ok(matched.every((m) => m.studentId != null && m.publicUuid));
+  assert.ok(
+    matched.every((m) => m.matchMode === "unique_enrollment_cross_course")
+  );
+  assert.strictEqual(matched[0].courseCode, "24CSI013");
+  assert.strictEqual(matched[0].enrollmentCourseCode, "24MAD101");
+}
+
+/** Multi-enrollment + seating course not among them → still unresolved. */
 function testCourseMismatchStillVisible() {
   const {
     summarizeUnmatched,
   } = require("../utils/resolveSeatedStudentEnrollments");
   const matched = matchSeatedStudentsToEnrollments(
-    [{ regNo: "26MAD001", courseCode: "WRONG101" }],
+    [{ regNo: "26MAD001", courseCode: "24CSI013" }],
     [
       {
         id: 501,
@@ -291,13 +333,47 @@ function testCourseMismatchStillVisible() {
         regn_no: "26MAD001",
         course_description: "24MAD101",
       },
+      {
+        id: 502,
+        public_uuid: "u-2",
+        regn_no: "26MAD001",
+        course_description: "24MAD202",
+      },
     ]
   );
   assert.strictEqual(matched[0].studentId, null);
   assert.strictEqual(matched[0].unmatchedReason, "course_mismatch");
+  assert.deepStrictEqual(
+    matched[0].availableEnrollmentCourses.sort(),
+    ["24MAD101", "24MAD202"]
+  );
   const diag = summarizeUnmatched(matched);
   assert.strictEqual(diag.unmatchedCount, 1);
   assert.strictEqual(diag.byReason.course_mismatch, 1);
+}
+
+/** Exact course still preferred over unique fallback when both exist. */
+function testExactCoursePreferredOverHomeEnrollment() {
+  const matched = matchSeatedStudentsToEnrollments(
+    [{ regNo: "26MAD001", courseCode: "24CSI013" }],
+    [
+      {
+        id: 701,
+        public_uuid: "u-home",
+        regn_no: "26MAD001",
+        course_description: "24MAD101",
+      },
+      {
+        id: 702,
+        public_uuid: "u-csi",
+        regn_no: "26MAD001",
+        course_description: "24CSI013",
+      },
+    ]
+  );
+  assert.strictEqual(matched[0].studentId, 702);
+  assert.strictEqual(matched[0].publicUuid, "u-csi");
+  assert.strictEqual(matched[0].matchMode, "exact_course");
 }
 
 testSeatingPlan21ResolvesIti005();
@@ -307,11 +383,14 @@ testTwentyFiveBitUsesIti005Enrollment();
 testCaseInsensitiveCourseMatch();
 testAmbiguousWithoutCourseDoesNotGuess();
 testSingleEnrollmentFallbackWithoutCourse();
+testMissingExactCourseUsesUniqueEnrollment();
 testMissingEnrollmentReturnsNullId();
 testRowOrderDoesNotAffectResolution();
 testFutureMarkingToExportChain();
 testSixStudentsCaseInsensitiveLinking();
+testUniqueEnrollmentCrossCourseLinks();
 testCourseMismatchStillVisible();
+testExactCoursePreferredOverHomeEnrollment();
 
 console.log("✅ Attendance student enrollment resolution regression checks passed");
 process.exit(0);

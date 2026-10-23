@@ -61,11 +61,15 @@ function indexEnrollmentsByRegnCourse(studentRows = []) {
 
 /**
  * Match seated (regn + course) pairs to student enrollment rows.
- * Course identity must come from the seating assignment — never an arbitrary enrollment.
+ *
+ * Priority:
+ * 1. Exact regn + seating course → enrollment (preferred for multi-enrollment regns)
+ * 2. Unique enrollment for that regn (cross-dept / LAB: seating exam course may differ
+ *    from students.course_description home course — only safe when one row exists)
+ * 3. Otherwise unmatched with a precise reason (never pick among multiple enrollments)
  *
  * @param {Array<{regNo: string, courseCode?: string, name?: string}>} seated
  * @param {Array<object>} studentRows - students table rows for those regn_nos
- * @returns {Array<{studentId: number|null, publicUuid: string|null, regnNo: string, studentName: string, courseCode: string}>}
  */
 function matchSeatedStudentsToEnrollments(seated = [], studentRows = []) {
   const { byKey, byRegn } = indexEnrollmentsByRegnCourse(studentRows);
@@ -87,11 +91,18 @@ function matchSeatedStudentsToEnrollments(seated = [], studentRows = []) {
 
     const enrollments = byRegn.get(reg) || [];
     let match = null;
+    let matchMode = null;
+
     if (course) {
       match = byKey.get(`${reg}::${course}`) || null;
-    } else if (enrollments.length === 1) {
-      // Legacy seats without course: only safe when a single enrollment exists.
+      if (match) matchMode = "exact_course";
+    }
+
+    // Unique enrollment: safe identity even when seating course ≠ home course
+    // (common for LAB / cross-department candidates sitting a shared exam course).
+    if (!match && enrollments.length === 1) {
       match = enrollments[0];
+      matchMode = course ? "unique_enrollment_cross_course" : "unique_enrollment";
     }
 
     let unmatchedReason = null;
@@ -109,9 +120,15 @@ function matchSeatedStudentsToEnrollments(seated = [], studentRows = []) {
         (match && match.studentName) ||
         String(seat.name || seat.studentName || "").trim() ||
         regnRaw,
+      // Keep seating/exam course on the roster; enrollment course is separate.
       courseCode: courseRaw || (match ? match.courseCode : ""),
+      enrollmentCourseCode: match ? match.courseCode : "",
+      matchMode,
       unmatchedReason,
       enrollmentCourseCount: enrollments.length,
+      availableEnrollmentCourses: !match
+        ? enrollments.map((e) => e.courseCode).filter(Boolean)
+        : [],
     });
   }
 
@@ -134,6 +151,7 @@ function summarizeUnmatched(matched = []) {
       courseCode: m.courseCode || null,
       reason: m.unmatchedReason,
       enrollmentCourseCount: m.enrollmentCourseCount ?? 0,
+      availableEnrollmentCourses: m.availableEnrollmentCourses || [],
     })),
   };
 }

@@ -117,19 +117,36 @@ function mergeCourseAttendance(seatingData, savedStudents = [], isLocked = false
         regNo,
         name: st.name || st.studentName || regNo,
         studentUuid: saved?.uuid ?? saved?.studentUuid ?? null,
+        unmatchedReason: saved?.unmatchedReason || null,
+        availableEnrollmentCourses: saved?.availableEnrollmentCourses || [],
         status: saved?.status || "Present",
       };
     }),
   }));
 }
 
+/** Only linked students are sent to the write API. */
 function buildSubmitPayload(courses) {
   return courses.flatMap((course) =>
     course.students
       .filter((s) => s.studentUuid)
       .map((s) => ({
         studentUuid: s.studentUuid,
+        regnNo: s.regNo,
         status: s.status,
+      }))
+  );
+}
+
+function listUnresolvedStudents(courses) {
+  return (courses || []).flatMap((course) =>
+    (course.students || [])
+      .filter((s) => !s.studentUuid)
+      .map((s) => ({
+        regNo: s.regNo,
+        name: s.name,
+        courseCode: course.courseCode,
+        reason: s.unmatchedReason || "unlinked",
       }))
   );
 }
@@ -227,36 +244,51 @@ function CourseAttendanceCard({ course, courseIndex, isLocked, search, onSetStat
             </tr>
           </thead>
           <tbody>
-            {filteredStudents.map((s, idx) => (
+            {filteredStudents.map((s, idx) => {
+              const unlinked = !s.studentUuid;
+              const rowDisabled = isLocked || unlinked;
+              return (
               <tr
                 key={`${course.courseCode}-${s.regNo}`}
                 className={`border-b border-slate-100 last:border-0 ${
-                  idx % 2 === 0 ? "bg-white" : "bg-slate-50/50"
+                  unlinked
+                    ? "bg-amber-50/80"
+                    : idx % 2 === 0
+                      ? "bg-white"
+                      : "bg-slate-50/50"
                 }`}
               >
                 <td className="px-3 py-2 text-slate-500 tabular-nums">{idx + 1}</td>
                 <td className="px-3 py-2 font-mono text-slate-800 text-xs sm:text-sm">{s.regNo}</td>
-                <td className="px-3 py-2 text-slate-900">{s.name}</td>
+                <td className="px-3 py-2 text-slate-900">
+                  {s.name}
+                  {unlinked ? (
+                    <span className="ml-2 text-[11px] font-medium text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded">
+                      Unlinked{s.unmatchedReason ? ` · ${s.unmatchedReason}` : ""}
+                    </span>
+                  ) : null}
+                </td>
                 <td className="px-3 py-2 text-center">
                   <RadioMark
-                    selected={s.status === "Present"}
+                    selected={!unlinked && s.status === "Present"}
                     label="Present"
                     variant="present"
-                    disabled={isLocked}
+                    disabled={rowDisabled}
                     onClick={() => onSetStatus(course.courseCode, s.regNo, "Present")}
                   />
                 </td>
                 <td className="px-3 py-2 text-center">
                   <RadioMark
-                    selected={s.status === "Absent"}
+                    selected={!unlinked && s.status === "Absent"}
                     label="Absent"
                     variant="absent"
-                    disabled={isLocked}
+                    disabled={rowDisabled}
                     onClick={() => onSetStatus(course.courseCode, s.regNo, "Absent")}
                   />
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
 
@@ -446,6 +478,50 @@ export default function FacultyAttendance() {
   );
   const totalStudents = allStudents.length;
 
+  const unresolvedStudents = useMemo(
+    () => listUnresolvedStudents(courses),
+    [courses]
+  );
+  const linkedCount = useMemo(
+    () => allStudents.filter((s) => s.studentUuid).length,
+    [allStudents]
+  );
+
+  const reloadAttendance = async () => {
+    if (!examMeta?.venueName) return;
+    const parsed = parseExamTimeRange(examMeta.examTime);
+    const startTime = examMeta.startTime || parsed.startTime;
+    const endTime = examMeta.endTime || parsed.endTime;
+    const dateOnly = normalizeApiDate(examMeta.examDate);
+    const [seatingRes, studentsRes] = await Promise.all([
+      api.get("/seating/attendance", {
+        params: {
+          date: dateOnly,
+          session: examMeta.examSession,
+          startTime,
+          endTime,
+          venue: examMeta.venueName,
+        },
+      }),
+      api.get(`/attendance/assignment/${assignmentUuid}/students`),
+    ]);
+    const seatingData = seatingRes.data;
+    const savedStudents = studentsRes.data.students || [];
+    const locked = !!studentsRes.data.isLocked;
+    const writable = !!studentsRes.data.canWrite;
+    const completed = !!studentsRes.data.lifecycleCompleted;
+    setSheetMeta({
+      hallNo: seatingData.hallNo || examMeta.venueName,
+      examDate: seatingData.examDate || dateOnly || examMeta.examDate,
+      examSession: seatingData.examSession || examMeta.examSession,
+    });
+    setCourses(mergeCourseAttendance(seatingData, savedStudents, locked || !writable));
+    setIsLocked(locked);
+    setLifecycleCompleted(completed);
+    setCanWrite(writable);
+    setWindowInfo(studentsRes.data.window || null);
+  };
+
   const setStatus = (courseCode, regNo, status) => {
     if (readOnly) return;
     setCourses((prev) =>
@@ -455,19 +531,22 @@ export default function FacultyAttendance() {
           : {
               ...course,
               students: course.students.map((s) =>
-                s.regNo === regNo ? { ...s, status } : s
+                s.regNo === regNo && s.studentUuid ? { ...s, status } : s
               ),
             }
       )
     );
   };
 
+  // Mark All Present applies only to linked students (unlinked stay unresolved).
   const markAllPresent = () => {
     if (readOnly) return;
     setCourses((prev) =>
       prev.map((course) => ({
         ...course,
-        students: course.students.map((s) => ({ ...s, status: "Present" })),
+        students: course.students.map((s) =>
+          s.studentUuid ? { ...s, status: "Present" } : s
+        ),
       }))
     );
   };
@@ -480,7 +559,9 @@ export default function FacultyAttendance() {
           ? course
           : {
               ...course,
-              students: course.students.map((s) => ({ ...s, status: "Present" })),
+              students: course.students.map((s) =>
+                s.studentUuid ? { ...s, status: "Present" } : s
+              ),
             }
       )
     );
@@ -492,11 +573,16 @@ export default function FacultyAttendance() {
     setSubmitting(true);
 
     const attendance = buildSubmitPayload(courses);
-    const missingIds = allStudents.filter((s) => !s.studentUuid);
+    const unresolved = listUnresolvedStudents(courses);
 
-    if (missingIds.length > 0) {
+    if (!attendance.length) {
       setError(
-        `${missingIds.length} student(s) could not be linked to records. Contact administrator.`
+        unresolved.length
+          ? `No linked students to submit. ${unresolved.length} unlinked (e.g. ${unresolved
+              .slice(0, 3)
+              .map((u) => u.regNo)
+              .join(", ")}).`
+          : "No students to submit."
       );
       setSubmitting(false);
       setShowConfirm(false);
@@ -504,13 +590,25 @@ export default function FacultyAttendance() {
     }
 
     try {
-      await api.post("/attendance/submit", {
+      const res = await api.post("/attendance/submit", {
         assignmentUuid,
         attendance,
       });
-      setMessage("Attendance submitted and locked successfully.");
+      const savedCount = res.data?.savedCount ?? attendance.length;
+      const failCount = (res.data?.failures || []).length;
+      let msg = `Attendance submitted and locked (${savedCount} student(s)).`;
+      if (unresolved.length) {
+        msg += ` ${unresolved.length} unlinked student(s) were not submitted.`;
+      }
+      if (failCount) msg += ` ${failCount} UUID(s) rejected.`;
+      setMessage(msg);
       setIsLocked(true);
       setShowConfirm(false);
+      try {
+        await reloadAttendance();
+      } catch (_) {
+        /* keep local state if refresh fails */
+      }
     } catch (err) {
       setError(getApiError(err, err.response?.data?.message || "Failed to submit attendance"));
       if (err.response?.data?.code) {
@@ -529,22 +627,51 @@ export default function FacultyAttendance() {
     setSubmitting(true);
 
     const attendance = buildSubmitPayload(courses);
-    const missingIds = allStudents.filter((s) => !s.studentUuid);
+    const unresolved = listUnresolvedStudents(courses);
 
-    if (missingIds.length > 0) {
+    if (!attendance.length) {
       setError(
-        `${missingIds.length} student(s) could not be linked to records. Contact administrator.`
+        unresolved.length
+          ? `No linked students to save. ${unresolved.length} unlinked (e.g. ${unresolved
+              .slice(0, 3)
+              .map((u) => u.regNo)
+              .join(", ")}).`
+          : "No students to save."
       );
       setSubmitting(false);
       return;
     }
 
     try {
-      await api.post("/attendance/save", {
+      const res = await api.post("/attendance/save", {
         assignmentUuid,
         attendance,
       });
-      setMessage("Attendance saved. You can still edit and lock it later.");
+      const savedCount = res.data?.savedCount ?? attendance.length;
+      const failCount = (res.data?.failures || []).length;
+      let msg = `Attendance saved for ${savedCount} linked student(s). You can still edit and lock later.`;
+      if (unresolved.length) {
+        msg += ` ${unresolved.length} unlinked not saved: ${unresolved
+          .slice(0, 6)
+          .map((u) => u.regNo)
+          .join(", ")}${unresolved.length > 6 ? "…" : ""}.`;
+        setError(
+          `${unresolved.length} student(s) remain unlinked and were not saved. Contact administrator if they should be on this roster.`
+        );
+      }
+      if (failCount) {
+        setError((prev) =>
+          prev
+            ? `${prev} ${failCount} UUID(s) rejected by server.`
+            : `${failCount} UUID(s) rejected by server.`
+        );
+      }
+      setMessage(msg);
+      try {
+        await reloadAttendance();
+      } catch (_) {
+        /* keep local state if refresh fails */
+      }
     } catch (err) {
       setError(getApiError(err, err.response?.data?.message || "Failed to save attendance"));
       if (err.response?.data?.code) {
@@ -642,6 +769,23 @@ export default function FacultyAttendance() {
         {isLocked && !lifecycleCompleted && (
           <div className="mb-4 bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-lg text-sm">
             Attendance is submitted and locked. Contact admin to unlock for edits.
+          </div>
+        )}
+        {unresolvedStudents.length > 0 && (
+          <div className="mb-4 bg-amber-50 border border-amber-200 text-amber-900 px-4 py-3 rounded-lg text-sm">
+            <p className="font-medium">
+              {unresolvedStudents.length} student(s) could not be linked to records
+              {" "}({linkedCount} linked / {totalStudents} on roster).
+            </p>
+            <p className="mt-1 text-amber-800">
+              Unlinked rows cannot be marked or saved. Linked attendance can still be saved.
+              {" "}
+              {unresolvedStudents
+                .slice(0, 8)
+                .map((u) => u.regNo)
+                .join(", ")}
+              {unresolvedStudents.length > 8 ? "…" : ""}
+            </p>
           </div>
         )}
 

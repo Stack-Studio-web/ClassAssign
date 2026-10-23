@@ -130,10 +130,15 @@ function toStudentRow(row) {
     regnNo: row.regn_no ?? row.regnno ?? "",
     studentName: row.student_name ?? row.studentname ?? "",
     courseCode: row.course_code ?? row.courseCode ?? row.coursedescription ?? "",
+    enrollmentCourseCode:
+      row.enrollment_course_code ?? row.enrollmentCourseCode ?? "",
+    matchMode: row.match_mode ?? row.matchMode ?? null,
     status: row.status ?? null,
     isLocked: !!(row.is_locked ?? row.islocked),
     markedTime: row.marked_time ?? row.markedtime ?? null,
     unmatchedReason: row.unmatched_reason ?? row.unmatchedReason ?? null,
+    availableEnrollmentCourses:
+      row.available_enrollment_courses ?? row.availableEnrollmentCourses ?? [],
   };
 }
 
@@ -859,10 +864,13 @@ const AttendanceService = {
           regn_no: m.regnNo,
           student_name: m.studentName,
           course_code: m.courseCode,
+          enrollment_course_code: m.enrollmentCourseCode,
+          match_mode: m.matchMode,
           status: att?.status ?? null,
           is_locked: att?.is_locked ?? att?.islocked ?? false,
           marked_time: att?.marked_time ?? att?.markedtime ?? null,
           unmatched_reason: m.unmatchedReason,
+          available_enrollment_courses: m.availableEnrollmentCourses,
         });
       })
       .sort((a, b) =>

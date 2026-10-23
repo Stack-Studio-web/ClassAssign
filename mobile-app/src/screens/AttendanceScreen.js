@@ -298,15 +298,24 @@ export default function AttendanceScreen({ navigation, route }) {
     );
 
     const missing = allStudents.filter((s) => !s.studentUuid);
-    if (missing.length > 0) {
+    if (!attendance.length) {
       setShowConfirm(false);
       Alert.alert(
         "Cannot submit",
-        `${missing.length} student(s) could not be linked. Contact administrator.`
+        missing.length
+          ? `${missing.length} student(s) could not be linked. Contact administrator.`
+          : "No students to submit."
       );
       submitLock.current = false;
       setSubmitting(false);
       return;
+    }
+    if (missing.length > 0) {
+      // Linked students still submit; warn about unresolved.
+      Alert.alert(
+        "Partial submit",
+        `${missing.length} unlinked student(s) will be skipped. ${attendance.length} linked will be submitted.`
+      );
     }
 
     const payload = {
