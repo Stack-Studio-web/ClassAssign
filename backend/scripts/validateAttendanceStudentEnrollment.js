@@ -195,6 +195,111 @@ function testFutureMarkingToExportChain() {
   assert.strictEqual(exportB.regnNo, "24BIT003");
 }
 
+/**
+ * Reproduce "6 student(s) could not be linked": seating roster uses mixed-case
+ * regns / courses while students table stores canonical casing. Backend match
+ * must link all 6; a case-sensitive regn-only merge must not drop UUIDs.
+ */
+function testSixStudentsCaseInsensitiveLinking() {
+  const {
+    summarizeUnmatched,
+  } = require("../utils/resolveSeatedStudentEnrollments");
+
+  const students = [
+    { id: 501, public_uuid: "u-1", regn_no: "26MAD001", course_description: "24MAD101", student_name: "A" },
+    { id: 502, public_uuid: "u-2", regn_no: "26MAD002", course_description: "24MAD101", student_name: "B" },
+    { id: 503, public_uuid: "u-3", regn_no: "26MAD003", course_description: "24MAD101", student_name: "C" },
+    { id: 504, public_uuid: "u-4", regn_no: "26MAD004", course_description: "24MAD101", student_name: "D" },
+    { id: 505, public_uuid: "u-5", regn_no: "26MAD005", course_description: "24MAD101", student_name: "E" },
+    { id: 506, public_uuid: "u-6", regn_no: "26MAD006", course_description: "24MAD101", student_name: "F" },
+  ];
+  const seated = [
+    { regNo: "26mad001", courseCode: "24mad101" },
+    { regNo: "26Mad002", courseCode: "24MAD101" },
+    { regNo: "26MAD003", courseCode: "24 Mad 101" },
+    { regNo: "26MAD004", courseCode: "24MAD101" },
+    { regNo: "26mad005", courseCode: "24MAD101" },
+    { regNo: "26MAD006", courseCode: "24mad101" },
+  ];
+
+  const matched = matchSeatedStudentsToEnrollments(seated, students);
+  assert.strictEqual(matched.length, 6);
+  assert.ok(matched.every((m) => m.studentId != null && m.publicUuid));
+  const diag = summarizeUnmatched(matched);
+  assert.strictEqual(diag.unmatchedCount, 0);
+
+  // Frontend-style merge: seating courses + API students (mixed case).
+  const seatingData = {
+    courses: [
+      {
+        courseCode: "24MAD101",
+        courseName: "MAD",
+        students: seated.map((s) => ({ regNo: s.regNo, name: s.regNo })),
+      },
+    ],
+  };
+  // API historically returned DB casing; seating sheet kept allotment casing.
+  const savedStudents = matched.map((m, i) => ({
+    uuid: m.publicUuid,
+    regnNo: students[i].regn_no,
+    courseCode: students[i].course_description,
+    status: "Present",
+  }));
+
+  function oldCaseSensitiveMerge(data, saved) {
+    const savedByReg = {};
+    for (const s of saved) {
+      const reg = String(s.regnNo || "").trim();
+      if (reg) savedByReg[reg] = s;
+    }
+    return data.courses[0].students.map((st) => {
+      const regNo = String(st.regNo || "").trim();
+      return { regNo, studentUuid: savedByReg[regNo]?.uuid ?? null };
+    });
+  }
+
+  function newMerge(data, saved) {
+    const normR = (r) => String(r || "").trim().toLowerCase().replace(/\s+/g, "");
+    const normC = (c) => String(c || "").trim().toUpperCase().replace(/\s+/g, "");
+    const byKey = new Map();
+    for (const s of saved) {
+      byKey.set(`${normR(s.regnNo)}::${normC(s.courseCode)}`, s);
+    }
+    return data.courses[0].students.map((st) => {
+      const regNo = String(st.regNo || "").trim();
+      const savedRow = byKey.get(`${normR(regNo)}::${normC(data.courses[0].courseCode)}`);
+      return { regNo, studentUuid: savedRow?.uuid ?? null };
+    });
+  }
+
+  const oldLinked = oldCaseSensitiveMerge(seatingData, savedStudents).filter((s) => s.studentUuid).length;
+  const newLinked = newMerge(seatingData, savedStudents).filter((s) => s.studentUuid).length;
+  assert.ok(oldLinked < 6, "old case-sensitive merge should leave some unlinked");
+  assert.strictEqual(newLinked, 6, "case-insensitive regn+course merge must link all 6");
+}
+
+function testCourseMismatchStillVisible() {
+  const {
+    summarizeUnmatched,
+  } = require("../utils/resolveSeatedStudentEnrollments");
+  const matched = matchSeatedStudentsToEnrollments(
+    [{ regNo: "26MAD001", courseCode: "WRONG101" }],
+    [
+      {
+        id: 501,
+        public_uuid: "u-1",
+        regn_no: "26MAD001",
+        course_description: "24MAD101",
+      },
+    ]
+  );
+  assert.strictEqual(matched[0].studentId, null);
+  assert.strictEqual(matched[0].unmatchedReason, "course_mismatch");
+  const diag = summarizeUnmatched(matched);
+  assert.strictEqual(diag.unmatchedCount, 1);
+  assert.strictEqual(diag.byReason.course_mismatch, 1);
+}
+
 testSeatingPlan21ResolvesIti005();
 testSeatingPlan25ResolvesIti004();
 testSameRegnDifferentPlansDifferentStudentIds();
@@ -205,6 +310,8 @@ testSingleEnrollmentFallbackWithoutCourse();
 testMissingEnrollmentReturnsNullId();
 testRowOrderDoesNotAffectResolution();
 testFutureMarkingToExportChain();
+testSixStudentsCaseInsensitiveLinking();
+testCourseMismatchStillVisible();
 
 console.log("✅ Attendance student enrollment resolution regression checks passed");
 process.exit(0);

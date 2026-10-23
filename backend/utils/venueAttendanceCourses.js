@@ -5,6 +5,13 @@
  * (avoids JOIN inflation when the same regn appears under multiple plan courses).
  */
 
+function normalizeRegnKey(regn) {
+  return String(regn || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "");
+}
+
 function flattenLayoutStudents(layoutJson) {
   let layout = layoutJson;
   if (layout == null) return [];
@@ -39,7 +46,10 @@ function flattenLayoutStudents(layoutJson) {
         const courseCode = String(
           seat.course ?? seat.courseCode ?? seat.course_description ?? seat.courseDescription ?? ""
         ).trim();
-        const key = `${regNo}::${courseCode || "_"}`;
+        const key = `${normalizeRegnKey(regNo)}::${String(courseCode || "_")
+          .trim()
+          .toUpperCase()
+          .replace(/\s+/g, "")}`;
         if (seen.has(key)) continue;
         seen.add(key);
         out.push({
@@ -64,11 +74,12 @@ function buildRegnCourseMap(planStudentRows = []) {
   const map = new Map();
   for (const row of planStudentRows) {
     const regn = String(row.regn_no ?? row.regnno ?? "").trim();
-    if (!regn) continue;
+    const key = normalizeRegnKey(regn);
+    if (!key) continue;
     const course = String(row.course_description ?? row.coursedescription ?? "").trim();
     const name = String(row.student_name ?? row.studentname ?? "").trim();
-    if (!map.has(regn)) {
-      map.set(regn, { courseCode: course, name });
+    if (!map.has(key)) {
+      map.set(key, { courseCode: course, name, regnNo: regn });
     }
   }
   return map;
@@ -96,7 +107,7 @@ function resolveVenueStudentsWithCourses({
   const layoutAny = flattenLayoutStudents(layoutJson);
   if (layoutAny.length > 0) {
     return layoutAny.map((s) => {
-      const meta = courseMap.get(s.regNo) || {};
+      const meta = courseMap.get(normalizeRegnKey(s.regNo)) || {};
       return {
         ...s,
         courseCode: s.courseCode || meta.courseCode || "",
@@ -109,13 +120,14 @@ function resolveVenueStudentsWithCourses({
   const out = [];
   for (const row of arrangementRows || []) {
     const regNo = String(row.regn_no ?? row.regnno ?? "").trim();
-    if (!regNo || regNo === "-") continue;
-    if (seen.has(regNo)) continue;
-    seen.add(regNo);
-    const meta = courseMap.get(regNo) || {};
+    const key = normalizeRegnKey(regNo);
+    if (!key || regNo === "-") continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const meta = courseMap.get(key) || {};
     if (!meta.courseCode) continue;
     out.push({
-      regNo,
+      regNo: meta.regnNo || regNo,
       name: meta.name || regNo,
       courseCode: meta.courseCode,
       seatRow: row.seat_row ?? row.seatrow ?? null,

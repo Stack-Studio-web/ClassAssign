@@ -43,18 +43,37 @@ export function parseExamTimeRange(examTime) {
   };
 }
 
+function normalizeMergeRegn(regn) {
+  return String(regn || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "");
+}
+
+function normalizeMergeCourse(course) {
+  return String(course || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "");
+}
+
 export function mergeCourseAttendance(seatingData, savedStudents = [], draftCourses = null) {
-  const savedByReg = {};
-  for (const s of savedStudents) {
-    const reg = String(s.regnNo || s.regNo || "").trim();
-    if (reg) savedByReg[reg] = s;
+  const byRegCourse = new Map();
+  const byReg = new Map();
+  for (const s of savedStudents || []) {
+    const reg = normalizeMergeRegn(s.regnNo || s.regNo);
+    if (!reg) continue;
+    const course = normalizeMergeCourse(s.courseCode || s.course);
+    if (course) byRegCourse.set(`${reg}::${course}`, s);
+    if (!byReg.has(reg)) byReg.set(reg, []);
+    byReg.get(reg).push(s);
   }
 
   const draftByReg = {};
   if (draftCourses) {
     for (const course of draftCourses) {
       for (const st of course.students || []) {
-        if (st.regNo) draftByReg[st.regNo] = st.status;
+        if (st.regNo) draftByReg[normalizeMergeRegn(st.regNo)] = st.status;
       }
     }
   }
@@ -65,8 +84,21 @@ export function mergeCourseAttendance(seatingData, savedStudents = [], draftCour
     expanded: true,
     students: (course.students || []).map((st) => {
       const regNo = String(st.regNo || st.regnNo || "").trim();
-      const saved = savedByReg[regNo];
-      const draftStatus = draftByReg[regNo];
+      const regKey = normalizeMergeRegn(regNo);
+      const courseKey = normalizeMergeCourse(course.courseCode || st.courseCode);
+      let saved = courseKey ? byRegCourse.get(`${regKey}::${courseKey}`) : null;
+      if (!saved) {
+        const list = byReg.get(regKey) || [];
+        if (list.length === 1) saved = list[0];
+        else if (list.length > 1 && courseKey) {
+          saved =
+            list.find(
+              (s) =>
+                normalizeMergeCourse(s.courseCode || s.course) === courseKey
+            ) || null;
+        }
+      }
+      const draftStatus = draftByReg[regKey];
       return {
         regNo,
         name: st.name || st.studentName || regNo,

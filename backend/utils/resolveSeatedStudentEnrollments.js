@@ -4,11 +4,17 @@
  */
 
 function normalizeRegn(regn) {
-  return String(regn || "").trim().toLowerCase();
+  return String(regn || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "");
 }
 
 function normalizeCourse(course) {
-  return String(course || "").trim().toUpperCase();
+  return String(course || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "");
 }
 
 /**
@@ -79,13 +85,20 @@ function matchSeatedStudentsToEnrollments(seated = [], studentRows = []) {
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
 
+    const enrollments = byRegn.get(reg) || [];
     let match = null;
     if (course) {
       match = byKey.get(`${reg}::${course}`) || null;
-    } else {
+    } else if (enrollments.length === 1) {
       // Legacy seats without course: only safe when a single enrollment exists.
-      const enrollments = byRegn.get(reg) || [];
-      if (enrollments.length === 1) match = enrollments[0];
+      match = enrollments[0];
+    }
+
+    let unmatchedReason = null;
+    if (!match) {
+      if (!enrollments.length) unmatchedReason = "no_enrollment_for_regn";
+      else if (!course) unmatchedReason = "ambiguous_multi_enrollment_no_course";
+      else unmatchedReason = "course_mismatch";
     }
 
     out.push({
@@ -97,10 +110,32 @@ function matchSeatedStudentsToEnrollments(seated = [], studentRows = []) {
         String(seat.name || seat.studentName || "").trim() ||
         regnRaw,
       courseCode: courseRaw || (match ? match.courseCode : ""),
+      unmatchedReason,
+      enrollmentCourseCount: enrollments.length,
     });
   }
 
   return out;
+}
+
+/** Compact diagnostics for logs (regn + course only — no names/emails). */
+function summarizeUnmatched(matched = []) {
+  const unmatched = (matched || []).filter((m) => m.studentId == null);
+  const byReason = {};
+  for (const m of unmatched) {
+    const reason = m.unmatchedReason || "unknown";
+    byReason[reason] = (byReason[reason] || 0) + 1;
+  }
+  return {
+    unmatchedCount: unmatched.length,
+    byReason,
+    samples: unmatched.slice(0, 12).map((m) => ({
+      regnNo: m.regnNo,
+      courseCode: m.courseCode || null,
+      reason: m.unmatchedReason,
+      enrollmentCourseCount: m.enrollmentCourseCount ?? 0,
+    })),
+  };
 }
 
 module.exports = {
@@ -108,4 +143,5 @@ module.exports = {
   normalizeCourse,
   indexEnrollmentsByRegnCourse,
   matchSeatedStudentsToEnrollments,
+  summarizeUnmatched,
 };

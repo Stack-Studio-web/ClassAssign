@@ -64,11 +64,34 @@ function parseExamTimeRange(examTime) {
   };
 }
 
+function normalizeMergeRegn(regn) {
+  return String(regn || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "");
+}
+
+function normalizeMergeCourse(course) {
+  return String(course || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "");
+}
+
+/**
+ * Attach studentUuid from assignment students API onto seating roster rows.
+ * Prefer regn+course (case-insensitive); fall back to regn only when unique.
+ */
 function mergeCourseAttendance(seatingData, savedStudents = [], isLocked = false) {
-  const savedByReg = {};
-  for (const s of savedStudents) {
-    const reg = String(s.regnNo || s.regNo || "").trim();
-    if (reg) savedByReg[reg] = s;
+  const byRegCourse = new Map();
+  const byReg = new Map();
+  for (const s of savedStudents || []) {
+    const reg = normalizeMergeRegn(s.regnNo || s.regNo);
+    if (!reg) continue;
+    const course = normalizeMergeCourse(s.courseCode || s.course);
+    if (course) byRegCourse.set(`${reg}::${course}`, s);
+    if (!byReg.has(reg)) byReg.set(reg, []);
+    byReg.get(reg).push(s);
   }
 
   return (seatingData.courses || []).map((course) => ({
@@ -76,7 +99,20 @@ function mergeCourseAttendance(seatingData, savedStudents = [], isLocked = false
     courseName: course.courseName,
     students: (course.students || []).map((st) => {
       const regNo = String(st.regNo || st.regnNo || "").trim();
-      const saved = savedByReg[regNo];
+      const regKey = normalizeMergeRegn(regNo);
+      const courseKey = normalizeMergeCourse(course.courseCode || st.courseCode);
+      let saved = courseKey ? byRegCourse.get(`${regKey}::${courseKey}`) : null;
+      if (!saved) {
+        const list = byReg.get(regKey) || [];
+        if (list.length === 1) saved = list[0];
+        else if (list.length > 1 && courseKey) {
+          saved =
+            list.find(
+              (s) =>
+                normalizeMergeCourse(s.courseCode || s.course) === courseKey
+            ) || null;
+        }
+      }
       return {
         regNo,
         name: st.name || st.studentName || regNo,

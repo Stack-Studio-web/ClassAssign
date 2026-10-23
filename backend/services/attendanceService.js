@@ -129,9 +129,11 @@ function toStudentRow(row) {
     uuid: row.student_public_uuid ?? row.studentpublicuuid ?? row.public_uuid ?? row.publicuuid ?? null,
     regnNo: row.regn_no ?? row.regnno ?? "",
     studentName: row.student_name ?? row.studentname ?? "",
+    courseCode: row.course_code ?? row.courseCode ?? row.coursedescription ?? "",
     status: row.status ?? null,
     isLocked: !!(row.is_locked ?? row.islocked),
     markedTime: row.marked_time ?? row.markedtime ?? null,
+    unmatchedReason: row.unmatched_reason ?? row.unmatchedReason ?? null,
   };
 }
 
@@ -812,37 +814,55 @@ const AttendanceService = {
       regns.map((r) => r.toLowerCase())
     );
 
+    const {
+      summarizeUnmatched,
+    } = require("../utils/resolveSeatedStudentEnrollments");
     const matched = matchSeatedStudentsToEnrollments(seated, studentRows || []);
     const withIds = matched.filter((m) => m.studentId != null);
-    if (!withIds.length) return [];
-
-    const idPlaceholders = withIds.map(() => "?").join(", ");
-    const studentIds = withIds.map((m) => m.studentId);
-    const [attRows] = await db.query(
-      `SELECT student_id, status, is_locked, marked_time
-       FROM attendance
-       WHERE exam_id = ?
-         AND venue_id = ?
-         AND student_id IN (${idPlaceholders})`,
-      [examId, venueId, ...studentIds]
-    );
-
-    const attendanceByStudent = new Map();
-    for (const att of attRows || []) {
-      const sid = Number(att.student_id ?? att.studentid);
-      if (Number.isFinite(sid)) attendanceByStudent.set(sid, att);
+    const unmatchedDiag = summarizeUnmatched(matched);
+    if (unmatchedDiag.unmatchedCount > 0) {
+      console.warn("[attendance] seated students not linked to enrollments", {
+        examId,
+        venueId,
+        seatedCount: seated.length,
+        linkedCount: withIds.length,
+        ...unmatchedDiag,
+      });
     }
 
-    return withIds
+    const attendanceByStudent = new Map();
+    if (withIds.length) {
+      const idPlaceholders = withIds.map(() => "?").join(", ");
+      const studentIds = withIds.map((m) => m.studentId);
+      const [attRows] = await db.query(
+        `SELECT student_id, status, is_locked, marked_time
+         FROM attendance
+         WHERE exam_id = ?
+           AND venue_id = ?
+           AND student_id IN (${idPlaceholders})`,
+        [examId, venueId, ...studentIds]
+      );
+      for (const att of attRows || []) {
+        const sid = Number(att.student_id ?? att.studentid);
+        if (Number.isFinite(sid)) attendanceByStudent.set(sid, att);
+      }
+    }
+
+    // Keep unmatched rows (uuid null) so the UI can surface them instead of
+    // silently dropping students who appear on the seating sheet.
+    return matched
       .map((m) => {
-        const att = attendanceByStudent.get(m.studentId);
+        const att =
+          m.studentId != null ? attendanceByStudent.get(m.studentId) : null;
         return toStudentRow({
           student_public_uuid: m.publicUuid,
           regn_no: m.regnNo,
           student_name: m.studentName,
+          course_code: m.courseCode,
           status: att?.status ?? null,
           is_locked: att?.is_locked ?? att?.islocked ?? false,
           marked_time: att?.marked_time ?? att?.markedtime ?? null,
+          unmatched_reason: m.unmatchedReason,
         });
       })
       .sort((a, b) =>
