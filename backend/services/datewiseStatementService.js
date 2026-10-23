@@ -1,6 +1,6 @@
 /**
- * Datewise Attendance Statement — built from saved seating_plans (owner-scoped)
- * plus persisted attendance (Present/Absent) for absentee counts.
+ * Datewise Seating Allotment Report — from saved seating_plans only (owner-scoped).
+ * No attendance reads or calculations.
  */
 const db = require("../config/db");
 const { resolveOwnerOpts } = require("../utils/rbac");
@@ -8,10 +8,14 @@ const {
   normalizeTime,
   normalizeDate,
   normalizeRegnKey,
+  branchFromRegn,
   sessionLabel,
+  examTimeLabel,
   sessionValue,
   parseSessionValue,
   buildHallBranchRows,
+  annotateHallFacultyMerge,
+  grandTotalStudents,
   flattenLayoutRegns,
 } = require("../utils/datewiseStatementHelpers");
 
@@ -33,66 +37,9 @@ function seatingOwnerScope(opts = {}, alias = "sp") {
   return { sql: ` AND ${alias}.owner_user_id = ?`, params: [uid] };
 }
 
-function formatExamTimeRange(startTime, endTime) {
-  const s = normalizeTime(startTime);
-  const e = normalizeTime(endTime);
-  if (s && e) return `${s} - ${e}`;
-  return "";
-}
-
-async function findExistingExamIds(plan) {
-  const examDate = normalizeDate(plan.exam_date ?? plan.examdate);
-  const examSession = String(plan.exam_session ?? plan.examsession ?? "").trim();
-  const startTime = plan.exam_start_time ?? plan.examstarttime;
-  const endTime = plan.exam_end_time ?? plan.examendtime;
-  const examTimeStr = formatExamTimeRange(startTime, endTime);
-  const ids = new Set();
-
-  if (examDate && examSession && examTimeStr) {
-    const [rows] = await db.query(
-      `SELECT id FROM exams
-       WHERE exam_date = ? AND exam_session = ? AND exam_time = ?`,
-      [examDate, examSession, examTimeStr]
-    );
-    for (const r of rows || []) {
-      if (r.id != null) ids.add(Number(r.id));
-    }
-  }
-
-  // Also match exams linked via faculty_assignments on plan venues + date
-  const planId = plan.id ?? plan._id;
-  if (planId && examDate) {
-    const [rows] = await db.query(
-      `SELECT DISTINCT fa.exam_id AS id
-       FROM seating_plan_venues spv
-       JOIN faculty_assignments fa
-         ON fa.venue_id = spv.venue_id
-        AND fa.assigned_date = ?
-       WHERE spv.seating_plan_id = ?
-         AND fa.exam_id IS NOT NULL`,
-      [examDate, planId]
-    );
-    for (const r of rows || []) {
-      if (r.id != null) ids.add(Number(r.id));
-    }
-  }
-
-  return [...ids];
-}
-
 const DatewiseStatementService = {
-  helpers: {
-    normalizeTime,
-    normalizeDate,
-    sessionLabel,
-    sessionValue,
-    parseSessionValue,
-    buildHallBranchRows,
-    formatRollDisplay: require("../utils/datewiseStatementHelpers").formatRollDisplay,
-  },
-
   /**
-   * Distinct exam dates from saved seating plans owned by the requester's scope.
+   * Distinct exam dates from saved seating plans in the caller's ownership scope.
    */
   getDates: async (req) => {
     const opts = await resolveOwnerOpts(req);
@@ -148,13 +95,14 @@ const DatewiseStatementService = {
         startTime,
         endTime,
         label: sessionLabel(examSession, startTime, endTime),
+        examTime: examTimeLabel(startTime, endTime),
       });
     }
     return { date, sessions };
   },
 
   /**
-   * Build statement rows for owner-scoped plans matching date + session slot.
+   * Build allotment rows from owner-scoped seating plans for date + session slot.
    */
   getStatement: async (req, filters = {}) => {
     const date = normalizeDate(filters.date);
@@ -208,18 +156,21 @@ const DatewiseStatementService = {
       [date, examSession, startTime, endTime, ...scope.params]
     );
 
+    const meta = {
+      date,
+      examSession,
+      startTime,
+      endTime,
+      label: sessionLabel(examSession, startTime, endTime),
+      examTime: examTimeLabel(startTime, endTime),
+    };
+
     if (!plans?.length) {
       return {
         empty: true,
-        attendanceIncomplete: false,
-        meta: {
-          date,
-          examSession,
-          startTime,
-          endTime,
-          label: sessionLabel(examSession, startTime, endTime),
-        },
+        meta,
         rows: [],
+        grandTotal: 0,
         warnings: [
           {
             type: "NO_PLANS",
@@ -231,12 +182,9 @@ const DatewiseStatementService = {
     }
 
     const studentRows = [];
-    const missingAttendanceVenues = [];
-    const warnings = [];
 
     for (const plan of plans) {
       const planId = plan.id;
-      const examIds = await findExistingExamIds(plan);
 
       const [venues] = await db.query(
         `SELECT
@@ -255,11 +203,12 @@ const DatewiseStatementService = {
       );
 
       for (const venue of venues || []) {
-        const venueId = venue.venue_id ?? venue.venueid;
-        const hallNo = String(venue.venue_name ?? venue.venuename ?? "").trim() || "—";
+        const hallNo =
+          String(venue.venue_name ?? venue.venuename ?? "").trim() || "—";
 
-        // Multi-faculty names from junction table
-        let facultyName = String(venue.faculty_name ?? venue.facultyname ?? "").trim();
+        let facultyName = String(
+          venue.faculty_name ?? venue.facultyname ?? ""
+        ).trim();
         const spvId = venue.seating_plan_venue_id ?? venue.seatingplanvenueid;
         if (spvId) {
           const [fm] = await db.query(
@@ -276,8 +225,9 @@ const DatewiseStatementService = {
         }
         if (!facultyName) facultyName = "—";
 
-        // Distinct reg numbers from layout (preferred) or seating_arrangements
-        let regns = flattenLayoutRegns(venue.seating_layout_json ?? venue.seatinglayoutjson);
+        let regns = flattenLayoutRegns(
+          venue.seating_layout_json ?? venue.seatinglayoutjson
+        );
         if (!regns.length && spvId) {
           const [arr] = await db.query(
             `SELECT DISTINCT regn_no
@@ -294,183 +244,37 @@ const DatewiseStatementService = {
             .filter(Boolean);
         }
 
-        // Deduplicate
         const seenReg = new Set();
-        const distinctRegns = [];
         for (const r of regns) {
           const k = normalizeRegnKey(r);
           if (!k || seenReg.has(k)) continue;
           seenReg.add(k);
-          distinctRegns.push(r);
-        }
-
-        // Department/branch from students table (match normalized regn keys)
-        const branchByRegn = new Map();
-        if (distinctRegns.length) {
-          const keys = distinctRegns.map((r) => normalizeRegnKey(r));
-          const placeholders = keys.map(() => "?").join(",");
-          const [stuRows] = await db.query(
-            `SELECT regn_no, department
-             FROM students
-             WHERE LOWER(REPLACE(TRIM(regn_no), ' ', '')) IN (${placeholders})`,
-            keys
-          );
-          for (const s of stuRows || []) {
-            const rk = normalizeRegnKey(s.regn_no ?? s.regnno);
-            if (!rk) continue;
-            branchByRegn.set(rk, String(s.department || "").trim() || "—");
-          }
-        }
-
-        for (const regNo of distinctRegns) {
-          const rk = normalizeRegnKey(regNo);
+          const branch = branchFromRegn(r);
           studentRows.push({
             hallNo,
             facultyName,
-            branch: branchByRegn.get(rk) || "—",
-            regNo,
-            venueId,
-            planId,
+            branch: branch || "—",
+            regNo: r,
           });
         }
-
-        // Attendance readiness for this venue
-        let attendanceCount = 0;
-        const attendanceByRegnKey = new Map();
-        if (venueId && examIds.length) {
-          const examPlaceholders = examIds.map(() => "?").join(",");
-          const [attCountRows] = await db.query(
-            `SELECT COUNT(*)::int AS cnt
-             FROM attendance a
-             WHERE a.venue_id = ?
-               AND a.exam_id IN (${examPlaceholders})`,
-            [venueId, ...examIds]
-          );
-          attendanceCount = Number(attCountRows?.[0]?.cnt ?? 0) || 0;
-
-          if (attendanceCount > 0) {
-            const [attRows] = await db.query(
-              `SELECT a.status, s.regn_no
-               FROM attendance a
-               JOIN students s ON s.id = a.student_id
-               WHERE a.venue_id = ?
-                 AND a.exam_id IN (${examPlaceholders})`,
-              [venueId, ...examIds]
-            );
-            for (const a of attRows || []) {
-              const rk = normalizeRegnKey(a.regn_no ?? a.regnno);
-              if (!rk) continue;
-              const status = String(a.status || "").trim();
-              if (status === "Absent" || status === "Present") {
-                // Prefer Absent if any row says Absent (should be unique per student+exam+venue)
-                if (attendanceByRegnKey.get(rk) !== "Absent") {
-                  attendanceByRegnKey.set(rk, status);
-                }
-              }
-            }
-          }
-        }
-
-        if (!venueId || examIds.length === 0 || attendanceCount === 0) {
-          missingAttendanceVenues.push(hallNo);
-        } else {
-          // Attach per-venue attendance map onto students of this venue for grouping later
-          for (const s of studentRows) {
-            if (s.venueId === venueId && s.planId === planId) {
-              s._attendanceByRegnKey = attendanceByRegnKey;
-              s._venueAttendanceReady = true;
-            }
-          }
-        }
       }
     }
 
-    const attendanceIncomplete = missingAttendanceVenues.length > 0;
-    if (attendanceIncomplete) {
-      warnings.push({
-        type: "ATTENDANCE_MISSING",
-        message: `Attendance has not been submitted (or no records found) for hall(s): ${[
-          ...new Set(missingAttendanceVenues),
-        ].join(", ")}. Absentee counts cannot be reported until attendance is marked.`,
-        halls: [...new Set(missingAttendanceVenues)],
-      });
-    }
-
-    // Build rows per hall+branch. When attendance incomplete, still show student totals
-    // but leave totalAbsentees null.
-    // Group by hall+branch across all students; use attendance only when ready for that venue.
-    const byHallBranch = new Map();
-    for (const s of studentRows) {
-      const hallNo = s.hallNo;
-      const branch = s.branch;
-      const key = `${hallNo}::${branch}`;
-      if (!byHallBranch.has(key)) {
-        byHallBranch.set(key, {
-          hallNo,
-          name: s.facultyName,
-          branch,
-          rolls: [],
-          rollKeys: new Set(),
-          attendanceByRegnKey: s._attendanceByRegnKey || new Map(),
-          venueAttendanceReady: Boolean(s._venueAttendanceReady),
-        });
-      }
-      const g = byHallBranch.get(key);
-      const rk = normalizeRegnKey(s.regNo);
-      if (!rk || g.rollKeys.has(rk)) continue;
-      g.rollKeys.add(rk);
-      g.rolls.push(s.regNo);
-      if (s._venueAttendanceReady) {
-        g.venueAttendanceReady = true;
-        if (s._attendanceByRegnKey) {
-          for (const [k, v] of s._attendanceByRegnKey.entries()) {
-            if (g.attendanceByRegnKey.get(k) !== "Absent") {
-              g.attendanceByRegnKey.set(k, v);
-            }
-          }
-        }
-      }
-      if (s.facultyName && g.name === "—") g.name = s.facultyName;
-    }
-
-    const rows = [];
-    for (const g of byHallBranch.values()) {
-      const built = buildHallBranchRows(
-        g.rolls.map((regNo) => ({
-          hallNo: g.hallNo,
-          facultyName: g.name,
-          branch: g.branch,
-          regNo,
-        })),
-        {
-          attendanceByRegnKey: g.attendanceByRegnKey,
-          venueAttendanceReady: g.venueAttendanceReady,
-        }
-      );
-      rows.push(...built);
-    }
-    rows.sort(
-      (a, b) =>
-        String(a.hallNo).localeCompare(String(b.hallNo)) ||
-        String(a.branch).localeCompare(String(b.branch))
-    );
-
-    const empty = rows.length === 0;
+    const rawRows = buildHallBranchRows(studentRows);
+    const rows = annotateHallFacultyMerge(rawRows);
+    const grandTotal = grandTotalStudents(rows);
 
     return {
-      empty,
-      attendanceIncomplete,
+      empty: rows.length === 0,
       meta: {
-        date,
-        examSession,
-        startTime,
-        endTime,
-        label: sessionLabel(examSession, startTime, endTime),
+        ...meta,
         planCount: plans.length,
         rowCount: rows.length,
+        grandTotal,
       },
       rows,
-      warnings,
+      grandTotal,
+      warnings: [],
     };
   },
 };

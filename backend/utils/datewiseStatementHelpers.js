@@ -1,5 +1,6 @@
 /**
- * Pure helpers for Datewise Attendance Statement (unit-tested without DB).
+ * Pure helpers for Datewise Seating Allotment Report (unit-tested without DB).
+ * Seating-allotment only — no attendance logic.
  */
 
 function normalizeTime(value) {
@@ -36,6 +37,13 @@ function normalizeRegnKey(regn) {
     .replace(/\s+/g, "");
 }
 
+/** Program / branch from regn, e.g. 26BCS119 → BCS (matches template). */
+function branchFromRegn(regnNo) {
+  if (!regnNo) return null;
+  const match = String(regnNo).trim().toUpperCase().match(/^[0-9]{2}([A-Z]+)/);
+  return match ? match[1] : null;
+}
+
 function formatTime12h(value) {
   const norm = normalizeTime(value);
   if (!norm || !norm.includes(":")) return String(value || "");
@@ -53,6 +61,14 @@ function sessionLabel(examSession, startTime, endTime) {
   const end = formatTime12h(endTime);
   if (start && end) return `${session} — ${start} to ${end}`;
   return session;
+}
+
+/** Exam time line for header: "9:00 AM - 11:30 AM" */
+function examTimeLabel(startTime, endTime) {
+  const start = formatTime12h(startTime);
+  const end = formatTime12h(endTime);
+  if (start && end) return `${start} - ${end}`;
+  return start || end || "—";
 }
 
 function sessionValue(examSession, startTime, endTime) {
@@ -75,6 +91,7 @@ function parseSessionValue(value) {
 
 /**
  * Continuous roll range when same prefix + consecutive numbers; otherwise list.
+ * Display uses en-dash for ranges (template style).
  */
 function formatRollDisplay(rolls) {
   const unique = [
@@ -91,7 +108,7 @@ function formatRollDisplay(rolls) {
   const parsed = unique.map((r) => {
     const m = String(r).match(/^(.*?)(\d+)$/);
     if (!m) return null;
-    return { prefix: m[1], num: Number(m[2]), raw: r, width: m[2].length };
+    return { prefix: m[1], num: Number(m[2]), raw: r };
   });
 
   if (parsed.every((p) => p && p.prefix === parsed[0].prefix)) {
@@ -104,7 +121,7 @@ function formatRollDisplay(rolls) {
       }
     }
     if (continuous) {
-      return `${unique[0]} - ${unique[unique.length - 1]}`;
+      return `${unique[0]} – ${unique[unique.length - 1]}`;
     }
   }
 
@@ -113,27 +130,24 @@ function formatRollDisplay(rolls) {
 }
 
 /**
- * Group distinct students by hall + branch.
- * @param {Array<{hallNo, facultyName, branch, regNo}>} students
- * @param {Map<string, 'Absent'|'Present'>} attendanceByRegnKey - only keys with marked status
- * @param {Set<string>} markedRegnKeys - all students who have ANY attendance row for the venue
- * @param {boolean} venueHasAttendance - whether the venue has any attendance records
+ * Group distinct students by hall + branch (+ faculty).
+ * Absentees intentionally omitted (blank on print).
  */
-function buildHallBranchRows(students, { attendanceByRegnKey, venueAttendanceReady } = {}) {
+function buildHallBranchRows(students) {
   const groups = new Map();
 
   for (const s of students || []) {
     const hallNo = String(s.hallNo || "").trim() || "—";
-    const branch = String(s.branch || "").trim() || "—";
-    const facultyName = String(s.facultyName || "").trim() || "—";
+    const branch = String(s.branch || branchFromRegn(s.regNo) || "").trim() || "—";
+    const faculty = String(s.facultyName || s.name || "").trim() || "—";
     const regNo = String(s.regNo || "").trim();
     if (!regNo || regNo === "0" || regNo === "-") continue;
 
-    const key = `${hallNo}::${branch}`;
+    const key = `${hallNo}::${faculty}::${branch}`;
     if (!groups.has(key)) {
       groups.set(key, {
         hallNo,
-        name: facultyName,
+        faculty,
         branch,
         rolls: [],
         rollKeys: new Set(),
@@ -144,27 +158,19 @@ function buildHallBranchRows(students, { attendanceByRegnKey, venueAttendanceRea
     if (g.rollKeys.has(rk)) continue;
     g.rollKeys.add(rk);
     g.rolls.push(regNo);
-    if (facultyName && g.name === "—") g.name = facultyName;
   }
 
   const rows = [];
   for (const g of groups.values()) {
-    let absentCount = 0;
-    if (venueAttendanceReady && attendanceByRegnKey) {
-      for (const reg of g.rolls) {
-        if (attendanceByRegnKey.get(normalizeRegnKey(reg)) === "Absent") {
-          absentCount += 1;
-        }
-      }
-    }
-
     rows.push({
       hallNo: g.hallNo,
-      name: g.name,
+      faculty: g.faculty,
+      name: g.faculty, // alias for older callers
       branch: g.branch,
       rollNo: formatRollDisplay(g.rolls),
+      total: g.rolls.length,
       totalStudents: g.rolls.length,
-      totalAbsentees: venueAttendanceReady ? absentCount : null,
+      absentees: "",
       signature: "",
     });
   }
@@ -172,9 +178,49 @@ function buildHallBranchRows(students, { attendanceByRegnKey, venueAttendanceRea
   rows.sort(
     (a, b) =>
       String(a.hallNo).localeCompare(String(b.hallNo)) ||
+      String(a.faculty).localeCompare(String(b.faculty)) ||
       String(a.branch).localeCompare(String(b.branch))
   );
   return rows;
+}
+
+/**
+ * Annotate rowspan for Hall No + Faculty when consecutive rows share them.
+ * span > 1 on first row of group; span = 0 means skip cell (merged into above).
+ */
+function annotateHallFacultyMerge(rows) {
+  const out = (rows || []).map((r) => ({
+    ...r,
+    hallSpan: 1,
+    facultySpan: 1,
+  }));
+  let i = 0;
+  while (i < out.length) {
+    let j = i + 1;
+    while (
+      j < out.length &&
+      out[j].hallNo === out[i].hallNo &&
+      out[j].faculty === out[i].faculty
+    ) {
+      j += 1;
+    }
+    const span = j - i;
+    out[i].hallSpan = span;
+    out[i].facultySpan = span;
+    for (let k = i + 1; k < j; k++) {
+      out[k].hallSpan = 0;
+      out[k].facultySpan = 0;
+    }
+    i = j;
+  }
+  return out;
+}
+
+function grandTotalStudents(rows) {
+  return (rows || []).reduce(
+    (sum, r) => sum + (Number(r.total ?? r.totalStudents) || 0),
+    0
+  );
 }
 
 function flattenLayoutRegns(layoutJson) {
@@ -220,11 +266,15 @@ module.exports = {
   normalizeTime,
   normalizeDate,
   normalizeRegnKey,
+  branchFromRegn,
   formatTime12h,
   sessionLabel,
+  examTimeLabel,
   sessionValue,
   parseSessionValue,
   formatRollDisplay,
   buildHallBranchRows,
+  annotateHallFacultyMerge,
+  grandTotalStudents,
   flattenLayoutRegns,
 };

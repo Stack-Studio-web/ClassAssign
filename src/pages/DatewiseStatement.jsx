@@ -135,12 +135,6 @@ export default function DatewiseStatement() {
           setError(
             "No saved seating reports found for this date and session under your account."
           );
-        } else if (data.attendanceIncomplete) {
-          const msg =
-            data.warnings?.find((w) => w.type === "ATTENDANCE_MISSING")
-              ?.message ||
-            "Attendance is incomplete for one or more halls; absentee counts are unavailable.";
-          setError(msg);
         }
       } catch (err) {
         if (!cancelled) {
@@ -162,7 +156,6 @@ export default function DatewiseStatement() {
     Boolean(selectedSession) &&
     statement &&
     !statement.empty &&
-    !statement.attendanceIncomplete &&
     Array.isArray(statement.rows) &&
     statement.rows.length > 0;
 
@@ -173,12 +166,6 @@ export default function DatewiseStatement() {
     }
     if (!statement || statement.empty) {
       setError("No eligible saved reports for this date and session.");
-      return;
-    }
-    if (statement.attendanceIncomplete) {
-      setError(
-        "Cannot export while attendance is missing for one or more halls."
-      );
       return;
     }
     setExporting(true);
@@ -202,6 +189,16 @@ export default function DatewiseStatement() {
     date,
     label: selectedSession?.label || "",
   };
+  const examTime =
+    meta.examTime ||
+    selectedSession?.examTime ||
+    (selectedSession?.startTime && selectedSession?.endTime
+      ? `${selectedSession.startTime} – ${selectedSession.endTime}`
+      : "—");
+  const grandTotal =
+    statement?.grandTotal ??
+    meta.grandTotal ??
+    rows.reduce((s, r) => s + (Number(r.total ?? r.totalStudents) || 0), 0);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -216,11 +213,12 @@ export default function DatewiseStatement() {
           </Link>
           <h1 className="text-2xl md:text-3xl font-bold text-gray-800 flex items-center gap-2">
             <CalendarDaysIcon className="h-7 w-7 text-indigo-600" />
-            Datewise Statement
+            Datewise Seating Allotment
           </h1>
           <p className="text-sm text-gray-500 mt-1">
-            Preview and export a formal datewise attendance statement from your
-            saved seating reports.
+            Preview and export a printable seating-allotment statement from your
+            saved seating reports. Absentees and signatures are left blank for
+            handwritten entry.
           </p>
         </div>
 
@@ -275,9 +273,11 @@ export default function DatewiseStatement() {
             </label>
 
             <div className="text-sm space-y-1.5">
-              <span className="font-medium text-gray-700">Selected timing</span>
+              <span className="font-medium text-gray-700">Exam time</span>
               <div className="h-11 px-3 rounded-xl border border-gray-100 bg-gray-50 flex items-center text-sm text-gray-800">
-                {selectedSession?.label || "—"}
+                {selectedSession
+                  ? examTime
+                  : "—"}
               </div>
             </div>
           </div>
@@ -306,40 +306,44 @@ export default function DatewiseStatement() {
             <p className="text-center text-gray-500 py-10">Loading statement…</p>
           ) : !date || !sessionValue ? (
             <p className="text-center text-gray-500 py-10">
-              Select a date and session to preview the statement.
+              Select a date and session to preview the seating allotment report.
             </p>
           ) : (
-            <div className="min-w-[900px]">
+            <div className="min-w-[960px]">
               <div className="text-center mb-6">
                 <img
                   src={logoKct}
                   alt="KCT Logo"
                   className="mx-auto mb-3"
-                  style={{ height: 64, width: "auto" }}
+                  style={{ height: 56, width: "auto" }}
                 />
                 <h2 className="text-lg font-bold tracking-wide">
                   KUMARAGURU COLLEGE OF TECHNOLOGY
                 </h2>
-                <h3 className="text-base font-bold mt-1">DATEWISE STATEMENT</h3>
+                <h3 className="text-base font-bold mt-1">
+                  DATEWISE SEATING ALLOTMENT REPORT
+                </h3>
                 <p className="text-sm mt-2">
                   Date: <strong>{formatDateLong(meta.date || date)}</strong>
                 </p>
                 <p className="text-sm">
-                  Session:{" "}
-                  <strong>{meta.label || selectedSession?.label || "—"}</strong>
+                  Exam Time: <strong>{examTime}</strong>
                 </p>
+                {meta.label ? (
+                  <p className="text-xs text-gray-500 mt-1">{meta.label}</p>
+                ) : null}
               </div>
 
               <table className="w-full border-collapse border border-black text-sm">
                 <thead>
-                  <tr className="bg-gray-100">
+                  <tr className="bg-gray-50">
                     {[
                       "Hall No",
-                      "Name",
+                      "Faculty",
                       "Branch",
-                      "Roll No",
-                      "Total Students",
-                      "Total Absentees",
+                      "Roll No's",
+                      "Total",
+                      "Absentees",
                       "Signature",
                     ].map((h) => (
                       <th
@@ -362,32 +366,62 @@ export default function DatewiseStatement() {
                       </td>
                     </tr>
                   ) : (
-                    rows.map((row, idx) => (
-                      <tr key={`${row.hallNo}-${row.branch}-${idx}`}>
-                        <td className="border border-black px-2 py-3 text-center">
-                          {row.hallNo}
-                        </td>
-                        <td className="border border-black px-2 py-3 text-center">
-                          {row.name}
-                        </td>
-                        <td className="border border-black px-2 py-3 text-center">
-                          {row.branch}
-                        </td>
-                        <td className="border border-black px-2 py-3 text-center text-xs">
-                          {row.rollNo}
-                        </td>
-                        <td className="border border-black px-2 py-3 text-center">
-                          {row.totalStudents}
-                        </td>
-                        <td className="border border-black px-2 py-3 text-center">
-                          {row.totalAbsentees == null ? "—" : row.totalAbsentees}
-                        </td>
-                        <td className="border border-black px-2 py-3 h-12" />
-                      </tr>
-                    ))
+                    rows.map((row, idx) => {
+                      const showHallFaculty = Number(row.hallSpan) > 0;
+                      const span = Number(row.hallSpan) || 1;
+                      return (
+                        <tr key={`${row.hallNo}-${row.branch}-${idx}`}>
+                          {showHallFaculty ? (
+                            <>
+                              <td
+                                rowSpan={span}
+                                className="border border-black px-2 py-3 text-center font-medium align-middle"
+                              >
+                                {row.hallNo}
+                              </td>
+                              <td
+                                rowSpan={span}
+                                className="border border-black px-2 py-3 text-center align-middle"
+                              >
+                                {row.faculty || row.name || "—"}
+                              </td>
+                            </>
+                          ) : null}
+                          <td className="border border-black px-2 py-3 text-center">
+                            {row.branch}
+                          </td>
+                          <td className="border border-black px-2 py-3 text-center text-xs">
+                            {row.rollNo}
+                          </td>
+                          <td className="border border-black px-2 py-3 text-center">
+                            {row.total ?? row.totalStudents}
+                          </td>
+                          <td className="border border-black px-2 py-3 h-12" />
+                          <td className="border border-black px-2 py-3 h-12" />
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
+
+              {rows.length > 0 ? (
+                <div className="mt-4 space-y-6">
+                  <p className="text-sm font-bold">
+                    Grand Total Students: {grandTotal}
+                  </p>
+                  <div className="grid grid-cols-3 gap-4 text-center text-sm pt-4">
+                    {["AEC", "HOD", "COE"].map((label) => (
+                      <div key={label} className="space-y-8">
+                        <p className="font-semibold">{label}</p>
+                        <p className="text-xs text-gray-600">
+                          Signature: __________
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </div>
           )}
         </section>

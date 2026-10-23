@@ -1,25 +1,26 @@
 /**
- * Datewise Attendance Statement — A4 landscape jsPDF (black & white).
+ * Datewise Seating Allotment PDF — A4 landscape, print-ready.
+ * Absentees & Signature blank for handwriting. No attendance data.
  */
 import { jsPDF } from "jspdf";
 import logoKctUrl from "../assets/logo.png";
 
-const MARGIN = 12; // mm
+const MARGIN = 12;
 const FONT = "helvetica";
 const LINE = 0.3;
 const HEADER_H = 8;
-const ROW_H = 11; // ample height for handwritten signature
+const ROW_H = 12;
+const FOOTER_BLOCK_H = 30;
 const COL_HEADERS = [
   "Hall No",
-  "Name",
+  "Faculty",
   "Branch",
-  "Roll No",
-  "Total Students",
-  "Total Absentees",
+  "Roll No's",
+  "Total",
+  "Absentees",
   "Signature",
 ];
-// Fractions of usable width
-const COL_FRACS = [0.1, 0.2, 0.1, 0.22, 0.12, 0.12, 0.14];
+const COL_FRACS = [0.09, 0.14, 0.08, 0.28, 0.07, 0.18, 0.16];
 
 async function loadLogoDataUrl() {
   try {
@@ -105,31 +106,40 @@ function drawDocHeader(pdf, meta, logoDataUrl) {
 
   if (logoDataUrl) {
     try {
-      pdf.addImage(logoDataUrl, "PNG", MARGIN + w / 2 - 10, y, 20, 20);
+      pdf.addImage(logoDataUrl, "PNG", MARGIN + w / 2 - 8, y, 16, 16);
     } catch {
       /* logo optional */
     }
-    y += 22;
+    y += 18;
   }
 
   pdf.setFont(FONT, "bold");
-  pdf.setFontSize(14);
-  pdf.text("KUMARAGURU COLLEGE OF TECHNOLOGY", MARGIN + w / 2, y + 5, {
+  pdf.setFontSize(13);
+  pdf.setTextColor(0, 0, 0);
+  pdf.text("KUMARAGURU COLLEGE OF TECHNOLOGY", MARGIN + w / 2, y + 4, {
     align: "center",
   });
-  y += 10;
+  y += 8;
 
-  pdf.setFontSize(12);
-  pdf.text("DATEWISE STATEMENT", MARGIN + w / 2, y + 4, { align: "center" });
-  y += 9;
+  pdf.setFontSize(11);
+  pdf.text("DATEWISE SEATING ALLOTMENT REPORT", MARGIN + w / 2, y + 4, {
+    align: "center",
+  });
+  y += 8;
 
   pdf.setFont(FONT, "normal");
-  pdf.setFontSize(10);
+  pdf.setFontSize(9);
   pdf.text(`Date: ${formatDateLong(meta.date)}`, MARGIN + w / 2, y + 3, {
     align: "center",
   });
-  y += 6;
-  pdf.text(`Session: ${meta.label || "—"}`, MARGIN + w / 2, y + 3, {
+  y += 5;
+
+  const examTime =
+    meta.examTime ||
+    (meta.startTime && meta.endTime
+      ? `${meta.startTime} – ${meta.endTime}`
+      : "—");
+  pdf.text(`Exam Time: ${examTime}`, MARGIN + w / 2, y + 3, {
     align: "center",
   });
   y += 8;
@@ -148,27 +158,161 @@ function drawTableHeader(pdf, y, cols) {
   return y + HEADER_H;
 }
 
-function drawDataRow(pdf, y, cols, row) {
-  const values = [
-    row.hallNo,
-    row.name,
-    row.branch,
-    row.rollNo,
-    row.totalStudents,
-    row.totalAbsentees == null ? "—" : row.totalAbsentees,
-    "",
-  ];
-  for (let i = 0; i < cols.length; i++) {
-    const col = cols[i];
-    drawRect(pdf, col.x, y, col.w, ROW_H);
-    if (i < 6) {
-      drawCenteredText(pdf, values[i], col.x, y, col.w, ROW_H, {
-        bold: false,
-        size: i === 3 ? 7 : 8,
-      });
-    }
+/**
+ * Measure how many consecutive rows share hall+faculty starting at index.
+ * Uses hallSpan from annotateHallFacultyMerge when present.
+ */
+function groupSpanAt(rows, index) {
+  const row = rows[index];
+  if (row && Number(row.hallSpan) > 0) return Number(row.hallSpan);
+  let j = index + 1;
+  while (
+    j < rows.length &&
+    rows[j].hallNo === row.hallNo &&
+    (rows[j].faculty || rows[j].name) === (row.faculty || row.name)
+  ) {
+    j += 1;
   }
-  return y + ROW_H;
+  return j - index;
+}
+
+/**
+ * Paginate so a hall+faculty merge group is not split across pages when practical.
+ */
+function paginateRows(rows, firstPageCapacity, otherPageCapacity) {
+  const pages = [];
+  let i = 0;
+  let capacity = firstPageCapacity;
+
+  while (i < rows.length) {
+    const page = [];
+    let used = 0;
+    while (i < rows.length) {
+      const span = groupSpanAt(rows, i);
+      // If group won't fit and page empty, force at least one row
+      if (used + span > capacity && used > 0) break;
+      const take = Math.min(span, capacity - used);
+      for (let k = 0; k < take; k++) {
+        page.push(rows[i + k]);
+      }
+      used += take;
+      i += take;
+      if (take < span) break; // remainder continues next page (span redrawn)
+    }
+    pages.push(page);
+    capacity = otherPageCapacity;
+  }
+  if (pages.length === 0) pages.push([]);
+  return pages;
+}
+
+/** Recompute hall/faculty spans for rows on a single page (handles split groups). */
+function annotatePageMerge(pageRows) {
+  const out = (pageRows || []).map((r) => ({ ...r }));
+  let i = 0;
+  while (i < out.length) {
+    let j = i + 1;
+    while (
+      j < out.length &&
+      out[j].hallNo === out[i].hallNo &&
+      (out[j].faculty || out[j].name) === (out[i].faculty || out[i].name)
+    ) {
+      j += 1;
+    }
+    const span = j - i;
+    out[i].hallSpan = span;
+    out[i].facultySpan = span;
+    for (let k = i + 1; k < j; k++) {
+      out[k].hallSpan = 0;
+      out[k].facultySpan = 0;
+    }
+    i = j;
+  }
+  return out;
+}
+
+function drawDataRows(pdf, startY, cols, pageRows) {
+  const rows = annotatePageMerge(pageRows);
+  let y = startY;
+  let i = 0;
+  while (i < rows.length) {
+    const row = rows[i];
+    const span = Math.max(1, Number(row.hallSpan) || 1);
+    const mergeH = span * ROW_H;
+    const faculty = row.faculty || row.name || "—";
+
+    drawRect(pdf, cols[0].x, y, cols[0].w, mergeH);
+    drawCenteredText(pdf, row.hallNo || "—", cols[0].x, y, cols[0].w, mergeH, {
+      bold: true,
+      size: 8,
+    });
+    drawRect(pdf, cols[1].x, y, cols[1].w, mergeH);
+    drawCenteredText(pdf, faculty, cols[1].x, y, cols[1].w, mergeH, {
+      size: 8,
+    });
+
+    for (let s = 0; s < span; s++) {
+      const r = rows[i + s];
+      const ry = y + s * ROW_H;
+      const values = [
+        null,
+        null,
+        r.branch || "—",
+        r.rollNo || r.rollNosDisplay || "—",
+        String(r.total ?? r.totalStudents ?? 0),
+        "",
+        "",
+      ];
+      for (let c = 2; c < cols.length; c++) {
+        drawRect(pdf, cols[c].x, ry, cols[c].w, ROW_H);
+        if (c < 5) {
+          drawCenteredText(pdf, values[c], cols[c].x, ry, cols[c].w, ROW_H, {
+            size: c === 3 ? 7 : 8,
+          });
+        }
+      }
+    }
+
+    y += mergeH;
+    i += span;
+  }
+  return y;
+}
+
+function drawGrandTotalAndApprovals(pdf, y, grandTotal) {
+  const w = usableWidth(pdf);
+  const h = pageHeight(pdf);
+  let cy = y + 6;
+
+  if (cy + FOOTER_BLOCK_H > h - MARGIN) {
+    pdf.addPage();
+    cy = MARGIN + 4;
+  }
+
+  pdf.setFont(FONT, "bold");
+  pdf.setFontSize(10);
+  pdf.setTextColor(0, 0, 0);
+  pdf.text(`Grand Total Students: ${grandTotal}`, MARGIN, cy);
+  cy += 10;
+
+  const colW = w / 3;
+  const labels = ["AEC", "HOD", "COE"];
+  pdf.setFont(FONT, "bold");
+  pdf.setFontSize(9);
+  labels.forEach((label, i) => {
+    pdf.text(label, MARGIN + i * colW + colW / 2, cy, { align: "center" });
+  });
+  cy += 14;
+  pdf.setFont(FONT, "normal");
+  pdf.setFontSize(8);
+  labels.forEach((_, i) => {
+    pdf.text(
+      "Signature: __________",
+      MARGIN + i * colW + colW / 2,
+      cy,
+      { align: "center" }
+    );
+  });
 }
 
 function addPageNumber(pdf, pageIndex, totalPages) {
@@ -176,64 +320,69 @@ function addPageNumber(pdf, pageIndex, totalPages) {
   const h = pageHeight(pdf);
   pdf.setFont(FONT, "normal");
   pdf.setFontSize(8);
-  pdf.text(`Page ${pageIndex} of ${totalPages}`, MARGIN + w / 2, h - 6, {
+  pdf.text(`Page ${pageIndex} of ${totalPages}`, MARGIN + w / 2, h - 5, {
     align: "center",
   });
 }
 
+function grandTotalFromRows(rows) {
+  return (rows || []).reduce(
+    (sum, r) => sum + (Number(r.total ?? r.totalStudents) || 0),
+    0
+  );
+}
+
 /**
- * @param {object} statement - API payload { meta, rows }
+ * @param {object} statement - API payload { meta, rows, grandTotal }
  * @returns {Promise<{ blob: Blob, filename: string }>}
  */
 export async function generateDatewiseStatementPdf(statement) {
   const meta = statement?.meta || {};
   const rows = Array.isArray(statement?.rows) ? statement.rows : [];
+  const grandTotal =
+    statement?.grandTotal ?? meta.grandTotal ?? grandTotalFromRows(rows);
   const logoDataUrl = await loadLogoDataUrl();
 
   const pdf = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
   const cols = colLayout(pdf);
-  const bottomLimit = () => pageHeight(pdf) - MARGIN - 8;
+  const ph = pageHeight(pdf);
 
-  // First pass: paginate to know page count
-  const pages = [];
-  let y = drawDocHeader(pdf, meta, logoDataUrl);
-  y = drawTableHeader(pdf, y, cols);
-  let pageRows = [];
+  // Approximate header + table-header height (logo + titles + date/time)
+  const headerBlockH = (logoDataUrl ? 18 : 0) + 8 + 8 + 5 + 5 + 8 + HEADER_H;
+  const firstCapacity = Math.max(
+    1,
+    Math.floor((ph - MARGIN - FOOTER_BLOCK_H - 10 - headerBlockH) / ROW_H)
+  );
+  const otherCapacity = Math.max(
+    1,
+    Math.floor((ph - MARGIN - 10 - headerBlockH) / ROW_H)
+  );
 
-  const flushPage = () => {
-    pages.push(pageRows);
-    pageRows = [];
-  };
-
-  for (const row of rows) {
-    if (y + ROW_H > bottomLimit()) {
-      flushPage();
-      // next page header cost
-      y = MARGIN + 22 + 10 + 9 + 6 + 8; // approx header without re-measure
-      y += HEADER_H;
-    }
-    pageRows.push(row);
-    y += ROW_H;
-  }
-  flushPage();
-  if (pages.length === 0) pages.push([]);
-
-  // Rebuild cleanly page by page
+  const pages = paginateRows(rows, firstCapacity, otherCapacity);
   const totalPages = pages.length;
+
   for (let p = 0; p < totalPages; p++) {
     if (p > 0) pdf.addPage();
     let cy = drawDocHeader(pdf, meta, logoDataUrl);
     cy = drawTableHeader(pdf, cy, cols);
-    for (const row of pages[p]) {
-      if (cy + ROW_H > bottomLimit()) break;
-      cy = drawDataRow(pdf, cy, cols, row);
-    }
+    cy = drawDataRows(pdf, cy, cols, pages[p]);
+
     if (rows.length === 0 && p === 0) {
       pdf.setFont(FONT, "normal");
       pdf.setFontSize(11);
       pdf.text("No rows for this date and session.", MARGIN, cy + 10);
+      cy += 16;
     }
-    addPageNumber(pdf, p + 1, totalPages);
+
+    if (p === totalPages - 1) {
+      drawGrandTotalAndApprovals(pdf, cy, grandTotal);
+    }
+  }
+
+  const finalPageCount = pdf.getNumberOfPages();
+  for (let p = 1; p <= finalPageCount; p++) {
+    pdf.setPage(p);
+    addPageNumber(pdf, p, finalPageCount);
   }
 
   const sessionPart = sanitizeFilenamePart(

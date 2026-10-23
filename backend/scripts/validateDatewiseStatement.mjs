@@ -1,5 +1,5 @@
 /**
- * Unit checks for Datewise Attendance Statement helpers + wiring.
+ * Unit checks for Datewise Seating Allotment helpers + wiring.
  * Run: node backend/scripts/validateDatewiseStatement.mjs
  */
 import assert from "assert";
@@ -19,60 +19,71 @@ function read(rel) {
 }
 
 function testRollRange() {
-  assert.strictEqual(H.formatRollDisplay(["26BBT003", "26BBT001", "26BBT002"]), "26BBT001 - 26BBT003");
+  assert.strictEqual(
+    H.formatRollDisplay(["26BBT003", "26BBT001", "26BBT002"]),
+    "26BBT001 – 26BBT003"
+  );
   assert.strictEqual(H.formatRollDisplay(["26BBT001"]), "26BBT001");
   const gap = H.formatRollDisplay(["26BBT001", "26BBT003"]);
   assert.ok(gap.includes("26BBT001") && gap.includes("26BBT003"));
-  assert.ok(!gap.includes(" - ") || gap.includes(","));
+  assert.ok(!gap.includes(" – ") || gap.includes(","));
   console.log("✓ roll range continuous vs gapped");
+}
+
+function testBranchFromRegn() {
+  assert.strictEqual(H.branchFromRegn("26BCS119"), "BCS");
+  assert.strictEqual(H.branchFromRegn("26BCS160"), "BCS");
+  assert.strictEqual(H.branchFromRegn("26BBT001"), "BBT");
+  assert.strictEqual(H.branchFromRegn("24BIT002"), "BIT");
+  assert.notStrictEqual(H.branchFromRegn("26BCS119"), "SFS");
+  console.log("✓ branch from regn (26BCS → BCS, not SFS)");
 }
 
 function testHallBranchGrouping() {
   const students = [
-    { hallNo: "SC311", facultyName: "Alice", branch: "CSE", regNo: "26CSE001" },
-    { hallNo: "SC311", facultyName: "Alice", branch: "CSE", regNo: "26CSE002" },
-    { hallNo: "SC311", facultyName: "Alice", branch: "IT", regNo: "26IT001" },
-    { hallNo: "SC311", facultyName: "Alice", branch: "CSE", regNo: "26CSE001" }, // dup
-    { hallNo: "SC315", facultyName: "Bob", branch: "CSE", regNo: "26CSE010" },
+    { hallNo: "SC316", facultyName: "Faizal", branch: "BCS", regNo: "26BCS001" },
+    { hallNo: "SC316", facultyName: "Faizal", branch: "BCS", regNo: "26BCS002" },
+    { hallNo: "SC316", facultyName: "Faizal", branch: "BBT", regNo: "26BBT001" },
+    { hallNo: "SC316", facultyName: "Faizal", branch: "BCS", regNo: "26BCS001" }, // dup
+    { hallNo: "SC315", facultyName: "Bob", branch: "BCS", regNo: "26BCS010" },
   ];
-  const attendanceByRegnKey = new Map([
-    [H.normalizeRegnKey("26CSE001"), "Absent"],
-    [H.normalizeRegnKey("26CSE002"), "Present"],
-    [H.normalizeRegnKey("26IT001"), "Absent"],
-    [H.normalizeRegnKey("26CSE010"), "Present"],
-  ]);
 
-  const rows = H.buildHallBranchRows(students, {
-    attendanceByRegnKey,
-    venueAttendanceReady: true,
-  });
+  const rows = H.buildHallBranchRows(students);
 
   assert.strictEqual(rows.length, 3);
-  const cse311 = rows.find((r) => r.hallNo === "SC311" && r.branch === "CSE");
-  const it311 = rows.find((r) => r.hallNo === "SC311" && r.branch === "IT");
-  const cse315 = rows.find((r) => r.hallNo === "SC315" && r.branch === "CSE");
-  assert.ok(cse311 && it311 && cse315);
-  assert.strictEqual(cse311.totalStudents, 2);
-  assert.strictEqual(cse311.totalAbsentees, 1);
-  assert.strictEqual(it311.totalStudents, 1);
-  assert.strictEqual(it311.totalAbsentees, 1);
-  assert.strictEqual(cse315.totalStudents, 1);
-  assert.strictEqual(cse315.totalAbsentees, 0);
-  assert.strictEqual(cse311.name, "Alice");
-  console.log("✓ hall-and-branch grouping + distinct totals + absentees");
+  const bcs316 = rows.find((r) => r.hallNo === "SC316" && r.branch === "BCS");
+  const bbt316 = rows.find((r) => r.hallNo === "SC316" && r.branch === "BBT");
+  const bcs315 = rows.find((r) => r.hallNo === "SC315" && r.branch === "BCS");
+  assert.ok(bcs316 && bbt316 && bcs315);
+  assert.strictEqual(bcs316.total, 2);
+  assert.strictEqual(bbt316.total, 1);
+  assert.strictEqual(bcs315.total, 1);
+  assert.strictEqual(bcs316.absentees, "");
+  assert.strictEqual(bcs316.signature, "");
+  assert.strictEqual(bcs316.faculty, "Faizal");
+  console.log("✓ hall-and-branch grouping + blank absentees/signature");
 }
 
-function testMissingAttendanceLeavesAbsenteesNull() {
+function testHallFacultyMerge() {
   const students = [
-    { hallNo: "SC311", facultyName: "Alice", branch: "CSE", regNo: "26CSE001" },
+    { hallNo: "SC316", facultyName: "Faizal", branch: "BCS", regNo: "26BCS001" },
+    { hallNo: "SC316", facultyName: "Faizal", branch: "BBT", regNo: "26BBT001" },
+    { hallNo: "SC315", facultyName: "Bob", branch: "BCS", regNo: "26BCS010" },
   ];
-  const rows = H.buildHallBranchRows(students, {
-    attendanceByRegnKey: new Map(),
-    venueAttendanceReady: false,
-  });
-  assert.strictEqual(rows[0].totalStudents, 1);
-  assert.strictEqual(rows[0].totalAbsentees, null);
-  console.log("✓ missing attendance → totalAbsentees null (not false zero)");
+  const rows = H.annotateHallFacultyMerge(H.buildHallBranchRows(students));
+  const first = rows.find((r) => r.hallNo === "SC316" && r.branch === "BBT") ||
+    rows.find((r) => r.hallNo === "SC316");
+  // After sort: BBT then BCS under SC316, or BCS then BBT — first SC316 row spans 2
+  const sc316 = rows.filter((r) => r.hallNo === "SC316");
+  assert.strictEqual(sc316.length, 2);
+  assert.strictEqual(sc316[0].hallSpan, 2);
+  assert.strictEqual(sc316[0].facultySpan, 2);
+  assert.strictEqual(sc316[1].hallSpan, 0);
+  assert.strictEqual(sc316[1].facultySpan, 0);
+  const sc315 = rows.find((r) => r.hallNo === "SC315");
+  assert.strictEqual(sc315.hallSpan, 1);
+  assert.strictEqual(H.grandTotalStudents(rows), 3);
+  console.log("✓ Hall/Faculty rowspan merge + grand total");
 }
 
 function testSessionHelpers() {
@@ -80,22 +91,29 @@ function testSessionHelpers() {
     H.sessionLabel("FN", "09:00", "11:30"),
     "FN — 9:00 AM to 11:30 AM"
   );
+  assert.strictEqual(H.examTimeLabel("09:00", "11:30"), "9:00 AM - 11:30 AM");
   const value = H.sessionValue("AN", "13:00", "15:00");
   const parsed = H.parseSessionValue(value);
   assert.strictEqual(parsed.examSession, "AN");
   assert.strictEqual(parsed.startTime, "13:00");
   assert.strictEqual(parsed.endTime, "15:00");
-  console.log("✓ session label / value round-trip (non-hardcoded FN/AN times)");
+  console.log("✓ session / exam-time helpers (non-hardcoded times)");
 }
 
 function testDateResetWiringInFrontend() {
   const page = read("src/pages/DatewiseStatement.jsx");
   assert.ok(page.includes('setSessionValue("")'));
   assert.ok(page.includes("fetchDatewiseSessions(date)"));
-  assert.ok(page.includes("navigate") || page.includes('to="/report"'));
+  assert.ok(page.includes('to="/report"'));
   assert.ok(page.includes("Export PDF"));
   assert.ok(page.includes("downloadDatewiseStatementPdf"));
-  console.log("✓ /datewise page resets session on date change + export wired");
+  assert.ok(page.includes("DATEWISE SEATING ALLOTMENT REPORT"));
+  assert.ok(page.includes("Grand Total Students"));
+  assert.ok(page.includes("AEC"));
+  assert.ok(page.includes("HOD"));
+  assert.ok(page.includes("COE"));
+  assert.ok(page.includes("rowSpan"));
+  console.log("✓ /datewise page: preview columns, merge, approvals, export");
 }
 
 function testReportButtonAndRoute() {
@@ -116,11 +134,11 @@ function testPdfColumns() {
   const pdf = read("src/lib/generateDatewiseStatementPdf.js");
   const order = [
     "Hall No",
-    "Name",
+    "Faculty",
     "Branch",
-    "Roll No",
-    "Total Students",
-    "Total Absentees",
+    "Roll No's",
+    "Total",
+    "Absentees",
     "Signature",
   ];
   let last = -1;
@@ -131,8 +149,31 @@ function testPdfColumns() {
   }
   assert.ok(pdf.includes('orientation: "landscape"'));
   assert.ok(pdf.includes("Datewise_"));
-  assert.ok(pdf.includes("Page "));
-  console.log("✓ PDF column order, landscape, filename, page numbers");
+  assert.ok(pdf.includes("DATEWISE SEATING ALLOTMENT REPORT"));
+  assert.ok(pdf.includes("Grand Total Students"));
+  assert.ok(pdf.includes("AEC"));
+  assert.ok(pdf.includes("HOD"));
+  assert.ok(pdf.includes("COE"));
+  assert.ok(pdf.includes("Exam Time"));
+  assert.ok(!/attendance/i.test(pdf) || pdf.includes("No attendance"));
+  console.log("✓ PDF column order, title, merge footer, landscape, filename");
+}
+
+function testNoAttendanceDependency() {
+  const svc = read("backend/services/datewiseStatementService.js");
+  assert.ok(
+    !/FROM\s+attendance|JOIN\s+attendance|attendance_records|fetchAttendance/i.test(
+      svc
+    ),
+    "service must not query attendance tables"
+  );
+  const helpers = read("backend/utils/datewiseStatementHelpers.js");
+  assert.ok(
+    !helpers.includes("attendanceByRegnKey"),
+    "helpers must not take attendance maps"
+  );
+  assert.ok(helpers.includes('absentees: ""'));
+  console.log("✓ no attendance dependency in datewise export path");
 }
 
 function testOwnershipOnBackend() {
@@ -143,7 +184,7 @@ function testOwnershipOnBackend() {
   const routes = read("backend/routes/datewiseRoutes.js");
   assert.ok(routes.includes("sessionAuth"));
   assert.ok(routes.includes("checkRole"));
-  console.log("✓ ownership enforced via resolveOwnerOpts + sessionAuth (no client user id)");
+  console.log("✓ ownership enforced via resolveOwnerOpts + sessionAuth");
 }
 
 function testApiRoutesExist() {
@@ -155,13 +196,15 @@ function testApiRoutesExist() {
 }
 
 testRollRange();
+testBranchFromRegn();
 testHallBranchGrouping();
-testMissingAttendanceLeavesAbsenteesNull();
+testHallFacultyMerge();
 testSessionHelpers();
 testDateResetWiringInFrontend();
 testReportButtonAndRoute();
 testPdfColumns();
+testNoAttendanceDependency();
 testOwnershipOnBackend();
 testApiRoutesExist();
 
-console.log("\n✅ Datewise statement validation checks passed");
+console.log("\n✅ Datewise seating allotment validation checks passed");
