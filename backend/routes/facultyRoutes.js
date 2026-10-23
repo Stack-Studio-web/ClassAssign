@@ -117,6 +117,33 @@ router.get(
 );
 
 /**
+ * GET /faculty/invigilation-schedule/sessions
+ * Distinct FN / AN values for the selected date range.
+ */
+router.get(
+  "/invigilation-schedule/sessions",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge", "hod"]),
+  async (req, res) => {
+    try {
+      const result = await FacultyScheduleService.getInvigilationSessionsForDates({
+        dateFrom: req.query.dateFrom || req.query.date_from,
+        dateTo: req.query.dateTo || req.query.date_to,
+        examType: req.query.examType || req.query.category,
+        semester: req.query.semester,
+      });
+      return res.json({ success: true, ...result });
+    } catch (err) {
+      if (err.statusCode === 400) {
+        return Api.validationError(res, err.message);
+      }
+      console.error("GET /faculty/invigilation-schedule/sessions:", err?.message || err);
+      return Api.serverError(res, err, "Failed to load sessions for date range");
+    }
+  }
+);
+
+/**
  * GET /faculty/invigilation-schedule/preview
  */
 router.get(
@@ -131,8 +158,6 @@ router.get(
         examType: req.query.examType || req.query.category,
         department: req.query.department,
         session: req.query.session,
-        startTime: req.query.startTime || req.query.start_time,
-        endTime: req.query.endTime || req.query.end_time,
         dateFrom: req.query.dateFrom || req.query.date_from,
         dateTo: req.query.dateTo || req.query.date_to,
       });

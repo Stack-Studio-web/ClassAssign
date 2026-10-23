@@ -53,13 +53,6 @@ function formatDateSlash(dateValue) {
   return `${d}/${m}/${y}`;
 }
 
-function formatSessionOptionLabel(startTime, endTime) {
-  const start = formatTime12h(startTime);
-  const end = formatTime12h(endTime);
-  if (!start && !end) return "";
-  return `${start} - ${end}`;
-}
-
 const emptyFilters = {
   semester: "EVEN",
   academicYearUuid: "",
@@ -80,9 +73,10 @@ export default function FacultyInvigilationExport() {
     semesters: [],
     examTypes: [],
     departments: [],
-    sessions: [],
   });
+  const [sessions, setSessions] = useState([]);
   const [loadingOptions, setLoadingOptions] = useState(true);
+  const [loadingSessions, setLoadingSessions] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [preview, setPreview] = useState(null);
@@ -92,6 +86,10 @@ export default function FacultyInvigilationExport() {
   );
 
   const currentLogo = logoType === "KCT" ? LogoKCT : LogoKSI;
+  const datesReady =
+    Boolean(filters.dateFrom) &&
+    Boolean(filters.dateTo) &&
+    filters.dateTo >= filters.dateFrom;
 
   useEffect(() => {
     let cancelled = false;
@@ -101,26 +99,11 @@ export default function FacultyInvigilationExport() {
         const res = await api.get("/faculty/invigilation-schedule/options");
         const body = res.data || {};
         if (cancelled) return;
-        const sessions = (Array.isArray(body.sessions) ? body.sessions : [])
-          .map((s) => {
-            const startTime = normalizeTime(s.startTime || s.start_time || "");
-            const endTime = normalizeTime(s.endTime || s.end_time || "");
-            const value = s.value || (startTime && endTime ? `${startTime}|${endTime}` : "");
-            if (!value) return null;
-            return {
-              value,
-              startTime,
-              endTime,
-              label: formatSessionOptionLabel(startTime, endTime) || s.label || value,
-            };
-          })
-          .filter(Boolean);
         setOptions({
           academicYears: Array.isArray(body.academicYears) ? body.academicYears : [],
           semesters: Array.isArray(body.semesters) ? body.semesters : [],
           examTypes: Array.isArray(body.examTypes) ? body.examTypes : [],
           departments: Array.isArray(body.departments) ? body.departments : [],
-          sessions,
         });
         const years = Array.isArray(body.academicYears) ? body.academicYears : [];
         const active = years.find((y) => !y.isArchived) || years[0];
@@ -148,8 +131,80 @@ export default function FacultyInvigilationExport() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Load FN / AN sessions only after Date From + Date To are chosen.
+  useEffect(() => {
+    let cancelled = false;
+    if (!datesReady) {
+      setSessions([]);
+      setFilters((prev) => (prev.session ? { ...prev, session: "" } : prev));
+      setLoadingSessions(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    (async () => {
+      setLoadingSessions(true);
+      try {
+        const res = await api.get("/faculty/invigilation-schedule/sessions", {
+          params: {
+            dateFrom: filters.dateFrom,
+            dateTo: filters.dateTo,
+            examType: filters.examType || undefined,
+            semester: filters.semester || undefined,
+          },
+        });
+        const body = res.data || {};
+        const list = (Array.isArray(body.sessions) ? body.sessions : [])
+          .map((s) => {
+            const value = String(s.value || s.examSession || s.exam_session || "")
+              .trim()
+              .toUpperCase();
+            if (!value) return null;
+            return {
+              value,
+              label:
+                s.label ||
+                (value === "FN"
+                  ? "FN (Forenoon)"
+                  : value === "AN"
+                    ? "AN (Afternoon)"
+                    : value),
+            };
+          })
+          .filter(Boolean);
+        if (cancelled) return;
+        setSessions(list);
+        setFilters((prev) => {
+          if (prev.session && !list.some((s) => s.value === prev.session)) {
+            return { ...prev, session: "" };
+          }
+          return prev;
+        });
+      } catch (err) {
+        if (!cancelled) {
+          setSessions([]);
+          setError(getApiError(err, "Failed to load sessions for selected dates"));
+        }
+      } finally {
+        if (!cancelled) setLoadingSessions(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [datesReady, filters.dateFrom, filters.dateTo, filters.examType, filters.semester]);
+
   const setFilter = (key, value) => {
-    setFilters((prev) => ({ ...prev, [key]: value }));
+    setFilters((prev) => {
+      const next = { ...prev, [key]: value };
+      // Changing dates clears session; it reloads from FN/AN for the new range.
+      if (key === "dateFrom" || key === "dateTo") {
+        next.session = "";
+      }
+      return next;
+    });
     setPreview(null);
     setError("");
   };
@@ -164,8 +219,8 @@ export default function FacultyInvigilationExport() {
   }, [filters]);
 
   const selectedSession = useMemo(
-    () => options.sessions.find((s) => s.value === filters.session) || null,
-    [options.sessions, filters.session]
+    () => sessions.find((s) => s.value === filters.session) || null,
+    [sessions, filters.session]
   );
 
   const queryParams = useMemo(
@@ -396,25 +451,6 @@ export default function FacultyInvigilationExport() {
               </label>
 
               <label className="text-sm space-y-1.5">
-                <span className="font-medium text-gray-700">Session</span>
-                <select
-                  value={filters.session}
-                  onChange={(e) => setFilter("session", e.target.value)}
-                  disabled={loadingOptions}
-                  className="w-full h-11 px-3 rounded-xl border border-gray-200 bg-white text-sm focus:ring-2 focus:ring-red-500 outline-none disabled:bg-gray-50"
-                >
-                  <option value="">
-                    {loadingOptions ? "Loading…" : "All Sessions"}
-                  </option>
-                  {options.sessions.map((s) => (
-                    <option key={s.value} value={s.value}>
-                      {s.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="text-sm space-y-1.5">
                 <span className="font-medium text-gray-700">Date From</span>
                 <input
                   type="date"
@@ -432,6 +468,31 @@ export default function FacultyInvigilationExport() {
                   onChange={(e) => setFilter("dateTo", e.target.value)}
                   className="w-full h-11 px-3 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-red-500 outline-none"
                 />
+              </label>
+
+              <label className="text-sm space-y-1.5">
+                <span className="font-medium text-gray-700">Session</span>
+                <select
+                  value={filters.session}
+                  onChange={(e) => setFilter("session", e.target.value)}
+                  disabled={!datesReady || loadingSessions}
+                  className="w-full h-11 px-3 rounded-xl border border-gray-200 bg-white text-sm focus:ring-2 focus:ring-red-500 outline-none disabled:bg-gray-50"
+                >
+                  <option value="">
+                    {!datesReady
+                      ? "Select dates first"
+                      : loadingSessions
+                        ? "Loading…"
+                        : sessions.length
+                          ? "All Sessions"
+                          : "No FN/AN for dates"}
+                  </option>
+                  {sessions.map((s) => (
+                    <option key={s.value} value={s.value}>
+                      {s.label}
+                    </option>
+                  ))}
+                </select>
               </label>
 
               <label className="text-sm space-y-1.5">

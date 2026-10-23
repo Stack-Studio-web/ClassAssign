@@ -233,38 +233,85 @@ async function getInvigilationFilterOptions() {
     console.warn("departments for invigilation options:", err?.message || err);
   }
 
-  let sessions = [];
-  try {
-    const [sessionRows] = await db.query(
-      `SELECT DISTINCT exam_start_time, exam_end_time
-       FROM seating_plans
-       WHERE exam_start_time IS NOT NULL AND exam_end_time IS NOT NULL
-       ORDER BY exam_start_time ASC, exam_end_time ASC`
-    );
-    sessions = (sessionRows || [])
-      .map((r) => {
-        const startTime = normalizeTime(r.exam_start_time ?? r.examstarttime);
-        const endTime = normalizeTime(r.exam_end_time ?? r.examendtime);
-        if (!startTime || !endTime) return null;
-        return {
-          value: `${startTime}|${endTime}`,
-          startTime,
-          endTime,
-          label: `${startTime} - ${endTime}`,
-        };
-      })
-      .filter(Boolean);
-  } catch (err) {
-    console.warn("sessions for invigilation options:", err?.message || err);
-  }
-
   return {
     academicYears,
     semesters,
     examTypes,
     departments,
-    sessions,
   };
+}
+
+/**
+ * Distinct FN / AN sessions available in a date range (for invigilation export filter).
+ */
+async function getInvigilationSessionsForDates(filters = {}) {
+  const dateFrom = normalizeDate(filters.dateFrom || filters.date_from);
+  const dateTo = normalizeDate(filters.dateTo || filters.date_to);
+  const examType = String(filters.examType || filters.category || "").trim();
+  const semester = String(filters.semester || "").trim().toUpperCase();
+
+  if (!dateFrom || !dateTo) {
+    const err = new Error("Date From and Date To are required");
+    err.statusCode = 400;
+    throw err;
+  }
+  if (dateTo < dateFrom) {
+    const err = new Error("Date To cannot be before Date From");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const params = [dateFrom, dateTo];
+  const where = [
+    "sp.exam_date BETWEEN ? AND ?",
+    "sp.exam_session IS NOT NULL",
+    "TRIM(sp.exam_session) <> ''",
+  ];
+
+  if (examType) {
+    const typeFilter = sqlExamTypeIn("sp.exam_type", examType);
+    where.push(`(${typeFilter.clause})`);
+    params.push(...typeFilter.params);
+  }
+  if (semester === "ODD") {
+    where.push("EXTRACT(MONTH FROM sp.exam_date) BETWEEN 7 AND 12");
+  } else if (semester === "EVEN") {
+    where.push("EXTRACT(MONTH FROM sp.exam_date) BETWEEN 1 AND 6");
+  }
+
+  const [rows] = await db.query(
+    `
+    SELECT DISTINCT UPPER(TRIM(sp.exam_session)) AS exam_session
+    FROM seating_plans sp
+    WHERE ${where.join(" AND ")}
+    ORDER BY 1 ASC
+    `,
+    params
+  );
+
+  const order = { FN: 0, AN: 1 };
+  const sessions = (rows || [])
+    .map((r) => {
+      const value = String(r.exam_session ?? r.examsession ?? "")
+        .trim()
+        .toUpperCase();
+      if (!value) return null;
+      const label =
+        value === "FN"
+          ? "FN (Forenoon)"
+          : value === "AN"
+            ? "AN (Afternoon)"
+            : value;
+      return { value, label };
+    })
+    .filter(Boolean)
+    .sort(
+      (a, b) =>
+        (order[a.value] ?? 99) - (order[b.value] ?? 99) ||
+        a.value.localeCompare(b.value)
+    );
+
+  return { sessions, dateFrom, dateTo };
 }
 
 /**
@@ -277,17 +324,9 @@ async function getInvigilationSchedulePreview(filters = {}) {
   const department = String(filters.department || "").trim();
   const semester = String(filters.semester || "").trim().toUpperCase();
   const academicYearLabel = String(filters.academicYear || filters.academic_year || "").trim();
-  const startTime = normalizeTime(filters.startTime || filters.start_time || filters.examStartTime);
-  const endTime = normalizeTime(filters.endTime || filters.end_time || filters.examEndTime);
-  // session value may arrive as "HH:MM|HH:MM"
-  let sessionStart = startTime;
-  let sessionEnd = endTime;
-  const sessionKey = String(filters.session || filters.sessionKey || "").trim();
-  if ((!sessionStart || !sessionEnd) && sessionKey.includes("|")) {
-    const [s, e] = sessionKey.split("|");
-    sessionStart = normalizeTime(s) || sessionStart;
-    sessionEnd = normalizeTime(e) || sessionEnd;
-  }
+  const examSession = String(filters.session || filters.examSession || filters.exam_session || "")
+    .trim()
+    .toUpperCase();
 
   if (!dateFrom || !dateTo) {
     const err = new Error("Date From and Date To are required");
@@ -316,10 +355,9 @@ async function getInvigilationSchedulePreview(filters = {}) {
     where.push("EXTRACT(MONTH FROM sp.exam_date) BETWEEN 1 AND 6");
   }
 
-  if (sessionStart && sessionEnd) {
-    where.push("sp.exam_start_time = ?::time");
-    where.push("sp.exam_end_time = ?::time");
-    params.push(sessionStart, sessionEnd);
+  if (examSession) {
+    where.push("UPPER(TRIM(sp.exam_session)) = ?");
+    params.push(examSession);
   }
 
   if (department) {
@@ -389,10 +427,9 @@ async function getInvigilationSchedulePreview(filters = {}) {
   } else if (semester === "EVEN") {
     unassignedWhere.push("EXTRACT(MONTH FROM sp.exam_date) BETWEEN 1 AND 6");
   }
-  if (sessionStart && sessionEnd) {
-    unassignedWhere.push("sp.exam_start_time = ?::time");
-    unassignedWhere.push("sp.exam_end_time = ?::time");
-    unassignedParams.push(sessionStart, sessionEnd);
+  if (examSession) {
+    unassignedWhere.push("UPPER(TRIM(sp.exam_session)) = ?");
+    unassignedParams.push(examSession);
   }
 
   const [unassignedRows] = await db.query(
@@ -449,8 +486,7 @@ async function getInvigilationSchedulePreview(filters = {}) {
       academicYear: academicYearLabel || null,
       examType: examType || null,
       department: department || null,
-      startTime: sessionStart || null,
-      endTime: sessionEnd || null,
+      examSession: examSession || null,
       dateFrom,
       dateTo,
       assignmentCount: assignments.length,
@@ -466,6 +502,7 @@ async function getInvigilationSchedulePreview(filters = {}) {
 module.exports = {
   getFacultySchedule,
   getInvigilationFilterOptions,
+  getInvigilationSessionsForDates,
   getInvigilationSchedulePreview,
   normalizeTime,
   normalizeDate,
