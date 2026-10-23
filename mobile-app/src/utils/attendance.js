@@ -1,15 +1,30 @@
-export function formatDisplayDate(dateStr) {
-  if (!dateStr) return "—";
-  const raw = String(dateStr).includes("T") ? dateStr.split("T")[0] : dateStr;
-  const [y, m, d] = raw.split("-");
-  if (y && m && d) return `${d}/${m}/${y}`;
-  return raw;
-}
-
+/** Calendar YYYY-MM-DD using local Y/M/D (avoid UTC day shift for IST). */
 export function normalizeApiDate(dateStr) {
   if (!dateStr) return "";
+  if (dateStr instanceof Date && !Number.isNaN(dateStr.getTime())) {
+    const y = dateStr.getFullYear();
+    const m = String(dateStr.getMonth() + 1).padStart(2, "0");
+    const d = String(dateStr.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
   const raw = String(dateStr).trim();
-  if (raw.includes("T")) return raw.split("T")[0];
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  if (/^\d{4}-\d{2}-\d{2}/.test(raw) && !raw.includes("T")) return raw.slice(0, 10);
+  const parsed = new Date(raw);
+  if (!Number.isNaN(parsed.getTime())) {
+    const y = parsed.getFullYear();
+    const m = String(parsed.getMonth() + 1).padStart(2, "0");
+    const d = String(parsed.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+  return raw.slice(0, 10);
+}
+
+export function formatDisplayDate(dateStr) {
+  if (!dateStr) return "—";
+  const raw = normalizeApiDate(dateStr);
+  const [y, m, d] = raw.split("-");
+  if (y && m && d) return `${d}/${m}/${y}`;
   return raw;
 }
 

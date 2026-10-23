@@ -28,19 +28,31 @@ function parseExamTimeRangeString(examTime) {
   };
 }
 
-/** Calendar YYYY-MM-DD from DATE / ISO — not created_at / assigned_date. */
+/**
+ * Calendar YYYY-MM-DD from DATE / ISO — not created_at / assigned_date.
+ * Prefer explicit YYYY-MM-DD text; for Date/ISO use LOCAL Y/M/D so IST midnights
+ * are not shifted to the previous UTC calendar day.
+ */
 function examDateSortKey(value) {
   if (value == null || value === "") return "";
+  const s = typeof value === "string" ? value.trim() : "";
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    const y = value.getUTCFullYear();
-    const m = String(value.getUTCMonth() + 1).padStart(2, "0");
-    const d = String(value.getUTCDate()).padStart(2, "0");
+    const y = value.getFullYear();
+    const m = String(value.getMonth() + 1).padStart(2, "0");
+    const d = String(value.getDate()).padStart(2, "0");
     return `${y}-${m}-${d}`;
   }
-  const s = String(value).trim();
-  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
-  return s.slice(0, 10);
+  const asString = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(asString)) return asString.slice(0, 10);
+  const parsed = new Date(asString);
+  if (!Number.isNaN(parsed.getTime())) {
+    const y = parsed.getFullYear();
+    const m = String(parsed.getMonth() + 1).padStart(2, "0");
+    const d = String(parsed.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+  return "";
 }
 
 /** Stable My Exams order: exam date ASC, then start time ASC, then uuid. */
@@ -87,7 +99,8 @@ function toAssignmentRow(row) {
     examCode: row.exam_code ?? row.examcode ?? "",
     examTime: row.exam_time ?? row.examtime ?? "",
     examSession: row.exam_session ?? row.examsession ?? "",
-    examDate: row.exam_date ?? row.examdate ?? "",
+    // Always emit calendar YYYY-MM-DD so clients never UTC-truncate ISO Dates.
+    examDate: examDateSortKey(row.exam_date ?? row.examdate ?? ""),
     examId: row.exam_id ?? row.examid ?? null,
     venueId: row.venue_id ?? row.venueid ?? null,
     startTime,
@@ -483,7 +496,7 @@ const AttendanceService = {
         e.exam_code,
         e.exam_time,
         e.exam_session,
-        e.exam_date,
+        to_char(e.exam_date, 'YYYY-MM-DD') AS exam_date,
         v.name AS venue_name,
         v.capacity AS venue_capacity,
         ${SESSION_SELECT},

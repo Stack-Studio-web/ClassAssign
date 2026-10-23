@@ -89,6 +89,8 @@ export default function AttendanceScreen({ navigation, route }) {
     examSession,
     venueName,
     facultyName,
+    startTime: paramStartTime,
+    endTime: paramEndTime,
   } = route.params;
 
   const { isOnline, refreshQueueLength } = useNetwork();
@@ -122,13 +124,16 @@ export default function AttendanceScreen({ navigation, route }) {
 
   const loadData = useCallback(
     async (signal) => {
-      const { startTime, endTime } = parseExamTimeRange(examTime);
+      const parsed = parseExamTimeRange(examTime);
+      const startTime = paramStartTime || parsed.startTime;
+      const endTime = paramEndTime || parsed.endTime;
+      const dateOnly = normalizeApiDate(examDate);
       const draft = await loadAttendanceDraft(assignmentUuid);
 
       const [seatingData, savedData] = await Promise.all([
         fetchSeatingAttendance(
           {
-            date: normalizeApiDate(examDate),
+            date: dateOnly,
             session: examSession,
             startTime,
             endTime,
@@ -141,7 +146,7 @@ export default function AttendanceScreen({ navigation, route }) {
 
       setSheetMeta({
         hallNo: seatingData.hallNo || venueName,
-        examDate: seatingData.examDate || examDate,
+        examDate: seatingData.examDate || dateOnly || examDate,
         examSession: seatingData.examSession || examSession,
       });
       setCourses(
@@ -155,7 +160,7 @@ export default function AttendanceScreen({ navigation, route }) {
       setCanWrite(!!savedData.canWrite);
       setWindowInfo(savedData.window || null);
     },
-    [assignmentUuid, examDate, examSession, examTime, venueName]
+    [assignmentUuid, examDate, examSession, examTime, venueName, paramStartTime, paramEndTime]
   );
 
   useAbortableEffect((signal) => {

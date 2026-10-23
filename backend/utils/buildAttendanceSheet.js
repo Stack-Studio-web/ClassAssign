@@ -31,9 +31,24 @@ async function findAttendancePlan({
   ownerSql = "",
   ownerParams = [],
 }) {
-  const dateOnly = String(date || "").includes("T")
-    ? String(date).split("T")[0]
-    : String(date || "").trim();
+  // Prefer calendar YYYY-MM-DD; for ISO Date strings use local Y/M/D (not UTC
+  // split) so IST midnights still match seating_plans.exam_date.
+  let dateOnly = String(date || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) {
+    // already calendar key
+  } else if (/^\d{4}-\d{2}-\d{2}/.test(dateOnly) && !dateOnly.includes("T")) {
+    dateOnly = dateOnly.slice(0, 10);
+  } else if (dateOnly) {
+    const parsed = new Date(dateOnly);
+    if (!Number.isNaN(parsed.getTime())) {
+      const y = parsed.getFullYear();
+      const m = String(parsed.getMonth() + 1).padStart(2, "0");
+      const d = String(parsed.getDate()).padStart(2, "0");
+      dateOnly = `${y}-${m}-${d}`;
+    } else {
+      dateOnly = dateOnly.includes("T") ? dateOnly.split("T")[0] : dateOnly;
+    }
+  }
   const reqStart = normalizeTimeParam(startTime);
   const reqEnd = normalizeTimeParam(endTime);
 

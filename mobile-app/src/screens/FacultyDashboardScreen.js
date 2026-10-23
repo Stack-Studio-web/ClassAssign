@@ -83,6 +83,8 @@ export default function FacultyDashboardScreen({ navigation }) {
         examDate: exam.examDate,
         examSession: exam.examSession,
         examTime: exam.examTime,
+        startTime: exam.startTime,
+        endTime: exam.endTime,
         venueName: exam.venueName,
         facultyName: exam.facultyName,
         studentCount: exam.studentCount,

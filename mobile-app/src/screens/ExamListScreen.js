@@ -23,6 +23,8 @@ export default function ExamListScreen({ navigation, route }) {
       examDate: exam.examDate,
       examSession: exam.examSession,
       examTime: exam.examTime,
+      startTime: exam.startTime,
+      endTime: exam.endTime,
       facultyName: exam.facultyName,
     });
   };
