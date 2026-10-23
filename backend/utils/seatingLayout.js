@@ -1,14 +1,22 @@
+/** Preserve 0 seats; only fall back when missing/non-numeric. */
+function parseSeatsPerBench(value, fallback = 2) {
+  if (value === null || value === undefined || value === "") return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.trunc(n);
+}
+
 function normalizeBenchConfig(rawBenchConfig, fallbackCols = 0) {
   if (rawBenchConfig && typeof rawBenchConfig === "object" && !Array.isArray(rawBenchConfig)) {
     if (Array.isArray(rawBenchConfig.rowConfigs) && rawBenchConfig.rowConfigs.length > 0) {
       const first = rawBenchConfig.rowConfigs[0];
       if (Array.isArray(first) && first.length > 0) {
-        return first.map((n) => Number(n) || 2);
+        return first.map((n) => parseSeatsPerBench(n, 2));
       }
     }
   }
   if (Array.isArray(rawBenchConfig) && rawBenchConfig.length > 0) {
-    return rawBenchConfig.map((n) => Number(n) || 2);
+    return rawBenchConfig.map((n) => parseSeatsPerBench(n, 2));
   }
   if (fallbackCols > 0) return Array(fallbackCols).fill(2);
   return [];
@@ -21,7 +29,7 @@ function resolveRowConfigs(rawBenchConfig, arrangementRows = 0, fallbackCols = 0
   if (rawBenchConfig && typeof rawBenchConfig === "object" && !Array.isArray(rawBenchConfig)) {
     if (Array.isArray(rawBenchConfig.rowConfigs) && rawBenchConfig.rowConfigs.length > 0) {
       return rawBenchConfig.rowConfigs.map((row) =>
-        Array.isArray(row) ? row.map((n) => Number(n) || 2) : []
+        Array.isArray(row) ? row.map((n) => parseSeatsPerBench(n, 2)) : []
       );
     }
   }
@@ -44,9 +52,9 @@ function resolveRowConfigs(rawBenchConfig, arrangementRows = 0, fallbackCols = 0
 
 function seatsForCell(rowConfigs, benchConfig, r, c) {
   if (Array.isArray(rowConfigs?.[r]) && rowConfigs[r][c] != null) {
-    return Number(rowConfigs[r][c]) || 2;
+    return parseSeatsPerBench(rowConfigs[r][c], 2);
   }
-  return Number(benchConfig?.[c] ?? 2) || 2;
+  return parseSeatsPerBench(benchConfig?.[c], 2);
 }
 
 function flattenArrangementForStorage(seatingArrangement, benchConfig) {

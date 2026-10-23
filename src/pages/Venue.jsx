@@ -29,8 +29,8 @@ const VENUE_TYPE_LABELS = {
   hall: "Seminar Hall",
 };
 
-/** Uniform / Custom seats-per-bench options (must match backend benchSeats util). */
-const SEATS_PER_BENCH_OPTIONS = [1, 2, 3, 4, 5, 6];
+/** Uniform / Custom seats-per-bench options (must match backend benchSeats util). 0 = unused column. */
+const SEATS_PER_BENCH_OPTIONS = [0, 1, 2, 3, 4, 5, 6];
 
 function formatVenueType(type) {
   if (!type) return "—";

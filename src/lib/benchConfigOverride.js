@@ -4,16 +4,25 @@
  * and the seating-plan snapshot at save time.
  */
 
-export const MIN_SEATS_PER_BENCH = 1;
+/** 0 = unused/blocked column for dynamic constraints. */
+export const MIN_SEATS_PER_BENCH = 0;
 export const MAX_SEATS_PER_BENCH = 6;
-export const SEATS_PER_BENCH_OPTIONS = [1, 2, 3, 4, 5, 6];
+export const SEATS_PER_BENCH_OPTIONS = [0, 1, 2, 3, 4, 5, 6];
 /** Safety cap for temporary extra rows on one allotment. */
 export const MAX_TEMPORARY_ROWS = 40;
+
+/** Preserve 0; only fall back when value is missing/non-numeric. */
+export function parseSeatsPerBench(value, fallback = 2) {
+  if (value === null || value === undefined || value === "") return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.trunc(n);
+}
 
 export function defaultBenchConfigForVenue(venue) {
   const cols = Math.max(0, Number(venue?.benchesCol) || 0);
   if (Array.isArray(venue?.benchConfig) && venue.benchConfig.length === cols && cols > 0) {
-    return venue.benchConfig.map((n) => Number(n) || 2);
+    return venue.benchConfig.map((n) => parseSeatsPerBench(n, 2));
   }
   return Array(cols).fill(2);
 }
@@ -57,7 +66,14 @@ export function normalizeBenchConfig(benchConfig) {
   }
   const seats = [];
   for (let i = 0; i < benchConfig.length; i++) {
-    const n = Number(benchConfig[i]);
+    const raw = benchConfig[i];
+    if (raw === null || raw === undefined || raw === "" || typeof raw === "boolean") {
+      return {
+        ok: false,
+        message: `Invalid seats per bench at column ${i + 1}: ${benchConfig[i]}. Allowed values are ${MIN_SEATS_PER_BENCH}–${MAX_SEATS_PER_BENCH}.`,
+      };
+    }
+    const n = Number(raw);
     if (!Number.isInteger(n) || n < MIN_SEATS_PER_BENCH || n > MAX_SEATS_PER_BENCH) {
       return {
         ok: false,
@@ -354,13 +370,13 @@ export function decodeBenchConfigStorage(raw, fallbackRows = 1, fallbackCols = 0
     }
   }
   if (Array.isArray(parsed)) {
-    const seats = parsed.map((n) => Number(n) || 2);
+    const seats = parsed.map((n) => parseSeatsPerBench(n, 2));
     const rows = Math.max(1, Number(fallbackRows) || 1);
     return Array.from({ length: rows }, () => [...seats]);
   }
   if (parsed && typeof parsed === "object" && Array.isArray(parsed.rowConfigs)) {
     return parsed.rowConfigs.map((row) =>
-      Array.isArray(row) ? row.map((n) => Number(n) || 2) : []
+      Array.isArray(row) ? row.map((n) => parseSeatsPerBench(n, 2)) : []
     );
   }
   return defaultRowConfigsForVenue({

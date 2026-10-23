@@ -1,5 +1,5 @@
 /**
- * Seats-per-bench options 1–6 (Uniform capacity + validation).
+ * Seats-per-bench options 0–6 (Uniform capacity + validation).
  * Run: node backend/scripts/validateBenchSeats.mjs
  */
 import assert from "assert";
@@ -18,26 +18,30 @@ const {
   isValidSeatsPerBench,
   normalizeBenchConfig,
   capacityFromLayout,
+  parseSeatsPerBench,
 } = require("../utils/benchSeats.js");
 
 function read(rel) {
   return fs.readFileSync(path.join(root, rel), "utf8");
 }
 
-assert.strictEqual(MIN_SEATS_PER_BENCH, 1);
+assert.strictEqual(MIN_SEATS_PER_BENCH, 0);
 assert.strictEqual(MAX_SEATS_PER_BENCH, 6);
+assert.strictEqual(parseSeatsPerBench(0), 0);
+assert.strictEqual(parseSeatsPerBench("0"), 0);
+assert.strictEqual(parseSeatsPerBench(null, 2), 2);
 
-for (const n of [1, 2, 3, 4, 5, 6]) {
+for (const n of [0, 1, 2, 3, 4, 5, 6]) {
   assert.strictEqual(isValidSeatsPerBench(n), true, `${n} must be valid`);
 }
-for (const n of [0, 7, -1, 2.5, "x", null, undefined]) {
+for (const n of [7, -1, 2.5, "x", null, undefined]) {
   assert.strictEqual(isValidSeatsPerBench(n), false, `${n} must be invalid`);
 }
 
 // 5 rows × 4 columns, uniform seats → capacity = rows * cols * seats
 const ROWS = 5;
 const COLS = 4;
-for (const seats of [1, 2, 3, 4, 5, 6]) {
+for (const seats of [0, 1, 2, 3, 4, 5, 6]) {
   const cfg = Array(COLS).fill(seats);
   const expected = ROWS * COLS * seats;
   assert.strictEqual(
@@ -51,21 +55,25 @@ for (const seats of [1, 2, 3, 4, 5, 6]) {
   console.log(`✓ ${ROWS}×${COLS} @ ${seats} seat(s)/bench → ${expected} students`);
 }
 
+assert.strictEqual(normalizeBenchConfig([0, 2, 3, 0]).ok, true);
 assert.strictEqual(normalizeBenchConfig([2, 3, 4, 5, 6]).ok, true);
 assert.strictEqual(normalizeBenchConfig([1, 6]).ok, true);
 assert.strictEqual(normalizeBenchConfig([1, 7]).ok, false);
-assert.strictEqual(normalizeBenchConfig([0, 2]).ok, false);
 assert.strictEqual(normalizeBenchConfig([]).ok, false);
-console.log("✓ normalizeBenchConfig accepts 1–6 mixes; rejects 0 and 7");
+console.log("✓ normalizeBenchConfig accepts 0–6 mixes; rejects 7");
 
 const ui = read("src/pages/Venue.jsx");
 assert(
-  /SEATS_PER_BENCH_OPTIONS = \[1, 2, 3, 4, 5, 6\]/.test(ui),
-  "Venue.jsx must offer seats 1–6"
+  /SEATS_PER_BENCH_OPTIONS = \[0, 1, 2, 3, 4, 5, 6\]/.test(ui),
+  "Venue.jsx must offer seats 0–6"
 );
-assert(!/<option value=\{2\}>2 Seats<\/option>\s*<option value=\{3\}>3 Seats<\/option>\s*<\/select>/.test(ui.replace(/\n/g, "")),
-  "Uniform dropdown must not be limited to only 2 and 3"
+
+const allotLib = read("src/lib/benchConfigOverride.js");
+assert(
+  /SEATS_PER_BENCH_OPTIONS = \[0, 1, 2, 3, 4, 5, 6\]/.test(allotLib),
+  "Allotment bench override must offer seats 0–6"
 );
+assert(/MIN_SEATS_PER_BENCH = 0/.test(allotLib), "MIN seats must be 0");
 
 const routes = read("backend/routes/venueRoutes.js");
 assert(
@@ -75,8 +83,8 @@ assert(
 
 const bulk = read("backend/utils/venueBulkImport.js");
 assert(
-  /Only 1–6 allowed/.test(bulk) || /isValidSeatsPerBench/.test(bulk),
-  "Bulk import must accept seats 1–6"
+  /Only 0–6 allowed/.test(bulk) || /isValidSeatsPerBench/.test(bulk),
+  "Bulk import must accept seats 0–6"
 );
 
 console.log("validateBenchSeats: ok");

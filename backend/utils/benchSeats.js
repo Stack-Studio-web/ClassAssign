@@ -1,8 +1,19 @@
-/** Allowed seats-per-bench values for venue layout (Uniform and Custom). */
-const MIN_SEATS_PER_BENCH = 1;
+/** Allowed seats-per-bench values for venue layout (Uniform and Custom). 0 = unused column. */
+const MIN_SEATS_PER_BENCH = 0;
 const MAX_SEATS_PER_BENCH = 6;
 
+/** Preserve 0; only fall back when value is missing/non-numeric. */
+function parseSeatsPerBench(value, fallback = 2) {
+  if (value === null || value === undefined || value === "") return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.trunc(n);
+}
+
 function isValidSeatsPerBench(value) {
+  // Reject null/undefined/"" — Number(null)===0 would falsely pass with MIN=0.
+  if (value === null || value === undefined || value === "") return false;
+  if (typeof value === "boolean") return false;
   const n = Number(value);
   return Number.isInteger(n) && n >= MIN_SEATS_PER_BENCH && n <= MAX_SEATS_PER_BENCH;
 }
@@ -17,14 +28,13 @@ function normalizeBenchConfig(benchConfig) {
   }
   const seats = [];
   for (let i = 0; i < benchConfig.length; i++) {
-    const n = Number(benchConfig[i]);
-    if (!Number.isInteger(n) || n < MIN_SEATS_PER_BENCH || n > MAX_SEATS_PER_BENCH) {
+    if (!isValidSeatsPerBench(benchConfig[i])) {
       return {
         ok: false,
         message: `Invalid seats per bench at column ${i + 1}: ${benchConfig[i]}. Allowed values are ${MIN_SEATS_PER_BENCH}–${MAX_SEATS_PER_BENCH}.`,
       };
     }
-    seats.push(n);
+    seats.push(Math.trunc(Number(benchConfig[i])));
   }
   return { ok: true, seats };
 }
@@ -41,6 +51,7 @@ function capacityFromLayout(benchesRow, benchConfig) {
 module.exports = {
   MIN_SEATS_PER_BENCH,
   MAX_SEATS_PER_BENCH,
+  parseSeatsPerBench,
   isValidSeatsPerBench,
   normalizeBenchConfig,
   capacityFromLayout,

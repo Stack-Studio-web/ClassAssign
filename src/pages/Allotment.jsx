@@ -951,7 +951,11 @@ const Allotment = () => {
     }
     if (Array.isArray(override) && override.length) {
       const rows = Math.max(1, Number(venue.benchesRow) || 1);
-      const seats = override.map((n) => Number(n) || 2);
+      const seats = override.map((n) => {
+        if (n === null || n === undefined || n === "") return 2;
+        const v = Number(n);
+        return Number.isFinite(v) ? Math.trunc(v) : 2;
+      });
       return {
         benchesRow: rows,
         rowConfigs: Array.from({ length: rows }, () => [...seats]),
@@ -4255,8 +4259,20 @@ const Allotment = () => {
                               const rowConfigs = item.venue.rowConfigs;
                               const benchConfig = item.venue.benchConfig || [];
                               const seatsInCol = Array.isArray(rowConfigs?.[rIdx])
-                                ? Number(rowConfigs[rIdx][cIdx]) || 2
-                                : benchConfig[cIdx] || 2;
+                                ? (() => {
+                                    const raw = rowConfigs[rIdx][cIdx];
+                                    if (raw === null || raw === undefined || raw === "")
+                                      return 2;
+                                    const v = Number(raw);
+                                    return Number.isFinite(v) ? Math.trunc(v) : 2;
+                                  })()
+                                : (() => {
+                                    const raw = benchConfig[cIdx];
+                                    if (raw === null || raw === undefined || raw === "")
+                                      return 2;
+                                    const v = Number(raw);
+                                    return Number.isFinite(v) ? Math.trunc(v) : 2;
+                                  })();
  
                               let slots = [];
                               if (cell === "Empty" || !cell) {

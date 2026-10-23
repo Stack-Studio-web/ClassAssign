@@ -22,9 +22,15 @@ import {
   SINGLE_COURSE_BLOCKED,
 } from "./singleCourseSeating.js";
 
+function parseSeats(n, fallback = 2) {
+  if (n === null || n === undefined || n === "") return fallback;
+  const v = Number(n);
+  return Number.isFinite(v) ? Math.trunc(v) : fallback;
+}
+
 export function benchConfigOf(venue) {
   if (Array.isArray(venue?.benchConfig) && venue.benchConfig.length) {
-    return venue.benchConfig.map((n) => Number(n) || 2);
+    return venue.benchConfig.map((n) => parseSeats(n, 2));
   }
   return defaultBenchConfigForVenue(venue);
 }
@@ -32,7 +38,7 @@ export function benchConfigOf(venue) {
 export function rowConfigsOf(venue) {
   if (Array.isArray(venue?.rowConfigs) && venue.rowConfigs.length) {
     return venue.rowConfigs.map((row) =>
-      Array.isArray(row) ? row.map((n) => Number(n) || 2) : []
+      Array.isArray(row) ? row.map((n) => parseSeats(n, 2)) : []
     );
   }
   return defaultRowConfigsForVenue(venue);

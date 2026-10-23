@@ -30,7 +30,13 @@ function expandBenchConfigForClient(v) {
   if (raw && typeof raw === "object" && !Array.isArray(raw) && Array.isArray(raw.rowConfigs)) {
     v.benchConfigStorage = raw;
     v.rowConfigs = raw.rowConfigs.map((row) =>
-      Array.isArray(row) ? row.map((n) => Number(n) || 2) : []
+      Array.isArray(row)
+        ? row.map((n) => {
+            if (n === null || n === undefined || n === "") return 2;
+            const vSeat = Number(n);
+            return Number.isFinite(vSeat) ? Math.trunc(vSeat) : 2;
+          })
+        : []
     );
     v.benchesRow = v.rowConfigs.length;
     v.benchesCol = v.rowConfigs[0]?.length || 0;
@@ -45,7 +51,11 @@ function expandBenchConfigForClient(v) {
       v.egMainCourseKey = raw.egMainCourseKey || null;
     }
   } else if (Array.isArray(raw)) {
-    v.benchConfig = raw.map((n) => Number(n) || 2);
+    v.benchConfig = raw.map((n) => {
+      if (n === null || n === undefined || n === "") return 2;
+      const vSeat = Number(n);
+      return Number.isFinite(vSeat) ? Math.trunc(vSeat) : 2;
+    });
     v.benchesCol = v.benchConfig.length;
   }
 }

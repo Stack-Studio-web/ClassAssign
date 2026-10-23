@@ -232,7 +232,13 @@ const Venue = {
       }
 
       for (let colIndex = 0; colIndex < benchConfig.length; colIndex++) {
-        const seats = Number(benchConfig[colIndex]) || 2;
+        const rawSeats = benchConfig[colIndex];
+        const seats =
+          rawSeats === null || rawSeats === undefined || rawSeats === ""
+            ? 2
+            : Number.isFinite(Number(rawSeats))
+              ? Math.trunc(Number(rawSeats))
+              : 2;
         await conn.query(
           `INSERT INTO venue_bench_config
            (venue_id, column_index, seats_per_bench)
@@ -397,9 +403,12 @@ const Venue = {
          ORDER BY column_index`,
         [raw.id]
       );
-      const seatsPerBench = (benchConfig || []).map(
-        (b) => Number(b.seats_per_bench ?? b.seatsPerBench ?? 2) || 2
-      );
+      const seatsPerBench = (benchConfig || []).map((b) => {
+        const raw = b.seats_per_bench ?? b.seatsPerBench;
+        if (raw === null || raw === undefined || raw === "") return 2;
+        const n = Number(raw);
+        return Number.isFinite(n) ? Math.trunc(n) : 2;
+      });
       const cols = v.benchesCol || 1;
       while (seatsPerBench.length < cols) seatsPerBench.push(2);
       v.benchConfig = seatsPerBench;

@@ -76,7 +76,8 @@ function testResetAndInvalid() {
 
   assert.strictEqual(validateTemporaryBenchConfig(venue, [2, 3, 3]).ok, false); // wrong length
   assert.strictEqual(validateTemporaryBenchConfig(venue, [2, 3, 3, 7]).ok, false); // > max
-  assert.strictEqual(validateTemporaryBenchConfig(venue, [0, 2, 2, 2]).ok, false);
+  assert.strictEqual(validateTemporaryBenchConfig(venue, [0, 2, 2, 2]).ok, true); // 0 = unused column
+  assert.strictEqual(validateTemporaryBenchConfig(venue, [-1, 2, 2, 2]).ok, false);
   assert.strictEqual(validateTemporaryBenchConfig(venue, [2, 3, 3, 2]).ok, true);
 
   // Physical max: 5×4×6 = 120; all-6 is ok
