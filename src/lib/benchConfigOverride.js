@@ -323,6 +323,13 @@ export function encodeBenchConfigForStorage(rowConfigs, extras = {}) {
       payload.blocked = extras.blocked.map((pair) => [Number(pair[0]), Number(pair[1])]);
     }
   }
+  if (extras.egCourseMode) {
+    payload.egCourseMode = true;
+    if (extras.egCourseKey) payload.egCourseKey = String(extras.egCourseKey);
+    if (extras.egMainCourseKey) {
+      payload.egMainCourseKey = String(extras.egMainCourseKey);
+    }
+  }
   return payload;
 }
 

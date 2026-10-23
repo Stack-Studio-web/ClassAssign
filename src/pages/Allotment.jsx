@@ -88,6 +88,16 @@ import {
   isBlockedCellSlot,
   formatSingleCourseCell,
 } from "../lib/singleCourseSeating";
+import {
+  allocateEgCourseVenue,
+  applyEgAllocationToGrid,
+  planEgColumnOwnership,
+  resolveEgMainCourseKey,
+  regnPrefixHint,
+  compactRegnLabel,
+  EG_PREFERRED_X_COLUMNS,
+  EG_PREFERRED_Y_COLUMNS,
+} from "../lib/egCourseSeating";
 
 // Normalize student/ineligible objects (PostgreSQL may return lowercase keys)
 const normalizeStudent = (s) => ({
@@ -281,6 +291,13 @@ const Allotment = () => {
    * Never written to permanent venue settings.
    */
   const [singleCourseModeByVenue, setSingleCourseModeByVenue] = useState({});
+  /**
+   * EG Course Mode (uuid → boolean): second scheduled course Y shares an SC venue.
+   * Only meaningful when Single-Course Mode is ON + layout [3,2,2,3].
+   */
+  const [egCourseModeByVenue, setEgCourseModeByVenue] = useState({});
+  /** uuid → scheduled course key for EG course Y (≠ main course X). */
+  const [egCourseKeyByVenue, setEgCourseKeyByVenue] = useState({});
   const [singleCourseOverflowSummary, setSingleCourseOverflowSummary] = useState(null);
   /** uuid -> { status, available, conflicts, message } for current exam slot */
   const [venueSlotStatus, setVenueSlotStatus] = useState({});
@@ -1057,14 +1074,67 @@ const Allotment = () => {
 
   const toggleSingleCourseMode = (venue) => {
     const id = String(venue.uuid);
-    setSingleCourseModeByVenue((prev) => ({
-      ...prev,
-      [id]: !prev[id],
-    }));
+    setSingleCourseModeByVenue((prev) => {
+      const nextOn = !prev[id];
+      if (!nextOn) {
+        setEgCourseModeByVenue((eg) => ({ ...eg, [id]: false }));
+        setEgCourseKeyByVenue((keys) => {
+          const next = { ...keys };
+          delete next[id];
+          return next;
+        });
+      }
+      return { ...prev, [id]: nextOn };
+    });
     setGeneratedSeating(null);
     setAllottedStudents([]);
     setAutoPlanValidation(null);
     setSingleCourseOverflowSummary(null);
+    setBenchConfigError("");
+  };
+
+  const toggleEgCourseMode = (venue) => {
+    const id = String(venue.uuid);
+    if (!singleCourseModeByVenue[id]) {
+      setBenchConfigError(
+        `${venue.name}: turn on Single-Course Mode before enabling EG Course.`
+      );
+      return;
+    }
+    const effective = withEffectiveBenchConfig(venue, benchConfigOverrides);
+    const rowConfigs =
+      effective.rowConfigs || defaultRowConfigsForVenue(effective);
+    const layout = effectiveLayoutFromRowConfigs(rowConfigs);
+    if (!isSingleCourseLayout(layout)) {
+      setBenchConfigError(
+        `${venue.name}: EG Course requires applied layout [3, 2, 2, 3].`
+      );
+      return;
+    }
+    setEgCourseModeByVenue((prev) => {
+      const nextOn = !prev[id];
+      if (!nextOn) {
+        setEgCourseKeyByVenue((keys) => {
+          const next = { ...keys };
+          delete next[id];
+          return next;
+        });
+      }
+      return { ...prev, [id]: nextOn };
+    });
+    setGeneratedSeating(null);
+    setAllottedStudents([]);
+    setAutoPlanValidation(null);
+    setSingleCourseOverflowSummary(null);
+    setBenchConfigError("");
+  };
+
+  const setEgCourseYForVenue = (venue, courseKey) => {
+    const id = String(venue.uuid);
+    setEgCourseKeyByVenue((prev) => ({ ...prev, [id]: courseKey || "" }));
+    setGeneratedSeating(null);
+    setAllottedStudents([]);
+    setAutoPlanValidation(null);
     setBenchConfigError("");
   };
 
@@ -1154,10 +1224,14 @@ const Allotment = () => {
     const attachSingleCourseFlag = (venue) => {
       const id = String(venue.uuid);
       const effective = withEffectiveBenchConfig(venue, benchConfigOverrides);
+      const scOn = Boolean(singleCourseModeByVenue[id]);
+      const egOn = scOn && Boolean(egCourseModeByVenue[id]);
       return {
         ...effective,
-        singleCourseMode: Boolean(singleCourseModeByVenue[id]),
+        singleCourseMode: scOn,
         singleCourseBlocked: SINGLE_COURSE_BLOCKED,
+        egCourseMode: egOn,
+        egCourseKey: egOn ? egCourseKeyByVenue[id] || null : null,
       };
     };
     for (const v of venues) {
@@ -1356,7 +1430,64 @@ const Allotment = () => {
     }
 
     const generalPoolIds = new Set(generalPool.map((v) => String(v.uuid)));
-    const unmappedStudents = sortedCourses
+    const sortedCourseKeys = sortedCourses.map(({ key }) => key);
+
+    // EG venues reserve X/Y seats before general capacity checks so Y is not
+    // wrongly required to fit entirely in the general pool.
+    const egReservedByCourse = {};
+    {
+      const remainingCounts = Object.fromEntries(
+        sortedCourses.map(({ key, students }) => [key, students.length])
+      );
+      for (const venue of venuesToUse) {
+        if (!venue.egCourseMode) continue;
+        const vid = String(venue.uuid);
+        const yKey = String(venue.egCourseKey || egCourseKeyByVenue[vid] || "").trim();
+        const xKey = resolveEgMainCourseKey({
+          venueId: vid,
+          egCourseKeyY: yKey,
+          courseVenueMappings: activeMappings,
+          sortedCourseKeys,
+        });
+        if (!xKey || !yKey || xKey === yKey) continue;
+        const rowConfigs =
+          Array.isArray(venue.rowConfigs) && venue.rowConfigs.length
+            ? venue.rowConfigs
+            : defaultRowConfigsForVenue(venue);
+        const plan = planEgColumnOwnership({
+          rows: rowConfigs.length,
+          nx: remainingCounts[xKey] || 0,
+          ny: remainingCounts[yKey] || 0,
+        });
+        if (!plan.ok) continue;
+        const xTake = Math.min(remainingCounts[xKey] || 0, plan.xCapacity);
+        const yTake = Math.min(remainingCounts[yKey] || 0, plan.yCapacity);
+        egReservedByCourse[xKey] = (egReservedByCourse[xKey] || 0) + xTake;
+        egReservedByCourse[yKey] = (egReservedByCourse[yKey] || 0) + yTake;
+        remainingCounts[xKey] = Math.max(0, (remainingCounts[xKey] || 0) - xTake);
+        remainingCounts[yKey] = Math.max(0, (remainingCounts[yKey] || 0) - yTake);
+        logger.debug("[EG Course] capacity reservation", {
+          venue: venue.name,
+          xKey,
+          yKey,
+          xTake,
+          yTake,
+          xCols: plan.xCols,
+          yCols: plan.yCols,
+          spareCols: plan.spareCols,
+        });
+      }
+    }
+
+    const sortedCoursesAfterEgReserve = sortedCourses.map(({ key, students }) => {
+      const reserved = egReservedByCourse[key] || 0;
+      return {
+        key,
+        students: reserved > 0 ? students.slice(reserved) : students,
+      };
+    });
+
+    const unmappedStudents = sortedCoursesAfterEgReserve
       .filter(({ key }) => !activeMappings[key]?.length)
       .reduce((sum, { students }) => sum + students.length, 0);
     const generalPhysical = generalPool.reduce(
@@ -1375,7 +1506,7 @@ const Allotment = () => {
     // Physical capacity alone is misleading under adjacency (2-seat benches ≈ half usable).
     {
       const courseStudentCounts = {};
-      for (const { key, students } of sortedCourses) {
+      for (const { key, students } of sortedCoursesAfterEgReserve) {
         courseStudentCounts[key] = students.length;
       }
 
@@ -1396,7 +1527,7 @@ const Allotment = () => {
       }
 
       const allCap = validateAllCourseUsableCapacity({
-        sortedCourses,
+        sortedCourses: sortedCoursesAfterEgReserve,
         courseVenueMappings: seatingMode === "manual" ? activeMappings : {},
         generalPool,
         venuesById,
@@ -1472,13 +1603,149 @@ const Allotment = () => {
         benchConfig: rowConfigs[0] ? [...rowConfigs[0]] : Array(cols).fill(2),
         rowConfigs,
         singleCourseMode: Boolean(venue.singleCourseMode),
+        egCourseMode: Boolean(venue.egCourseMode),
         singleCourseStats: null,
+        egCourseStats: null,
       };
     });
  
     const allSeatedStudents = [];
     const singleCourseOverflowByVenue = [];
     const singleCourseVenuesFilled = new Set();
+    // Mutable student pools — EG removes seated X/Y so they cannot be seated twice.
+    const mutableStudentsByKey = Object.fromEntries(
+      sortedCourses.map(({ key, students }) => [key, [...students]])
+    );
+    for (const course of sortedCourses) {
+      course.students = mutableStudentsByKey[course.key];
+    }
+
+    // —— EG Course pre-pass: two courses share one SC venue by column ownership ——
+    for (const venueData of venueGrids) {
+      if (!venueData.egCourseMode) continue;
+      const { venue, rowConfigs } = venueData;
+      const vid = String(venue.uuid);
+      const yKey = String(venue.egCourseKey || egCourseKeyByVenue[vid] || "").trim();
+      const xKey = resolveEgMainCourseKey({
+        venueId: vid,
+        egCourseKeyY: yKey,
+        courseVenueMappings: activeMappings,
+        sortedCourseKeys,
+      });
+
+      if (!xKey) {
+        setIsGenerating(false);
+        return setError(
+          `❌ ${venue.name} (EG Course): main course X must be mapped to this venue. ` +
+            `Map a scheduled course to ${venue.name} in Manual mode, then select a different EG course Y.`
+        );
+      }
+      if (!yKey) {
+        setIsGenerating(false);
+        return setError(
+          `❌ ${venue.name} (EG Course): select EG course Y (must differ from main course X).`
+        );
+      }
+
+      const studentsX = mutableStudentsByKey[xKey] || [];
+      const studentsY = mutableStudentsByKey[yKey] || [];
+      const egResult = allocateEgCourseVenue({
+        studentsX,
+        studentsY,
+        courseKeyX: xKey,
+        courseKeyY: yKey,
+        rowConfigs,
+        egDebug: true,
+      });
+      if (!egResult.ok) {
+        setIsGenerating(false);
+        return setError(`❌ ${venue.name} (EG Course): ${egResult.message}`);
+      }
+
+      const filledGrid = applyEgAllocationToGrid(egResult, rowConfigs);
+      for (let r = 0; r < filledGrid.length; r++) {
+        venueData.grid[r] = filledGrid[r];
+      }
+
+      for (const { student } of egResult.seated) {
+        allSeatedStudents.push(student);
+      }
+
+      // Remove successfully seated students from the general allocation pool.
+      const removeSeated = (key, seatedEntries) => {
+        const seatedRegs = new Set(
+          (seatedEntries || []).map((e) =>
+            String(e.student?.regnNo ?? e.student?.regn_no ?? "").trim()
+          )
+        );
+        mutableStudentsByKey[key] = (mutableStudentsByKey[key] || []).filter((s) => {
+          const reg = String(s?.regnNo ?? s?.regn_no ?? "").trim();
+          return !reg || !seatedRegs.has(reg);
+        });
+        const courseEntry = sortedCourses.find((c) => c.key === key);
+        if (courseEntry) courseEntry.students = mutableStudentsByKey[key];
+      };
+      removeSeated(xKey, egResult.seatedX);
+      removeSeated(yKey, egResult.seatedY);
+
+      venueData.egCourseStats = {
+        ...egResult.summary,
+        courseKeyX: xKey,
+        courseKeyY: yKey,
+        prefixX: egResult.summary.prefixX,
+        prefixY: egResult.summary.prefixY,
+      };
+      venueData.singleCourseStats = {
+        seatedCount: egResult.seatedCount,
+        overflowCount: egResult.summary.xOverflow + egResult.summary.yOverflow,
+        emptyUsableSeats: egResult.emptyUsableSeats,
+        blockedCount: egResult.blockedCount,
+        capacity: egResult.capacity,
+        physicalCapacity: egResult.physicalCapacity,
+        totalStudents: studentsX.length + studentsY.length,
+        courseKey: xKey,
+        courseKeys: [xKey, yKey],
+        mergedCourses: true,
+        egCourseMode: true,
+        continuedIntoLeftover: false,
+        firstRegn: egResult.seated[0]?.student?.regnNo || null,
+        lastRegn:
+          egResult.seated[egResult.seated.length - 1]?.student?.regnNo || null,
+      };
+
+      // EG rooms already hold two course groups — lock so leftover cannot add a third.
+      singleCourseVenuesFilled.add(vid);
+
+      if (egResult.summary.xOverflow > 0) {
+        singleCourseOverflowByVenue.push({
+          venueName: venue.name,
+          courseKey: xKey,
+          seated: egResult.summary.xSeated,
+          overflow: egResult.summary.xOverflow,
+          capacity: egResult.plan.xCapacity,
+          egRole: "X",
+        });
+      }
+      if (egResult.summary.yOverflow > 0) {
+        singleCourseOverflowByVenue.push({
+          venueName: venue.name,
+          courseKey: yKey,
+          seated: egResult.summary.ySeated,
+          overflow: egResult.summary.yOverflow,
+          capacity: egResult.plan.yCapacity,
+          egRole: "Y",
+        });
+      }
+
+      logger.log(
+        `   ✅ EG Course ${venue.name}: X[${xKey}] cols=${egResult.summary.xCols.join(",")} ` +
+          `seated=${egResult.summary.xSeated} overflow=${egResult.summary.xOverflow}; ` +
+          `Y[${yKey}] cols=${egResult.summary.yCols.join(",")} ` +
+          `seated=${egResult.summary.ySeated} overflow=${egResult.summary.yOverflow}; ` +
+          `spare=${egResult.summary.spareCols.join(",") || "none"} ` +
+          `emptyUsable=${egResult.emptyUsableSeats} blocked=${egResult.blockedCount}`
+      );
+    }
  
     // ✅ IMPROVED MULTI-PASS FILLING: Fill VERTICALLY (column-by-column) with cross-bench adjacency check
     for (let courseIdx = 0; courseIdx < sortedCourses.length; courseIdx++) {
@@ -1545,12 +1812,14 @@ const Allotment = () => {
         // Underfilled SC venues stay open so the next course continues into
         // remaining empty usable seats (course order). Lock only when full.
         // Unused empty SC venues must stay free for later groups (BIT/BAD after BCS).
+        // EG Course venues are filled in the pre-pass and locked (no third course).
         if (venueData.singleCourseMode) {
           const venueId = String(venue.uuid);
-          if (singleCourseVenuesFilled.has(venueId)) {
-            logger.debug("SC skip venue already full", {
+          if (venueData.egCourseMode || singleCourseVenuesFilled.has(venueId)) {
+            logger.debug("SC skip venue already full or EG", {
               venue: venue.name,
               courseKey: key,
+              eg: Boolean(venueData.egCourseMode),
             });
             continue;
           }
@@ -1941,8 +2210,16 @@ const Allotment = () => {
     const venuesResult = [];
 
     venueGrids.forEach((venueData) => {
-      const { venue, grid, benchConfig, rowConfigs, singleCourseMode, singleCourseStats } =
-        venueData;
+      const {
+        venue,
+        grid,
+        benchConfig,
+        rowConfigs,
+        singleCourseMode,
+        egCourseMode,
+        singleCourseStats,
+        egCourseStats,
+      } = venueData;
 
       const hasStudents = grid.some((row) =>
         row.some(
@@ -2010,11 +2287,15 @@ const Allotment = () => {
             scUsable != null ? scUsable : capacityFromRowConfigs(rowConfigs),
           singleCourseMode: Boolean(singleCourseMode),
           singleCourseBlocked: singleCourseMode ? [...SINGLE_COURSE_BLOCKED] : undefined,
+          egCourseMode: Boolean(egCourseMode),
+          egCourseKey: egCourseMode ? venue.egCourseKey || null : null,
+          egMainCourseKey: egCourseStats?.courseKeyX || null,
         },
         seats: formattedGrid,
         facultyId: assignedFacultyId,
         previewFacultyName,
         singleCourseStats: singleCourseStats || null,
+        egCourseStats: egCourseStats || null,
       });
     });
 
@@ -2234,12 +2515,18 @@ const Allotment = () => {
             ? v.venue.rowConfigs
             : null;
         const singleCourseMode = Boolean(v.venue.singleCourseMode);
+        const egCourseMode = Boolean(v.venue.egCourseMode);
         const benchConfig =
           (rowConfigs &&
             encodeBenchConfigForStorage(rowConfigs, {
               singleCourseMode,
               blocked: singleCourseMode
                 ? v.venue.singleCourseBlocked || SINGLE_COURSE_BLOCKED
+                : undefined,
+              egCourseMode: egCourseMode || undefined,
+              egCourseKey: egCourseMode ? v.venue.egCourseKey || null : undefined,
+              egMainCourseKey: egCourseMode
+                ? v.venue.egMainCourseKey || v.egCourseStats?.courseKeyX || null
                 : undefined,
             })) ||
           v.venue.benchConfig ||
@@ -2252,6 +2539,8 @@ const Allotment = () => {
           benchConfig,
           rowConfigs: rowConfigs || undefined,
           singleCourseMode: singleCourseMode || undefined,
+          egCourseMode: egCourseMode || undefined,
+          egCourseKey: egCourseMode ? v.venue.egCourseKey || undefined : undefined,
           facultyId: facultyMode === "MANUAL" ? manualIds[0] || null : v.facultyId,
           facultyIds: facultyMode === "MANUAL" ? manualIds : v.facultyId ? [v.facultyId] : [],
         };
@@ -3203,46 +3492,306 @@ const Allotment = () => {
                               </p>
                             </div>
                             {singleCourseModeByVenue[id] ? (
-                              <p className="text-[11px] font-medium text-emerald-800">
-                                Special seating: {SINGLE_COURSE_LAYOUT.join(",")} · Single
-                                course only
+                              <div className="space-y-2">
+                                <p className="text-[11px] font-medium text-emerald-800">
+                                  Special seating: {SINGLE_COURSE_LAYOUT.join(",")} · Single
+                                  course only
+                                  {(() => {
+                                    const appliedLayout =
+                                      effectiveLayoutFromRowConfigs(
+                                        applied?.rowConfigs || draftRows
+                                      );
+                                    if (!isSingleCourseLayout(appliedLayout)) {
+                                      return (
+                                        <span className="text-amber-800">
+                                          {" "}
+                                          · Apply layout [3, 2, 2, 3] before generate
+                                        </span>
+                                      );
+                                    }
+                                    const rows = (applied?.rowConfigs || draftRows).length;
+                                    const usable = singleCourseUsableCapacity(
+                                      appliedLayout,
+                                      rows,
+                                      SINGLE_COURSE_BLOCKED
+                                    );
+                                    const physical = singleCoursePhysicalCapacity(
+                                      appliedLayout,
+                                      rows
+                                    );
+                                    const blocked = singleCourseBlockedCount(
+                                      appliedLayout,
+                                      rows,
+                                      SINGLE_COURSE_BLOCKED
+                                    );
+                                    return (
+                                      <span>
+                                        {" "}
+                                        · Usable {usable} / physical {physical} (blocked{" "}
+                                        {blocked})
+                                      </span>
+                                    );
+                                  })()}
+                                </p>
                                 {(() => {
                                   const appliedLayout =
                                     effectiveLayoutFromRowConfigs(
                                       applied?.rowConfigs || draftRows
                                     );
-                                  if (!isSingleCourseLayout(appliedLayout)) {
-                                    return (
-                                      <span className="text-amber-800">
-                                        {" "}
-                                        · Apply layout [3, 2, 2, 3] before generate
-                                      </span>
-                                    );
-                                  }
+                                  const egEligible = isSingleCourseLayout(appliedLayout);
+                                  const egOn = Boolean(egCourseModeByVenue[id]);
+                                  const mappings =
+                                    seatingMode === "manual"
+                                      ? normalizeCourseVenueMappings(courseVenueMappings)
+                                      : {};
+                                  const xKey = resolveEgMainCourseKey({
+                                    venueId: id,
+                                    egCourseKeyY: egCourseKeyByVenue[id],
+                                    courseVenueMappings: mappings,
+                                    sortedCourseKeys: orderedTimetableCourses.map((c) =>
+                                      legacyCourseEntryKey(c)
+                                    ),
+                                  });
+                                  const xCourse = orderedTimetableCourses.find(
+                                    (c) => legacyCourseEntryKey(c) === xKey
+                                  );
+                                  const xStudents = xKey
+                                    ? studentsByCourse[xKey] || []
+                                    : [];
+                                  const xPrefix = regnPrefixHint(xStudents);
+                                  const yOptions = orderedTimetableCourses.filter((c) => {
+                                    const k = legacyCourseEntryKey(c);
+                                    return k && k !== xKey;
+                                  });
+                                  const yKey = egCourseKeyByVenue[id] || "";
+                                  const yCourse = orderedTimetableCourses.find(
+                                    (c) => legacyCourseEntryKey(c) === yKey
+                                  );
+                                  const yStudents = yKey
+                                    ? studentsByCourse[yKey] || []
+                                    : [];
+                                  const yPrefix = regnPrefixHint(yStudents);
                                   const rows = (applied?.rowConfigs || draftRows).length;
-                                  const usable = singleCourseUsableCapacity(
-                                    appliedLayout,
-                                    rows,
-                                    SINGLE_COURSE_BLOCKED
-                                  );
-                                  const physical = singleCoursePhysicalCapacity(
-                                    appliedLayout,
-                                    rows
-                                  );
-                                  const blocked = singleCourseBlockedCount(
-                                    appliedLayout,
-                                    rows,
-                                    SINGLE_COURSE_BLOCKED
-                                  );
+                                  const splitPreview =
+                                    egOn && egEligible
+                                      ? planEgColumnOwnership({
+                                          rows,
+                                          nx: xStudents.length || 28,
+                                          ny: yStudents.length || 14,
+                                        })
+                                      : null;
                                   return (
-                                    <span>
-                                      {" "}
-                                      · Usable {usable} / physical {physical} (blocked{" "}
-                                      {blocked})
-                                    </span>
+                                    <div className="rounded-lg border border-teal-200 bg-teal-50/50 p-2 space-y-1.5">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <button
+                                          type="button"
+                                          disabled={!egEligible}
+                                          onClick={() => toggleEgCourseMode(v)}
+                                          className={`h-7 px-2.5 rounded-lg text-[11px] font-semibold border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                                            egOn
+                                              ? "border-teal-500 bg-teal-100 text-teal-900"
+                                              : "border-gray-300 bg-white text-gray-600 hover:bg-gray-50"
+                                          }`}
+                                          title={
+                                            egEligible
+                                              ? "Two scheduled courses share this SC venue by columns"
+                                              : "Requires layout [3, 2, 2, 3]"
+                                          }
+                                        >
+                                          EG Course: {egOn ? "ON" : "OFF"}
+                                        </button>
+                                        {!egEligible ? (
+                                          <span className="text-[10px] text-amber-800">
+                                            Apply [3, 2, 2, 3] to enable EG
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                      {egOn ? (
+                                        <>
+                                          <p className="text-[11px] text-teal-900">
+                                            Course X (Main):{" "}
+                                            <span className="font-semibold">
+                                              {xCourse
+                                                ? `${xCourse.courseCode}${
+                                                    xCourse.department
+                                                      ? ` · ${xCourse.department}`
+                                                      : ""
+                                                  }`
+                                                : xKey || "— map a course to this venue —"}
+                                            </span>
+                                            {xPrefix ? (
+                                              <span className="text-teal-700">
+                                                {" "}
+                                                ({xPrefix}…)
+                                              </span>
+                                            ) : null}
+                                            {xStudents.length ? (
+                                              <span className="text-gray-600">
+                                                {" "}
+                                                · {xStudents.length} students
+                                              </span>
+                                            ) : null}
+                                          </p>
+                                          <label className="flex flex-col gap-0.5">
+                                            <span className="text-[10px] font-semibold text-teal-800">
+                                              Course Y (EG)
+                                            </span>
+                                            <select
+                                              value={yKey}
+                                              onChange={(e) =>
+                                                setEgCourseYForVenue(v, e.target.value)
+                                              }
+                                              className="h-8 rounded border border-teal-300 bg-white px-2 text-[11px] focus:ring-2 focus:ring-teal-500 outline-none"
+                                            >
+                                              <option value="">Select EG course…</option>
+                                              {yOptions.map((c) => {
+                                                const k = legacyCourseEntryKey(c);
+                                                const st = studentsByCourse[k] || [];
+                                                const pref = regnPrefixHint(st);
+                                                return (
+                                                  <option key={k} value={k}>
+                                                    {c.courseCode}
+                                                    {c.department
+                                                      ? ` · ${c.department}`
+                                                      : ""}
+                                                    {pref ? ` · ${pref}…` : ""}
+                                                    {` · ${st.length} students`}
+                                                  </option>
+                                                );
+                                              })}
+                                            </select>
+                                          </label>
+                                          {yCourse && yPrefix ? (
+                                            <p className="text-[11px] text-teal-900">
+                                              Course Y (EG):{" "}
+                                              <span className="font-semibold">
+                                                {yCourse.courseCode}
+                                                {yCourse.department
+                                                  ? ` · ${yCourse.department}`
+                                                  : ""}
+                                              </span>
+                                              <span className="text-teal-700">
+                                                {" "}
+                                                ({yPrefix}…)
+                                              </span>
+                                            </p>
+                                          ) : null}
+                                          <p className="text-[10px] text-teal-800 font-medium">
+                                            Column split (read-only): X →{" "}
+                                            {(splitPreview?.ok
+                                              ? splitPreview.xCols
+                                              : EG_PREFERRED_X_COLUMNS
+                                            ).join(", ")}
+                                            {" · "}Y →{" "}
+                                            {(splitPreview?.ok
+                                              ? splitPreview.yCols
+                                              : EG_PREFERRED_Y_COLUMNS
+                                            ).join(", ")}
+                                            {splitPreview?.ok &&
+                                            splitPreview.spareCols?.length
+                                              ? ` · spare ${splitPreview.spareCols.join(", ")}`
+                                              : ""}
+                                          </p>
+                                          {splitPreview?.ok ? (
+                                            <div className="flex flex-wrap gap-1">
+                                              {SINGLE_COURSE_LAYOUT.flatMap(
+                                                (seatsInGroup, g) =>
+                                                  Array.from(
+                                                    { length: Number(seatsInGroup) || 0 },
+                                                    (_, p) => {
+                                                      const colId = `${String.fromCharCode(65 + g)}${p + 1}`;
+                                                      const blocked =
+                                                        SINGLE_COURSE_BLOCKED.some(
+                                                          ([bg, bp]) =>
+                                                            bg === g && bp === p
+                                                        );
+                                                      let owner = null;
+                                                      if (!blocked) {
+                                                        if (
+                                                          splitPreview.xCols.includes(
+                                                            colId
+                                                          )
+                                                        )
+                                                          owner = "X";
+                                                        else if (
+                                                          splitPreview.yCols.includes(
+                                                            colId
+                                                          )
+                                                        )
+                                                          owner = "Y";
+                                                      }
+                                                      return (
+                                                        <span
+                                                          key={colId}
+                                                          className={`inline-flex items-center justify-center min-w-[1.75rem] h-6 rounded text-[9px] font-semibold border ${
+                                                            blocked
+                                                              ? "bg-gray-200 text-gray-500 border-gray-300"
+                                                              : owner === "X"
+                                                                ? "bg-indigo-100 text-indigo-900 border-indigo-300"
+                                                                : owner === "Y"
+                                                                  ? "bg-teal-100 text-teal-900 border-teal-300"
+                                                                  : "bg-white text-gray-400 border-gray-200"
+                                                          }`}
+                                                          title={
+                                                            blocked
+                                                              ? `${colId} blocked`
+                                                              : owner
+                                                                ? `${colId} → Course ${owner}`
+                                                                : `${colId} empty/spare`
+                                                          }
+                                                        >
+                                                          {blocked
+                                                            ? "0"
+                                                            : owner || "·"}
+                                                        </span>
+                                                      );
+                                                    }
+                                                  )
+                                              )}
+                                            </div>
+                                          ) : null}
+                                          {splitPreview?.ok ? (
+                                            <p className="text-[10px] text-gray-600">
+                                              Preview (nX={xStudents.length || "—"}, nY=
+                                              {yStudents.length || "—"}, rows={rows}): X
+                                              capacity {splitPreview.xCapacity}
+                                              {splitPreview.xOverflow
+                                                ? ` (overflow ${splitPreview.xOverflow})`
+                                                : ""}
+                                              {" · "}Y capacity {splitPreview.yCapacity}
+                                              {splitPreview.yOverflow
+                                                ? ` (overflow ${splitPreview.yOverflow})`
+                                                : ""}
+                                              {" · "}empty usable{" "}
+                                              {Math.max(
+                                                0,
+                                                splitPreview.xCapacity +
+                                                  splitPreview.yCapacity +
+                                                  (splitPreview.spareCols?.length || 0) *
+                                                    rows -
+                                                  Math.min(
+                                                    xStudents.length,
+                                                    splitPreview.xCapacity
+                                                  ) -
+                                                  Math.min(
+                                                    yStudents.length,
+                                                    splitPreview.yCapacity
+                                                  )
+                                              )}
+                                              {" · "}blocked{" "}
+                                              {singleCourseBlockedCount(
+                                                appliedLayout,
+                                                rows,
+                                                SINGLE_COURSE_BLOCKED
+                                              )}
+                                            </p>
+                                          ) : null}
+                                        </>
+                                      ) : null}
+                                    </div>
                                   );
                                 })()}
-                              </p>
+                              </div>
                             ) : null}
 
                             <div className="flex flex-wrap items-center gap-2">
@@ -3639,16 +4188,39 @@ const Allotment = () => {
                         {item.venue.singleCourseMode ? (
                           <span className="ml-2 text-[11px] font-semibold text-emerald-700">
                             · Single-Course Mode
-                            {item.singleCourseStats?.mergedCourses
-                              ? " · shared leftover"
-                              : ""}
+                            {item.venue.egCourseMode
+                              ? " · EG Course"
+                              : item.singleCourseStats?.mergedCourses
+                                ? " · shared leftover"
+                                : ""}
                           </span>
                         ) : null}
                       </h3>
                       <p className="text-xs text-gray-500">
                         Capacity: {item.venue.capacity}
                       </p>
-                      {item.singleCourseStats ? (
+                      {item.egCourseStats ? (
+                        <p className="text-xs text-gray-600">
+                          EG X[{item.egCourseStats.courseKeyX}
+                          {item.egCourseStats.prefixX
+                            ? ` · ${item.egCourseStats.prefixX}…`
+                            : ""}
+                          ]: seated {item.egCourseStats.xSeated}
+                          {item.egCourseStats.xOverflow
+                            ? ` · overflow ${item.egCourseStats.xOverflow}`
+                            : ""}
+                          {" · "}Y[{item.egCourseStats.courseKeyY}
+                          {item.egCourseStats.prefixY
+                            ? ` · ${item.egCourseStats.prefixY}…`
+                            : ""}
+                          ]: seated {item.egCourseStats.ySeated}
+                          {item.egCourseStats.yOverflow
+                            ? ` · overflow ${item.egCourseStats.yOverflow}`
+                            : ""}
+                          {" · "}Empty usable {item.egCourseStats.emptyUsableSeats}
+                          {" · "}Blocked {item.egCourseStats.blockedCount}
+                        </p>
+                      ) : item.singleCourseStats ? (
                         <p className="text-xs text-gray-600">
                           Seated {item.singleCourseStats.seatedCount}
                           {" · "}Empty usable {item.singleCourseStats.emptyUsableSeats}
@@ -3785,11 +4357,13 @@ const Allotment = () => {
                                 slots = Array.from({ length: seatsInCol }, (_, slotIdx) => {
                                   const seat = cell[slotIdx];
                                   if (isBlockedCellSlot(seat)) {
-                                    return { label: "0", blocked: true };
+                                    return { label: "0", blocked: true, title: "Blocked" };
                                   }
+                                  const full =
+                                    seat?.regn_no ?? seat?.regnNo ?? "";
                                   return {
-                                    label:
-                                      seat?.regn_no ?? seat?.regnNo ?? "",
+                                    label: compactRegnLabel(full),
+                                    title: full,
                                     blocked: false,
                                   };
                                 });
@@ -3805,7 +4379,8 @@ const Allotment = () => {
                                     {slots.map((slot, sIdx) => (
                                       <div
                                         key={`seat-${sIdx}`}
-                                        className={`flex-1 px-2 py-2 text-[10px] text-center border-r last:border-r-0 border-gray-200 ${
+                                        title={slot.title || undefined}
+                                        className={`flex-1 px-1 sm:px-2 py-2 text-[9px] sm:text-[10px] text-center border-r last:border-r-0 border-gray-200 truncate ${
                                           slot.blocked
                                             ? "bg-gray-200 text-gray-500 font-semibold"
                                             : slot.label

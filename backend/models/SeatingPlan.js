@@ -39,6 +39,11 @@ function expandBenchConfigForClient(v) {
       v.singleCourseMode = true;
       v.singleCourseBlocked = Array.isArray(raw.blocked) ? raw.blocked : null;
     }
+    if (raw.egCourseMode) {
+      v.egCourseMode = true;
+      v.egCourseKey = raw.egCourseKey || null;
+      v.egMainCourseKey = raw.egMainCourseKey || null;
+    }
   } else if (Array.isArray(raw)) {
     v.benchConfig = raw.map((n) => Number(n) || 2);
     v.benchesCol = v.benchConfig.length;
