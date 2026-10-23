@@ -92,7 +92,7 @@ import {
   allocateEgCourseVenue,
   applyEgAllocationToGrid,
   planEgColumnOwnership,
-  resolveEgMainCourseKey,
+  resolveEgMappedCourses,
   regnPrefixHint,
   compactRegnLabel,
   EG_PREFERRED_X_COLUMNS,
@@ -292,12 +292,10 @@ const Allotment = () => {
    */
   const [singleCourseModeByVenue, setSingleCourseModeByVenue] = useState({});
   /**
-   * EG Course Mode (uuid → boolean): second scheduled course Y shares an SC venue.
-   * Only meaningful when Single-Course Mode is ON + layout [3,2,2,3].
+   * EG Course Mode (uuid → boolean): two courses mapped to this SC venue share columns.
+   * X/Y come from the course selector mappings (first two in seating order) — no picker.
    */
   const [egCourseModeByVenue, setEgCourseModeByVenue] = useState({});
-  /** uuid → scheduled course key for EG course Y (≠ main course X). */
-  const [egCourseKeyByVenue, setEgCourseKeyByVenue] = useState({});
   const [singleCourseOverflowSummary, setSingleCourseOverflowSummary] = useState(null);
   /** uuid -> { status, available, conflicts, message } for current exam slot */
   const [venueSlotStatus, setVenueSlotStatus] = useState({});
@@ -1078,11 +1076,6 @@ const Allotment = () => {
       const nextOn = !prev[id];
       if (!nextOn) {
         setEgCourseModeByVenue((eg) => ({ ...eg, [id]: false }));
-        setEgCourseKeyByVenue((keys) => {
-          const next = { ...keys };
-          delete next[id];
-          return next;
-        });
       }
       return { ...prev, [id]: nextOn };
     });
@@ -1111,30 +1104,11 @@ const Allotment = () => {
       );
       return;
     }
-    setEgCourseModeByVenue((prev) => {
-      const nextOn = !prev[id];
-      if (!nextOn) {
-        setEgCourseKeyByVenue((keys) => {
-          const next = { ...keys };
-          delete next[id];
-          return next;
-        });
-      }
-      return { ...prev, [id]: nextOn };
-    });
+    setEgCourseModeByVenue((prev) => ({ ...prev, [id]: !prev[id] }));
     setGeneratedSeating(null);
     setAllottedStudents([]);
     setAutoPlanValidation(null);
     setSingleCourseOverflowSummary(null);
-    setBenchConfigError("");
-  };
-
-  const setEgCourseYForVenue = (venue, courseKey) => {
-    const id = String(venue.uuid);
-    setEgCourseKeyByVenue((prev) => ({ ...prev, [id]: courseKey || "" }));
-    setGeneratedSeating(null);
-    setAllottedStudents([]);
-    setAutoPlanValidation(null);
     setBenchConfigError("");
   };
 
@@ -1231,7 +1205,6 @@ const Allotment = () => {
         singleCourseMode: scOn,
         singleCourseBlocked: SINGLE_COURSE_BLOCKED,
         egCourseMode: egOn,
-        egCourseKey: egOn ? egCourseKeyByVenue[id] || null : null,
       };
     };
     for (const v of venues) {
@@ -1442,14 +1415,13 @@ const Allotment = () => {
       for (const venue of venuesToUse) {
         if (!venue.egCourseMode) continue;
         const vid = String(venue.uuid);
-        const yKey = String(venue.egCourseKey || egCourseKeyByVenue[vid] || "").trim();
-        const xKey = resolveEgMainCourseKey({
+        const resolved = resolveEgMappedCourses({
           venueId: vid,
-          egCourseKeyY: yKey,
           courseVenueMappings: activeMappings,
           sortedCourseKeys,
         });
-        if (!xKey || !yKey || xKey === yKey) continue;
+        if (!resolved.ok) continue;
+        const { xKey, yKey } = resolved;
         const rowConfigs =
           Array.isArray(venue.rowConfigs) && venue.rowConfigs.length
             ? venue.rowConfigs
@@ -1625,26 +1597,18 @@ const Allotment = () => {
       if (!venueData.egCourseMode) continue;
       const { venue, rowConfigs } = venueData;
       const vid = String(venue.uuid);
-      const yKey = String(venue.egCourseKey || egCourseKeyByVenue[vid] || "").trim();
-      const xKey = resolveEgMainCourseKey({
+      const resolved = resolveEgMappedCourses({
         venueId: vid,
-        egCourseKeyY: yKey,
         courseVenueMappings: activeMappings,
         sortedCourseKeys,
       });
-
-      if (!xKey) {
+      if (!resolved.ok) {
         setIsGenerating(false);
-        return setError(
-          `❌ ${venue.name} (EG Course): main course X must be mapped to this venue. ` +
-            `Map a scheduled course to ${venue.name} in Manual mode, then select a different EG course Y.`
-        );
+        return setError(`❌ ${venue.name} (EG Course): ${resolved.message}`);
       }
-      if (!yKey) {
-        setIsGenerating(false);
-        return setError(
-          `❌ ${venue.name} (EG Course): select EG course Y (must differ from main course X).`
-        );
+      const { xKey, yKey } = resolved;
+      if (resolved.message) {
+        logger.log(`   ℹ️ EG ${venue.name}: ${resolved.message}`);
       }
 
       const studentsX = mutableStudentsByKey[xKey] || [];
@@ -2288,8 +2252,8 @@ const Allotment = () => {
           singleCourseMode: Boolean(singleCourseMode),
           singleCourseBlocked: singleCourseMode ? [...SINGLE_COURSE_BLOCKED] : undefined,
           egCourseMode: Boolean(egCourseMode),
-          egCourseKey: egCourseMode ? venue.egCourseKey || null : null,
-          egMainCourseKey: egCourseStats?.courseKeyX || null,
+          egCourseKey: egCourseMode ? egCourseStats?.courseKeyY || null : null,
+          egMainCourseKey: egCourseMode ? egCourseStats?.courseKeyX || null : null,
         },
         seats: formattedGrid,
         facultyId: assignedFacultyId,
@@ -3544,42 +3508,62 @@ const Allotment = () => {
                                     seatingMode === "manual"
                                       ? normalizeCourseVenueMappings(courseVenueMappings)
                                       : {};
-                                  const xKey = resolveEgMainCourseKey({
+                                  const sortedKeys = orderedTimetableCourses.map((c) =>
+                                    legacyCourseEntryKey(c)
+                                  );
+                                  const resolved = resolveEgMappedCourses({
                                     venueId: id,
-                                    egCourseKeyY: egCourseKeyByVenue[id],
                                     courseVenueMappings: mappings,
-                                    sortedCourseKeys: orderedTimetableCourses.map((c) =>
-                                      legacyCourseEntryKey(c)
-                                    ),
+                                    sortedCourseKeys: sortedKeys,
                                   });
+                                  const xKey = resolved.xKey;
+                                  const yKey = resolved.yKey;
                                   const xCourse = orderedTimetableCourses.find(
                                     (c) => legacyCourseEntryKey(c) === xKey
                                   );
-                                  const xStudents = xKey
-                                    ? studentsByCourse[xKey] || []
-                                    : [];
-                                  const xPrefix = regnPrefixHint(xStudents);
-                                  const yOptions = orderedTimetableCourses.filter((c) => {
-                                    const k = legacyCourseEntryKey(c);
-                                    return k && k !== xKey;
-                                  });
-                                  const yKey = egCourseKeyByVenue[id] || "";
                                   const yCourse = orderedTimetableCourses.find(
                                     (c) => legacyCourseEntryKey(c) === yKey
                                   );
-                                  const yStudents = yKey
-                                    ? studentsByCourse[yKey] || []
-                                    : [];
+                                  const xStudents = xKey ? studentsByCourse[xKey] || [] : [];
+                                  const yStudents = yKey ? studentsByCourse[yKey] || [] : [];
+                                  const xPrefix = regnPrefixHint(xStudents);
                                   const yPrefix = regnPrefixHint(yStudents);
                                   const rows = (applied?.rowConfigs || draftRows).length;
                                   const splitPreview =
-                                    egOn && egEligible
+                                    egOn && egEligible && xStudents.length && yStudents.length
                                       ? planEgColumnOwnership({
                                           rows,
-                                          nx: xStudents.length || 28,
-                                          ny: yStudents.length || 14,
+                                          nx: xStudents.length,
+                                          ny: yStudents.length,
                                         })
-                                      : null;
+                                      : egOn && egEligible
+                                        ? planEgColumnOwnership({
+                                            rows,
+                                            nx: 28,
+                                            ny: 14,
+                                          })
+                                        : null;
+                                  const formatCourseLine = (label, course, key, students, prefix) => (
+                                    <p className="text-[11px] text-teal-900">
+                                      {label}:{" "}
+                                      <span className="font-semibold">
+                                        {course
+                                          ? `${course.courseCode}${
+                                              course.department ? ` · ${course.department}` : ""
+                                            }`
+                                          : key || "— map via course selector —"}
+                                      </span>
+                                      {prefix ? (
+                                        <span className="text-teal-700"> ({prefix}…)</span>
+                                      ) : null}
+                                      {students.length ? (
+                                        <span className="text-gray-600">
+                                          {" "}
+                                          · {students.length} students
+                                        </span>
+                                      ) : null}
+                                    </p>
+                                  );
                                   return (
                                     <div className="rounded-lg border border-teal-200 bg-teal-50/50 p-2 space-y-1.5">
                                       <div className="flex flex-wrap items-center gap-2">
@@ -3594,7 +3578,7 @@ const Allotment = () => {
                                           }`}
                                           title={
                                             egEligible
-                                              ? "Two scheduled courses share this SC venue by columns"
+                                              ? "ON: uses the two courses mapped to this venue in the course selector"
                                               : "Requires layout [3, 2, 2, 3]"
                                           }
                                         >
@@ -3608,72 +3592,27 @@ const Allotment = () => {
                                       </div>
                                       {egOn ? (
                                         <>
-                                          <p className="text-[11px] text-teal-900">
-                                            Course X (Main):{" "}
-                                            <span className="font-semibold">
-                                              {xCourse
-                                                ? `${xCourse.courseCode}${
-                                                    xCourse.department
-                                                      ? ` · ${xCourse.department}`
-                                                      : ""
-                                                  }`
-                                                : xKey || "— map a course to this venue —"}
-                                            </span>
-                                            {xPrefix ? (
-                                              <span className="text-teal-700">
-                                                {" "}
-                                                ({xPrefix}…)
-                                              </span>
-                                            ) : null}
-                                            {xStudents.length ? (
-                                              <span className="text-gray-600">
-                                                {" "}
-                                                · {xStudents.length} students
-                                              </span>
-                                            ) : null}
+                                          <p className="text-[10px] text-teal-800">
+                                            Uses the first two courses mapped to this venue
+                                            (course selector). No separate X/Y picker.
                                           </p>
-                                          <label className="flex flex-col gap-0.5">
-                                            <span className="text-[10px] font-semibold text-teal-800">
-                                              Course Y (EG)
-                                            </span>
-                                            <select
-                                              value={yKey}
-                                              onChange={(e) =>
-                                                setEgCourseYForVenue(v, e.target.value)
-                                              }
-                                              className="h-8 rounded border border-teal-300 bg-white px-2 text-[11px] focus:ring-2 focus:ring-teal-500 outline-none"
-                                            >
-                                              <option value="">Select EG course…</option>
-                                              {yOptions.map((c) => {
-                                                const k = legacyCourseEntryKey(c);
-                                                const st = studentsByCourse[k] || [];
-                                                const pref = regnPrefixHint(st);
-                                                return (
-                                                  <option key={k} value={k}>
-                                                    {c.courseCode}
-                                                    {c.department
-                                                      ? ` · ${c.department}`
-                                                      : ""}
-                                                    {pref ? ` · ${pref}…` : ""}
-                                                    {` · ${st.length} students`}
-                                                  </option>
-                                                );
-                                              })}
-                                            </select>
-                                          </label>
-                                          {yCourse && yPrefix ? (
-                                            <p className="text-[11px] text-teal-900">
-                                              Course Y (EG):{" "}
-                                              <span className="font-semibold">
-                                                {yCourse.courseCode}
-                                                {yCourse.department
-                                                  ? ` · ${yCourse.department}`
-                                                  : ""}
-                                              </span>
-                                              <span className="text-teal-700">
-                                                {" "}
-                                                ({yPrefix}…)
-                                              </span>
+                                          {formatCourseLine(
+                                            "Course X (Main)",
+                                            xCourse,
+                                            xKey,
+                                            xStudents,
+                                            xPrefix
+                                          )}
+                                          {formatCourseLine(
+                                            "Course Y (EG)",
+                                            yCourse,
+                                            yKey,
+                                            yStudents,
+                                            yPrefix
+                                          )}
+                                          {!resolved.ok ? (
+                                            <p className="text-[10px] font-medium text-amber-800">
+                                              {resolved.message}
                                             </p>
                                           ) : null}
                                           <p className="text-[10px] text-teal-800 font-medium">
@@ -3702,22 +3641,13 @@ const Allotment = () => {
                                                       const colId = `${String.fromCharCode(65 + g)}${p + 1}`;
                                                       const blocked =
                                                         SINGLE_COURSE_BLOCKED.some(
-                                                          ([bg, bp]) =>
-                                                            bg === g && bp === p
+                                                          ([bg, bp]) => bg === g && bp === p
                                                         );
                                                       let owner = null;
                                                       if (!blocked) {
-                                                        if (
-                                                          splitPreview.xCols.includes(
-                                                            colId
-                                                          )
-                                                        )
+                                                        if (splitPreview.xCols.includes(colId))
                                                           owner = "X";
-                                                        else if (
-                                                          splitPreview.yCols.includes(
-                                                            colId
-                                                          )
-                                                        )
+                                                        else if (splitPreview.yCols.includes(colId))
                                                           owner = "Y";
                                                       }
                                                       return (
@@ -3740,9 +3670,7 @@ const Allotment = () => {
                                                                 : `${colId} empty/spare`
                                                           }
                                                         >
-                                                          {blocked
-                                                            ? "0"
-                                                            : owner || "·"}
+                                                          {blocked ? "0" : owner || "·"}
                                                         </span>
                                                       );
                                                     }
@@ -3750,11 +3678,10 @@ const Allotment = () => {
                                               )}
                                             </div>
                                           ) : null}
-                                          {splitPreview?.ok ? (
+                                          {splitPreview?.ok && resolved.ok ? (
                                             <p className="text-[10px] text-gray-600">
-                                              Preview (nX={xStudents.length || "—"}, nY=
-                                              {yStudents.length || "—"}, rows={rows}): X
-                                              capacity {splitPreview.xCapacity}
+                                              Preview (nX={xStudents.length}, nY={yStudents.length},
+                                              rows={rows}): X capacity {splitPreview.xCapacity}
                                               {splitPreview.xOverflow
                                                 ? ` (overflow ${splitPreview.xOverflow})`
                                                 : ""}
@@ -3762,22 +3689,6 @@ const Allotment = () => {
                                               {splitPreview.yOverflow
                                                 ? ` (overflow ${splitPreview.yOverflow})`
                                                 : ""}
-                                              {" · "}empty usable{" "}
-                                              {Math.max(
-                                                0,
-                                                splitPreview.xCapacity +
-                                                  splitPreview.yCapacity +
-                                                  (splitPreview.spareCols?.length || 0) *
-                                                    rows -
-                                                  Math.min(
-                                                    xStudents.length,
-                                                    splitPreview.xCapacity
-                                                  ) -
-                                                  Math.min(
-                                                    yStudents.length,
-                                                    splitPreview.yCapacity
-                                                  )
-                                              )}
                                               {" · "}blocked{" "}
                                               {singleCourseBlockedCount(
                                                 appliedLayout,

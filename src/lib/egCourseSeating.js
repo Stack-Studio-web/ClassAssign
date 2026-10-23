@@ -69,31 +69,72 @@ export function compactRegnLabel(regn, maxLen = 12) {
 }
 
 /**
- * Main course X for an EG venue: the scheduled course mapped to this venue
- * (excluding Y). Prefer seating-order among multiple mappings.
+ * Resolve EG courses X + Y from the course→venue selector mappings.
+ * First two courses mapped to this venue (in seating order) become X then Y.
+ * No separate Y picker — arrange courses in the course selector only.
  */
-export function resolveEgMainCourseKey({
+export function resolveEgMappedCourses({
   venueId,
-  egCourseKeyY,
   courseVenueMappings = {},
   sortedCourseKeys = [],
 } = {}) {
   const vid = String(venueId || "");
-  const yKey = String(egCourseKeyY || "").trim();
-  if (!vid) return null;
+  if (!vid) {
+    return {
+      ok: false,
+      xKey: null,
+      yKey: null,
+      mappedKeys: [],
+      code: "NO_VENUE",
+      message: "EG Course: venue id is required.",
+    };
+  }
   const mapped = [];
   for (const [key, venueIds] of Object.entries(courseVenueMappings || {})) {
-    if (!key || key === yKey) continue;
+    if (!key) continue;
     if ((venueIds || []).map(String).includes(vid)) mapped.push(key);
   }
-  if (mapped.length === 1) return mapped[0];
-  if (mapped.length > 1) {
-    for (const k of sortedCourseKeys || []) {
-      if (mapped.includes(k)) return k;
+  const ordered = [];
+  const seen = new Set();
+  for (const k of sortedCourseKeys || []) {
+    if (mapped.includes(k) && !seen.has(k)) {
+      ordered.push(k);
+      seen.add(k);
     }
-    return mapped[0];
   }
-  return null;
+  for (const k of mapped) {
+    if (!seen.has(k)) ordered.push(k);
+  }
+  if (ordered.length < 2) {
+    return {
+      ok: false,
+      xKey: ordered[0] || null,
+      yKey: null,
+      mappedKeys: ordered,
+      code: "NEED_TWO_MAPPED",
+      message:
+        `EG Course needs two courses mapped to this venue via the course selector ` +
+        `(found ${ordered.length}). Map the main course and the EG course to the same venue.`,
+    };
+  }
+  return {
+    ok: true,
+    xKey: ordered[0],
+    yKey: ordered[1],
+    mappedKeys: ordered,
+    extraKeys: ordered.slice(2),
+    code: ordered.length > 2 ? "EXTRA_MAPPED" : "OK",
+    message:
+      ordered.length > 2
+        ? `EG uses the first two mapped courses in seating order; ignoring ${ordered.length - 2} extra.`
+        : null,
+  };
+}
+
+/** @deprecated Prefer resolveEgMappedCourses — kept for call-site compatibility. */
+export function resolveEgMainCourseKey(opts = {}) {
+  const resolved = resolveEgMappedCourses(opts);
+  return resolved.xKey || null;
 }
 
 /**

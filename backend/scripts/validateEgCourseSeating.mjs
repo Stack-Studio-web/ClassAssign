@@ -17,6 +17,7 @@ const {
   allocateEgCourseVenue,
   validateEgCourseActivation,
   applyEgAllocationToGrid,
+  resolveEgMappedCourses,
   isBlockedSeat,
   compareRegnNo,
 } = await import("../../src/lib/egCourseSeating.js");
@@ -249,17 +250,45 @@ function testOwnershipExclusiveForLeftoverPolicy() {
   console.log("✓ Test 11: EG ownership exclusive; spare cols free for leftover");
 }
 
+function testResolveFromCourseSelector() {
+  const sorted = ["24BAU-BAU-2026", "24BAE-BAE-2026", "24BTT-BBT-2026"];
+  const ok = resolveEgMappedCourses({
+    venueId: "v1",
+    courseVenueMappings: {
+      "24BAU-BAU-2026": ["v1"],
+      "24BAE-BAE-2026": ["v1"],
+      "24BTT-BBT-2026": ["other"],
+    },
+    sortedCourseKeys: sorted,
+  });
+  assert.strictEqual(ok.ok, true);
+  assert.strictEqual(ok.xKey, "24BAU-BAU-2026");
+  assert.strictEqual(ok.yKey, "24BAE-BAE-2026");
+
+  const one = resolveEgMappedCourses({
+    venueId: "v1",
+    courseVenueMappings: { "24BAU-BAU-2026": ["v1"] },
+    sortedCourseKeys: sorted,
+  });
+  assert.strictEqual(one.ok, false);
+  assert.strictEqual(one.code, "NEED_TWO_MAPPED");
+  console.log("✓ resolveEgMappedCourses from course selector mappings");
+}
+
 function testWiringMentionsEg() {
   const page = fs.readFileSync(path.join(root, "src/pages/Allotment.jsx"), "utf8");
   assert.match(page, /egCourseModeByVenue/);
   assert.match(page, /allocateEgCourseVenue/);
+  assert.match(page, /resolveEgMappedCourses/);
   assert.match(page, /EG Course:/);
+  assert.doesNotMatch(page, /Select EG course/);
+  assert.doesNotMatch(page, /egCourseKeyByVenue/);
   const bench = fs.readFileSync(
     path.join(root, "src/lib/benchConfigOverride.js"),
     "utf8"
   );
   assert.match(bench, /egCourseMode/);
-  console.log("✓ Wiring: Allotment + benchConfig EG persistence present");
+  console.log("✓ Wiring: EG ON only; courses from selector (no Y picker)");
 }
 
 function main() {
@@ -274,6 +303,7 @@ function main() {
   testBlockedNeverAssigned();
   testNoDuplicateOrSkip();
   testOwnershipExclusiveForLeftoverPolicy();
+  testResolveFromCourseSelector();
   testWiringMentionsEg();
   console.log("\nAll EG Course seating checks passed.");
 }
