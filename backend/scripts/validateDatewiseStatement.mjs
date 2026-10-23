@@ -113,7 +113,10 @@ function testDateResetWiringInFrontend() {
   assert.ok(page.includes("HOD"));
   assert.ok(page.includes("COE"));
   assert.ok(page.includes("rowSpan"));
-  console.log("✓ /datewise page: preview columns, merge, approvals, export");
+  assert.ok(page.includes("ExportCustomizeBar"));
+  assert.ok(page.includes("useExportHeaderSettings"));
+  assert.ok(page.includes("headerOptions"));
+  console.log("✓ /datewise page: preview, merge, approvals, customize bar");
 }
 
 function testReportButtonAndRoute() {
@@ -155,8 +158,11 @@ function testPdfColumns() {
   assert.ok(pdf.includes("HOD"));
   assert.ok(pdf.includes("COE"));
   assert.ok(pdf.includes("Exam Time"));
+  assert.ok(pdf.includes("FOOTER_BLOCK_H"));
+  assert.ok(pdf.includes("headerOptions"));
+  assert.ok(pdf.includes("hall_kct.png"));
   assert.ok(!/attendance/i.test(pdf) || pdf.includes("No attendance"));
-  console.log("✓ PDF column order, title, merge footer, landscape, filename");
+  console.log("✓ PDF column order, title, footer reserve, customize header");
 }
 
 function testNoAttendanceDependency() {

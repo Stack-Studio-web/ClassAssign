@@ -13,7 +13,13 @@ import {
 import { downloadDatewiseStatementPdf } from "../lib/generateDatewiseStatementPdf";
 import { useToast } from "../context/ToastContext";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
+import ExportCustomizeBar from "../Components/ExportCustomizeBar";
+import {
+  DEFAULT_EXPORT_HEADER,
+  useExportHeaderSettings,
+} from "../hooks/useExportHeaderSettings";
 import HallLogoKCT from "../assets/hall_kct.png";
+import LogoKSI from "../assets/logo KSI.png";
 
 function formatDateLong(dateValue) {
   const raw = String(dateValue || "");
@@ -31,6 +37,7 @@ function formatDateLong(dateValue) {
 
 export default function DatewiseStatement() {
   const toast = useToast();
+  const header = useExportHeaderSettings();
   const [dates, setDates] = useState([]);
   const [sessions, setSessions] = useState([]);
   const [date, setDate] = useState("");
@@ -41,6 +48,12 @@ export default function DatewiseStatement() {
   const [loadingStatement, setLoadingStatement] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
+
+  const handleSaveHeader = async () => {
+    const ok = await header.save();
+    if (ok) toast.success("Header settings saved");
+    else if (header.error) toast.error(header.error, "Save failed");
+  };
 
   const selectedSession = useMemo(
     () => sessions.find((s) => s.value === sessionValue) || null,
@@ -170,7 +183,9 @@ export default function DatewiseStatement() {
     }
     setExporting(true);
     try {
-      const filename = await downloadDatewiseStatementPdf(statement);
+      const filename = await downloadDatewiseStatementPdf(statement, {
+        headerOptions: header.headerOptions,
+      });
       toast.success(`Downloaded ${filename}`);
     } catch (err) {
       console.error(err);
@@ -200,6 +215,10 @@ export default function DatewiseStatement() {
     meta.grandTotal ??
     rows.reduce((s, r) => s + (Number(r.total ?? r.totalStudents) || 0), 0);
 
+  const previewLogo =
+    header.logoType === "KSI" ? LogoKSI : HallLogoKCT;
+  const isKctHallLogo = header.logoType !== "KSI";
+
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="px-4 md:px-8 py-6 md:py-8 max-w-7xl mx-auto space-y-6">
@@ -221,6 +240,26 @@ export default function DatewiseStatement() {
             handwritten entry.
           </p>
         </div>
+
+        <ExportCustomizeBar
+          logoType={header.logoType}
+          setLogoType={header.setLogoType}
+          departmentLine={header.departmentLine}
+          setDepartmentLine={header.setDepartmentLine}
+          programmeLine1={header.programmeLine1}
+          setProgrammeLine1={header.setProgrammeLine1}
+          programmeLine2={header.programmeLine2}
+          setProgrammeLine2={header.setProgrammeLine2}
+          sfsLine1={header.sfsLine1}
+          setSfsLine1={header.setSfsLine1}
+          sfsLine2={header.sfsLine2}
+          setSfsLine2={header.setSfsLine2}
+          isSfs={header.isSfs}
+          setIsSfs={header.setIsSfs}
+          saving={header.saving}
+          saveMsg={header.saveMsg}
+          onSave={handleSaveHeader}
+        />
 
         <section className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 md:p-6 space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -312,19 +351,60 @@ export default function DatewiseStatement() {
             <div className="min-w-[960px]">
               <div className="text-center mb-6">
                 <img
-                  src={HallLogoKCT}
-                  alt="Kumaraguru College of Technology"
+                  src={previewLogo}
+                  alt={
+                    isKctHallLogo
+                      ? "Kumaraguru College of Technology"
+                      : "KSI Logo"
+                  }
                   className="mx-auto"
-                  style={{
-                    height: 56,
-                    width: "auto",
-                    maxWidth: 360,
-                    objectFit: "contain",
-                    display: "block",
-                    margin: "0 auto 8px",
-                  }}
+                  style={
+                    isKctHallLogo
+                      ? {
+                          height: 56,
+                          width: "auto",
+                          maxWidth: 360,
+                          objectFit: "contain",
+                          display: "block",
+                          margin: "0 auto 6px",
+                        }
+                      : {
+                          height: 56,
+                          width: "auto",
+                          maxWidth: 240,
+                          objectFit: "contain",
+                          display: "block",
+                          margin: "0 auto 6px",
+                        }
+                  }
                 />
-                <h3 className="text-base font-bold">
+                {header.isSfs ? (
+                  <>
+                    <p className="text-sm font-semibold">
+                      {header.sfsLine1 || DEFAULT_EXPORT_HEADER.sfsLine1}
+                    </p>
+                    <p className="text-sm">
+                      {header.sfsLine2 || DEFAULT_EXPORT_HEADER.sfsLine2}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    {header.departmentLine ? (
+                      <p className="text-sm">{header.departmentLine}</p>
+                    ) : null}
+                    {header.programmeLine1 ? (
+                      <strong className="block text-sm">
+                        {header.programmeLine1}
+                      </strong>
+                    ) : null}
+                    {header.programmeLine2 ? (
+                      <strong className="block text-sm">
+                        {header.programmeLine2}
+                      </strong>
+                    ) : null}
+                  </>
+                )}
+                <h3 className="text-base font-bold mt-2">
                   DATEWISE SEATING ALLOTMENT REPORT
                 </h3>
                 <p className="text-sm mt-2">
