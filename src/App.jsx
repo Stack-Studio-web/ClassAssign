@@ -36,6 +36,7 @@ import ActiveAttendance from './pages/ActiveAttendance';
 import CompletedAttendance from './pages/CompletedAttendance';
 import AttendanceExport from './pages/AttendanceExport';
 import FacultyInvigilationExport from './pages/FacultyInvigilationExport';
+import DatewiseStatement from './pages/DatewiseStatement';
 import NotificationManagement from './pages/NotificationManagement';
 import FacultyTransferRequests from './pages/FacultyTransferRequests';
 import FacultyChange from './pages/FacultyChange';
@@ -312,6 +313,15 @@ function App() {
         element={
           <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod']}>
             <Layout><FacultyInvigilationExport /></Layout>
+          </AuthGuard>
+        }
+      />
+
+      <Route
+        path="/datewise"
+        element={
+          <AuthGuard allowedRoles={['admin', 'faculty_incharge', 'hod']}>
+            <Layout><DatewiseStatement /></Layout>
           </AuthGuard>
         }
       />

@@ -424,6 +424,14 @@ const Report = () => {
           <DocumentTextIcon className="h-5 w-5" />
           Faculty Invigilation Schedule
         </button>
+        <button
+          type="button"
+          onClick={() => navigate("/datewise")}
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-medium shadow-sm transition-all duration-200"
+        >
+          <CalendarIcon className="h-5 w-5" />
+          Datewise
+        </button>
         {selectedPlans.length > 0 && (
           <>
             <button

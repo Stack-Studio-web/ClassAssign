@@ -134,6 +134,7 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/hall-notifications", hallNotificationRoutes);
 app.use("/api/invigilation-notifications", invigilationNotificationRoutes);
 app.use("/api/attendance", attendanceRoutes);
+app.use("/api/datewise", require("./routes/datewiseRoutes"));
 app.use("/api/faculty-attendance", facultyAttendanceRoutes);
 app.use("/api/faculty-transfers", facultyTransferRoutes);
 app.use("/api/academic-contexts", require("./routes/academicContextRoutes"));
