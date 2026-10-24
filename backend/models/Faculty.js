@@ -1175,6 +1175,54 @@ const Faculty = {
     Faculty.queryScopedRows(opts, { applyVisibility: true }),
 
   /**
+   * Active allotment exam dates per faculty uuid (owner-scoped seating plans).
+   * Dates match duties that still count toward Alloc (not fully completed).
+   * @returns {Promise<Record<string, string[]>>} uuid → sorted YYYY-MM-DD dates
+   */
+  getActiveAllotmentDatesByUuid: async (opts = {}) => {
+    const ownerIds =
+      (opts.ownerIds && opts.ownerIds.length > 0 && opts.ownerIds) || null;
+    const params = [];
+    let ownerSql = "";
+    if (opts.role !== "admin") {
+      if (ownerIds && ownerIds.length) {
+        ownerSql = ` AND sp.owner_user_id IN (${ownerIds.map(() => "?").join(",")})`;
+        params.push(...ownerIds);
+      } else {
+        const uid = opts.ownerUserId ?? opts.userId ?? null;
+        if (!uid) return {};
+        ownerSql = " AND sp.owner_user_id = ?";
+        params.push(uid);
+      }
+    }
+
+    const [rows] = await db.query(
+      `SELECT
+         f.public_uuid,
+         to_char(sp.exam_date, 'YYYY-MM-DD') AS exam_date
+       FROM seating_plan_venue_faculty spvf
+       JOIN seating_plan_venues spv ON spv.id = spvf.seating_plan_venue_id
+       JOIN seating_plans sp ON sp.id = spv.seating_plan_id
+       JOIN faculty f ON f.id = spvf.faculty_id
+       WHERE sp.exam_date IS NOT NULL
+         AND (${ACTIVE_ALLOCATION_SQL})
+         ${ownerSql}
+       ORDER BY f.public_uuid, sp.exam_date ASC`,
+      params
+    );
+
+    const byUuid = {};
+    for (const r of rows || []) {
+      const uuid = String(r.public_uuid ?? r.publicuuid ?? "").trim();
+      const date = String(r.exam_date ?? r.examdate ?? "").slice(0, 10);
+      if (!uuid || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+      if (!byUuid[uuid]) byUuid[uuid] = [];
+      if (!byUuid[uuid].includes(date)) byUuid[uuid].push(date);
+    }
+    return byUuid;
+  },
+
+  /**
    * Allocation summaries for specific faculty internal IDs (derived, idempotent).
    * With opts, shared faculty report the caller's department counters.
    */

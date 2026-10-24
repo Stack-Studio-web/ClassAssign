@@ -74,6 +74,26 @@ router.get("/stats", sessionAuth, checkRole(["admin", "faculty_incharge", "hod"]
 });
 
 /**
+ * GET /faculty/allotment-dates
+ * Active allotment exam dates per faculty (owner-scoped). Used by Rem PDF export.
+ */
+router.get(
+  "/allotment-dates",
+  sessionAuth,
+  checkRole(["admin", "faculty_incharge", "hod"]),
+  async (req, res) => {
+    try {
+      const byUuid = await Faculty.getActiveAllotmentDatesByUuid(
+        await resolveOwnerOpts(req)
+      );
+      return Api.success(res, "Faculty allotment dates", { byUuid });
+    } catch (err) {
+      return Api.serverError(res, err, "GET /faculty/allotment-dates");
+    }
+  }
+);
+
+/**
  * GET /faculty/schedule?date=&startTime=&endTime=
  * Returns faculty duties grouped by examDate + startTime + endTime.
  */

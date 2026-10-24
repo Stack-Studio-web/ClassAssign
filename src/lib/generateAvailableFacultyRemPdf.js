@@ -1,45 +1,73 @@
 /**
- * PDF: available faculty with remaining invigilation slots (Name + Rem).
+ * PDF: available faculty with remaining slots — Name, Allotted, Allotted Date, Rem.
  */
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 
+function formatDateList(dates) {
+  const list = [...new Set((dates || []).filter(Boolean))].sort();
+  if (!list.length) return "—";
+  return list
+    .map((d) => {
+      const raw = String(d).slice(0, 10);
+      const parsed = new Date(`${raw}T12:00:00`);
+      if (Number.isNaN(parsed.getTime())) return raw;
+      return parsed.toLocaleDateString("en-GB", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+      });
+    })
+    .join(", ");
+}
+
 /**
  * Faculty who are available and have remaining invigilation slots.
  * @param {Array<object>} facultyList
- * @returns {Array<{ name: string, remaining: number, department?: string }>}
+ * @param {Record<string, string[]>} [datesByUuid]
  */
-export function filterAvailableWithRemaining(facultyList) {
+export function filterAvailableWithRemaining(facultyList, datesByUuid = {}) {
   return (facultyList || [])
     .filter((f) => {
       const rem = Number(f.remaining ?? f.freeSlots ?? 0);
       const available = f.isAvailable !== false;
       return available && rem > 0;
     })
-    .map((f) => ({
-      name: String(f.name || "").trim() || "—",
-      remaining: Number(f.remaining ?? f.freeSlots ?? 0),
-      department: String(
-        f.membershipLabel || f.mainDepartment || f.department || ""
-      ).trim(),
-    }))
+    .map((f) => {
+      const uuid = String(f.uuid || f.public_uuid || "").trim();
+      return {
+        name: String(f.name || "").trim() || "—",
+        allotted: Number(f.allocation ?? 0) || 0,
+        allottedDates: datesByUuid[uuid] || [],
+        remaining: Number(f.remaining ?? f.freeSlots ?? 0),
+        department: String(
+          f.membershipLabel || f.mainDepartment || f.department || ""
+        ).trim(),
+      };
+    })
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /**
- * @param {Array<object>} facultyList — typically filteredFaculty from Faculty Management
- * @param {{ departmentFilter?: string, contextLabel?: string }} [meta]
- * @returns {Promise<{ blob: Blob, filename: string }>}
+ * @param {Array<object>} facultyList
+ * @param {{
+ *   departmentFilter?: string,
+ *   contextLabel?: string,
+ *   datesByUuid?: Record<string, string[]>,
+ * }} [meta]
  */
 export async function generateAvailableFacultyRemPdf(facultyList, meta = {}) {
-  const rows = filterAvailableWithRemaining(facultyList);
+  const rows = filterAvailableWithRemaining(
+    facultyList,
+    meta.datesByUuid || {}
+  );
   const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const pageW = pdf.internal.pageSize.getWidth();
-  const margin = 14;
+  const margin = 12;
   let y = 16;
 
   pdf.setFont("helvetica", "bold");
-  pdf.setFontSize(14);
+  pdf.setFontSize(13);
   pdf.setTextColor(0, 0, 0);
   pdf.text("Available Faculty — Remaining Invigilation", pageW / 2, y, {
     align: "center",
@@ -70,16 +98,22 @@ export async function generateAvailableFacultyRemPdf(facultyList, meta = {}) {
 
   autoTable(pdf, {
     startY: y,
-    head: [["S.No", "Name", "Remaining Invigilation"]],
-    body: rows.map((r, i) => [String(i + 1), r.name, String(r.remaining)]),
+    head: [["S.No", "Name", "Allotted", "Allotted Date", "Rem"]],
+    body: rows.map((r, i) => [
+      String(i + 1),
+      r.name,
+      String(r.allotted),
+      formatDateList(r.allottedDates),
+      String(r.remaining),
+    ]),
     theme: "grid",
     styles: {
       font: "helvetica",
-      fontSize: 10,
+      fontSize: 9,
       textColor: [0, 0, 0],
       lineColor: [0, 0, 0],
       lineWidth: 0.25,
-      cellPadding: 3,
+      cellPadding: 2.5,
       valign: "middle",
     },
     headStyles: {
@@ -89,9 +123,11 @@ export async function generateAvailableFacultyRemPdf(facultyList, meta = {}) {
       halign: "center",
     },
     columnStyles: {
-      0: { cellWidth: 18, halign: "center" },
-      1: { cellWidth: "auto", halign: "left" },
-      2: { cellWidth: 45, halign: "center" },
+      0: { cellWidth: 14, halign: "center" },
+      1: { cellWidth: 55, halign: "left" },
+      2: { cellWidth: 22, halign: "center" },
+      3: { cellWidth: 70, halign: "left" },
+      4: { cellWidth: 18, halign: "center" },
     },
     margin: { left: margin, right: margin },
     didDrawPage: (data) => {

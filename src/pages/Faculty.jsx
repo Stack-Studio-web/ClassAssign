@@ -522,9 +522,20 @@ export default function Faculty() {
   const handleExportAvailableRemPdf = async () => {
     setExportingRemPdf(true);
     try {
+      let datesByUuid = {};
+      try {
+        const res = await api.get("/faculty/allotment-dates");
+        datesByUuid =
+          res.data?.data?.byUuid ||
+          res.data?.byUuid ||
+          {};
+      } catch (datesErr) {
+        console.warn("Allotment dates load:", datesErr?.message || datesErr);
+      }
       const filename = await downloadAvailableFacultyRemPdf(filteredFaculty, {
         departmentFilter: departmentFilter || undefined,
         contextLabel: currentContextLabel || undefined,
+        datesByUuid,
       });
       toast.success(`Downloaded ${filename}`);
     } catch (err) {
