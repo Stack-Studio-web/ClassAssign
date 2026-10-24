@@ -1,11 +1,16 @@
 import React, { useState, useEffect, useMemo } from "react";
 import api from "../lib/api";
-import { UserGroupIcon, BuildingOffice2Icon } from "@heroicons/react/24/outline";
+import {
+  ArrowDownTrayIcon,
+  UserGroupIcon,
+  BuildingOffice2Icon,
+} from "@heroicons/react/24/outline";
 import { useToast } from "../context/ToastContext";
 import { useConfirm } from "../context/ConfirmContext";
 import { useAuth } from "../hooks/useAuth";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
 import { downloadTemplate } from "../lib/downloadTemplate";
+import { downloadAvailableFacultyRemPdf } from "../lib/generateAvailableFacultyRemPdf";
 import FacultyDepartmentSelect from "../Components/FacultyDepartmentSelect";
 import { resolveFacultyDepartment } from "../lib/facultyDepartments";
 
@@ -78,6 +83,7 @@ export default function Faculty() {
   const [searchQuery, setSearchQuery] = useState("");
   const [departmentFilter, setDepartmentFilter] = useState("");
   const [sortOrder, setSortOrder] = useState("asc");
+  const [exportingRemPdf, setExportingRemPdf] = useState(false);
 
   /* ================= FETCH DATA ================= */
   const fetchFacultyStats = async () => {
@@ -513,6 +519,25 @@ export default function Faculty() {
       );
   }, [faculty, searchQuery, departmentFilter, sortOrder]);
 
+  const handleExportAvailableRemPdf = async () => {
+    setExportingRemPdf(true);
+    try {
+      const filename = await downloadAvailableFacultyRemPdf(filteredFaculty, {
+        departmentFilter: departmentFilter || undefined,
+        contextLabel: currentContextLabel || undefined,
+      });
+      toast.success(`Downloaded ${filename}`);
+    } catch (err) {
+      console.error(err);
+      toast.error(
+        getApiError(err, "Failed to export PDF"),
+        getApiErrorTitle(err, "Export failed")
+      );
+    } finally {
+      setExportingRemPdf(false);
+    }
+  };
+
   const departmentCounts = useMemo(() => {
     const counts = new Map();
     for (const f of faculty) {
@@ -779,6 +804,16 @@ export default function Faculty() {
                 className="h-11 md:h-12 px-4 rounded-xl bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-medium text-sm shadow-sm transition-all duration-200"
               >
                 Sort: {sortOrder === "asc" ? "A–Z ↑" : "Z–A ↓"}
+              </button>
+              <button
+                type="button"
+                onClick={handleExportAvailableRemPdf}
+                disabled={exportingRemPdf || filteredFaculty.length === 0}
+                title="Export available faculty with remaining invigilation slots"
+                className="inline-flex items-center gap-2 h-11 md:h-12 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium text-sm shadow-sm transition-all duration-200"
+              >
+                <ArrowDownTrayIcon className="h-4 w-4" />
+                {exportingRemPdf ? "Exporting…" : "Export Rem PDF"}
               </button>
               <button
                 type="button"
