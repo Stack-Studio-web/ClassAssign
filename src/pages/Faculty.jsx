@@ -10,7 +10,10 @@ import { useConfirm } from "../context/ConfirmContext";
 import { useAuth } from "../hooks/useAuth";
 import { getApiError, getApiErrorTitle } from "../lib/errors";
 import { downloadTemplate } from "../lib/downloadTemplate";
-import { downloadAvailableFacultyRemPdf } from "../lib/generateAvailableFacultyRemPdf";
+import {
+  downloadAllFacultyAllotmentPdf,
+  downloadAvailableFacultyRemPdf,
+} from "../lib/generateAvailableFacultyRemPdf";
 import FacultyDepartmentSelect from "../Components/FacultyDepartmentSelect";
 import { resolveFacultyDepartment } from "../lib/facultyDepartments";
 
@@ -83,6 +86,7 @@ export default function Faculty() {
   const [searchQuery, setSearchQuery] = useState("");
   const [departmentFilter, setDepartmentFilter] = useState("");
   const [sortOrder, setSortOrder] = useState("asc");
+  const [exportingAllotmentPdf, setExportingAllotmentPdf] = useState(false);
   const [exportingRemPdf, setExportingRemPdf] = useState(false);
 
   /* ================= FETCH DATA ================= */
@@ -519,24 +523,48 @@ export default function Faculty() {
       );
   }, [faculty, searchQuery, departmentFilter, sortOrder]);
 
+  const exportMeta = {
+    departmentFilter: departmentFilter || undefined,
+    contextLabel: currentContextLabel || undefined,
+  };
+
+  const fetchAllotmentDatesByUuid = async () => {
+    try {
+      const res = await api.get("/faculty/allotment-dates");
+      return res.data?.data?.byUuid || res.data?.byUuid || {};
+    } catch (datesErr) {
+      console.warn("Allotment dates load:", datesErr?.message || datesErr);
+      return {};
+    }
+  };
+
+  const handleExportAllFacultyAllotmentPdf = async () => {
+    setExportingAllotmentPdf(true);
+    try {
+      const datesByUuid = await fetchAllotmentDatesByUuid();
+      const filename = await downloadAllFacultyAllotmentPdf(filteredFaculty, {
+        ...exportMeta,
+        datesByUuid,
+      });
+      toast.success(`Downloaded ${filename}`);
+    } catch (err) {
+      console.error(err);
+      toast.error(
+        getApiError(err, "Failed to export PDF"),
+        getApiErrorTitle(err, "Export failed")
+      );
+    } finally {
+      setExportingAllotmentPdf(false);
+    }
+  };
+
   const handleExportAvailableRemPdf = async () => {
     setExportingRemPdf(true);
     try {
-      let datesByUuid = {};
-      try {
-        const res = await api.get("/faculty/allotment-dates");
-        datesByUuid =
-          res.data?.data?.byUuid ||
-          res.data?.byUuid ||
-          {};
-      } catch (datesErr) {
-        console.warn("Allotment dates load:", datesErr?.message || datesErr);
-      }
-      const filename = await downloadAvailableFacultyRemPdf(filteredFaculty, {
-        departmentFilter: departmentFilter || undefined,
-        contextLabel: currentContextLabel || undefined,
-        datesByUuid,
-      });
+      const filename = await downloadAvailableFacultyRemPdf(
+        filteredFaculty,
+        exportMeta
+      );
       toast.success(`Downloaded ${filename}`);
     } catch (err) {
       console.error(err);
@@ -818,10 +846,28 @@ export default function Faculty() {
               </button>
               <button
                 type="button"
-                onClick={handleExportAvailableRemPdf}
-                disabled={exportingRemPdf || filteredFaculty.length === 0}
-                title="Export available faculty with remaining invigilation slots"
+                onClick={handleExportAllFacultyAllotmentPdf}
+                disabled={
+                  exportingAllotmentPdf ||
+                  exportingRemPdf ||
+                  filteredFaculty.length === 0
+                }
+                title="Export all faculty: Name, Allotted, Allotted Date"
                 className="inline-flex items-center gap-2 h-11 md:h-12 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium text-sm shadow-sm transition-all duration-200"
+              >
+                <ArrowDownTrayIcon className="h-4 w-4" />
+                {exportingAllotmentPdf ? "Exporting…" : "Export Allotment PDF"}
+              </button>
+              <button
+                type="button"
+                onClick={handleExportAvailableRemPdf}
+                disabled={
+                  exportingRemPdf ||
+                  exportingAllotmentPdf ||
+                  filteredFaculty.length === 0
+                }
+                title="Export available faculty with remaining invigilation only"
+                className="inline-flex items-center gap-2 h-11 md:h-12 px-4 rounded-xl bg-slate-700 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium text-sm shadow-sm transition-all duration-200"
               >
                 <ArrowDownTrayIcon className="h-4 w-4" />
                 {exportingRemPdf ? "Exporting…" : "Export Rem PDF"}
