@@ -69,6 +69,7 @@ export default function FacultyDashboard() {
   const [transferExam, setTransferExam] = useState(null);
   const [incomingAction, setIncomingAction] = useState(null);
   const [actionLoading, setActionLoading] = useState(null);
+  const [transferActionError, setTransferActionError] = useState("");
   const [error, setError] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -145,15 +146,18 @@ export default function FacultyDashboard() {
     if (!incomingAction) return;
     const uuid = incomingAction.uuid;
     setActionLoading(uuid);
+    setTransferActionError("");
     try {
       await api.post(`/faculty-transfers/${uuid}/approve`);
-      toast.success("Mutual change approved. Assignment transferred to you.");
+      toast.success("Transfer accepted. Assignment moved to you. Your other assignments are unchanged.");
       setIncomingAction(null);
       await refreshTransfers();
       const examRes = await api.get("/faculty-attendance/my-exams");
       setExams(examRes.data.exams || []);
     } catch (err) {
-      toast.error(err.response?.data?.message || err.message || "Approval failed");
+      const msg = err.response?.data?.message || err.message || "Approval failed";
+      setTransferActionError(msg);
+      toast.error(msg);
     } finally {
       setActionLoading(null);
     }
@@ -161,14 +165,17 @@ export default function FacultyDashboard() {
 
   const handleIncomingReject = async (req) => {
     setActionLoading(req.uuid);
+    setTransferActionError("");
     try {
       await api.post(`/faculty-transfers/${req.uuid}/reject`, {
         reason: "Rejected by requested faculty",
       });
-      toast.success("Mutual change request rejected.");
+      toast.success("Transfer request rejected. Assignments were not changed.");
       await refreshTransfers();
     } catch (err) {
-      toast.error(err.response?.data?.message || err.message || "Rejection failed");
+      const msg = err.response?.data?.message || err.message || "Rejection failed";
+      setTransferActionError(msg);
+      toast.error(msg);
     } finally {
       setActionLoading(null);
     }
@@ -301,14 +308,22 @@ export default function FacultyDashboard() {
 
         {incomingRequests.length > 0 && (
           <section className="mb-6 space-y-3">
-            <h2 className="text-lg font-bold text-[#0B1F4B]">Incoming Faculty Change Requests</h2>
+            <h2 className="text-lg font-bold text-[#0B1F4B]">Mutual Requests</h2>
+            <p className="text-sm text-slate-500">
+              Incoming assignment transfers. Accepting moves only that exam to you; it is not a swap.
+            </p>
+            {transferActionError ? (
+              <div className="bg-red-50 border border-red-200 text-red-800 text-sm rounded-xl px-4 py-3">
+                {transferActionError}
+              </div>
+            ) : null}
             {incomingRequests.map((req) => (
               <article
                 key={req.uuid}
                 className="bg-white rounded-2xl border border-amber-100 shadow-sm p-4 sm:p-5"
               >
                 <p className="text-xs font-semibold uppercase tracking-wide text-amber-700 mb-2">
-                  Faculty Change Request · Pending
+                  Assignment Transfer · Pending
                 </p>
                 <div className="grid sm:grid-cols-2 gap-2 text-sm text-slate-700">
                   <p>
@@ -345,7 +360,7 @@ export default function FacultyDashboard() {
                     onClick={() => setIncomingAction(req)}
                     className="px-4 py-2 rounded-xl text-sm font-semibold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
                   >
-                    Approve
+                    Accept
                   </button>
                   <button
                     type="button"
@@ -461,7 +476,7 @@ export default function FacultyDashboard() {
                       )}
                       {pendingTransfer && (
                         <p className="mt-2 text-xs text-amber-700 font-medium">
-                          Mutual change request pending — awaiting faculty approval
+                          Transfer request pending — awaiting faculty approval
                         </p>
                       )}
                     </div>
@@ -527,7 +542,7 @@ export default function FacultyDashboard() {
           currentFacultyName={displayName}
           onClose={() => setTransferExam(null)}
           onSuccess={() => {
-            toast.success("Mutual change request sent. Awaiting faculty approval.");
+            toast.success("Transfer request sent. Awaiting faculty acceptance.");
             refreshTransfers();
           }}
         />
@@ -536,14 +551,19 @@ export default function FacultyDashboard() {
       {incomingAction && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4">
-            <h3 className="text-lg font-bold text-gray-900">Confirm Faculty Change?</h3>
-            <p className="text-sm text-slate-600">By approving this request:</p>
+            <h3 className="text-lg font-bold text-gray-900">Accept assignment transfer?</h3>
+            <p className="text-sm text-slate-600">This is a transfer, not a swap:</p>
             <ul className="text-sm text-slate-700 space-y-1.5 list-disc pl-5">
-              <li>This assignment will be transferred to you.</li>
-              <li>Attendance responsibility will be transferred to you.</li>
-              <li>The requesting faculty will no longer be responsible for attendance.</li>
-              <li>Admin / Faculty Incharge will be notified.</li>
+              <li>Only this assignment moves to you.</li>
+              <li>You keep all of your existing assignments.</li>
+              <li>The requesting faculty is removed from this assignment only.</li>
+              <li>Overlapping exam times on the same date will be rejected.</li>
             </ul>
+            {transferActionError ? (
+              <div className="bg-red-50 border border-red-200 text-red-800 text-sm rounded-xl px-3 py-2">
+                {transferActionError}
+              </div>
+            ) : null}
             <div className="flex gap-3 pt-2">
               <button
                 type="button"
@@ -558,7 +578,7 @@ export default function FacultyDashboard() {
                 onClick={confirmIncomingApprove}
                 className="flex-1 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50"
               >
-                {actionLoading === incomingAction.uuid ? "Approving…" : "Confirm Approval"}
+                {actionLoading === incomingAction.uuid ? "Accepting…" : "Accept Transfer"}
               </button>
             </div>
           </div>

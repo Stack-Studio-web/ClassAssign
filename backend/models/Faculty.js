@@ -1026,7 +1026,10 @@ const Faculty = {
    * Capacity and time conflict are checked separately.
    * @param {object} opts
    * @param {boolean} [opts.ignoreCapacity=false] - When true (faculty transfer),
-   *   skip normal allocation-limit check; still enforce same-day conflict / active status.
+   *   skip normal allocation-limit check; still enforce same-day conflict / active status
+   *   unless skipTimeConflict is also true.
+   * @param {boolean} [opts.skipTimeConflict=false] - When true, skip the allocator
+   *   same-day rule. Transfer flow uses overlap checks instead.
    * @param {number|null} [opts.attributionUserId] - Owner of the plan being created;
    *   selects which department's Max / Alloc applies.
    * @param {object|null} [opts.viewer] - conflictViewerFromOpts(); hides other departments' venues.
@@ -1042,6 +1045,7 @@ const Faculty = {
       excludeSeatingPlanId = null,
       excludeSpvId = null,
       ignoreCapacity = false,
+      skipTimeConflict = false,
       forUpdate = false,
       attributionUserId = null,
       viewer = null,
@@ -1098,7 +1102,8 @@ const Faculty = {
     }
 
     // Same calendar day = conflict (times are informational only).
-    if (examDate) {
+    // Allocator always uses this rule. Transfers pass skipTimeConflict and check overlap separately.
+    if (examDate && !skipTimeConflict) {
       const conflict = await findActiveTimeConflict(executor, {
         facultyId,
         examDate,

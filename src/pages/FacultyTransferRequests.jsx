@@ -138,11 +138,11 @@ export default function FacultyTransferRequests() {
             </div>
             <div>
               <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">
-                Mutual Faculty Requests
+                Mutual Requests
               </h1>
               <p className="text-sm text-gray-500 mt-1">
-                View mutual faculty change history. Approvals are handled by the requested faculty.
-                You may cancel pending requests in exceptional cases.
+                Assignment transfer history (not a swap). Accept/Reject is handled by the requested
+                faculty. You may cancel pending requests in exceptional cases.
               </p>
             </div>
           </div>
@@ -328,7 +328,7 @@ export default function FacultyTransferRequests() {
             <StatusBadge status={selected.status} />
             <div className="text-sm space-y-2 border border-slate-100 rounded-xl p-4 bg-slate-50">
               <p className="font-medium text-slate-800">{selected.currentFaculty?.name}</p>
-              <p className="text-slate-500 text-xs pl-2">↓ Requested change</p>
+              <p className="text-slate-500 text-xs pl-2">↓ Requested transfer (not a swap)</p>
               <p className="font-medium text-slate-800">{selected.requestedFaculty?.name || "—"}</p>
               {selected.status === "Approved" && (
                 <>

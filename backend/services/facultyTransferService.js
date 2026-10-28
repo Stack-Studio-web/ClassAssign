@@ -7,6 +7,13 @@ const AttendanceService = require("./attendanceService");
 const { notifyTransferApproved } = require("./transferApprovalNotification");
 const { notifyAdminsOfMutualApproval } = require("./mutualTransferAdminNotify");
 const { isValidKctEmail, passwordFromEmail, hashPassword } = require("../utils/password");
+const {
+  findOverlappingTimeConflict,
+  lockFacultyRowsForUpdate,
+  transferWindowsConflict,
+  buildTransferOverlapMessage,
+  normalizeExamDate,
+} = require("../utils/facultyTimeConflict");
 
 function toRequestRow(row) {
   if (!row) return null;
@@ -225,6 +232,8 @@ async function checkReplacementAvailability({
   examEndTime,
   excludeFacultyId,
   excludeSpvId = null,
+  executor = db,
+  forUpdate = false,
 }) {
   if (!requestedFacultyId) {
     return { available: true, message: "Faculty is available for assignment." };
@@ -237,27 +246,22 @@ async function checkReplacementAvailability({
     };
   }
 
-  // Transfer flow: ignore normal allocation capacity; still block same-day / status.
-  const validation = await Faculty.validateFacultyForAllocation(requestedFacultyId, {
-    examDate,
-    examStartTime: examStartTime || "00:00",
-    examEndTime: examEndTime || "23:59",
-    additionalSlots: 1,
-    excludeSpvId,
-    ignoreCapacity: true,
-  });
+  // Transfer: ignore allocator capacity and one-duty-per-day. Block only real time overlap.
+  const validation = await Faculty.validateFacultyForAllocation(
+    requestedFacultyId,
+    {
+      examDate,
+      examStartTime: examStartTime || "00:00",
+      examEndTime: examEndTime || "23:59",
+      additionalSlots: 1,
+      excludeSpvId,
+      ignoreCapacity: true,
+      skipTimeConflict: true,
+    },
+    executor
+  );
 
   if (!validation.allowed) {
-    if (validation.code === "TIME_CONFLICT") {
-      return {
-        available: false,
-        message:
-          validation.message ||
-          "Transfer unavailable. This faculty is already allotted to an exam on this date.",
-        code: validation.code,
-        conflict: validation.conflict || null,
-      };
-    }
     return {
       available: false,
       message: validation.message,
@@ -266,29 +270,115 @@ async function checkReplacementAvailability({
     };
   }
 
-  const [assignConflicts] = await db.query(
-    `SELECT v.name AS venue_name
-     FROM faculty_assignments fa
-     JOIN venues v ON v.id = fa.venue_id
-     JOIN exams e ON e.id = fa.exam_id
-     WHERE fa.faculty_id = ?
-       AND e.exam_date = ?
-       AND fa.exam_id = ?
-       AND fa.venue_id != ?
-     LIMIT 1`,
-    [requestedFacultyId, examDate, examId, venueId]
-  );
+  const overlap = await findTransferOverlapConflict({
+    requestedFacultyId,
+    examId,
+    venueId,
+    examDate,
+    examStartTime,
+    examEndTime,
+    excludeSpvId,
+    executor,
+    forUpdate,
+  });
+  if (overlap) return overlap;
 
-  if (assignConflicts.length > 0) {
+  return { available: true, message: "Faculty is available for this transfer." };
+}
+
+async function findTransferOverlapConflict({
+  requestedFacultyId,
+  examId,
+  venueId,
+  examDate,
+  examStartTime,
+  examEndTime,
+  excludeSpvId = null,
+  executor = db,
+  forUpdate = false,
+}) {
+  const seatingConflict = await findOverlappingTimeConflict(executor, {
+    facultyId: requestedFacultyId,
+    examDate,
+    examStartTime,
+    examEndTime,
+    excludeSpvId,
+    forUpdate,
+  });
+  if (seatingConflict) {
     return {
       available: false,
-      message:
-        "Transfer unavailable. This faculty is already assigned for another venue during this session.",
+      message: seatingConflict.message || buildTransferOverlapMessage(seatingConflict),
       code: "TIME_CONFLICT",
+      conflict: seatingConflict,
     };
   }
 
-  return { available: true, message: "Faculty is available for assignment." };
+  const dateOnly = normalizeExamDate(examDate);
+  const [assignRows] = await executor.query(
+    `SELECT DISTINCT ON (fa.id)
+       fa.id,
+       e.exam_date,
+       e.exam_time,
+       fa.start_time,
+       fa.end_time,
+       sp.exam_start_time,
+       sp.exam_end_time,
+       v.name AS venue_name,
+       f.name AS faculty_name
+     FROM faculty_assignments fa
+     JOIN exams e ON e.id = fa.exam_id
+     JOIN venues v ON v.id = fa.venue_id
+     JOIN faculty f ON f.id = fa.faculty_id
+     LEFT JOIN seating_plan_venues spv
+       ON spv.venue_id = fa.venue_id AND spv.faculty_id = fa.faculty_id
+     LEFT JOIN seating_plans sp
+       ON sp.id = spv.seating_plan_id AND sp.exam_date = e.exam_date
+     WHERE fa.faculty_id = ?
+       AND e.exam_date = ?
+       AND NOT (fa.exam_id = ? AND fa.venue_id = ?)
+     ORDER BY fa.id, sp.id DESC NULLS LAST`,
+    [requestedFacultyId, dateOnly, examId, venueId]
+  );
+
+  for (const row of assignRows || []) {
+    const existingStart =
+      row.start_time ??
+      row.starttime ??
+      row.exam_start_time ??
+      row.examstarttime ??
+      parseExamTimeRange(row.exam_time ?? row.examtime).start;
+    const existingEnd =
+      row.end_time ??
+      row.endtime ??
+      row.exam_end_time ??
+      row.examendtime ??
+      parseExamTimeRange(row.exam_time ?? row.examtime).end;
+    if (
+      transferWindowsConflict(
+        existingStart,
+        existingEnd,
+        examStartTime,
+        examEndTime
+      )
+    ) {
+      const conflict = {
+        facultyName: row.faculty_name ?? row.facultyname,
+        venueName: row.venue_name ?? row.venuename,
+        examDate: dateOnly,
+        examStartTime: existingStart,
+        examEndTime: existingEnd,
+      };
+      return {
+        available: false,
+        message: buildTransferOverlapMessage(conflict),
+        code: "TIME_CONFLICT",
+        conflict,
+      };
+    }
+  }
+
+  return null;
 }
 
 async function createFacultyWithUser({
@@ -742,68 +832,102 @@ const FacultyTransferService = {
     assertWithinTransferWindow(reqExamDate, reqExamStart);
 
     const assignmentId = req.attendance_assignment_id ?? req.attendanceassignmentid;
-    const [assignRows] = await db.query(
-      `SELECT fa.*, e.exam_date, e.exam_session, e.exam_time,
-              sp.exam_start_time, sp.exam_end_time
-       FROM faculty_assignments fa
-       JOIN exams e ON e.id = fa.exam_id
-       LEFT JOIN seating_plan_venues spv ON spv.venue_id = fa.venue_id AND spv.faculty_id = fa.faculty_id
-       LEFT JOIN seating_plans sp ON sp.id = spv.seating_plan_id AND sp.exam_date = e.exam_date
-       WHERE fa.id = ?
-       ORDER BY sp.id DESC NULLS LAST
-       LIMIT 1`,
-      [assignmentId]
-    );
-    const assign = assignRows[0];
-    if (!assign) {
-      const err = new Error("Assignment no longer exists");
-      err.statusCode = 404;
-      throw err;
-    }
-
-    const examId = assign.exam_id ?? assign.examid;
-    const venueId = assign.venue_id ?? assign.venueid;
     const currentFacultyId = req.current_faculty_id ?? req.currentfacultyid;
     const newFacultyId = Number(requestedFacultyId);
-
-    const [lockedRows] = await db.query(
-      `SELECT 1 FROM attendance WHERE exam_id = ? AND venue_id = ? AND is_locked = TRUE LIMIT 1`,
-      [examId, venueId]
-    );
-    if (lockedRows.length > 0) {
-      const err = new Error("Attendance already submitted — cannot approve transfer");
-      err.statusCode = 409;
-      throw err;
-    }
-
-    if ((assign.faculty_id ?? assign.facultyid) !== currentFacultyId) {
-      const err = new Error("Assignment faculty has changed since the request was submitted");
-      err.statusCode = 409;
-      throw err;
-    }
-
-    const timeRange = parseExamTimeRange(assign.exam_time ?? assign.examtime);
-    const availability = await checkReplacementAvailability({
-      requestedFacultyId: newFacultyId,
-      examId,
-      venueId,
-      examDate: assign.exam_date ?? assign.examdate,
-      examStartTime: assign.exam_start_time ?? assign.examstarttime ?? timeRange.start,
-      examEndTime: assign.exam_end_time ?? assign.examendtime ?? timeRange.end,
-      excludeFacultyId: currentFacultyId,
-      excludeSpvId: req.seating_plan_venue_id ?? req.seatingplanvenueid ?? null,
-    });
-    if (!availability.available) {
-      const err = new Error(availability.message);
-      err.statusCode = 409;
-      throw err;
-    }
+    let examId;
+    let venueId;
+    let assign;
 
     const conn = await db.getConnection();
     try {
       await conn.beginTransaction();
+
+      const [lockedReq] = await conn.query(
+        `SELECT * FROM faculty_transfer_requests WHERE public_uuid = ? FOR UPDATE`,
+        [requestUuid]
+      );
+      const liveReq = lockedReq[0];
+      if (!liveReq || liveReq.status !== "Pending") {
+        const err = new Error("This request is no longer pending and cannot be accepted again");
+        err.statusCode = 409;
+        throw err;
+      }
+
+      await lockFacultyRowsForUpdate(conn, [currentFacultyId, newFacultyId]);
+
+      const [assignRows] = await conn.query(
+        `SELECT fa.*, e.exam_date, e.exam_session, e.exam_time,
+                sp.exam_start_time, sp.exam_end_time
+         FROM faculty_assignments fa
+         JOIN exams e ON e.id = fa.exam_id
+         LEFT JOIN seating_plan_venues spv ON spv.venue_id = fa.venue_id AND spv.faculty_id = fa.faculty_id
+         LEFT JOIN seating_plans sp ON sp.id = spv.seating_plan_id AND sp.exam_date = e.exam_date
+         WHERE fa.id = ?
+         ORDER BY sp.id DESC NULLS LAST
+         LIMIT 1
+         FOR UPDATE OF fa`,
+        [assignmentId]
+      );
+      assign = assignRows[0];
+      if (!assign) {
+        const err = new Error("Assignment no longer exists");
+        err.statusCode = 404;
+        throw err;
+      }
+
+      examId = assign.exam_id ?? assign.examid;
+      venueId = assign.venue_id ?? assign.venueid;
+
+      const [lockedRows] = await conn.query(
+        `SELECT 1 FROM attendance WHERE exam_id = ? AND venue_id = ? AND is_locked = TRUE LIMIT 1`,
+        [examId, venueId]
+      );
+      if (lockedRows.length > 0) {
+        const err = new Error("Attendance already submitted — cannot approve transfer");
+        err.statusCode = 409;
+        throw err;
+      }
+
+      if (Number(assign.faculty_id ?? assign.facultyid) !== Number(currentFacultyId)) {
+        const err = new Error("Assignment faculty has changed since the request was submitted");
+        err.statusCode = 409;
+        throw err;
+      }
+
+      const timeRange = parseExamTimeRange(assign.exam_time ?? assign.examtime);
+      const examStartTime =
+        assign.exam_start_time ??
+        assign.examstarttime ??
+        assign.start_time ??
+        assign.starttime ??
+        timeRange.start;
+      const examEndTime =
+        assign.exam_end_time ??
+        assign.examendtime ??
+        assign.end_time ??
+        assign.endtime ??
+        timeRange.end;
+
+      const availability = await checkReplacementAvailability({
+        requestedFacultyId: newFacultyId,
+        examId,
+        venueId,
+        examDate: assign.exam_date ?? assign.examdate,
+        examStartTime,
+        examEndTime,
+        excludeFacultyId: currentFacultyId,
+        excludeSpvId: liveReq.seating_plan_venue_id ?? liveReq.seatingplanvenueid ?? null,
+        executor: conn,
+        forUpdate: true,
+      });
+      if (!availability.available) {
+        const err = new Error(availability.message);
+        err.statusCode = 409;
+        throw err;
+      }
+
       await FacultyTransferService._applyTransfer(conn, {
-        req,
+        req: liveReq,
         newFacultyId,
         examId,
         venueId,
@@ -1119,12 +1243,17 @@ const FacultyTransferService = {
       [newFacultyId, examId, venueId]
     );
 
-    await executor.query(
+    const [claimed] = await executor.query(
       `UPDATE faculty_transfer_requests
        SET status = 'Approved', approved_by = ?, approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
+       WHERE id = ? AND status = 'Pending'`,
       [adminUserId, req.id]
     );
+    if ((claimed?.affectedRows ?? 0) === 0) {
+      const err = new Error("This request is no longer pending and cannot be accepted again");
+      err.statusCode = 409;
+      throw err;
+    }
 
     try {
       await AuditLog.create({
@@ -1178,13 +1307,18 @@ const FacultyTransferService = {
     const requestId = req.id ?? req.ID;
     const reasonText = (rejectionReason || "").trim() || "Rejected by requested faculty";
 
-    await db.query(
+    const [rejected] = await db.query(
       `UPDATE faculty_transfer_requests
        SET status = 'Rejected', rejected_by = ?, rejected_at = CURRENT_TIMESTAMP,
            rejection_reason = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
+       WHERE id = ? AND status = 'Pending'`,
       [rejectingUserId, reasonText, requestId]
     );
+    if ((rejected?.affectedRows ?? 0) === 0) {
+      const err = new Error("This request is no longer pending");
+      err.statusCode = 409;
+      throw err;
+    }
 
     await AuditLog.create({
       userId: rejectingUserId,

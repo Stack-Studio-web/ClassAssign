@@ -347,6 +347,138 @@ function examTimesOverlap(existingStart, existingEnd, newStart, newEnd) {
   return es < ne && ee > ns;
 }
 
+/**
+ * Transfer-only: overlapping time windows conflict.
+ * Adjacent sessions (e.g. 09:00–11:00 and 11:00–13:00) do not overlap.
+ * If either window is missing times, treat as a conflict (cannot prove non-overlap).
+ */
+function transferWindowsConflict(existingStart, existingEnd, newStart, newEnd) {
+  const es = normalizeExamTime(existingStart);
+  const ee = normalizeExamTime(existingEnd);
+  const ns = normalizeExamTime(newStart);
+  const ne = normalizeExamTime(newEnd);
+  if (!es || !ee || !ns || !ne) return true;
+  return examTimesOverlap(es, ee, ns, ne);
+}
+
+function buildTransferOverlapMessage({
+  facultyName,
+  venueName,
+  examDate,
+  examStartTime,
+  examEndTime,
+  hideVenue = false,
+} = {}) {
+  const name = facultyName || "This faculty";
+  const date = formatDateDisplay(normalizeExamDate(examDate));
+  const start = formatTime12h(examStartTime);
+  const end = formatTime12h(examEndTime);
+  const datePart = date ? ` on ${date}` : "";
+  const timePart = start && end ? ` from ${start}–${end}` : "";
+  const venuePart = hideVenue || !venueName ? "" : ` at ${venueName}`;
+  return (
+    `Transfer unavailable. ${name} already has an overlapping assignment${datePart}${timePart}${venuePart}. ` +
+    "Transfers are allowed on the same day only when exam start and end times do not overlap."
+  );
+}
+
+/**
+ * Active seating allotments for a faculty on a calendar day (all rows, not just first).
+ */
+async function listActiveSameDayAssignments(
+  executor,
+  {
+    facultyId,
+    examDate,
+    excludeSeatingPlanId = null,
+    excludeSpvId = null,
+    forUpdate = false,
+  }
+) {
+  if (!facultyId || !examDate) return [];
+  const dateOnly = normalizeExamDate(examDate);
+  if (!dateOnly) return [];
+
+  const excludeClauses = [];
+  const params = [facultyId, dateOnly];
+  if (excludeSeatingPlanId) {
+    excludeClauses.push("AND sp.id != ?");
+    params.push(excludeSeatingPlanId);
+  }
+  if (excludeSpvId) {
+    excludeClauses.push("AND spv.id != ?");
+    params.push(excludeSpvId);
+  }
+  const lockSql = forUpdate ? " FOR UPDATE OF spvf" : "";
+
+  const [rows] = await executor.query(
+    `SELECT
+       spv.id AS spv_id,
+       sp.id AS seating_plan_id,
+       spvf.faculty_id,
+       spv.venue_name,
+       sp.exam_date,
+       sp.exam_start_time,
+       sp.exam_end_time,
+       sp.owner_user_id,
+       ${PLAN_CONTEXT_SQL} AS assigned_context,
+       f.name AS faculty_name
+     FROM seating_plan_venue_faculty spvf
+     JOIN seating_plan_venues spv ON spv.id = spvf.seating_plan_venue_id
+     JOIN seating_plans sp ON sp.id = spv.seating_plan_id
+     JOIN faculty f ON f.id = spvf.faculty_id
+     WHERE spvf.faculty_id = ?
+       AND sp.exam_date = ?
+       AND (${ACTIVE_ALLOCATION_SQL})
+       ${excludeClauses.join("\n       ")}
+     ORDER BY sp.exam_start_time, spv.id${lockSql}`,
+    params
+  );
+  return (rows || []).map(mapConflictRow).filter(Boolean);
+}
+
+/**
+ * Transfer-only overlap check. Same-day non-overlapping sessions are allowed.
+ * Does not change the allocator's one-duty-per-day rule.
+ */
+async function findOverlappingTimeConflict(
+  executor,
+  {
+    facultyId,
+    examDate,
+    examStartTime = null,
+    examEndTime = null,
+    excludeSeatingPlanId = null,
+    excludeSpvId = null,
+    forUpdate = false,
+  }
+) {
+  const assignments = await listActiveSameDayAssignments(executor, {
+    facultyId,
+    examDate,
+    excludeSeatingPlanId,
+    excludeSpvId,
+    forUpdate,
+  });
+
+  for (const conflict of assignments) {
+    if (
+      transferWindowsConflict(
+        conflict.examStartTime,
+        conflict.examEndTime,
+        examStartTime,
+        examEndTime
+      )
+    ) {
+      return {
+        ...conflict,
+        message: buildTransferOverlapMessage(conflict),
+      };
+    }
+  }
+  return null;
+}
+
 module.exports = {
   normalizeExamTime,
   normalizeExamDate,
@@ -357,8 +489,11 @@ module.exports = {
   presentConflictForViewer,
   findActiveTimeConflict,
   findActiveSameDayConflictsBulk,
+  findOverlappingTimeConflict,
   lockFacultyRowsForUpdate,
   examTimesOverlap,
+  transferWindowsConflict,
+  buildTransferOverlapMessage,
   getStartTimeGroupMaxEnds,
   resolveOccupancyWindow,
 };
